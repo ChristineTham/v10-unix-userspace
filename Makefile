@@ -51,7 +51,7 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -77,7 +77,7 @@ test-waveb: rootfs libv8sys crt0 libv8c
 	@$(ROOT)tests/waveb/run.sh
 test-sh: sh
 	@$(ROOT)tests/sh/run.sh
-test-wavec: nroff
+test-wavec: nroff troff
 	@$(ROOT)tests/wavec/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
@@ -445,6 +445,21 @@ rootfs: cpp v8ccom v8cc
 	@# /usr/lib/... inside $V8ROOT -- see rootpath() in shim/v8sys/syscall.c.
 	@mkdir -p $(ROOTFS)/usr/lib/term
 	@cp $(SRC)/cmd/troff/term/tab.* $(ROOTFS)/usr/lib/term/ 2>/dev/null || true
+	@$(MAKE) --no-print-directory devtables
+
+# troff's device tables.  makedev compiles the plain-text description in
+# dev202/ into the binary DESC.out and per-font .out files troff opens at
+# startup; the original makefile does the same.  It is a BUILD tool, like yacc,
+# so it is built with the host compiler and never ends up in the rootfs.
+devtables: $(BUILD)/troff/dev202/DESC.out
+$(BUILD)/troff/dev202/DESC.out: $(TROFFSRC)/makedev.c $(wildcard $(TROFFSRC)/dev202/*)
+	@mkdir -p $(BUILD)/troff/dev202
+	@$(HOSTCC) -std=gnu89 -fcommon -w -I$(TROFFSRC) -o $(BUILD)/troff/makedev \
+	    $(TROFFSRC)/makedev.c
+	@cp -R $(TROFFSRC)/dev202/. $(BUILD)/troff/dev202/
+	@cd $(BUILD)/troff/dev202 && ../makedev DESC > /dev/null
+	@mkdir -p $(ROOTFS)/usr/lib/font/dev202
+	@cp $(BUILD)/troff/dev202/*.out $(ROOTFS)/usr/lib/font/dev202/
 	@echo "rootfs ready: V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc"
 
 clean:

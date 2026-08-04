@@ -33,5 +33,20 @@ check 'nroff spaces' '2' "$("$NROFF" t4 | grep -c .)"
 printf '.na\none two\n' > t5
 check 'nroff no-adjust' 'one two' "$("$NROFF" t5 | tr -s ' \n' ' ' | sed 's/^ //;s/ $//')"
 
+
+# troff, whose device tables `make rootfs` compiles with makedev.  Its output is
+# the device-independent stream a typesetter driver consumes, not text, so the
+# test looks at the header it must always emit.
+TROFF=$ROOT/build/stage0/troff/troff
+if [ -x "$TROFF" ]; then
+	"$TROFF" t1 > tr.out 2>tr.err
+	check 'troff names the device' 'x T 202' "$(head -1 tr.out)"
+	check 'troff states resolution' 'x res 972 1 2' "$(sed -n 2p tr.out)"
+	check 'troff initialises' 'x init' "$(sed -n 3p tr.out)"
+	check 'troff emits no errors' '' "$(cat tr.err)"
+else
+	fail=$((fail+4)); echo "FAIL troff not built"
+fi
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

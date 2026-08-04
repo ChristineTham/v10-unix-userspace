@@ -36,12 +36,11 @@ same treatment for free.
 
 ## What is left
 
-**troff** needs its device tables compiled. It opens
-`/usr/lib/font/dev202/DESC.out`, which `makedev` builds from the plain-text
-description in `src/cmd/troff/dev202/`. That is a build step the original
-makefile runs, not a porting problem: `makedev.c` is in the tree and compiles.
-`make rootfs` should run it and install the result, the way it already installs
-the terminal tables.
+**troff runs.** Its device tables are compiled at build time: `make rootfs`
+builds `makedev` with the host compiler — it is a build tool, like yacc, and
+never enters the rootfs — runs it over `src/cmd/troff/dev202/`, and installs the
+resulting `DESC.out` and per-font files. troff then emits the device-independent
+stream a typesetter driver consumes.
 
 **eqn, tbl, pic, refer** are the rest of Wave C. `tbl` already compiles and
 links (23 files); `eqn` and `pic` need their yacc grammars generated first, which
