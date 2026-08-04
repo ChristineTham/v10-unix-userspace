@@ -644,7 +644,14 @@ struct lval {
 	int direct;	/* frame-relative: use the node's own offset */
 	int isreg;	/* the lvalue IS a register (REG/RNODE/SNODE/QNODE) */
 	int rval;	/* which register, when isreg */
+	int fldoff;	/* bit field: offset and width, -1 when not a field */
+	int fldsiz;
+	struct lval *cont;	/* bit field: the containing word */
 };
+
+static void lvaddr();
+static ret lvload();
+static void lvstore();
 
 static void
 lvaddr(p, lv)
@@ -658,6 +665,29 @@ lvaddr(p, lv)
 	lv->direct = 0;
 	lv->isreg = 0;
 	lv->rval = 0;
+	lv->fldoff = -1;
+	lv->fldsiz = 0;
+	lv->cont = 0;
+
+	if (p->in.op == FLD) {
+		/*
+		 * A bit field is addressed through its containing word, which
+		 * is itself an lvalue and must likewise be generated once.
+		 * Geometry is packed into tn.rval: rval/64 is the bit offset,
+		 * rval%64 the width.
+		 */
+		static struct lval contbuf[8];
+		static int contdepth;
+
+		lv->fldoff = p->tn.rval / 64;
+		lv->fldsiz = p->tn.rval % 64;
+		if (lv->fldsiz == 0) cerror("zero-width bit field");
+		if (contdepth >= 8) cerror("bit fields nested too deeply");
+		lv->cont = &contbuf[contdepth++];
+		lvaddr(p->in.left, lv->cont);
+		contdepth--;
+		return;
+	}
 
 	if (isdirect(p)) { lv->direct = 1; return; }
 
@@ -690,6 +720,13 @@ lvload(lv)
 	int reg;
 
 	r.reg = -1; r.flag = R_NONE;
+	if (lv->fldoff >= 0) {
+		r = lvload(lv->cont);
+		printx("\t%s\t%s, %s, #%d, #%d\n",
+		    tyunsigned(t) ? "ubfx" : "sbfx",
+		    xreg(r.reg), xreg(r.reg), lv->fldoff, lv->fldsiz);
+		return (r);
+	}
 	if (lv->isreg) {
 		reg = regalloc();
 		printx("\tmov\t%s, %s\n", xreg(reg),
@@ -723,9 +760,26 @@ lvstore(lv, src)
 {
 	TWORD t = lv->node->in.type;
 
+	if (lv->fldoff >= 0) {
+		/* read the containing word, splice the bits in, write it back */
+		ret c = lvload(lv->cont);
+		printx("\tbfi\t%s, %s, #%d, #%d\n", xreg(c.reg), xreg(src),
+		    lv->fldoff, lv->fldsiz);
+		lvstore(lv->cont, c.reg);
+		regfree(c.reg);
+		return;
+	}
 	if (lv->isreg) {
-		if (lv->rval < 0) printx("\tmov\tx0, %s\n", xreg(src));
-		else printx("\tmov\t%s, %s\n", xreg(lv->rval), xreg(src));
+		if (lv->rval < 0) {
+			/* RNODE/SNODE/QNODE: x0, or d0/s0 for a floating value */
+			if (tyfloat(t))
+				printx("\tfmov\t%s, %s\n",
+				    (t & TDOUBLE) ? "d0" : "s0", freg(t, src));
+			else
+				printx("\tmov\tx0, %s\n", xreg(src));
+		} else {
+			printx("\tmov\t%s, %s\n", xreg(lv->rval), xreg(src));
+		}
 		return;
 	}
 	if (lv->direct) { storedirect(lv->node, src); return; }
@@ -740,6 +794,7 @@ static void
 lvfree(lv)
 	struct lval *lv;
 {
+	if (lv->cont) lvfree(lv->cont);
 	if (lv->reg >= 0) regfree(lv->reg);
 }
 
@@ -991,15 +1046,30 @@ gen(p, want)
 		return (l);
 
 	/* ---------------------------------------------------- assignment */
-	case ASSIGN:
+	case ASSIGN: {
+		struct lval lv;
+
+		/*
+		 * The lvalue is generated ONCE here too.  A plain assignment
+		 * looks like it only needs the address, but the address itself
+		 * can carry a side effect -- stdio's putc macro is
+		 *
+		 *	*(p)->_ptr++ = (x)
+		 *
+		 * and evaluating that twice advanced _ptr twice per character,
+		 * so putchar wrote one good byte and then garbage.
+		 */
+		lvaddr(p->in.left, &lv);
 		r = gen(p->in.right, WVALUE);
 		if (tyfloat(p->in.left->in.type)) r = tofp(r, p->in.left->in.type);
-		storeto(p->in.left, r.reg);
+		lvstore(&lv, r.reg);
+		lvfree(&lv);
 		if (want == WEFFECT) {
 			if (r.flag & R_FREG) fregfree(r.reg); else regfree(r.reg);
 			return (res);
 		}
 		return (r);
+	}
 
 	/*
 	 * Assignment operators.  ASG X is X+1 (manifest.h: "# define ASG 1+"),

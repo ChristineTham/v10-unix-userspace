@@ -93,10 +93,21 @@ echo "wavea: $pass passed, $fail failed"
 # ---------------------------------------------------------------------------
 # STILL BROKEN, each recorded rather than left to be rediscovered:
 #
-#   head, rev  -- build and link, produce no output. Both read stdin with
-#                 getchar()/getc rather than read(2), so the next thing to check
-#                 is _filbuf: cat's read(2) path works and stdio output now
-#                 works, but stdio INPUT has not been separately exercised.
+#   head, rev  -- build and link, produce no output. Narrowed: stdio INPUT is
+#                 the problem, and specifically getc's fast path. A round trip
+#
+#                     while ((c = getchar()) != EOF) putchar(c);
+#
+#                 on "abc\n" reads the right NUMBER of characters (4, so
+#                 _filbuf and EOF detection work) but writes 'a' then 0x80
+#                 three times. The 'a' comes from _flsbuf, taken when _cnt is
+#                 still 0; the rest go through getc's fast path
+#
+#                     (--(p)->_cnt>=0 ? (int)*(p)->_ptr++ : _filbuf(p))
+#
+#                 which is a post-increment used as a VALUE rather than as an
+#                 lvalue. putc's mirror image of this was the double-evaluation
+#                 bug just fixed, so look there first: gen(STAR) over an INCR.
 #
 #   tr         -- `echo abc | tr a-z A-Z` gives "A000" instead of "ABC", so the
 #                 a-z range expansion is filling its table wrongly. tr builds
@@ -106,8 +117,7 @@ echo "wavea: $pass passed, $fail failed"
 #
 #   cmp        -- does not compile.
 #
-#   sum        -- builds and runs but prints nothing; same stdio-input question
-#                 as head and rev.
+#   sum        -- FIXED, works.
 #
 #   A failed open is silent and exits 0 (see cat nosuchfile). cat does
 #   `fprintf(stderr, "cat: "); perror(*argv); retcode = 1;` and loses both.
