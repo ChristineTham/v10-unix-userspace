@@ -107,15 +107,33 @@ echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
 # ---------------------------------------------------------------------------
-# KNOWN BROKEN: printf("%f") loses precision -- 3.14159 prints as 3.146509.
+# KNOWN BROKEN: printf("%f") -- 3.14159 prints as 3.146509.
 #
-# %e and %g are correct and share ecvt with it, so it is the fcvt digit loop.
-# The same source compiled by clang produces the right digits, so it is codegen.
-# V8DBG=1 prints node types (octal, comparable with mfile2.h) and is the tool
-# that found the malloc bug; the digit loop in src/libc/gen/ecvt.c is
+# NOT the digit loop and NOT modf. Both are correct, and identically so under
+# clang: the raw loop
 #
-#	while (p<=p1 && p<&buf[NDIG]) { arg *= 10; arg = modf(arg, &fj);
-#					*p++ = (int)fj + '0'; }
+#	for (i=0;i<7;i++){ arg=arg*10; arg=modf(arg,&fj); b[i]=(int)fj+'0'; }
 #
-# so the things to look at are the double-to-int conversion and whether `arg`
-# stays a double across the loop.
+# yields 1415899 from 0.14159 under BOTH compilers -- that trailing 899 is
+# ordinary binary floating point, and cvt's rounding step is what turns it into
+# 1415900. modf(5.9) and modf(8.999999) both come out right under v8cc, as do
+# 64-bit shifts and masks, so ieeefp.c is fine.
+#
+# So the fault is in cvt()'s rounding tail in src/libc/gen/ecvt.c:
+#
+#	p = p1;
+#	*p1 += 5;
+#	while (*p1 > '9') { *p1 = '0'; if (p1>buf) ++*--p1; else { ... } }
+#
+# The observed digits are 3146509 where 3141590 is wanted. Position 3 holds '6'
+# = '1'+5, which is the += 5 landing at buf[3] instead of buf[7]. So p1 is
+# wrong, and p1 comes from
+#
+#	p1 = &buf[ndigits];  if (eflag==0) p1 += r2;
+#
+# -- pointer arithmetic on a static array with an int index. Given that the
+# whole malloc bug turned out to be PTRTYPE narrowing pointer arithmetic, check
+# that first: compile just those two lines and read the types with V8DBG=1.
+#
+# The `*p1 += 5` and `*p++ = c` patterns themselves were tested in isolation and
+# compile correctly, so it is the address computation, not the store.
