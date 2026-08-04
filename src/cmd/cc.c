@@ -38,6 +38,10 @@ char	*as = "/usr/bin/clang";
 char	*ld = "/usr/bin/clang";
 char	*crt0 = "/lib/crt0.o";
 char	*instrcnt = "/lib/instrcnt";
+#ifndef V8ROOT_DEFAULT
+#define V8ROOT_DEFAULT ""
+#endif
+
 char	*v8root;
 char	*incdir;		/* "-I$V8ROOT/usr/include", built by setpaths */
 char	*libdir;
@@ -89,23 +93,14 @@ setpaths()
 	char *r, *getenv();
 
 	/*
-	 * The shim has a compiled-in default root (v8root() in
-	 * shim/v8sys/syscall.c) and the driver deliberately does NOT, yet.
-	 *
-	 * It was tried and it does not survive the trip: the Makefile passes
-	 * -DV8ROOT_DEFAULT='"..."', clang bakes it into the seed correctly, and
-	 * v8cc drops it -- the string is in cc-seed and absent from the cc.o
-	 * v8cc produces from the same source.  The driver turns -D into -X for
-	 * cpp (see the option loop below) and the quotes are lost somewhere in
-	 * that path.  Chasing it is worth doing; guessing at it is not.
-	 *
-	 * The consequence is bounded, which is why this can wait: with $V8ROOT
-	 * unset the driver fails LOUDLY -- "Can't find include file stdio.h" --
-	 * rather than silently compiling against the host's headers.  That is
-	 * the opposite of the shim's version of the same gap, which is why the
-	 * shim's was the urgent half.
+	 * $V8ROOT, then the root compiled in at build time -- the same decision
+	 * v8root() makes in shim/v8sys/syscall.c, and the driver needs its own
+	 * copy of it because it hands cpp an explicit -I and cpp is still a host
+	 * binary that never sees rootpath().
 	 */
 	if ((r = getenv("V8ROOT")) == 0 || *r == 0)
+		r = V8ROOT_DEFAULT;
+	if (r == 0 || *r == 0)
 		return;
 	v8root = r;
 	cpp        = strspl(r, "/lib/cpp");

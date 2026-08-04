@@ -263,16 +263,23 @@ convenience. Host directories are an explicit opt-in.
    work — the same silent fall-through class as the variadic libc gaps.
    `cat /usr/lib/yaccpar` now works with `$V8ROOT` unset.
 
-   **The driver still needs `$V8ROOT`, and that is a separate defect.** The same
-   `-DV8ROOT_DEFAULT` was tried on `cc.c` and does not survive: clang bakes it
-   into `cc-seed` correctly, and v8cc drops it — the string is present in
-   `cc-seed` and absent from the `cc.o` v8cc produces from identical source. The
-   driver rewrites `-D` into `-X` for cpp and the quotes are lost somewhere in
-   that path. **This is a v8cc bug worth finding**, not just a driver
-   inconvenience: any program compiled with a quoted `-D` is affected. It is
-   deferred rather than guessed at, and the consequence is bounded — with
-   `$V8ROOT` unset the driver fails loudly ("Can't find include file stdio.h")
-   rather than silently using host headers.
+   The driver has the same default, from the same `-DV8ROOT_DEFAULT`, so
+   `cc -o prog prog.c` works with `$V8ROOT` unset too.
+
+   **A retracted finding, kept because the mistake is instructive.** This was
+   first written up as a v8cc bug — the define appeared in `cc-seed` and not in
+   the `cc.o` v8cc produced from identical source, which looked exactly like the
+   compiler dropping a quoted `-D`. It was not. The Makefile line had been
+   edited with `perl -0pi -e "s|...|...$(V8ROOT_DEFAULT)...|"`, and in Perl
+   `$(` is the real-GID variable, so the substitution produced
+
+       -DV8ROOT_DEFAULT='"20 20 12 61 79 80 81 702 ...V8ROOT_DEFAULT)"'
+
+   v8cc handles a quoted `-D` correctly; `cc -E -DFOO='"bar"'` yields
+   `char *s = "bar";`. Two lessons, both already in this file's spirit: verify a
+   claim about a tool against the tool, not against a build that might be
+   feeding it something else — and read the command make actually ran (`make -n`
+   showed it immediately) before concluding anything about the program it ran.
 
 4. **`/etc` is not decoration.** `getpw.c`, `getlogin.c` and `ttyslot.c` read
    it. Upstream ships genuine V8 `group`, `fstab`, `hosts` and `ttys`, which can

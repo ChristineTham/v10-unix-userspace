@@ -509,7 +509,7 @@ $(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c $(SEED_DEPS)
 # No $(STAGE0_COMPAT) on either line: cc.c stopped needing _sobuf when it
 # stopped being linked against the host stdio.
 # ---------------------------------------------------------------------------
-V8CC_INC =
+V8CC_INC = -DV8ROOT_DEFAULT='"$(V8ROOT_DEFAULT)"'
 
 $(CCSEED): $(SRC)/cmd/cc.c
 	@mkdir -p $(BUILD)/cc
