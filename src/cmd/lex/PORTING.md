@@ -59,12 +59,30 @@ That was not the whole story. With `i` a `char *` and `calloc` properly declared
 **malloc is genuinely returning 0** for some of lex's requests. Some succeed —
 the run reports `1323/1700 nodes` — so it is not failing outright.
 
-Next: print `a`, `b` and the returned pointer at each `myalloc` call. Nine
-failures out of many suggests a particular size or a particular point in the
-arena's growth, and the numbers will say which. Then reproduce that size
-directly against `malloc` in a standalone program — the libc suite covers malloc
-but not at these sizes or this allocation pattern.
+Measured. Printing `a`, `b` and the result at every `myalloc`:
 
-Note that `left` and `right` are now 8 bytes an element, so lex asks for roughly
-twice the core it used to; if the arena has a limit being hit, that is why it is
-being hit now and was not before.
+```
+MA 000003e8 00000001 0000000300001010     1000 x 1   -> ok
+MA 00000028 00000008 00000003000017f0       40 x 8   -> ok
+MA 000002bc 00000001 0000000105adda80      700 x 1   -> ok, DIFFERENT region
+MA 000002bc 00000004 0000000000000000      700 x 4   -> FAILS
+MA 0000052c 00000008 0000000000000000     1324 x 8   -> FAILS
+MA 00001388 00000004 0000000000000000     5000 x 4   -> FAILS
+```
+
+So this is **a malloc problem, not a lex problem**: small requests succeed and
+requests from about 2800 bytes upward return 0. Note also that successful
+allocations come from two different regions — `0x3000xxxx`, the shim's sbrk
+arena, and `0x105adda80`, which is nowhere near it.
+
+That second address is the thing to pull on. `src/libc/gen/malloc.c` is Ritchie
+first-fit over `sbrk`, and `ialloc()` splices each new `sbrk` block into a
+circularly-linked arena that it requires to be **monotonically increasing**. If
+one block comes back far from the last, the ordering assumption breaks and the
+search walks off — which is exactly the shape of "small ones work, larger ones
+return 0".
+
+Next: print in `malloc` itself — the requested size, what `sbrk` returned, and
+`allocb`/`allocp` — for a program that asks for 700, then 2800, then 20000
+bytes. That is a libc test, not a lex one, and it belongs in
+`tests/libv8c/run.sh` once understood.
