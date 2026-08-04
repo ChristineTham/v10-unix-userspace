@@ -1,6 +1,6 @@
 # Porting Research Unix V8 Userspace to macOS (ARM64)
 
-**Status:** Phases 0 through 2b complete and tested; **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 216 tests. Waves 3B-3C, 4 and 5 not started.
+**Status:** Phases 0 through 2b complete and tested; **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 220 tests. **Wave B started**: the Bourne shell compiles, links and runs most of its grammar (`src/cmd/sh/PORTING.md`). Waves 3C, 4 and 5 not started.
 See "Current state" at the bottom.
 **Project arc:** V8 first (this plan), then V9, then V10 — restoring the original project goal of the last Research Edition, with V8 as the beachhead where the lessons are cheapest.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
@@ -294,8 +294,9 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 1c driver | done | `v8cc` 8/8, `make rootfs` |
 | 2a libv8sys | done | `v8sys` 44/44 |
 | 2b V8 libc | done | 89 objects, compiled by v8cc: stdio (incl. `%f`/`%e`/`%g`), the string family, malloc, ctype, qsort, getenv, the directory routines, `setjmp`/`longjmp`, perror and IEEE floats (`libv8c` 19/19) |
-| 3A Wave A | done | **156 of 163** single-file commands in `usr/src/cmd` build, including `ls`. 29 of them are exercised with golden output (`wavea` 58/58): `cat`, `cmp`, `col`, `comm`, `cut`, `deroff`, `echo`, `expand`, `fgrep`, `fold`, `grep`, `head`, `join`, `look`, `number`, `od`, `paste`, `pr`, `printenv`, `pwd`, `rev`, `seq`, `sort`, `split`, `sum`, `tail`, `tee`, `tr`, `uniq`, `unexpand`, `vis`, `wc`, `yes`, `ascii`, `basename`, `cal` |
-| 3B–3C waves | not started | |
+| 3A Wave A | done | **156 of 163** single-file commands in `usr/src/cmd` build, including `ls`. 29 of them are exercised with golden output (`wavea` 62/62): `cat`, `cmp`, `col`, `comm`, `cut`, `deroff`, `echo`, `expand`, `fgrep`, `fold`, `grep`, `head`, `join`, `look`, `number`, `od`, `paste`, `pr`, `printenv`, `pwd`, `rev`, `seq`, `sort`, `split`, `sum`, `tail`, `tee`, `tr`, `uniq`, `unexpand`, `vis`, `wc`, `yes`, `ascii`, `basename`, `cal` |
+| 3B Wave B | started | The **Bourne shell** compiles, links and runs: `for`, `if`, `case`, pipelines, redirection, backquotes, functions, `${}`, `set --`. Variable assignment still hangs in `findnam` — `src/cmd/sh/PORTING.md` has the state and the next step |
+| 3C Wave C | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
 

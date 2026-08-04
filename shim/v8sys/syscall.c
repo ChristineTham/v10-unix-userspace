@@ -153,9 +153,38 @@ long v8s_readlink(char *p, char *b, long n)
  * fork.  V8's vfork is the BSD one, which shared the address space until exec;
  * plain fork is always a correct substitute and never a dangerous one, so both
  * names map here.
+ *
+ * XNU's fork returns TWO values, like pipe below, and the second one is what
+ * tells parent from child.  x0 holds a pid in both processes -- the child's pid
+ * in the parent, and the PARENT's pid in the child -- and x1 is 0 in the parent
+ * and 1 in the child.  Reading only x0, as rawsys0 does, makes the child
+ * believe it is the parent: both carry on as the shell, neither ever execs, and
+ * the real parent waits forever.  That is exactly how it presented -- the
+ * Bourne shell parsed `echo hello`, forked, and sat in wait(2):
+ *
+ *	main -> exfile -> execute -> await -> wait -> v8s_wait -> rawsys4
+ *
+ * so the whole shell was working and only this was wrong.
  */
-int v8s_fork(void)                       { RET(rawsys0(SYS_fork)); }
-int v8s_vfork(void)                      { RET(rawsys0(SYS_fork)); }
+int
+v8s_fork(void)
+{
+#if defined(__APPLE__)
+	register long r0 __asm__("x0");
+	register long r1 __asm__("x1");
+	register long x16 __asm__("x16") = SYS_fork;
+	register long err __asm__("x8");
+
+	__asm__ volatile("svc #0x80\n\tcset x8, cs"
+	    : "=r"(r0), "=r"(r1), "=r"(err) : "r"(x16) : "memory", "cc");
+	if (err) { v8_errno = v8sys_errno((int)r0); return (-1); }
+	return (r1 ? 0 : (int)r0);	/* the child sees 0, as Unix promises */
+#else
+	RET(rawsys0(SYS_fork));
+#endif
+}
+
+int v8s_vfork(void)                      { return (v8s_fork()); }
 
 /*
  * pipe.  The macOS pipe syscall returns the two descriptors in x0 and x1 rather

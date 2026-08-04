@@ -83,10 +83,18 @@ main(void)
 	/* ------------------------------- directories read as V7 records */
 	/*
 	 * The load-bearing test: 44 V8 commands read directories with read(2)
-	 * and expect 16-byte records.  macOS refuses read() on a directory at
+	 * and expect fixed-size records.  macOS refuses read() on a directory at
 	 * all, so this is entirely synthesised by the shim.
+	 *
+	 * 256 bytes, not the V7 16: DIRSIZ is 254 here, because a 14-character
+	 * name cannot hold most of a real macOS path component and pwd(1) failed
+	 * in any directory with a long one above it.  See src/include/dir.h for
+	 * the reasoning; what matters at this seam is only that the shim and the
+	 * header agree, which is what this asserts.
 	 */
-	ok(sizeof(struct v8_direct) == 16, "struct v8_direct is 16 bytes");
+	ok(sizeof(struct v8_direct) == 2 + V8_DIRSIZ,
+	    "a v8_direct record is 2 + DIRSIZ bytes");
+	ok(sizeof(struct v8_direct) == 256, "struct v8_direct is 256 bytes");
 
 	snprintf(sub, sizeof sub, "%s/a", tmpl);
 	close(creat(sub, 0644));
@@ -105,14 +113,18 @@ main(void)
 		nm[V8_DIRSIZ] = '\0';
 		if (strcmp(nm, "a") == 0) found_a = 1;
 		if (strcmp(nm, "bb") == 0) found_b = 1;
-		/* truncated to exactly 14 bytes, as a V7 disk would have */
-		if (strncmp(nm, "a-very-long-na", 14) == 0) found_long = 1;
+		/*
+		 * The whole name, not the 14 bytes a V7 disk would have held.
+		 * That is the point of DIRSIZ being 254 here: truncation made
+		 * most of a real filesystem unnameable.
+		 */
+		if (strcmp(nm, "a-very-long-name-indeed") == 0) found_long = 1;
 		ok(rec.d_ino != 0, "directory entry has a non-zero inode");
 	}
 	ok(n == 0, "read on a directory ends cleanly at EOF");
 	ok(found_a, "found entry 'a'");
 	ok(found_b, "found entry 'bb'");
-	ok(found_long, "long name truncated to 14 bytes, not dropped");
+	ok(found_long, "a 23-character name survives whole");
 
 	ok(v8s_lseek(fd, 0, 0) == 0, "rewind a directory with lseek");
 	ok(v8s_read(fd, (char *)&rec, sizeof rec) == sizeof rec,

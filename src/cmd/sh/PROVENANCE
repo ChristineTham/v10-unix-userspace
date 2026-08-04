@@ -1,0 +1,44 @@
+# Provenance for src/cmd/sh
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+42b40d3b34283f1f8217c3acd3565471ea2f3524  v8/usr/src/cmd/sh/:fix
+e52066eb4e5873a3619d6631e7845911d92246a3  v8/usr/src/cmd/sh/sym.h
+046a05842dbe402de953f9d70d2898e9aac45d69  v8/usr/src/cmd/sh/msg.c
+8d189fc2bfa315c9920d21586d6e432a343fb172  v8/usr/src/cmd/sh/args.c
+6f7a730e7facf5b6f5d78c782a854d3ac8b690b4  v8/usr/src/cmd/sh/defs.h
+11460e4ff93cebc96865304bafd86b2204a5a28c  v8/usr/src/cmd/sh/stak.h
+4e2c5c531fb5c40259e546753c9ab0a80fda5d4e  v8/usr/src/cmd/sh/name.h
+01f03cb462c812992e3b30ef92ed166c985fba20  v8/usr/src/cmd/sh/print.c
+6890139738394fb5fe3047050865dc4d88c3ba2b  v8/usr/src/cmd/sh/io.c
+a8dad0efec45c439effd92b7bed7aa6b86ee428b  v8/usr/src/cmd/sh/ctype.c
+a621f583707cb4a31e85289eae1df1eb1f0e482c  v8/usr/src/cmd/sh/spname.c
+b435ad07d0898b9def2cb81e06476b45163caf5f  v8/usr/src/cmd/sh/makefile
+60ed5735ca8a55f35a01ff437e765579d2ec6f8e  v8/usr/src/cmd/sh/changes
+616d7cdf435f0fe7341334193d35c6452c4fbba3  v8/usr/src/cmd/sh/xec.c
+6fb8de892b9b28714a3f919c83f61038a6caaa84  v8/usr/src/cmd/sh/math.sh
+4afe80703e5dbd9a661453391022bf00380aa500  v8/usr/src/cmd/sh/func.c
+16258dcc21697e32236b4371d56f2dd8617b697a  v8/usr/src/cmd/sh/string.c
+c610780ef3cbca685b9092c371579c47dc35434c  v8/usr/src/cmd/sh/word.c
+027a9e58603eac7351d0bcc4b8214a2cba3d3aeb  v8/usr/src/cmd/sh/cmd.c
+2c10e8280f274f37454fd8ffc936a7d313b67619  v8/usr/src/cmd/sh/defs.c
+51637c4e247f4f671af3fc2b2b8564891a72f3e8  v8/usr/src/cmd/sh/mode.h
+a877e11a987451208ea7dbca1580f9d2f755c980  v8/usr/src/cmd/sh/main.c
+f629618d66f0d1c9c5cb4efdfec5abe83557ddad  v8/usr/src/cmd/sh/error.c
+41e7e701446a1fcd4a30da3b35ca2a93fed982c2  v8/usr/src/cmd/sh/blok.c
+ce2e94bd2853810677b5925beff84d176430ab57  v8/usr/src/cmd/sh/ctype.h
+16e6035bd3fd01128308c535e574b36a5367769e  v8/usr/src/cmd/sh/service.c
+ece3081f8c24dd0f17c365b3e55937b05e8417bd  v8/usr/src/cmd/sh/fault.oc
+663a24045249f27b63e5d0772423805c4b6745d5  v8/usr/src/cmd/sh/name.c
+2bc7917f3090c46627a1b3fe77721df721cbb815  v8/usr/src/cmd/sh/setbrk.c
+9a5f347359d3c31e0ad9f7d3c7bc3fee3217cdc4  v8/usr/src/cmd/sh/profile.c
+47fe735da50171400defb465e38b1f64ef83f5ca  v8/usr/src/cmd/sh/stak.c
+0512f5d569eff6fb0b10b3ec9d29c4848b4acb96  v8/usr/src/cmd/sh/fault.c
+685adc56c066f2d4abc7ec6beee9d79849f6d5da  v8/usr/src/cmd/sh/mac.h
+7f52831d82a224daf69837b763f319f5dbac5079  v8/usr/src/cmd/sh/timeout.h
+c8bd804c90bd67ff7c067fb626b0f57ad96cdd57  v8/usr/src/cmd/sh/brkincr.h
+e2361461ec96f16f1ecafb21b06bd5be2e68aa3e  v8/usr/src/cmd/sh/expand.c
+b78e37849a5294eca5f1a58f2a8a2a0726c8f75f  v8/usr/src/cmd/sh/pathserv.c
+8deb058bf6ab403f073ebed8bd7c1505c6f883f9  v8/usr/src/cmd/sh/macro.c
