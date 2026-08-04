@@ -154,10 +154,29 @@ changing it:
 negative controls. If you add build rules, add cases — and verify by mutation
 that they can fail.
 
+## Automation in this repo
+
+`.claude/` carries four things, all of them encoding a bug that has already
+happened here:
+
+- **`hooks/block-third-party.sh`** (PreToolUse) refuses any write under
+  `third_party/`, which would silently destroy the provenance hashes.
+- **`hooks/check-makefile.sh`** (PostToolUse) runs
+  `make -n --warn-undefined-variables` after any Makefile edit, and flags
+  multi-target rules that carry a recipe. ~60ms.
+- **`agents/lp64-auditor.md`** — subagent for the width, collision and variadic
+  hazards. Run it on a freshly imported program before building.
+- **`skills/port-program/`** — the workflow below, with `audit.sh` bundled.
+  Invoke with `/port-program NAME`.
+
+CI (`.github/workflows/ci.yml`) builds and tests on `macos-14` (ARM64 — an x86
+runner would not exercise the AAPCS64 bugs this port keeps finding), then
+asserts that a no-op `make` does zero work and that a clean `-j8` build passes.
+
 ## Porting a program
 
 The recurring task. Steps 4 and 6 are the ones most often skipped and the two
-with a history of costing multi-round debugging.
+with a history of costing multi-round debugging. `/port-program NAME` walks it.
 
 1. `tools/import.sh v8/usr/src/cmd/NAME` — never copy by hand; this records the
    upstream blob hash in `PROVENANCE` so the diff against pristine V8 stays

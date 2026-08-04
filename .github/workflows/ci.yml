@@ -1,0 +1,75 @@
+name: build and test
+
+# The economics here are unusually good: clean build ~4s, full suite ~360 tests.
+# There is no reason not to run it on every push.
+#
+# It would have caught the stale-binary incident independently: 38 /bin binaries
+# were left linked against an older shim because $(V8DEPS) expanded to nothing,
+# and the only reason it surfaced was a hand-run mutation test.  A clean-tree
+# build in CI cannot be stale by construction.
+#
+# INJECTION SURFACE: none.  No step interpolates ${{ ... }} into a run: block --
+# no issue titles, PR bodies, commit messages, branch names or any other
+# attacker-controllable event field appears anywhere here.  Every step runs a
+# fixed `make` target.  Keep it that way: if a step ever needs event data, pass
+# it through `env:` and reference it as "$VAR" inside the shell, never inline.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    # ARM64. The port targets Apple Silicon, and several of the bugs it has
+    # found are AAPCS64-specific -- the Apple variadic deviation above all --
+    # so an x86 runner would test something this project does not claim.
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        # Recorded because two of them are load-bearing and version-sensitive:
+        # make 3.81 has no grouped targets and compares mtimes at whole-second
+        # granularity, and the stage-0 seed needs a host yacc for cpp's grammar
+        # (V8's own yacc does not exist until rung 1).
+        run: |
+          uname -m
+          clang --version | head -1
+          make --version | head -1
+          yacc --version 2>&1 | head -1 || echo "yacc: (bsd yacc, no --version)"
+
+      - name: Build
+        run: make -j3
+
+      - name: Test
+        run: make test
+
+      # A clean build proves the graph can construct the world from nothing.
+      # An incremental one proves it settles -- that a second make does no work.
+      # Before the dependency audit, a no-op make recompiled 39 objects every
+      # time, which is how a build gets slow enough that people take shortcuts.
+      - name: Build must settle
+        run: |
+          busy=$(make 2>&1 | grep -cE '\-c \-o ' || true)
+          if [ "$busy" -ne 0 ]; then
+            echo "::error::a no-op make recompiled $busy objects; the graph does not settle"
+            make -n | head -20
+            exit 1
+          fi
+          echo "no-op make ran 0 compile steps"
+
+      - name: Rebuild from clean, in parallel
+        # -j is where a multi-target rule races under make 3.81, which reads
+        # `a b: dep` as two rules sharing one recipe rather than a grouped
+        # target. Serial passing does not prove parallel passing.
+        run: |
+          make clean
+          make -j8
+          make test
