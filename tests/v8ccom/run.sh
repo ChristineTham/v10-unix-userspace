@@ -250,6 +250,60 @@ struct pt { int x; int y; };
 f() { struct pt p; struct pt *q; q = &p; q->x = 5; q->y = 7; return q->x + q->y; }
 EOF
 
+# -------------------------------------------------------------- floating point
+cat > "$TMP/drv.c" <<'EOF'
+#include <stdio.h>
+double fd();
+int main(void){ printf("%.4f\n", fd()); return 0; }
+EOF
+
+t 'double arithmetic' '7.5000' <<'EOF'
+double fd() { double a,b; a = 5.0; b = 2.5; return a+b; }
+EOF
+
+t 'double multiply divide' '6.2500' <<'EOF'
+double fd() { double a; a = 12.5; return a*2.0/4.0; }
+EOF
+
+t 'double subtract negate' '-3.2500' <<'EOF'
+double fd() { double a,b; a = 1.25; b = 4.5; return a-b; }
+EOF
+
+t 'int to double' '3.5000' <<'EOF'
+double fd() { int i; double d; i = 7; d = i; return d/2.0; }
+EOF
+
+t 'double compare' '1.0000' <<'EOF'
+double fd() { double a,b; a = 2.5; b = 1.5; if (a > b) return 1.0; return 0.0; }
+EOF
+
+t 'double loop accumulate' '5.5000' <<'EOF'
+double fd() { int i; double s; s = 0.0; for(i=1;i<=10;i++) s += 0.55; return s; }
+EOF
+
+t 'float type' '2.5000' <<'EOF'
+double fd() { float f; f = 2.5; return f; }
+EOF
+
+t 'double function argument' '9.0000' <<'EOF'
+double twice(x) double x; { return x*2.0; }
+double fd() { double twice(); return twice(4.5); }
+EOF
+
+t 'double array' '6.0000' <<'EOF'
+double fd() { double v[4]; v[0]=1.0; v[1]=2.0; v[2]=3.0; return v[0]+v[1]+v[2]; }
+EOF
+
+cat > "$TMP/drv.c" <<'EOF'
+#include <stdio.h>
+long f();
+int main(void){ printf("%ld\n", f()); return 0; }
+EOF
+
+t 'double to int' '7' <<'EOF'
+f() { double d; d = 7.9; return (int)d; }
+EOF
+
 echo
 echo "v8ccom: $pass passed, $fail failed"
 [ -n "$FAILED" ] && echo "failing:$FAILED"

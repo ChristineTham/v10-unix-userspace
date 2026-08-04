@@ -77,6 +77,8 @@ typedef struct {
 #define R_CON	4		/* value is a known constant (in ret.reg's
 				 * place we keep nothing; the caller re-reads
 				 * the node) */
+#define R_FREG	8		/* value is in FP register ret.reg (a separate
+				 * register file -- see gencode.c) */
 
 /* Request flags, passed down as `flag` -- what the caller wants. */
 #define WVALUE	1		/* want the value in a register */

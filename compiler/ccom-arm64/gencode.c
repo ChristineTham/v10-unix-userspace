@@ -47,6 +47,17 @@ static ret gencall();
 
 static char inuse[REGVAR];
 
+/*
+ * Floating-point registers are a separate file on AArch64, so they get their
+ * own pool rather than competing with x9-x15.  d16-d23 are caller-saved and
+ * are not argument registers, which mirrors the choice of x9-x15 for integers.
+ */
+#define NFREG 8
+#define FREG0 16		/* d16 */
+
+static char inusef[NFREG];
+
+
 static int
 regalloc()
 {
@@ -78,6 +89,7 @@ regreset()
 {
 	int r;
 	for (r = 0; r < REGVAR; r++) inuse[r] = 0;
+	for (r = 0; r < NFREG; r++) inusef[r] = 0;
 }
 
 static char *
@@ -86,6 +98,49 @@ xreg(r)
 {
 	if (r < 0 || r >= nrnames) cerror("bad register number %d", r);
 	return (rnames[r]);
+}
+
+static int
+fregalloc()
+{
+	int r;
+
+	for (r = 0; r < NFREG; r++)
+		if (!inusef[r]) { inusef[r] = 1; return (r); }
+	cerror("expression too complicated: out of floating registers");
+	return (0);
+}
+
+static void
+fregfree(r)
+	int r;
+{
+	if (r >= 0 && r < NFREG) inusef[r] = 0;
+}
+
+/* d-form (double) and s-form (float) names for FP register r. */
+static char *
+dreg(r)
+	int r;
+{
+	static char buf[6][8];
+	static int i;
+
+	i = (i + 1) % 6;
+	snprintf(buf[i], sizeof buf[i], "d%d", FREG0 + r);
+	return (buf[i]);
+}
+
+static char *
+sreg(r)
+	int r;
+{
+	static char buf[6][8];
+	static int i;
+
+	i = (i + 1) % 6;
+	snprintf(buf[i], sizeof buf[i], "s%d", FREG0 + r);
+	return (buf[i]);
 }
 
 static char *
@@ -186,6 +241,15 @@ streg(t, r)
 	int r;
 {
 	return (tybytes(t) == 8) ? xreg(r) : wreg(r);
+}
+
+/* FP register spelling: doubles are d-form, floats s-form. */
+static char *
+freg(t, r)
+	TWORD t;
+	int r;
+{
+	return (t & TDOUBLE) ? dreg(r) : sreg(r);
 }
 
 /* ------------------------------------------------------------ addresses */
@@ -291,6 +355,11 @@ loaddirect(p, r)
 	NODE *p;
 	int r;
 {
+	if (tyfloat(p->in.type)) {
+		printx("\tldr\t%s, [x29, #%ld]\n", freg(p->in.type, r),
+		    directoff(p));
+		return;
+	}
 	printx("\t%s\t%s, [x29, #%ld]\n", ldinsn(p->in.type),
 	    ldreg(p->in.type, r), directoff(p));
 }
@@ -300,6 +369,11 @@ storedirect(p, r)
 	NODE *p;
 	int r;
 {
+	if (tyfloat(p->in.type)) {
+		printx("\tstr\t%s, [x29, #%ld]\n", freg(p->in.type, r),
+		    directoff(p));
+		return;
+	}
 	printx("\t%s\t%s, [x29, #%ld]\n", stinsn(p->in.type),
 	    streg(p->in.type, r), directoff(p));
 }
@@ -364,15 +438,23 @@ storeto(p, src)
 	case NAME:
 		reg = regalloc();
 		genaddr(p, reg);
-		printx("\t%s\t%s, [%s]\n", stinsn(p->in.type),
-		    streg(p->in.type, src), xreg(reg));
+		if (tyfloat(p->in.type))
+			printx("\tstr\t%s, [%s]\n", freg(p->in.type, src),
+			    xreg(reg));
+		else
+			printx("\t%s\t%s, [%s]\n", stinsn(p->in.type),
+			    streg(p->in.type, src), xreg(reg));
 		regfree(reg);
 		return;
 
 	case STAR:
 		a = gen(p->in.left, WVALUE);
-		printx("\t%s\t%s, [%s]\n", stinsn(p->in.type),
-		    streg(p->in.type, src), xreg(a.reg));
+		if (tyfloat(p->in.type))
+			printx("\tstr\t%s, [%s]\n", freg(p->in.type, src),
+			    xreg(a.reg));
+		else
+			printx("\t%s\t%s, [%s]\n", stinsn(p->in.type),
+			    streg(p->in.type, src), xreg(a.reg));
 		regfree(a.reg);
 		return;
 
@@ -389,7 +471,12 @@ storeto(p, src)
 	case RNODE:
 	case SNODE:
 	case QNODE:
-		printx("\tmov\tx0, %s\n", xreg(src));
+		if (tyfloat(p->in.type))
+			printx("\tfmov\t%s, %s\n",
+			    (p->in.type & TDOUBLE) ? "d0" : "s0",
+			    freg(p->in.type, src));
+		else
+			printx("\tmov\tx0, %s\n", xreg(src));
 		return;
 	}
 	cerror("assignment to unsupported lvalue op %d", p->in.op);
@@ -441,6 +528,15 @@ gen(p, want)
 		if (want == WEFFECT) return (res);
 		reg = regalloc();
 		genaddr(p, reg);
+		if (tyfloat(p->in.type)) {
+			/* float constants arrive here: prtdcon() has already
+			 * turned every FCON into a .data label plus a NAME */
+			int fr = fregalloc();
+			printx("\tldr\t%s, [%s]\n", freg(p->in.type, fr), xreg(reg));
+			regfree(reg);
+			res.reg = fr; res.flag = R_FREG;
+			return (res);
+		}
 		printx("\t%s\t%s, [%s]\n", ldinsn(p->in.type),
 		    ldreg(p->in.type, reg), xreg(reg));
 		res.reg = reg; res.flag = R_REG;
@@ -449,6 +545,12 @@ gen(p, want)
 	case VAUTO:
 	case VPARAM:
 		if (want == WEFFECT) return (res);
+		if (tyfloat(p->in.type)) {
+			reg = fregalloc();
+			loaddirect(p, reg);
+			res.reg = reg; res.flag = R_FREG;
+			return (res);
+		}
 		reg = regalloc();
 		loaddirect(p, reg);
 		res.reg = reg; res.flag = R_REG;
@@ -465,12 +567,24 @@ gen(p, want)
 	case STAR:			/* UNARY MUL -- indirection */
 		l = gen(p->in.left, WVALUE);
 		if (want == WEFFECT) { regfree(l.reg); return (res); }
+		if (tyfloat(p->in.type)) {
+			int fr = fregalloc();
+			printx("\tldr\t%s, [%s]\n", freg(p->in.type, fr), xreg(l.reg));
+			regfree(l.reg);
+			res.reg = fr; res.flag = R_FREG;
+			return (res);
+		}
 		printx("\t%s\t%s, [%s]\n", ldinsn(p->in.type),
 		    ldreg(p->in.type, l.reg), xreg(l.reg));
 		return (l);
 
 	case UNARY MINUS:
 		l = gen(p->in.left, WVALUE);
+		if (l.flag & R_FREG) {
+			printx("\tfneg\t%s, %s\n", freg(p->in.type, l.reg),
+			    freg(p->in.type, l.reg));
+			return (l);
+		}
 		printx("\tneg\t%s, %s\n", xreg(l.reg), xreg(l.reg));
 		return (l);
 
@@ -479,9 +593,43 @@ gen(p, want)
 		printx("\tmvn\t%s, %s\n", xreg(l.reg), xreg(l.reg));
 		return (l);
 
-	case CONV:
+	case CONV: {
+		TWORD st = p->in.left->in.type;
+		TWORD dt = p->in.type;
+
 		l = gen(p->in.left, want);
-		if (want == WEFFECT || !(l.flag & R_REG)) return (l);
+		if (want == WEFFECT) return (l);
+
+		if (tyfloat(dt) && !tyfloat(st)) {
+			/* integer -> floating */
+			int fr = fregalloc();
+			printx("\t%s\t%s, %s\n",
+			    tyunsigned(st) ? "ucvtf" : "scvtf",
+			    freg(dt, fr),
+			    tybytes(st) == 8 ? xreg(l.reg) : wreg(l.reg));
+			regfree(l.reg);
+			res.reg = fr; res.flag = R_FREG;
+			return (res);
+		}
+		if (!tyfloat(dt) && tyfloat(st)) {
+			/* floating -> integer, truncating toward zero as C says */
+			int ir = regalloc();
+			printx("\t%s\t%s, %s\n",
+			    tyunsigned(dt) ? "fcvtzu" : "fcvtzs",
+			    tybytes(dt) == 8 ? xreg(ir) : wreg(ir),
+			    freg(st, l.reg));
+			fregfree(l.reg);
+			res.reg = ir; res.flag = R_REG;
+			return (res);
+		}
+		if (tyfloat(dt) && tyfloat(st)) {
+			if (dt != st)
+				printx("\tfcvt\t%s, %s\n", freg(dt, l.reg),
+				    freg(st, l.reg));
+			return (l);
+		}
+
+		if (!(l.flag & R_REG)) return (l);
 		sz = tybytes(p->in.type);
 		if (sz == 1)
 			printx("\t%s\t%s, %s\n",
@@ -498,12 +646,29 @@ gen(p, want)
 				printx("\tsxtw\t%s, %s\n", xreg(l.reg), wreg(l.reg));
 		}
 		return (l);
+	}
 
 	/* ---------------------------------------------------- binary ops */
 	case PLUS: case MINUS: case MUL: case DIV:
 	case AND: case OR: case ER: case LS: case RS:
-		if (tyfloat(p->in.type))
-			cerror("floating point arithmetic not yet implemented");
+		if (tyfloat(p->in.type)) {
+			switch (p->in.op) {
+			case PLUS:  op = "fadd"; break;
+			case MINUS: op = "fsub"; break;
+			case MUL:   op = "fmul"; break;
+			case DIV:   op = "fdiv"; break;
+			default:
+				cerror("operator %d is not defined on floating operands",
+				    p->in.op);
+				op = "fadd";
+			}
+			l = gen(p->in.left, WVALUE);
+			r = gen(p->in.right, WVALUE);
+			printx("\t%s\t%s, %s, %s\n", op, freg(p->in.type, l.reg),
+			    freg(p->in.type, l.reg), freg(p->in.type, r.reg));
+			fregfree(r.reg);
+			return (l);
+		}
 		op = arithop(p->in.op, p->in.type);
 		l = gen(p->in.left, WVALUE);
 		/* fold a small constant right operand into the immediate form */
@@ -539,7 +704,10 @@ gen(p, want)
 	case ASSIGN:
 		r = gen(p->in.right, WVALUE);
 		storeto(p->in.left, r.reg);
-		if (want == WEFFECT) { regfree(r.reg); return (res); }
+		if (want == WEFFECT) {
+			if (r.flag & R_FREG) fregfree(r.reg); else regfree(r.reg);
+			return (res);
+		}
 		return (r);
 
 	/*
@@ -554,6 +722,26 @@ gen(p, want)
 
 		/* value of the left operand */
 		l = gen(p->in.left, WVALUE);
+		if (tyfloat(p->in.type)) {
+			char *fop;
+			switch (base) {
+			case PLUS:  fop = "fadd"; break;
+			case MINUS: fop = "fsub"; break;
+			case MUL:   fop = "fmul"; break;
+			case DIV:   fop = "fdiv"; break;
+			default:
+				cerror("operator %d is not defined on floating operands",
+				    base);
+				fop = "fadd";
+			}
+			r = gen(p->in.right, WVALUE);
+			printx("\t%s\t%s, %s, %s\n", fop, freg(p->in.type, l.reg),
+			    freg(p->in.type, l.reg), freg(p->in.type, r.reg));
+			fregfree(r.reg);
+			storeto(p->in.left, l.reg);
+			if (want == WEFFECT) { fregfree(l.reg); return (res); }
+			return (l);
+		}
 		if (base == MOD) {
 			r = gen(p->in.right, WVALUE);
 			reg = regalloc();
@@ -612,6 +800,17 @@ gen(p, want)
 	 * has already been rewritten into a branch chain by the time we run.
 	 */
 	case CMP:
+		if (tyfloat(p->in.left->in.type)) {
+			l = gen(p->in.left, WVALUE);
+			r = gen(p->in.right, WVALUE);
+			printx("\tfcmp\t%s, %s\n",
+			    freg(p->in.left->in.type, l.reg),
+			    freg(p->in.left->in.type, r.reg));
+			fregfree(l.reg);
+			fregfree(r.reg);
+			res.flag = R_CC;
+			return (res);
+		}
 		l = gen(p->in.left, WVALUE);
 		if (p->in.right->in.op == ICON &&
 		    (p->in.right->in.name == 0 || *p->in.right->in.name == 0) &&
@@ -758,23 +957,26 @@ gen(p, want)
 #define MAXARGS 8
 
 static int
-collectargs(p, regs, n)
+collectargs(p, regs, isf, ftype, n)
 	NODE *p;
-	int regs[];
+	int regs[], isf[];
+	TWORD ftype[];
 	int n;
 {
 	ret a;
 
 	if (p == 0) return n;
 	if (p->in.op == CM) {
-		n = collectargs(p->in.left, regs, n);
-		return collectargs(p->in.right, regs, n);
+		n = collectargs(p->in.left, regs, isf, ftype, n);
+		return collectargs(p->in.right, regs, isf, ftype, n);
 	}
 	if (p->in.op == FUNARG) p = p->in.left;
 	if (n >= MAXARGS)
 		cerror("more than %d arguments not yet implemented", MAXARGS);
 	a = gen(p, WVALUE);
 	regs[n] = a.reg;
+	isf[n] = (a.flag & R_FREG) != 0;
+	ftype[n] = p->in.type;
 	return (n + 1);
 }
 
@@ -784,21 +986,55 @@ gencall(p, want)
 	int want;
 {
 	ret res, f;
-	int regs[MAXARGS];
+	int regs[MAXARGS], isf[MAXARGS];
+	TWORD ftype[MAXARGS];
 	int saved[REGVAR];
-	int n, i, reg, nsave;
+	int fsaved[NFREG];
+	int n, i, reg, nsave, nfsave, nint, nflt;
 	int isunary = (p->in.op == (UNARY CALL) || p->in.op == (UNARY STCALL));
 
 	res.reg = -1; res.flag = R_NONE;
 
 	n = 0;
 	if (!isunary)
-		n = collectargs(p->in.right, regs, 0);
+		n = collectargs(p->in.right, regs, isf, ftype, 0);
 
-	for (i = 0; i < n; i++)
-		printx("\tmov\tx%d, %s\n", i, xreg(regs[i]));
-	for (i = 0; i < n; i++)
-		regfree(regs[i]);
+	/*
+	 * ONE POSITIONAL ARGUMENT SEQUENCE, floats included.
+	 *
+	 * AAPCS64 proper counts integer and floating arguments separately, into
+	 * x0-x7 and d0-d7.  We deliberately do not: a K&R compiler has no
+	 * prototypes, so at a call site it does not know which parameters the
+	 * callee will read as floating, and pass 1 has already laid the argument
+	 * block out as one positional sequence with a uniform SZARG stride.
+	 * Splitting the registers into two sequences would put argument n in a
+	 * different slot than the callee looks in, and only for functions that
+	 * mix the two kinds -- which is exactly the sort of bug that shows up
+	 * much later in something like troff.
+	 *
+	 * So a floating argument is bitcast into its positional x register and
+	 * the callee, which does know the type, reads it back out of the spill
+	 * block as a float.  This is self-consistent because everything v8cc
+	 * calls is compiled by v8cc: the libv8sys boundary passes only scalars
+	 * and pointers (PLAN.md S4), never a float.
+	 */
+	nint = nflt = 0;
+	for (i = 0; i < n; i++) {
+		if (nint >= 8)
+			cerror("more than 8 arguments not yet implemented");
+		if (isf[i]) {
+			/* a float widens to double first: V8 promotes, as C does */
+			if (!(ftype[i] & TDOUBLE))
+				printx("\tfcvt\t%s, %s\n", dreg(regs[i]),
+				    sreg(regs[i]));
+			printx("\tfmov\tx%d, %s\n", nint++, dreg(regs[i]));
+		} else {
+			printx("\tmov\tx%d, %s\n", nint++, xreg(regs[i]));
+		}
+	}
+	for (i = 0; i < n; i++) {
+		if (isf[i]) fregfree(regs[i]); else regfree(regs[i]);
+	}
 
 	/*
 	 * Save any scratch register still holding a live value.
@@ -821,6 +1057,13 @@ gencall(p, want)
 	if (nsave & 1)
 		printx("\tstr\t%s, [sp, #-16]!\n", xreg(saved[nsave - 1]));
 
+	/* d16-d23 are caller-saved too, for exactly the same reason. */
+	nfsave = 0;
+	for (i = 0; i < NFREG; i++)
+		if (inusef[i]) fsaved[nfsave++] = i;
+	for (i = 0; i < nfsave; i++)
+		printx("\tstr\t%s, [sp, #-16]!\n", dreg(fsaved[i]));
+
 	if (p->in.left->in.op == ICON && p->in.left->in.name &&
 	    *p->in.left->in.name) {
 		printx("\tbl\t%s\n", p->in.left->in.name);
@@ -834,6 +1077,8 @@ gencall(p, want)
 	}
 
 	/* restore, in reverse */
+	for (i = nfsave - 1; i >= 0; i--)
+		printx("\tldr\t%s, [sp], #16\n", dreg(fsaved[i]));
 	if (nsave & 1)
 		printx("\tldr\t%s, [sp], #16\n", xreg(saved[nsave - 1]));
 	for (i = (nsave & ~1) - 2; i >= 0; i -= 2)
@@ -842,6 +1087,13 @@ gencall(p, want)
 
 	if (want == WEFFECT) return (res);
 
+	if (tyfloat(p->in.type)) {
+		reg = fregalloc();
+		printx("\tfmov\t%s, %s\n", freg(p->in.type, reg),
+		    (p->in.type & TDOUBLE) ? "d0" : "s0");
+		res.reg = reg; res.flag = R_FREG;
+		return (res);
+	}
 	reg = regalloc();
 	printx("\tmov\t%s, x0\n", xreg(reg));
 	res.reg = reg; res.flag = R_REG;

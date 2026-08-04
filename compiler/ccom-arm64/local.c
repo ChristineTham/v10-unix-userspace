@@ -272,13 +272,24 @@ fincode(d, sz)			/* initialise sz bits to the value d */
 	 */
 	union { float f; unsigned int i; } fu;
 	union { double d; unsigned long l; } du;
+	char note[64];
 
+	/*
+	 * The human-readable comment is formatted here, not by printx.  printx
+	 * takes fixed long parameters (see printx.c) and so cannot receive a
+	 * double at all: AAPCS64 passes floating arguments in the FP registers,
+	 * where a long parameter never looks.  Passing one anyway silently ate
+	 * the rest of the format string, including the newline, and welded the
+	 * next directive onto the comment.
+	 */
 	if (sz == SZDOUBLE) {
 		du.d = d;
-		printx("\t.quad\t0x%lx\t// %.17g\n", du.l, d);
+		snprintf(note, sizeof note, "%.17g", d);
+		printx("\t.quad\t0x%lx\t// %s\n", du.l, note);
 	} else {
 		fu.f = (float)d;
-		printx("\t.long\t0x%x\t// %.9g\n", fu.i, (double)fu.f);
+		snprintf(note, sizeof note, "%.9g", (double)fu.f);
+		printx("\t.long\t0x%x\t// %s\n", (long)fu.i, note);
 	}
 	inoff += sz;
 }
