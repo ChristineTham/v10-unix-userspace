@@ -14,6 +14,16 @@
 # define ALLONG ALINT
 # endif
 
+/*
+ * Size of an argument slot.  Every parameter narrower than this is widened to
+ * it, so the argument block has a uniform stride.  The VAX pushed 32-bit words,
+ * which is the historical default; ARM64 passes 64-bit registers and spills
+ * them to a contiguous block, so its macdefs.h overrides this with SZLONG.
+ */
+# ifndef SZARG
+# define SZARG SZINT
+# endif
+
 # ifdef NOFLOAT
 # define SZFLOAT SZLONG
 # define SZDOUBLE SZLONG

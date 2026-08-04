@@ -1513,9 +1513,9 @@ register *poff;
 		}
 		else
 #endif
-			if( p->sclass == PARAM && ( tsz < SZINT ) )
+			if( p->sclass == PARAM && ( tsz < SZARG ) )
 			{
-				off = upoff( SZINT/*was tsz*/, ALSTACK, &noff );
+				off = upoff( SZARG/*was tsz*/, ALSTACK, &noff );
 # ifndef RTOLBYTES
 				off = noff - tsz;
 #endif

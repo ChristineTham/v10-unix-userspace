@@ -119,6 +119,34 @@ $(BUILD)/ccom/cgram.o: $(CCOM_M)/cgram.c
 	cp $(CCOM_V)/y.debug.sv $(BUILD)/ccom/y.debug
 	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -I$(BUILD)/ccom -DVAX -DYYDEBUG -c $< -o $@
 
+# ---------------------------------------------------------------------------
+# v8ccom -- the real thing: V8's pass 1 with our ARM64 back end.
+# ---------------------------------------------------------------------------
+A64      = $(ROOT)compiler/ccom-arm64
+A64BUILD = $(BUILD)/ccom-arm64
+A64INC   = -I$(A64) -I$(CCOM_M)
+
+A64_MI   = $(patsubst %,$(A64BUILD)/%.o,$(CCOM_MI) cgram)
+A64_MD   = $(patsubst %,$(A64BUILD)/%.o,local local2 emit printx gencode dbstubs)
+
+v8ccom: $(A64BUILD)/v8ccom
+$(A64BUILD)/v8ccom: $(A64_MI) $(A64_MD)
+	$(HOSTCC) $(KRFLAGS) -o $@ $(A64_MI) $(A64_MD)
+	@echo "built $@"
+
+$(A64BUILD)/%.o: $(CCOM_M)/%.c
+	@mkdir -p $(A64BUILD)
+	$(HOSTCC) $(KRFLAGS) $(A64INC) -c $< -o $@
+
+$(A64BUILD)/%.o: $(A64)/%.c
+	@mkdir -p $(A64BUILD)
+	$(HOSTCC) $(KRFLAGS) $(A64INC) -c $< -o $@
+
+$(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
+	@mkdir -p $(A64BUILD)
+	cp $(CCOM_V)/y.debug.sv $(A64BUILD)/y.debug
+	$(HOSTCC) $(KRFLAGS) $(A64INC) -I$(A64BUILD) -DYYDEBUG -c $< -o $@
+
 clean:
 	rm -rf $(BUILD)
 
