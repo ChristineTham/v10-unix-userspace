@@ -189,11 +189,37 @@ not, because it introduced a `FILE` layout mismatch of its own:
 - Ruled out: symbol collisions between the two objects (none), the two
   same-named function statics `down` (both emitted privately), the freestanding
   link itself, and libv8c.
+- Ruled out, and this one was the best candidate: `manifest.h`'s `char
+  pad[NCHNAM-sizeof(char *)]`, which is `char pad[0]` on LP64 and which v8cc
+  warns about on every compile. Both compilers agree exactly on `sizeof(NODE)`
+  = 88 and on every field offset in all four arms of `union ndu`. The central
+  data structure is not the disagreement.
+- `trees.o` emits **no uninitialised data at all** — no `.space`, no file-scope
+  arrays. Its 28960 bytes of `__DATA` against clang's 16406 are almost entirely
+  string literals, which v8cc puts in its own `__DATA,__v8str1`/`__v8str2`
+  sections rather than a read-only one.
 
-The next measurement is to find which object's data is being written past, by
-comparing the emitted size of every static in `trees.c` against what the code
-indexing it assumes — the `lex`/`once.c` shape, where an array's type is
-declared in one place and its allocation happens in another.
+That last point moves the hypothesis: with no writable table to overrun, a plain
+out-of-bounds write is unlikely. The obvious successor — that the fault is in
+how v8cc reaches its own string sections — was inspected and does **not** look
+wrong: it emits each literal inline mid-function (`.section __DATA,__v8str1`,
+bytes, `.text`) and then addresses it with a textbook `adrp Lnnn@PAGE` /
+`add x9, x9, Lnnn@PAGEOFF` pair. So that is not obviously it either.
+
+Two candidates remain, neither yet tested:
+
+1. **Stack, not heap.** The crash is inside `malloc`, but v8cc's frames are
+   large — `trees.c` has functions opening with `sub sp, sp, #464`, and every
+   local is spilled rather than kept in a register. `yyparse` recursion through
+   frames of that size could exhaust the stack, and the symptom would be a wild
+   fault in whatever ran next. Check the fault address against the stack guard
+   page rather than assuming heap corruption.
+2. **The epilogue.** v8cc pops each callee-saved register with its own
+   post-increment (`ldr x28, [sp], #16` three times) and then does a second
+   `add sp, sp, #64` after `ldp x29, x30`. That is unusual enough to be worth
+   verifying against AAPCS64 by hand for a function with several register
+   variables, which the big `trees.c` functions have and the tests/v8ccom cases
+   largely do not.
 
 Until this closes, rung 3 is open, and with it B3 (V8 make rebuilding the
 compiler) and B6.
