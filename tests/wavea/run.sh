@@ -157,9 +157,22 @@ echo "wavea: $pass passed, $fail failed"
 #       `1 || 0 && 0` is true.
 #     - `**++argv` is right: it yields 'n' for argv[1]="nosuchfile".
 #
-#   So each piece of the condition works in isolation and the whole still takes
-#   the wrong branch. Next: print argc and fflg from inside cat itself. cat does
-#   `if (argc < 2) { argc = 2; fflg++; }` near the top, and if fflg were set the
-#   observed behaviour follows exactly -- fi = 0, then the dev/ino guard fires
-#   against stdout. That would make this an argc problem, not a condition
-#   problem, despite appearances.
+#   Instrumented inside cat itself: argc=2 and fflg=0 at the branch, with
+#   argv[1][0]=='n'. So the condition IS false and the else branch DOES run --
+#   which means open() returned -1 and `(fi = open(...)) < 0` failed to detect
+#   it, letting control fall through to fstat(-1) and the dev/ino guard.
+#
+#   But that construct is also correct in isolation, with `int fi` and with
+#   `register int fi` (cat uses the latter): `(fi = neg()) < 0` takes the true
+#   branch and prints -1.
+#
+#   ELIMINATED SO FAR, each by direct test: argc, fflg, `**++argv`, the && / ||
+#   lowering on cat's exact expression, open()'s return value and errno, and
+#   assignment-in-condition against a negative value in both storage classes.
+#
+#   Every part works alone; only the assembled function misbehaves. That is the
+#   signature of the bugs already found here -- register-variable clobbering,
+#   lvalues evaluated twice, the conditional join -- all of which needed several
+#   features interacting. Next: read the generated assembly for cat's argument
+#   loop directly rather than testing more constructs, and diff it against what
+#   the same source compiles to under clang.
