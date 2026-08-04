@@ -82,17 +82,26 @@ passthrough is meant to be the exception, not the rule.
 Order matters and is not obvious. Each rung is built by the one above:
 
 ```
-0 seed   host clang + host make + host yacc -> cpp, ccom-arm64, cc, libv8sys, crt0
-1 tools  v8cc -> libv8c -> yacc -> lex -> make      (make needs yacc: it has gram.y)
+0 seed   host clang + host make + host yacc -> cpp, ccom-arm64, cc-seed, libv8sys, crt0
+1 tools  cc-seed -> libv8c -> v8cc -> yacc -> lex -> make   (make needs yacc: it has gram.y)
 2 jail   v8cc -> /bin: sh and the filters
 3 close  regenerate cpp's grammar with V8 yacc; fixpoint v8cc1 == v8cc2
 4 hand   V8 make rebuilds the compiler, inside the jail
 5 world  V8 make + each program's own authentic makefile
 ```
 
-Rungs 3–5 are unfinished. `rootfs/bin/cc` is still a **clang-built host binary**
-(`nm` shows 0 V8 symbols), so it does not go through the shim and the jail cannot
-observe it.
+**There is one cycle in this build, and `cc-seed` is how it is cut.** The
+installed driver is a V8 binary, so it must be *linked* against `libv8c` — and
+`libv8c` must be *compiled* by a driver. So `cc-seed` (the same `cc.c` built by
+clang, never installed) compiles `libv8c`, `libv8c` links the real driver, and
+the real driver compiles everything else. Both drivers exec the same `cpp` and
+`ccom`, so the objects are identical either way; only the process differs.
+Rung 4 is where the seed stops being needed.
+
+Rungs 3–5 are unfinished. `cpp` and `ccom` are still clang-built host binaries
+(`nm` shows 0 V8 symbols) — they sit *inside* the rootfs but do not obey the
+jail, so "the compiler runs on V8 code" is true of the driver and not yet of its
+passes.
 
 ### The jail
 

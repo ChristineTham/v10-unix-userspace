@@ -11,7 +11,16 @@
  * file with a longer name.  The V7 limit still applies inside the V8 world --
  * libv8sys truncates directory entries to 14 bytes, as PLAN.md S6 describes --
  * but it does not apply out here.
+ *
+ * The #undef is required, not decorative.  <sys/types.h> above reaches
+ * <sys/param.h>, which defines DIRSIZ as 14.  While the driver was compiled by
+ * clang against the HOST headers nothing defined it and a bare #define was
+ * enough; compiled by v8cc against V8's own include tree -- which is what
+ * happens now that the driver is a V8 binary -- it is a redefinition, and the
+ * value that wins decides whether getsuf() can see the `.c` on a path with a
+ * component longer than 14 characters.  Most of this repo's own paths are.
  */
+#undef	DIRSIZ
 #define	DIRSIZ	255
 
 /*
@@ -30,6 +39,7 @@ char	*ld = "/usr/bin/clang";
 char	*crt0 = "/lib/crt0.o";
 char	*instrcnt = "/lib/instrcnt";
 char	*v8root;
+char	*incdir;		/* "-I$V8ROOT/usr/include", built by setpaths */
 char	*libdir;
 char	*libc_a     = "/lib/libv8c.a";
 char	*libstubs_a = "/lib/libv8stubs.a";
@@ -63,22 +73,31 @@ int	nc, nl, np, nxo, na;
  * filesystem.  Ours is a directory, so the paths are built at startup; without
  * $V8ROOT the original absolute paths remain, which is what an installed system
  * would want.
+ *
+ * strspl(), not snprintf().  snprintf is C99 and does not exist in V8's libc,
+ * so in a driver compiled by v8cc it resolved from -lSystem -- and it is
+ * VARIADIC, which is the one shape where that silent fallback is not merely
+ * inauthentic but wrong: v8cc passes every argument positionally in x0-x7 and
+ * Apple's ARM64 ABI passes variadic arguments on the stack, so the two
+ * disagree about where `r` even is.  The same mistake produced garbage from
+ * scanf, printf and execl earlier in this port.  strspl() is this file's own
+ * concatenate-and-save helper, three K&R lines at the bottom, and it was
+ * always the right answer here.
  */
 setpaths()
 {
-	static char b1[1024], b2[1024], b3[1024];
-	static char b4[1024], b5[1024], b6[1024];
 	char *r, *getenv();
 
 	if ((r = getenv("V8ROOT")) == 0 || *r == 0)
 		return;
 	v8root = r;
-	snprintf(b1, sizeof b1, "%s/lib/cpp", r);    cpp = b1;
-	snprintf(b2, sizeof b2, "%s/lib/ccom", r);   ccom = b2;
-	snprintf(b3, sizeof b3, "%s/lib/crt0.o", r); crt0 = b3;
-	snprintf(b4, sizeof b4, "%s/lib/libv8c.a", r);     libc_a = b4;
-	snprintf(b5, sizeof b5, "%s/lib/libv8stubs.a", r); libstubs_a = b5;
-	snprintf(b6, sizeof b6, "%s/lib/libv8sys.a", r);   libsys_a = b6;
+	cpp        = strspl(r, "/lib/cpp");
+	ccom       = strspl(r, "/lib/ccom");
+	crt0       = strspl(r, "/lib/crt0.o");
+	libc_a     = strspl(r, "/lib/libv8c.a");
+	libstubs_a = strspl(r, "/lib/libv8stubs.a");
+	libsys_a   = strspl(r, "/lib/libv8sys.a");
+	incdir     = strspl("-I", strspl(r, "/usr/include"));
 }
 
 main(argc, argv)
@@ -281,11 +300,8 @@ main(argc, argv)
 		 * cpp has no built-in notion of where that is.  Appended after
 		 * the user's -I options so they still take precedence.
 		 */
-		if (v8root) {
-			static char incdir[1024];
-			snprintf(incdir, sizeof incdir, "-I%s/usr/include", v8root);
+		if (incdir)
 			av[na++] = incdir;
-		}
 		av[na++] = 0;
 		switch (callsys(cpp, av)) {
 			case 0:

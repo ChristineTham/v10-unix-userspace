@@ -370,35 +370,103 @@ int v8s_chroot(char *p)                  { RET(rawsys1(SYS_chroot, (long)p)); }
  * V8JAIL=strict refuses to exec it at all, which is what the build should run
  * under once /bin is complete.  Unset stays quiet, for a tree that is still
  * being ported.
+ *
+ * THREE THINGS, NOT TWO.  rootpath() leaving a path alone is not by itself an
+ * escape, and treating it as one made the report useless the moment the C
+ * driver became a V8 binary:
+ *
+ *   1. A path already INSIDE the rootfs.  cc(1) resolves its own passes from
+ *      $V8ROOT at startup, so it execs the absolute /path/to/rootfs/lib/cpp --
+ *      which rootpath() has no reason to touch, since it is already there.
+ *      `cc -c` under V8JAIL=warn duly reported cpp and ccom as escaping into
+ *      the jail they were sitting in.  injail() is that check.
+ *
+ *   2. A host tool on the EXCEPTION LIST.  as, ld, ar, strip and nm are the
+ *      host's deliberately -- the object format is Mach-O, and porting V8's
+ *      a.out assembler and link editor would buy no authenticity (PLAN.md S1).
+ *      cc reaches them through clang.  That crossing is real, so warn names it;
+ *      but it is sanctioned, so strict permits it.  Without this the compiler
+ *      simply cannot link inside its own jail.
+ *
+ *   3. Anything else.  A gap filled silently by the host -- the shape of bug
+ *      this port has already paid for three times.  strict refuses it.
+ *
+ * Keeping 2 and 3 apart is the whole value of the report.  A jail that cannot
+ * say which crossings it meant to allow reports either everything or nothing.
  */
-static void
-jailnote(char *p, int strict)
+static int
+injail(char *p)
 {
-	static const char m1[] = "v8sys: exec leaves the jail: ";
-	static const char m2[] = " (V8JAIL=strict would refuse)\n";
-	static const char m3[] = " (refused: V8JAIL=strict)\n";
+	char *root = v8sys_getenv("V8ROOT");
+	int i;
+
+	if (root == 0 || *root == '\0') return (0);
+	for (i = 0; root[i]; i++)
+		if (p[i] != root[i]) return (0);
+	return (p[i] == '/');		/* $V8ROOTsomething is not inside it */
+}
+
+/*
+ * The exception list, spelled as the paths cc(1) actually execs.  Short on
+ * purpose: every entry here is a hole in the jail.  tests/jail asserts that a
+ * host tool which is NOT on this list is still refused under strict.
+ */
+static const char *hosttools[] = { "/usr/bin/clang", 0 };
+
+static int
+sanctioned(char *p)
+{
+	int i, k;
+
+	for (i = 0; hosttools[i]; i++) {
+		for (k = 0; hosttools[i][k] && p[k] == hosttools[i][k]; k++)
+			;
+		if (hosttools[i][k] == '\0' && p[k] == '\0') return (1);
+	}
+	return (0);
+}
+
+static void
+jailsay(const char *pre, int prelen, char *p, const char *post, int postlen)
+{
 	int n;
 
-	rawsys3(SYS_write, 2, (long)m1, (long)sizeof m1 - 1);
+	rawsys3(SYS_write, 2, (long)pre, (long)prelen);
 	for (n = 0; p[n]; n++)
 		;
 	rawsys3(SYS_write, 2, (long)p, (long)n);
-	if (strict)
-		rawsys3(SYS_write, 2, (long)m3, (long)sizeof m3 - 1);
-	else
-		rawsys3(SYS_write, 2, (long)m2, (long)sizeof m2 - 1);
+	rawsys3(SYS_write, 2, (long)post, (long)postlen);
 }
+
+/* sizeof works here because the literals are substituted textually. */
+#define	SAY(pre, p, post) \
+	jailsay(pre, (int)sizeof (pre) - 1, p, post, (int)sizeof (post) - 1)
 
 int v8s_execve(char *p, char **a, char **e)
 {
 	char *q = vpath(p);
 
-	if (q == p && p != 0 && *p == '/') {
+	if (q == p && p != 0 && *p == '/' && !injail(p)) {
 		char *j = v8sys_getenv("V8JAIL");
 		if (j != 0 && *j != '\0') {
-			int strict = (j[0] == 's');
-			jailnote(p, strict);
-			if (strict) { v8_errno = V8_ENOENT; return (-1); }
+			if (sanctioned(p)) {
+				/*
+				 * Named under warn, silent under strict.  strict
+				 * output is meant to mean "something is wrong",
+				 * and a line per compiled file would drown that.
+				 */
+				if (j[0] != 's')
+					SAY("v8sys: sanctioned host toolchain: ",
+					    p, " (as/ld are the host's by design)\n");
+			} else if (j[0] == 's') {
+				SAY("v8sys: exec leaves the jail: ", p,
+				    " (refused: V8JAIL=strict)\n");
+				v8_errno = V8_ENOENT;
+				return (-1);
+			} else {
+				SAY("v8sys: exec leaves the jail: ", p,
+				    " (V8JAIL=strict would refuse)\n");
+			}
 		}
 	}
 	RET(rawsys3(SYS_execve, (long)q, (long)a, (long)e));

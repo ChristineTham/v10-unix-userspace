@@ -118,5 +118,60 @@ EOF
 V8JAIL=strict "$MAKE8" -f mk3 >/dev/null 2>&1
 ck 'cc resolves to V8 cc inside the jail' '0' "$?"
 
+# --- the compiler is IN the jail, not merely reachable from it --------------
+# `cc -V` above proves the shim resolved the name.  It does not prove the
+# driver obeys the jail, and for a long time it did not: rootfs/bin/cc was a
+# clang binary with zero V8 symbols, so every path it opened and every pass it
+# exec'd went straight to the kernel and the jail could not observe one of them.
+# The structural check first, because the behavioural ones below are only
+# meaningful if it holds.
+ck 'the installed driver is a V8 binary' 'yes' \
+   "$(nm "$V8ROOT/bin/cc" 2>/dev/null | grep -q '_v8start' && echo yes || echo no)"
+
+# --- a real compile AND link, entirely under strict -------------------------
+cat > hello.c <<'EOF'
+#include <stdio.h>
+main()
+{
+	printf("compiled in the jail\n");
+	exit(0);
+}
+EOF
+strictout=$(V8JAIL=strict "$V8ROOT/bin/cc" -o hello hello.c 2>&1)
+ck 'cc compiles and links under strict' 'compiled in the jail' "$(./hello 2>&1)"
+
+# The link reaches the host's clang, which is on the exception list.  strict
+# permits it and stays quiet, so any "leaves the jail" here is a real escape.
+case "$strictout" in
+*"leaves the jail"*) fail=$((fail+1)); echo "FAIL strict compile escaped: $strictout" ;;
+*) pass=$((pass+1)) ;;
+esac
+
+# --- warn tells the two kinds of crossing apart -----------------------------
+warnout=$(V8JAIL=warn "$V8ROOT/bin/cc" -o hello2 hello.c 2>&1)
+case "$warnout" in
+*"sanctioned host toolchain: /usr/bin/clang"*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL warn did not name the sanctioned clang exec"
+   echo "  got [$warnout]" ;;
+esac
+
+# cpp and ccom live INSIDE the rootfs; the driver execs them by absolute path,
+# which rootpath() has no reason to rewrite.  Reporting those as escapes made
+# every compile print two false alarms and taught the reader to skip the output.
+case "$warnout" in
+*"leaves the jail"*) fail=$((fail+1))
+   echo "FAIL warn reported a rootfs path as an escape"; echo "  got [$warnout]" ;;
+*) pass=$((pass+1)) ;;
+esac
+
+# --- the exception list is a list, not a door -------------------------------
+# clang being permitted must not permit anything else.  awk is refused above
+# under strict; assert the wording differs, so the two can never be confused.
+case "$warnout" in
+*"exec leaves the jail: /usr/bin/clang"*)
+   fail=$((fail+1)); echo "FAIL sanctioned and unsanctioned use the same wording" ;;
+*) pass=$((pass+1)) ;;
+esac
+
 echo "jail: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

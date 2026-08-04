@@ -229,8 +229,12 @@ convenience. Host directories are an explicit opt-in.
    be imported with provenance like any other file; `passwd` has to be
    synthesized at install from the real user, or `ls -l` shows bare uids.
 
-Blocked on B5: the `cc` driver is still a clang-built host binary, so
-installing it now would put a jail-blind compiler at `$V8ROOT/bin/cc`.
+**B5 unblocked the driver.** `$V8ROOT/bin/cc` is now a V8 binary — compiled by
+the seed driver, linked freestanding against `crt0 + libv8c + libv8sys` — so it
+goes through the shim and `V8JAIL=strict cc -o prog prog.c` compiles and links
+without leaving the jail. Still open before installation is honest: `cpp` and
+`ccom` remain clang-built, so the *passes* the driver execs sit inside the
+rootfs without obeying it.
 
 ## 5. Phase 1 — Toolchain bootstrap
 

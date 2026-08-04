@@ -130,6 +130,27 @@ fi
 # been silently stale.
 dep 'cc driver -> sh'          src/cmd/cc.c                    $B/sh/main.o
 dep 'cc driver -> libc'        src/cmd/cc.c                    $B/libc/gen/malloc.o
+
+# --- the driver is now a V8 binary, which gives it real prerequisites -------
+# It used to be one clang command with one input.  It is now compiled by the
+# seed and LINKED against crt0 + libv8c + libv8sys, so it has the same exposure
+# every other V8 program has -- and that is precisely the exposure that left 38
+# /bin binaries stale when $(V8DEPS) expanded to nothing.  Same shape, so the
+# same cases.
+dep 'cc.c -> seed driver'      src/cmd/cc.c                    $B/cc/cc-seed
+dep 'cc.c -> driver object'    src/cmd/cc.c                    $B/cc/cc.o
+dep 'driver object -> v8cc'    $B/cc/cc.o                      $B/cc/v8cc
+dep 'libc -> v8cc'             $B/libc/libv8c.a                $B/cc/v8cc
+dep 'shim -> v8cc'             $B/v8sys/libv8sys.a             $B/cc/v8cc
+dep 'crt0 -> v8cc'             $B/crt0.o                       $B/cc/v8cc
+dep 'seed -> libc'             $B/cc/cc-seed                   $B/libc/gen/malloc.o
+
+# The cycle-break, asserted rather than assumed.  libv8c is compiled by the
+# SEED driver precisely so it does not depend on the installed one -- the
+# installed one is linked against libv8c.  If someone "tidies" the libc rules
+# back onto $(V8CCRUN), make reports a dependency loop and drops the
+# prerequisite, and this is the case that notices.
+nodep 'libc does not need installed cc' rootfs/bin/cc          $B/libc/gen/malloc.o
 dep 'ccom backend -> libc'     compiler/ccom-arm64/gencode.c   $B/libc/gen/malloc.o
 dep 'ccom macdefs -> sh'       compiler/ccom-arm64/macdefs.h   $B/sh/main.o
 dep 'cpp -> libc'              src/cmd/cpp/cpp.c               $B/libc/gen/malloc.o

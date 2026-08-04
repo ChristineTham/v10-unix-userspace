@@ -60,6 +60,20 @@ ROOTFS_FONT  := $(patsubst %,$(ROOTFS)/usr/lib/font/dev202/%.out,DESC $(DEV202_F
 # order-only: a change to any of these invalidates every object in the tree.
 V8CC_DEPS = $(ROOTFS_CC) $(ROOTFS_CPP) $(ROOTFS_CCOM) $(ROOTFS_INC)
 
+# The seed driver, and what IT needs.
+#
+# There is exactly one cycle in this build and this is how it is cut.  The
+# installed driver is now a V8 binary, so it has to be LINKED against libv8c --
+# and libv8c has to be COMPILED by a driver.  cc-seed is the same cc.c built by
+# clang: it compiles libv8c, libv8c links the real driver, and the real driver
+# compiles everything else.  Note the absence of $(ROOTFS_CC) below; that is
+# the whole point of the variable.
+#
+# The seed is never installed and never linked into anything.  It is rung 0 of
+# the ladder in PLAN.md S4a, and rung 4 is where V8 make deletes the need for it.
+CCSEED     := $(BUILD)/cc/cc-seed
+SEED_DEPS   = $(CCSEED) $(ROOTFS_CPP) $(ROOTFS_CCOM) $(ROOTFS_INC)
+
 # The two generators, as the FILES they are.  Depending on the phony `v8yacc`
 # and `v8lex` is what rebuilt pic and eqn on every single make.
 YACC := $(BUILD)/yacc/yacc
@@ -438,32 +452,63 @@ $(BUILD)/libc/libv8c.a: $(LIBC_OBJ)
 # driver to find its passes.
 V8CCRUN = V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc -I$(LIBCSRC)/stdio
 
-$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.c $(V8CC_DEPS)
-	@mkdir -p $(BUILD)/libc/gen
-	$(V8CCRUN) -c -o $@ $<
+# ...except libc, which is compiled by the SEED driver, because the installed
+# driver is linked against the library this rule produces.  See CCSEED at the
+# top of this file.
+#
+# This does NOT weaken the claim.  A driver compiles nothing; it execs cpp and
+# ccom, and both drivers exec the same two binaries with the same arguments.
+# The objects are byte-identical either way -- tests/v8cc asserts exactly that,
+# by compiling one libc source with each driver and comparing.  What differs is
+# the process, not the code it emits.
+V8CCSEED = V8ROOT=$(ROOTFS) $(CCSEED) -I$(LIBCSRC)/stdio
 
-$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.C $(V8CC_DEPS)
+$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.c $(SEED_DEPS)
+	@mkdir -p $(BUILD)/libc/gen
+	$(V8CCSEED) -c -o $@ $<
+
+$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.C $(SEED_DEPS)
 	@mkdir -p $(BUILD)/libc/gen
 	cp $< $(BUILD)/libc/gen/$*.c
-	$(V8CCRUN) -c -o $@ $(BUILD)/libc/gen/$*.c
+	$(V8CCSEED) -c -o $@ $(BUILD)/libc/gen/$*.c
 
-$(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c $(V8CC_DEPS)
+$(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c $(SEED_DEPS)
 	@mkdir -p $(BUILD)/libc/stdio
-	$(V8CCRUN) -c -o $@ $<
+	$(V8CCSEED) -c -o $@ $<
 
 # ---------------------------------------------------------------------------
-# v8cc -- V8's cc(1) driver, retargeted.
+# v8cc -- V8's cc(1) driver, retargeted, in two stages.
 #
 # Paths resolve from $V8ROOT; the assembler and link editor are the host's,
 # reached through clang.  Everything else -- the flag surface, the temp-file
 # dance, the order of the passes -- is V8's own driver.
+#
+# STAGE 0, cc-seed: clang-built, host libc, invisible to the shim.  Exists only
+# to compile libv8c; never installed.
+#
+# STAGE 1, v8cc: the same cc.c, compiled by cc-seed and linked freestanding
+# against crt0 + libv8c + libv8sys exactly like every other V8 program.  THIS is
+# the one that gets installed, and being a V8 binary is the point: every path it
+# opens and every pass it execs now goes through libv8sys, so `V8JAIL=strict cc`
+# is a claim the jail can actually check.  Before this it was a clang binary
+# with zero V8 symbols, and the jail could not see a single thing it did.
+#
+# No $(STAGE0_COMPAT) on either line: cc.c stopped needing _sobuf when it
+# stopped being linked against the host stdio.
 # ---------------------------------------------------------------------------
 V8CC_INC =
 
-v8cc: $(BUILD)/cc/v8cc
-$(BUILD)/cc/v8cc: $(SRC)/cmd/cc.c
+$(CCSEED): $(SRC)/cmd/cc.c
 	@mkdir -p $(BUILD)/cc
-	$(HOSTCC) $(KRFLAGS) $(V8CC_INC) -o $@ $< $(STAGE0_COMPAT)
+	$(HOSTCC) $(KRFLAGS) $(V8CC_INC) -o $@ $<
+	@echo "built $@"
+
+v8cc: $(BUILD)/cc/v8cc
+$(BUILD)/cc/cc.o: $(SRC)/cmd/cc.c $(SEED_DEPS)
+	@mkdir -p $(BUILD)/cc
+	$(V8CCSEED) -c -o $@ $<
+$(BUILD)/cc/v8cc: $(BUILD)/cc/cc.o $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/cc/cc.o $(V8LIBS)
 	@echo "built $@"
 
 # ---------------------------------------------------------------------------
