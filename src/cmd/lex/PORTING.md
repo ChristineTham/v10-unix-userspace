@@ -31,7 +31,17 @@ stdio is **not** the cause. A direct test — `fopen`, a hundred `fprintf`s, the
 `exit(0)` with no `fclose` — writes all hundred lines and the last one is
 intact, so `_cleanup` flushes a `fopen`'d stream properly.
 
-So lex is either writing through a fixed 8KB buffer of its own, or stopping
-early for a reason it is not reporting. Next: find where lex writes `lex.yy.c`
-(`sub1.c`/`sub2.c` copy the `ncform` skeleton and emit the actions between), and
-check for a `char buf[8192]`-shaped limit or a silently-ignored write error.
+stdio *reading* is not the cause either: `getc` over a 37000-byte file returns
+every byte. So neither half of stdio is at fault.
+
+And the truncation is not in the skeleton copy — `lmain.c:104` copies `ncform`
+with `while ((i=getc(fother)) != EOF) putc(i,fout);` and that runs *after* the
+actions, while the cut is mid-action. So lex stopped emitting actions early,
+without reporting anything.
+
+Next: find where the action text is written — it is copied from the `.l` file as
+lex parses, so look in `sub1.c`/`sub2.c` for the routine that echoes an action,
+and for a fixed-size buffer or a counter that could stop at 8192. `lex` has
+several `char [ ]` limits of its own (`NCH`, `DEFSIZE`, `NSTATES`); one of them
+may simply be too small for a scanner this size, in which case the fix is the
+same kind of constant bump `brkincr.h` needed for the shell.
