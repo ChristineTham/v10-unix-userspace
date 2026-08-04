@@ -59,3 +59,9 @@ a5777dc8dd9691b8ed09728170cdc903512b06c8  v8/usr/src/libc/gen/valloc.c
 302b10898ae755bdd7df7b5ea62854175bf73432  v8/usr/src/libc/gen/strcspn.C
 10e64157916e16882b7ae59d5659563d6a289c25  v8/usr/src/libc/gen/strpbrk.C
 4caa45ef0e486ffce154c27337d1c3686cd7d3cf  v8/usr/src/libc/gen/strspn.C
+1712124223f26483958526a33423366fcbca5cec  v8/usr/src/libc/gen/stty.c
+12e6bf23ae4837e1092e43449f9df11e5a79e538  v8/usr/src/libc/gen/tell.c
+c87e2585ce0de20513fb5334e93e376441d5b91e  v8/usr/src/libc/gen/iread.c
+04eabc064a7222ad922524ebc17529b1150320d5  v8/usr/src/libc/gen/l3tol.c
+3f650a0494ac7fcbb99412441b9cc7e68e7c5667  v8/usr/src/libc/gen/ltol3.c
+9ee382c8a0034b812acf4131ac0aa87c64ca699a  v8/usr/src/libc/gen/nlist.c

@@ -166,7 +166,7 @@ extern CONSZ rdin();
 extern char *rnames[];
 
 extern int lineno;
-extern char ftitle[];
+extern char ftitle[FTITLESZ];
 extern int fldshf, fldsz;
 extern int lflag, udebug, e2debug, odebug, rdebug, radebug, sdebug;
 extern int fast;  /* try to make the compiler run faster */

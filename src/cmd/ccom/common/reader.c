@@ -6,7 +6,7 @@
 
 # ifdef TWOPASS
 NODE node[TREESZ];
-char ftitle[100] = "\"\"";  /* the name of the file */
+char ftitle[FTITLESZ] = "\"\"";  /* the name of the file */
 int ftnno;  /* number of current function */
 int lineno;
 #endif

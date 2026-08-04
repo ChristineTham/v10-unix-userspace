@@ -336,6 +336,55 @@ genconst(v, r)
 }
 
 /*
+ * r += off, for an offset of any size.
+ *
+ * ARM64's add and sub take a 12-bit immediate, optionally shifted left by 12 --
+ * so any offset below 2^24 fits in at most two instructions, and anything
+ * larger has to be materialised in a register first.  Emitting the offset raw
+ * works until a program has a large static table, and then fails in the
+ * ASSEMBLER rather than the compiler:
+ *
+ *	add	x10, x10, #99872
+ *		           ^ expected ... integer in range [0, 4095]
+ *
+ * Thirteen commands died that way -- cc, ld, find, du, stty among them -- all
+ * of them addressing something well past the first 4KB of a file-scope object.
+ */
+static void
+addconst(r, off)
+	int r;
+	long off;
+{
+	char *op = "add";
+	unsigned long u;
+
+	if (off == 0)
+		return;
+	if (off < 0) { op = "sub"; u = (unsigned long)(-off); }
+	else u = (unsigned long)off;
+
+	if (u < 4096) {
+		printx("\t%s\t%s, %s, #%lu\n", op, xreg(r), xreg(r), u);
+		return;
+	}
+	if (u < (1UL << 24)) {
+		if (u & 0xfff)
+			printx("\t%s\t%s, %s, #%lu\n", op, xreg(r), xreg(r),
+			    u & 0xfff);
+		printx("\t%s\t%s, %s, #%lu, lsl #12\n", op, xreg(r), xreg(r),
+		    u >> 12);
+		return;
+	}
+	{
+		int t = regalloc();
+
+		genconst(off, t);		/* signed: add is correct either way */
+		printx("\tadd\t%s, %s, %s\n", xreg(r), xreg(r), xreg(t));
+		regfree(t);
+	}
+}
+
+/*
  * Address of a leaf into register r.
  *
  * Globals go through adrp/add: the only PC-relative form that reaches the whole
@@ -365,36 +414,19 @@ genaddr(p, r)
 		printx("\tadrp\t%s, %s@PAGE\n", xreg(r), nm);
 		printx("\tadd\t%s, %s, %s@PAGEOFF\n", xreg(r), xreg(r), nm);
 #endif
-		if (p->tn.lval)
-			printx("\tadd\t%s, %s, #%ld\n", xreg(r), xreg(r),
-			    (long)p->tn.lval);
+		addconst(r, (long)p->tn.lval);
 		return;
 
 	case VAUTO:
 		/* lval is already negative: oalloc stores off = -noff */
-		off = (long)p->tn.lval;
-		if (off < 0 && -off >= 4096) {
-			/* add/sub take a 12-bit immediate; bigger frames need
-			 * the offset materialised first */
-			genconst(-off, r);
-			printx("\tsub\t%s, x29, %s\n", xreg(r), xreg(r));
-			return;
-		}
-		if (off >= 4096) {
-			genconst(off, r);
-			printx("\tadd\t%s, x29, %s\n", xreg(r), xreg(r));
-			return;
-		}
-		if (off < 0)
-			printx("\tsub\t%s, x29, #%ld\n", xreg(r), -off);
-		else
-			printx("\tadd\t%s, x29, #%ld\n", xreg(r), off);
+		printx("\tmov\t%s, x29\n", xreg(r));
+		addconst(r, (long)p->tn.lval);
 		return;
 
 	case VPARAM:
 		/* arguments start 16 bytes above x29, past the saved x29/x30 */
-		printx("\tadd\t%s, x29, #%ld\n", xreg(r),
-		    (long)(16 + p->tn.lval));
+		printx("\tmov\t%s, x29\n", xreg(r));
+		addconst(r, (long)(16 + p->tn.lval));
 		return;
 
 	case REG:
@@ -449,10 +481,8 @@ framereg(off)
 {
 	int t = regalloc();
 
-	if (off < 0)
-		printx("\tsub\t%s, x29, #%ld\n", xreg(t), -off);
-	else
-		printx("\tadd\t%s, x29, #%ld\n", xreg(t), off);
+	printx("\tmov\t%s, x29\n", xreg(t));
+	addconst(t, off);		/* frames larger than 4KB are common */
 	return (t);
 }
 

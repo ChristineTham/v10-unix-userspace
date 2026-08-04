@@ -94,7 +94,7 @@ extern CONSZ lastcon;
 extern CONSZ ccast();
 extern double dcon;
 
-extern char ftitle[];
+extern char ftitle[FTITLESZ];
 extern struct symtab stab[];
 extern int curftn;
 extern int strftn;

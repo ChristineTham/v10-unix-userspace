@@ -1,0 +1,99 @@
+/*
+ * The V8 syscall entry points, one per line.
+ *
+ *	V8SYS(name, implementation, return type, takes arguments)
+ *
+ * This is a table rather than a list of function definitions so the build can
+ * compile ONE OBJECT PER SYSCALL, which is how V8's libc was actually built --
+ * libc/sys holds mkdir.s, rmdir.s, open.s and sixty more, one file each.
+ *
+ * That granularity is not incidental.  A linker pulls a member out of an
+ * archive only when a symbol is still undefined, so a program that defines its
+ * own `rmdir` simply never pulls libc's.  V8's rm(1) does exactly that: its
+ * rmdir(f, iflg) takes two arguments, prompts, and forks /bin/rmdir, shadowing
+ * the syscall of the same name.  rcp(1) does it with mkdir.  With every wrapper
+ * in one object both programs failed to link with duplicate symbols -- not
+ * because anything was wrong with them, but because the shim was one file where
+ * libc had sixty.
+ *
+ * EVERY ENTRY RETURNS long, INCLUDING THE ONES THE MANUAL CALLS int.  See the
+ * note at the top of onestub.c: it is what keeps `if (open(...) < 0)` working.
+ *
+ * The IMPLEMENTATION type is a separate column from the wrapper type, and the
+ * distinction is load-bearing rather than bookkeeping.  v8s_open returns int,
+ * so AAPCS64 only requires it to set w0.  Declaring it `extern long v8s_open()`
+ * and returning the result told clang the top half of x0 was already meaningful
+ * and it copied it through -- so open() handed back 0x00000000ffffffff and
+ * fopen's `if (f < 0)` was false, which made fopen succeed on a file that does
+ * not exist.  Naming the real type makes the (long) conversion a genuine
+ * sign-extension, which is the whole job of this layer.
+ */
+
+V8SYS(open,	v8s_open,	int,	long,	1)
+V8SYS(creat,	v8s_creat,	int,	long,	1)
+V8SYS(close,	v8s_close,	int,	long,	1)
+V8SYS(read,	v8s_read,	long,	long,	1)
+V8SYS(write,	v8s_write,	long,	long,	1)
+V8SYS(lseek,	v8s_lseek,	long,	long,	1)
+V8SYS(link,	v8s_link,	int,	long,	1)
+V8SYS(unlink,	v8s_unlink,	int,	long,	1)
+V8SYS(chdir,	v8s_chdir,	int,	long,	1)
+V8SYS(chmod,	v8s_chmod,	int,	long,	1)
+V8SYS(chown,	v8s_chown,	int,	long,	1)
+V8SYS(fchmod,	v8s_fchmod,	int,	long,	1)
+V8SYS(fchown,	v8s_fchown,	int,	long,	1)
+V8SYS(access,	v8s_access,	int,	long,	1)
+V8SYS(mkdir,	v8s_mkdir,	int,	long,	1)
+V8SYS(rmdir,	v8s_rmdir,	int,	long,	1)
+V8SYS(symlink,	v8s_symlink,	int,	long,	1)
+V8SYS(readlink,	v8s_readlink,	long,	long,	1)
+V8SYS(dup,	v8s_dup,	int,	long,	1)
+V8SYS(dup2,	v8s_dup2,	int,	long,	1)
+V8SYS(pipe,	v8s_pipe,	int,	long,	1)
+V8SYS(getpid,	v8s_getpid,	int,	long,	0)
+V8SYS(getppid,	v8s_getppid,	int,	long,	0)
+V8SYS(getuid,	v8s_getuid,	int,	long,	0)
+V8SYS(geteuid,	v8s_geteuid,	int,	long,	0)
+V8SYS(getgid,	v8s_getgid,	int,	long,	0)
+V8SYS(getegid,	v8s_getegid,	int,	long,	0)
+V8SYS(setuid,	v8s_setuid,	int,	long,	1)
+V8SYS(setgid,	v8s_setgid,	int,	long,	1)
+V8SYS(umask,	v8s_umask,	int,	long,	1)
+V8SYS(sync,	v8s_sync,	int,	long,	0)
+V8SYS(fork,	v8s_fork,	int,	long,	0)
+V8SYS(vfork,	v8s_vfork,	int,	long,	0)
+V8SYS(pause,	v8s_pause,	int,	long,	0)
+V8SYS(execve,	v8s_execve,	int,	long,	1)
+V8SYS(nice,	v8s_nice,	int,	long,	1)
+V8SYS(kill,	v8s_kill,	int,	long,	1)
+V8SYS(stat,	v8s_stat,	int,	long,	1)
+V8SYS(lstat,	v8s_lstat,	int,	long,	1)
+V8SYS(fstat,	v8s_fstat,	int,	long,	1)
+V8SYS(utime,	v8s_utime,	int,	long,	1)
+V8SYS(wait,	v8s_wait,	int,	long,	1)
+V8SYS(wait3,	v8s_wait3,	int,	long,	1)
+V8SYS(ioctl,	v8s_ioctl,	int,	long,	1)
+V8SYS(alarm,	v8s_alarm,	unsigned,	long,	1)
+V8SYS(time,	v8s_time,	long,	long,	1)
+V8SYS(times,	v8s_times,	long,	long,	1)
+V8SYS(stime,	v8s_stime,	int,	long,	1)
+V8SYS(chroot,	v8s_chroot,	int,	long,	1)
+V8SYS(nap,	v8s_nap,	int,	long,	1)
+V8SYS(sbrk,	v8s_sbrk,	char *,	char *,	1)
+V8SYS(brk,	v8s_brk,	int,	long,	1)
+V8SYS(mount,	v8s_mount,	int,	long,	1)
+V8SYS(umount,	v8s_umount,	int,	long,	1)
+V8SYS(gmount,	v8s_gmount,	int,	long,	1)
+V8SYS(swapon,	v8s_swapon,	int,	long,	1)
+V8SYS(reboot,	v8s_reboot,	int,	long,	1)
+V8SYS(acct,	v8s_acct,	int,	long,	1)
+V8SYS(settod,	v8s_settod,	int,	long,	1)
+V8SYS(vadvise,	v8s_vadvise,	int,	long,	1)
+V8SYS(vlimit,	v8s_vlimit,	int,	long,	1)
+V8SYS(vtimes,	v8s_vtimes,	int,	long,	1)
+V8SYS(profil,	v8s_profil,	int,	long,	1)
+V8SYS(ptrace,	v8s_ptrace,	int,	long,	1)
+V8SYS(mpx,	v8s_mpx,	int,	long,	1)
+V8SYS(syscall,	v8s_syscall,	int,	long,	1)
+V8SYS(killpg,	v8s_killpg,	int,	long,	1)
+V8SYS(setpgrp,	v8s_setpgrp,	int,	long,	1)

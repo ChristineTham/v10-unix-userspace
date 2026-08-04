@@ -42,11 +42,14 @@ YACCFIX = sed 's/={/{/g'
 # V8 libc internals that host libc lacks.  Scaffolding; gone in Phase 2b.
 STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 
-# stubs.c is EXCLUDED here on purpose.  It defines open/read/write with their V8
-# names, which collide with the host functions the rest of the shim calls -- see
-# shim/NOTES.md.  It is compiled only into the copy the V8 world links against
-# with -nostartfiles, never into anything that also uses host libc.
-SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c,$(wildcard $(ROOT)shim/v8sys/*.c))
+# stubs.c and onestub.c are EXCLUDED here on purpose.  Between them they define
+# open/read/write with their V8 names, which collide with the host functions the
+# rest of the shim calls -- see shim/NOTES.md.  They are compiled only into
+# libv8stubs.a, which the V8 world links with -nostdlib, never into anything
+# that also uses host libc.  onestub.c additionally needs -DV8_NAME and friends
+# and does not compile without them.
+SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
+                        $(wildcard $(ROOT)shim/v8sys/*.c))
 
 .PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea clean distclean
 all: stage0
@@ -190,15 +193,62 @@ $(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
 SHIM_OBJ = $(patsubst $(ROOT)shim/v8sys/%.c,$(BUILD)/v8sys/%.o,$(SHIM_SRC))
 
 # crt0 and the V8-named stub layer: the two pieces a freestanding V8 program
-# needs on top of the shim.  stubs.c is built here, and ONLY here, because its
-# open/read/write collide with the host's -- see shim/NOTES.md.
-crt0: $(BUILD)/crt0.o $(BUILD)/v8sys/stubs-freestanding.o
+# needs on top of the shim.  The V8-named layer is built here, and ONLY here,
+# because open/read/write collide with the host's -- see shim/NOTES.md.
+crt0: $(BUILD)/crt0.o $(BUILD)/v8sys/libv8stubs.a
 $(BUILD)/crt0.o: $(ROOT)compiler/crt0.s
 	@mkdir -p $(BUILD)
 	$(HOSTCC) -c $< -o $@
-$(BUILD)/v8sys/stubs-freestanding.o: $(ROOT)shim/v8sys/stubs.c
-	@mkdir -p $(BUILD)/v8sys
-	$(HOSTCC) -std=gnu89 -fcommon -w -fno-stack-protector -c $< -o $@
+
+# ---------------------------------------------------------------------------
+# libv8stubs.a -- the V8-named entry points, ONE OBJECT PER SYSCALL.
+#
+# The granularity is the point, not tidiness.  A linker pulls an archive member
+# only when a symbol is still undefined, so a program defining its own rmdir
+# never pulls the library's.  V8 programs do this: rm(1) has an rmdir(f, iflg)
+# that prompts and forks /bin/rmdir, rcp(1) has its own mkdir.  With every
+# wrapper in one object, both failed to link with duplicate symbols.  V8's libc
+# had one file per syscall (libc/sys/mkdir.s, rmdir.s, ...) for this reason;
+# this reproduces that from syscalls.def.
+# ---------------------------------------------------------------------------
+STUBFLAGS = -std=gnu89 -fcommon -w -fno-stack-protector -I$(ROOT)shim/include \
+            -I$(ROOT)shim/v8sys
+SYSDEF    = $(ROOT)shim/v8sys/syscalls.def
+# name:impl:type:args, one per V8SYS() line.  ':' rather than ',' so the shell
+# can split them without tripping over `char *`.
+SYSCALLS := $(shell sed -n 's/^V8SYS(\([^,]*\),[ 	]*\([^,]*\),[ 	]*\([^,]*\),[ 	]*\([^,]*\),[ 	]*\([01]\)).*/\1:\2:\3:\4:\5/p' \
+                    $(ROOT)shim/v8sys/syscalls.def | tr -d ' \t')
+STUB_OBJ  = $(foreach s,$(SYSCALLS),$(BUILD)/v8sys/stub/$(word 1,$(subst :, ,$(s))).o) \
+            $(BUILD)/v8sys/stub/errno.o $(BUILD)/v8sys/stub/exit.o \
+            $(BUILD)/v8sys/stub/signal.o
+
+$(BUILD)/v8sys/libv8stubs.a: $(STUB_OBJ)
+	@ar rcs $@ $(STUB_OBJ)
+	@echo "built $@ ($(words $(STUB_OBJ)) objects)"
+
+# One rule per syscall, generated: each names its own -D set.
+define STUB_RULE
+$(BUILD)/v8sys/stub/$(word 1,$(subst :, ,$(1))).o: $(ROOT)shim/v8sys/onestub.c $(SYSDEF)
+	@mkdir -p $(BUILD)/v8sys/stub
+	$(HOSTCC) $(STUBFLAGS) -DV8_NAME=$(word 1,$(subst :, ,$(1))) \
+	    -DV8_IMPL=$(word 2,$(subst :, ,$(1))) \
+	    -DV8_IMPLTYPE="$(word 3,$(subst :, ,$(1)))" \
+	    -DV8_TYPE="$(word 4,$(subst :, ,$(1)))" \
+	    -DV8_ARGS=$(word 5,$(subst :, ,$(1))) -c $$< -o $$@
+endef
+$(foreach s,$(SYSCALLS),$(eval $(call STUB_RULE,$(s))))
+
+# The three that are not plain wrappers, each in its own object for the same
+# reason: a program defining its own signal() must get its own.
+$(BUILD)/v8sys/stub/errno.o: $(ROOT)shim/v8sys/stubs.c
+	@mkdir -p $(BUILD)/v8sys/stub
+	$(HOSTCC) $(STUBFLAGS) -DV8_PART_ERRNO -c $< -o $@
+$(BUILD)/v8sys/stub/exit.o: $(ROOT)shim/v8sys/stubs.c
+	@mkdir -p $(BUILD)/v8sys/stub
+	$(HOSTCC) $(STUBFLAGS) -DV8_PART_EXIT -c $< -o $@
+$(BUILD)/v8sys/stub/signal.o: $(ROOT)shim/v8sys/stubs.c
+	@mkdir -p $(BUILD)/v8sys/stub
+	$(HOSTCC) $(STUBFLAGS) -DV8_PART_SIGNAL -c $< -o $@
 
 libv8sys: $(BUILD)/v8sys/libv8sys.a
 $(BUILD)/v8sys/libv8sys.a: $(SHIM_OBJ)
@@ -230,8 +280,8 @@ LIBCSRC = $(SRC)/libc
 LIBC_GEN = malloc ecvt ieeefp errlst perror memops \
            ctype atoi atol abs max min sgn gcd lcm \
            index rindex strrchr strdup strtok strcatn strcmpn strcpyn \
-           calloc getenv qsort swab mktemp abort rand getopt \
-           execvp getwd ftw valloc \
+           calloc getenv qsort swab mktemp abort rand getopt stty \
+           execvp getwd ftw valloc tell iread l3tol ltol3 nlist \
            opendir readdir closedir seekdir telldir \
            ctime timezone ttyname cttyname getlogin ttyslot
 LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
@@ -249,7 +299,7 @@ LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/freopen.c $(LIBCSRC)/stdio/fdopen.c \
           $(LIBCSRC)/stdio/fseek.c $(LIBCSRC)/stdio/ftell.c \
           $(LIBCSRC)/stdio/strout.c $(LIBCSRC)/stdio/getw.c \
-          $(LIBCSRC)/stdio/putw.c $(LIBCSRC)/stdio/tmpnam.c
+          $(LIBCSRC)/stdio/getpw.c $(LIBCSRC)/stdio/putw.c $(LIBCSRC)/stdio/tmpnam.c
 # The string routines ship as .C -- portable references beside the VAX assembly
 # that V8 actually built.  They are what a machine without those instructions
 # was meant to use.

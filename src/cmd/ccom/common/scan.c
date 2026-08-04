@@ -1028,9 +1028,26 @@ lxtitle()
 		lineno = val;
 		lxget(' ', LEXWS);
 		if ((c = getchar()) != '\n') {
-			cp = ftitle; *cp++ = c;
-			while ((c=getchar()) != '\n')
-				*cp++ = c;
+			/*
+			 * PORT: bounded.  ftitle is char[100] and the original
+			 * loop had no limit at all, which was safe when paths
+			 * looked like "/usr/src/cmd/cat.c".  A modern checkout
+			 * path is longer than that on its own: compiling
+			 * .../v10-unix-userspace/third_party/.../cmd/ascii.c
+			 * wrote 102 bytes into it and ccom died with SIGSEGV
+			 * and no diagnostic, which read as "the compiler cannot
+			 * build this program".  The same source compiled fine
+			 * by a relative path.
+			 *
+			 * The name is only ever printed back out, so truncating
+			 * costs nothing but a long name in a comment.
+			 */
+			char *end = ftitle + sizeof(ftitle) - 1;
+
+			cp = ftitle;
+			if (cp < end) *cp++ = c;
+			while ((c=getchar()) != '\n' && c != EOF)
+				if (cp < end) *cp++ = c;
 			*cp = '\0';
 		}
 	}

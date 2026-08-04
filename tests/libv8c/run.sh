@@ -11,15 +11,18 @@ mkdir -p "$TMP"; trap 'rm -rf "$TMP"' EXIT; cd "$TMP" || exit 1
 pass=0 fail=0
 LIBC=$ROOT/build/stage0/libc/libv8c.a
 CRT=$ROOT/build/stage0/crt0.o
-STUBS=$ROOT/build/stage0/v8sys/stubs-freestanding.o
-SHIM=$(ls "$ROOT"/build/stage0/v8sys/*.o | grep -v stubs-freestanding | tr '\n' ' ')
+STUBS=$ROOT/build/stage0/v8sys/libv8stubs.a
+# Link the ARCHIVES, never a glob of loose .o files: a stale object left
+# behind by a rename once shadowed libv8stubs.a entirely, and the suites
+# passed while testing the old code.
+SHIM=$ROOT/build/stage0/v8sys/libv8sys.a
 
 run() {	# run <name> <expected>; program source on stdin
 	name=$1; want=$2; cat > t.c
 	if ! "$CC" -c t.c 2>e.log; then
 		fail=$((fail+1)); echo "FAIL $name (compile)"; head -2 e.log; return
 	fi
-	if ! clang -nostdlib -e _v8start -o t "$CRT" t.o "$LIBC" "$STUBS" $SHIM -lSystem 2>>e.log; then
+	if ! clang -nostdlib -e _v8start -o t "$CRT" t.o "$LIBC" "$STUBS" "$SHIM" -lSystem 2>>e.log; then
 		fail=$((fail+1)); echo "FAIL $name (link)"; head -2 e.log; return
 	fi
 	got=$(./t 2>&1)

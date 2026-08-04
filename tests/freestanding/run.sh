@@ -22,14 +22,13 @@ ok()  { pass=$((pass+1)); }
 bad() { fail=$((fail+1)); echo "FAIL $1"; shift; [ $# -gt 0 ] && echo "    $*"; }
 
 CRT=$ROOT/build/stage0/crt0.o
-STUBS=$ROOT/build/stage0/v8sys/stubs-freestanding.o
-SHIM=$ROOT/build/stage0/v8sys/syscall.o
+STUBS=$ROOT/build/stage0/v8sys/libv8stubs.a
 for f in "$CRT" "$STUBS"; do
 	[ -f "$f" ] || { echo "missing $f -- run make libv8sys crt0"; exit 1; }
 done
-SHIMOBJS=$(ls "$ROOT"/build/stage0/v8sys/*.o | grep -v 'stubs-freestanding' | tr '\n' ' ')
+SHIM=$ROOT/build/stage0/v8sys/libv8sys.a
 
-link() { clang -nostdlib -e _v8start -o "$1" "$CRT" "$2" "$STUBS" $SHIMOBJS -lSystem; }
+link() { clang -nostdlib -e _v8start -o "$1" "$CRT" "$2" "$STUBS" "$SHIM" -lSystem; }
 
 # --- write(2) reaches the kernel through the shim ------------------------
 cat > hello.c <<'EOF'

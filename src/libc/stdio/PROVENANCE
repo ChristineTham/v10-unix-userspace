@@ -38,3 +38,4 @@ f284f6fc4a4b0df31e219ef20f401dd24edf217b  v8/usr/src/libc/stdio/putw.c
 3e3154b6ea522a581e2bff52891dac2fee836c1a  v8/usr/src/libc/stdio/popen.c
 bcb4379351a2583dcdedd2d40715e64ecce4d306  v8/usr/src/libc/stdio/system.c
 8b7af03364d85715e0e707b60c0ab14927f54fcf  v8/usr/src/libc/stdio/tmpnam.c
+05d6fbd0339497594b6610f624e34d3f6ff2784f  v8/usr/src/libc/stdio/getpw.c

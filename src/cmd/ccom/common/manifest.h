@@ -335,6 +335,20 @@
 # endif
 # endif
 # define SWITSZ 4000 /* size of switch table */
+/*
+ * PORT: size of ftitle, the source file name taken from cpp's #line output.
+ *
+ * It was a bare `char ftitle[100]` in common1.c and reader.c, with an UNBOUNDED
+ * copy loop in scan.c -- fine when a path looked like "/usr/src/cmd/cat.c", and
+ * an overflow today: a checkout path plus third_party/Research-Unix-v8/... runs
+ * past 100 characters on its own, and ccom died with SIGSEGV and no diagnostic.
+ * That reads as "the compiler cannot build this program"; the same source
+ * compiled by a relative path was fine.
+ *
+ * Naming the size here lets scan.c bound the loop with sizeof, so the guard
+ * cannot drift away from the buffer.
+ */
+# define FTITLESZ 1024
 
 	char		*hash();
 	char		*savestr();

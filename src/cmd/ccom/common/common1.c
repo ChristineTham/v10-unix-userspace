@@ -136,7 +136,7 @@ register NODE *p;
 
 NODE node[TREESZ];
 
-char	ftitle[100] = "\"\"";	/* title of the file */
+char	ftitle[FTITLESZ] = "\"\"";	/* title of the file */
 extern int	lineno;		/* line number of the input file */
 
 
