@@ -209,32 +209,23 @@ bytes, `.text`) and then addresses it with a textbook `adrp Lnnn@PAGE` /
 Stack exhaustion is also ruled out: raising the limit eightfold changes nothing,
 and the fault address (0x1246040) is nowhere near `sp` (0x16d3546f0).
 
-**The strongest lead, and where to start next time: v8cc never emits `.comm`.**
-A file-scope `int bdebug;` is a *tentative* definition, and clang emits it as
-`.comm _bdebug,4,2` — a common symbol, which the linker merges across
-translation units and places in `__DATA,__common`, a zerofill section at the end
-of the segment. v8cc emits it as a strong definition instead:
+Also ruled out — recorded because it looked compelling and cost a detour.
+`trees.s` contains no `.comm` directive at all, which read like v8cc emitting
+tentative definitions as strong ones and so scattering every uninitialised
+global to a different address. It is not that. `trees.c` simply has no tentative
+definitions: every file-scope object in it is explicitly initialised
+(`int bdebug = 0;`), so `_bdebug: .long 0` is the correct output. Asked
+directly, v8cc emits `.comm _tentative,4` and `.lcomm _stat_tentative,4`
+exactly as it should — `EXCLASS` defaults to `EXTERN` in `pftn.c`, neither back
+end overrides it, and `commdec()` in `compiler/ccom-arm64/local.c` is reached.
 
-```
-_bdebug:
-	.long	0
-```
-
-placed inline among the initialised data. Across the whole compiler that moves
-every uninitialised global to a completely different address relative to
-everything else, which is exactly the kind of difference that turns a latent
-out-of-bounds access from harmless into fatal — and exactly the kind that is
-sensitive to link order. It is also the same family as the Mach-O
-common-symbol hazard already recorded in CLAUDE.md, approached from the other
-side: there the linker resolved a common symbol from an archive, here the
-compiler never makes one.
-
-Two things to establish: whether two translation units that both carry the same
-tentative definition still end up sharing one object (Mach-O does not error on
-this, so it may be silently picking by link order), and whether any tentative
-definition in ccom is declared at *different sizes* in different files — with
-`.comm` the linker takes the largest, with strong definitions it takes whichever
-comes first, and that difference alone would produce this symptom.
+So the difference is still unidentified. What the eliminations leave is a fault
+that is real, reproducible, confined to code v8cc generates, triggered before
+any code generation happens in the compiled compiler, and sensitive to link
+order — with no wrong data size, no wrong struct layout, no symbol collision,
+no stack exhaustion and no addressing defect found. The next thing to try is
+the direct one rather than another hypothesis: run the crashing binary under a
+watchpoint on the malloc free-list head and catch whoever writes it.
 
 Until this closes, rung 3 is open, and with it B3 (V8 make rebuilding the
 compiler) and B6.
