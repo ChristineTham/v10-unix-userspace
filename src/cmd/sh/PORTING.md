@@ -5,6 +5,8 @@ shell starts, reads its profile logic, parses, forks, execs and reaps.
 
 ## What runs
 
+All of it, as far as the test suite goes (`tests/sh/run.sh`, 21 cases):
+
 ```
 echo hello world                      hello world
 for i in a b c; do echo $i; done      a b c
@@ -21,38 +23,33 @@ test -d /tmp && echo isdir            isdir
 
 `$((...))` is correctly a syntax error: arithmetic expansion postdates 1985.
 
-## What does not, and where it is
+## The last one: a null pointer that used to read as zero
 
-**Variable assignment hangs.** `x=42` spins under `findnam`, and so does
-assigning to a name that already exists.
-
-It is **not** the tree. Instrumenting `findnam` to print its argument and cap
-the walk at 200 nodes shows it never reaches the walk at all:
+`x=42` hung, and so did every other variable assignment. It looked like a
+corrupt name tree — `findnam` walks one — but instrumenting `findnam` to print
+its argument showed it never reached the walk:
 
 ```
 F[]
 ```
 
-— the name it was handed prints as three invisible bytes, and the marker after
-`chkid()` never appears. So `findnam` is called with a garbage `nam` pointer and
-`chkid` runs off the end of it:
+The name printed as nothing at all, because `write(2, NULL, 3)` writes nothing.
+`com[0]` is null: a bare assignment leaves `argn` 0 and no command word.
+`findnam` passes it to `chkid`, whose loop
 
 ```c
 while(!ctrlchar(*nam) && (*nam&QUOTE)==0 && *nam!='(' && *nam!='=')
 	nam++;
 ```
 
-That loop has no bound but the string's own terminator.
+is bounded only by the string's terminator. **On a VAX or PDP-11 running Unix,
+address 0 read as zero** — so `ctrlchar(0)` was true and the loop stopped on the
+first character. The shell depends on that without saying so, and so does a good
+deal of V7-era code.
 
-So the fault is upstream, in whoever builds the name: `execute()` in `xec.c`
-handling the assignment word (the sample puts the call at `execute+808`), or the
-macro expansion that produced it. `namwalk` is bounded (instrumented to abort
-after 2000 visits; it never fires) and the arena no longer runs past the break,
-so both of those are cleared.
-
-Next: print the assignment word in `execute` before it reaches `findnam`, and
-walk back from there to where the pointer is made. As always in this port, make
-it print what it has rather than working out what it should have.
+macOS reserves the entire first 4GB as `__PAGEZERO` and it cannot be mapped, so
+the read faults. Guarded at the call site in `xec.c`, which is the one place
+that can know the word is optional.
 
 ## The four porting changes, all LP64
 

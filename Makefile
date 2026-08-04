@@ -51,14 +51,14 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-sh clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh
 
-test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea
+test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-sh
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: v8ccom
@@ -73,6 +73,8 @@ test-libv8c: rootfs libv8sys crt0 libv8c
 	@$(ROOT)tests/libv8c/run.sh
 test-wavea: rootfs libv8sys crt0 libv8c
 	@$(ROOT)tests/wavea/run.sh
+test-sh: sh
+	@$(ROOT)tests/sh/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
 	@mkdir -p $(BUILD)/v8sys
@@ -352,6 +354,33 @@ $(BUILD)/cc/v8cc: $(SRC)/cmd/cc.c
 	@mkdir -p $(BUILD)/cc
 	$(HOSTCC) $(KRFLAGS) $(V8CC_INC) -o $@ $< $(STAGE0_COMPAT)
 	@echo "built $@"
+
+# ---------------------------------------------------------------------------
+# sh -- the Bourne shell, the centrepiece of the port.
+#
+# Compiled by v8cc from authentic V8 source, linked freestanding against V8's
+# own libc.  The object list is the makefile's OFILES, unchanged; profile.c is
+# not in it there either.  src/cmd/sh/PORTING.md records the four LP64 changes.
+# ---------------------------------------------------------------------------
+SHSRC = $(SRC)/cmd/sh
+SH_OBJ_NAMES = setbrk blok stak cmd fault main word string name args xec \
+               service error io print macro expand ctype msg defs pathserv \
+               func spname
+SH_OBJ = $(patsubst %,$(BUILD)/sh/%.o,$(SH_OBJ_NAMES))
+
+sh: $(BUILD)/sh/sh
+$(BUILD)/sh/sh: $(SH_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(SH_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+
+$(BUILD)/sh/%.o: $(SHSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+	@mkdir -p $(BUILD)/sh
+	$(V8CCRUN) -I$(SHSRC) -c -o $@ $<
+
+$(SH_OBJ): $(wildcard $(SHSRC)/*.h)
 
 # ---------------------------------------------------------------------------
 # rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.

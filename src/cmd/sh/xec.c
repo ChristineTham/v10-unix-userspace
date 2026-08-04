@@ -86,7 +86,31 @@ int	*pf1, *pf2;
 				a1 = com[1];
 				gchain = schain;
 
-				if((n = findnam(com[0])) && !(n->namval.flg & N_FUNCTN))
+				/*
+				 * PORT: com[0] may be null, and dereferencing it
+				 * is fatal here.
+				 *
+				 * A bare assignment -- `x=42` with no command word
+				 * -- leaves argn 0 and com[0] null.  findnam()
+				 * passes it to chkid(), whose loop
+				 *
+				 *	while(!ctrlchar(*nam) && ...) nam++;
+				 *
+				 * is bounded only by the string's terminator.  On a
+				 * VAX or PDP-11 running Unix, address 0 read as
+				 * zero, so ctrlchar(0) was true and the loop stopped
+				 * on the first character -- the shell relies on that
+				 * without saying so, and so does a good deal of
+				 * V7-era code.
+				 *
+				 * macOS reserves the whole first 4GB as __PAGEZERO
+				 * and it cannot be mapped, so the read faults.  With
+				 * the handlers stdsigs() installs, a fault is not a
+				 * crash: the handler returns, the instruction
+				 * retries, and the shell HANGS.  Every variable
+				 * assignment did.
+				 */
+				if(com[0] && (n = findnam(com[0])) && !(n->namval.flg & N_FUNCTN))
 					n = 0;
 				if ((internal = syslook(com[0], commands, no_commands)) || argn == 0)
 					setlist(comptr(t)->comset, 0);
