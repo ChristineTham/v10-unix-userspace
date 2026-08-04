@@ -42,6 +42,20 @@ over a buffer from troff's own `setbrk`. That buffer, the parse, and `struct t`
 are all worth looking at together: it is the same shape of problem as `fdprintf`
 was, a routine that assumes a particular word size.
 
-Start by printing `stbuf.st_size`, what `setbrk` returned, and how far `p` gets
-before the fault. The table is ASCII, so the expected values are all readable in
-`src/cmd/troff/term/tab.37`.
+Instrumented so far — and note that this instrumentation works only because
+`fdprintf` is fixed, `%D` included:
+
+```
+TAB size=1538 nread=1538 codestr=4888477696
+TAB after type p-codestr=2
+```
+
+So the file is found, read whole, `setbrk` returns a usable buffer, and the
+first `skipstr` advances correctly. The fault is further into the walk.
+
+Next: print `p - codestr` after each of the nine `getint` calls and then after
+each `getstr`, and compare against the table, which is ASCII and readable in
+`src/cmd/troff/term/tab.37`. The `getstr(p, t.twinit = p)` form — assigning the
+destination inside the argument list, then copying in place — is the kind of
+construct this back end has been wrong about before, so it is worth reading the
+generated code for that line specifically if the counters do not localise it.
