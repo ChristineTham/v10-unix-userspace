@@ -39,9 +39,28 @@ with `while ((i=getc(fother)) != EOF) putc(i,fout);` and that runs *after* the
 actions, while the cut is mid-action. So lex stopped emitting actions early,
 without reporting anything.
 
-Next: find where the action text is written — it is copied from the `.l` file as
-lex parses, so look in `sub1.c`/`sub2.c` for the routine that echoes an action,
-and for a fixed-size buffer or a counter that could stop at 8192. `lex` has
-several `char [ ]` limits of its own (`NCH`, `DEFSIZE`, `NSTATES`); one of them
-may simply be too small for a scanner this size, in which case the fix is the
-same kind of constant bump `brkincr.h` needed for the shell.
+The routine is `cpyact()` at `sub1.c:272` — "copy C action to the next ; or
+closing }" — reading through `gch()` at `sub1.c:368`:
+
+```c
+gch(){
+	register int c;
+	prev = pres;
+	c = pres = peek;
+	peek = pushptr > pushc ? *--pushptr : getc(fin);
+```
+
+A ternary over a pushback stack, and the cut is mid-action at `dodef`, so
+`cpyact` stopped mid-copy rather than the output being lost after the fact.
+
+Two things to try next, in this order:
+
+1. **Print in `cpyact`** — the character count and `c` at each step — and see
+   what `gch()` returns where the copy stops. That is one write() and it
+   distinguishes "gch returned EOF early" from "cpyact took a branch it
+   should not have".
+2. If `gch` is returning EOF early, look at `fin` and the pushback ternary. Note
+   that `pushptr > pushc ? *--pushptr : getc(fin)` mixes a `char` dereference
+   with `getc`'s int, and the arms of a ternary rendezvous in one register — a
+   shape this back end has been wrong about twice now, once for the join
+   register and once for floats.
