@@ -47,80 +47,107 @@ sync_errno(void)
 	errno = v8_errno;
 }
 
+/*
+ * EVERY WRAPPER RETURNS long, INCLUDING THE ONES THE MANUAL CALLS int.
+ *
+ * AAPCS64 says a function returning int need only set w0; the top half of x0 is
+ * unspecified, and clang leaves whatever was there.  V8's back end computes at
+ * 64-bit width and compares with an x-form `cmp`, so -1 arriving as
+ * 0x00000000ffffffff tested as POSITIVE -- and V8 code checks every syscall
+ * with `< 0`.  `cat nosuchfile` reported "input nosuchfile is output" because
+ * open() failed and the failure did not register.
+ *
+ * The obvious fix is to sign-extend at the call site, and that was tried.  It
+ * breaks worse.  V8 calls malloc without declaring it -- opendir.c has
+ * `dirp = (DIR *)malloc(sizeof(DIR));` and nothing declares malloc anywhere in
+ * scope -- so K&R types the call `int`, and sign-extending the result from 32
+ * bits truncates the pointer.  On the VAX int and pointer were both 32 bits and
+ * the omission cost nothing; under LP64 it is fatal.  The compiler cannot tell
+ * a declared `int` from an undeclared one: they are the same node.
+ *
+ * So the seam adapts, which is the shim's job.  Returning long makes clang set
+ * all 64 bits, V8 sees a properly extended value, and the compiler narrows only
+ * types that must have been declared (char, short, unsigned).  gencall() in
+ * compiler/ccom-arm64/gencode.c carries the other half of this note; the two
+ * decisions only work together.
+ *
+ * Anything else in the shim that V8 code calls by name -- isatty() in ioctl.c
+ * is the current example -- has to follow the same rule.
+ */
 #define WRAP0(name, impl, type) \
 	type name() { type r = impl(); sync_errno(); return r; }
 #define WRAP(name, impl, type) \
 	type name(a,b,c,d,e,f) long a,b,c,d,e,f; \
 	{ type r = impl(a,b,c,d,e,f); sync_errno(); return r; }
 
-WRAP(open, v8s_open, int)
-WRAP(creat, v8s_creat, int)
-WRAP(close, v8s_close, int)
+WRAP(open, v8s_open, long)
+WRAP(creat, v8s_creat, long)
+WRAP(close, v8s_close, long)
 WRAP(read, v8s_read, long)
 WRAP(write, v8s_write, long)
 WRAP(lseek, v8s_lseek, long)
-WRAP(link, v8s_link, int)
-WRAP(unlink, v8s_unlink, int)
-WRAP(chdir, v8s_chdir, int)
-WRAP(chmod, v8s_chmod, int)
-WRAP(chown, v8s_chown, int)
-WRAP(fchmod, v8s_fchmod, int)
-WRAP(fchown, v8s_fchown, int)
-WRAP(access, v8s_access, int)
-WRAP(mkdir, v8s_mkdir, int)
-WRAP(rmdir, v8s_rmdir, int)
-WRAP(symlink, v8s_symlink, int)
+WRAP(link, v8s_link, long)
+WRAP(unlink, v8s_unlink, long)
+WRAP(chdir, v8s_chdir, long)
+WRAP(chmod, v8s_chmod, long)
+WRAP(chown, v8s_chown, long)
+WRAP(fchmod, v8s_fchmod, long)
+WRAP(fchown, v8s_fchown, long)
+WRAP(access, v8s_access, long)
+WRAP(mkdir, v8s_mkdir, long)
+WRAP(rmdir, v8s_rmdir, long)
+WRAP(symlink, v8s_symlink, long)
 WRAP(readlink, v8s_readlink, long)
-WRAP(dup, v8s_dup, int)
-WRAP(dup2, v8s_dup2, int)
-WRAP(pipe, v8s_pipe, int)
-WRAP0(getpid, v8s_getpid, int)
-WRAP0(getppid, v8s_getppid, int)
-WRAP0(getuid, v8s_getuid, int)
-WRAP0(geteuid, v8s_geteuid, int)
-WRAP0(getgid, v8s_getgid, int)
-WRAP0(getegid, v8s_getegid, int)
-WRAP(setuid, v8s_setuid, int)
-WRAP(setgid, v8s_setgid, int)
-WRAP(umask, v8s_umask, int)
-WRAP0(sync, v8s_sync, int)
-WRAP0(fork, v8s_fork, int)
-WRAP0(vfork, v8s_vfork, int)
-WRAP0(pause, v8s_pause, int)
-WRAP(execve, v8s_execve, int)
-WRAP(nice, v8s_nice, int)
-WRAP(kill, v8s_kill, int)
-WRAP(stat, v8s_stat, int)
-WRAP(lstat, v8s_lstat, int)
-WRAP(fstat, v8s_fstat, int)
-WRAP(utime, v8s_utime, int)
-WRAP(wait, v8s_wait, int)
-WRAP(wait3, v8s_wait3, int)
-WRAP(ioctl, v8s_ioctl, int)
-WRAP(alarm, v8s_alarm, unsigned)
+WRAP(dup, v8s_dup, long)
+WRAP(dup2, v8s_dup2, long)
+WRAP(pipe, v8s_pipe, long)
+WRAP0(getpid, v8s_getpid, long)
+WRAP0(getppid, v8s_getppid, long)
+WRAP0(getuid, v8s_getuid, long)
+WRAP0(geteuid, v8s_geteuid, long)
+WRAP0(getgid, v8s_getgid, long)
+WRAP0(getegid, v8s_getegid, long)
+WRAP(setuid, v8s_setuid, long)
+WRAP(setgid, v8s_setgid, long)
+WRAP(umask, v8s_umask, long)
+WRAP0(sync, v8s_sync, long)
+WRAP0(fork, v8s_fork, long)
+WRAP0(vfork, v8s_vfork, long)
+WRAP0(pause, v8s_pause, long)
+WRAP(execve, v8s_execve, long)
+WRAP(nice, v8s_nice, long)
+WRAP(kill, v8s_kill, long)
+WRAP(stat, v8s_stat, long)
+WRAP(lstat, v8s_lstat, long)
+WRAP(fstat, v8s_fstat, long)
+WRAP(utime, v8s_utime, long)
+WRAP(wait, v8s_wait, long)
+WRAP(wait3, v8s_wait3, long)
+WRAP(ioctl, v8s_ioctl, long)
+WRAP(alarm, v8s_alarm, long)
 WRAP(time, v8s_time, long)
 WRAP(times, v8s_times, long)
-WRAP(stime, v8s_stime, int)
-WRAP(chroot, v8s_chroot, int)
-WRAP(nap, v8s_nap, int)
+WRAP(stime, v8s_stime, long)
+WRAP(chroot, v8s_chroot, long)
+WRAP(nap, v8s_nap, long)
 WRAP(sbrk, v8s_sbrk, char *)
-WRAP(brk, v8s_brk, int)
-WRAP(mount, v8s_mount, int)
-WRAP(umount, v8s_umount, int)
-WRAP(gmount, v8s_gmount, int)
-WRAP(swapon, v8s_swapon, int)
-WRAP(reboot, v8s_reboot, int)
-WRAP(acct, v8s_acct, int)
-WRAP(settod, v8s_settod, int)
-WRAP(vadvise, v8s_vadvise, int)
-WRAP(vlimit, v8s_vlimit, int)
-WRAP(vtimes, v8s_vtimes, int)
-WRAP(profil, v8s_profil, int)
-WRAP(ptrace, v8s_ptrace, int)
-WRAP(mpx, v8s_mpx, int)
-WRAP(syscall, v8s_syscall, int)
-WRAP(killpg, v8s_killpg, int)
-WRAP(setpgrp, v8s_setpgrp, int)
+WRAP(brk, v8s_brk, long)
+WRAP(mount, v8s_mount, long)
+WRAP(umount, v8s_umount, long)
+WRAP(gmount, v8s_gmount, long)
+WRAP(swapon, v8s_swapon, long)
+WRAP(reboot, v8s_reboot, long)
+WRAP(acct, v8s_acct, long)
+WRAP(settod, v8s_settod, long)
+WRAP(vadvise, v8s_vadvise, long)
+WRAP(vlimit, v8s_vlimit, long)
+WRAP(vtimes, v8s_vtimes, long)
+WRAP(profil, v8s_profil, long)
+WRAP(ptrace, v8s_ptrace, long)
+WRAP(mpx, v8s_mpx, long)
+WRAP(syscall, v8s_syscall, long)
+WRAP(killpg, v8s_killpg, long)
+WRAP(setpgrp, v8s_setpgrp, long)
 
 /*
  * _exit is the raw syscall; exit() is libc's, which flushes stdio through

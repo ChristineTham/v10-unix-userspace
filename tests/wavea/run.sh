@@ -98,8 +98,35 @@ fi
 if build tr "$ROOT/src/cmd/tr.c"; then
 	check 'tr range'    'ABC' "$(printf 'abc\n' | ./tr a-z A-Z)"
 	check 'tr explicit' 'xyz' "$(printf 'abc\n' | ./tr abc xyz)"
+	# -d took a SIGBUS until string literals moved to writable data: with one
+	# argument the other string is the literal "", and nextc() ends with
+	# `if(c==0) *--s->p = 0;` -- a write straight into it.
+	check 'tr -d'       'acac' "$(printf 'abcabc\n' | ./tr -d b)"
+	check 'tr -cd'      'abcabc' "$(printf 'abc-abc\n' | ./tr -cd abc)"
+	# -s squeezes characters that are in STRING2, per V8's tr(1) -- so with
+	# no string2 nothing is squeezed, which is not the BSD reading.
+	check 'tr -s two strings' 'abc' "$(printf 'aabbcc\n' | ./tr -s a-c a-c)"
+	check 'tr -s one string'  'aabbcc' "$(printf 'aabbcc\n' | ./tr -s abc)"
 else
-	fail=$((fail+2))
+	fail=$((fail+6))
+fi
+
+# ---- cmp ----------------------------------------------------------------
+# cmp needs the ctype table, and it was the first program to want one.
+printf 'alpha\nbeta\n' > c1.txt; cp c1.txt c2.txt; printf 'alpha\nbetX\n' > c3.txt
+if build cmp "$ROOT/src/cmd/cmp.c"; then
+	./cmp c1.txt c2.txt > cmp.out 2>&1
+	check 'cmp same (silent)'  ''   "$(cat cmp.out)"
+	check 'cmp same (status)'  '0'  "$?"
+	check 'cmp differ' 'c1.txt c3.txt differ: char 10, line 2' \
+	    "$(./cmp c1.txt c3.txt 2>&1)"
+	./cmp -s c1.txt c3.txt 2>/dev/null
+	check 'cmp -s status' '1' "$?"
+	check 'cmp -l' '10 141 130' "$(./cmp -l c1.txt c3.txt | tr -s ' ' | sed 's/^ //')"
+	./cmp c1.txt nosuchfile > /dev/null 2>&1
+	check 'cmp missing file status' '2' "$?"
+else
+	fail=$((fail+6))
 fi
 
 # ---- sum ----------------------------------------------------------------
@@ -135,15 +162,6 @@ echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
 # ---------------------------------------------------------------------------
-# STILL BROKEN, recorded rather than left to be rediscovered:
-#
-#   tr -d      -- `tr -d b` produces nothing, though `tr a-z A-Z` and
-#                 `tr abc xyz` are both correct. The delete path is separate
-#                 code in tr.c.
-#
-#   cmp        -- does not compile.
-#
-# ---------------------------------------------------------------------------
 # SOLVED, kept because the search was long and the shape of it is the point:
 #
 #   `cat nosuchfile` printed "cat: input nosuchfile is output" -- its dev/ino
@@ -172,9 +190,36 @@ echo "wavea: $pass passed, $fail failed"
 #   The whole shim is clang-compiled, so EVERY syscall error check in EVERY V8
 #   program was broken -- and could not show up in a self-contained test,
 #   because v8cc's own callees return a properly extended x0 and only disagree
-#   with foreign ones. Fixed by arm64_widen() in ccom-arm64/gencode.c; the
-#   regression test lives in tests/v8cc/run.sh, which spans both compilers.
+#   with foreign ones.
+#
+#   The first fix -- sign-extend at the call site -- was WRONG, and instructive
+#   about why. V8 calls malloc undeclared (opendir.c: `(DIR *)malloc(...)` with
+#   nothing in scope), so K&R types the call int, and sign-extending it from 32
+#   bits truncated the pointer: opendir went from working to segfaulting. The
+#   compiler cannot tell a declared int from an undeclared one, because they are
+#   the same node. So the seam adapts instead -- every wrapper in
+#   shim/v8sys/stubs.c returns long -- and the compiler narrows only types that
+#   must have been declared. The two halves are documented together, in
+#   stubs.c and in gencall().
 #
 #   Worth remembering: the recorded next step was to read the generated assembly
 #   and diff it against clang's. Instrumenting the program was faster and
 #   pointed straight at the seam.
+
+# ---------------------------------------------------------------------------
+# tr and cmp: both were listed here as broken, and neither turned out to be a
+# bug in the program.
+#
+#   `tr -d b` took a SIGBUS.  V8's nextc() ends with `if(c==0) *--s->p = 0;`,
+#   pushing the NUL back after reading past the end, and with one argument the
+#   other string is the literal "".  String literals were being emitted into
+#   __TEXT,__cstring; V8's own VAX back end puts them in `.data 1`/`.data 2`
+#   (src/cmd/ccom/vax/lcatch2.c), because 1985 C had no `const` and programs
+#   wrote to literals freely.  They now go to writable data here too.
+#
+#   `cmp` did not compile, then wanted _ctype.  The table is authentic V8 --
+#   libc/gen/ctype.c -- and was simply not imported yet.
+#
+# The general shape again: neither was a defect in the ported program.  One was
+# a target-model decision made wrongly, one was a missing library file.
+# ---------------------------------------------------------------------------

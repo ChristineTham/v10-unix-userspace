@@ -1632,7 +1632,28 @@ gencall(p, want)
 	for (i = 0; i < n && i < 8; i++)
 		printx("\tldr\tx%d, [sp, #%d]\n", i, argslot(i, depth));
 
-	if ((p->in.left->in.op == ICON || p->in.left->in.op == NAME) &&
+	/*
+	 * ICON, not NAME.
+	 *
+	 * Both arrive here carrying a name and pointer type, and the difference
+	 * is the whole of it: an ICON with a name IS the address of the callee,
+	 * so `bl name` is right; a NAME is a reference to STORAGE that holds an
+	 * address, so its value must be loaded first.
+	 *
+	 *	add(2,3)	CALLEE op=4 name=[_add] type=4000   ICON
+	 *	(*fp)(2,3)	CALLEE op=2 name=[_fp]  type=4000   NAME
+	 *
+	 * Accepting NAME here emitted `bl _fp` -- a branch into the data cell
+	 * holding the pointer -- and every indirect call died with SIGBUS.
+	 * qsort was the first thing to need one; sh, awk and troff are full of
+	 * them.  Set V8DBG to see the trace above.
+	 */
+	V8DBG("CALLEE op=%d name=[%s] calltype=%o (%d bytes%s)\n",
+	    p->in.left->in.op,
+	    p->in.left->in.name ? p->in.left->in.name : "",
+	    p->in.type, tybytes(p->in.type),
+	    tyunsigned(p->in.type) ? ", unsigned" : "");
+	if (p->in.left->in.op == ICON &&
 	    p->in.left->in.name && *p->in.left->in.name) {
 		printx("\tbl\t%s\n", p->in.left->in.name);
 	} else {
@@ -1661,11 +1682,34 @@ gencall(p, want)
 	reg = regalloc();
 	printx("\tmov\t%s, x0\n", xreg(reg));
 	/*
-	 * AAPCS64 defines only the low bits of x0 for a return type narrower
-	 * than a register.  See arm64_widen() -- without this, `open()` returning
-	 * -1 tested as positive.
+	 * Re-extend a narrow return -- but NOT a plain signed int.  See
+	 * arm64_widen() for why AAPCS64 makes this necessary at all; this is
+	 * about which types it may safely be applied to.
+	 *
+	 * A CALL node typed char, short or unsigned can only have come from an
+	 * explicit declaration: K&R's implicit type for an undeclared function
+	 * is signed int and nothing else.  So for those, `int` really is what
+	 * the callee returns and narrowing is right.
+	 *
+	 * Signed int is ambiguous, and in this tree it usually means "nobody
+	 * declared it".  V8 code calls malloc undeclared -- opendir.c says
+	 *
+	 *	dirp = (DIR *)malloc(sizeof(DIR));
+	 *
+	 * with no `char *malloc();` anywhere in scope -- because on the VAX an
+	 * int and a pointer were both 32 bits and the fiction cost nothing.
+	 * Under LP64 it costs everything: sign-extending malloc's result from
+	 * 32 bits truncated the pointer and opendir segfaulted.
+	 *
+	 * We cannot tell the two apart here; `int` from a declaration and `int`
+	 * from a guess are the same node.  So the seam is fixed on the other
+	 * side instead: shim/v8sys/stubs.c returns long, which makes clang set
+	 * all 64 bits of x0, and no narrowing is needed for it.  See the note
+	 * above the WRAP macros there -- the two halves of this decision have
+	 * to stay together.
 	 */
-	arm64_widen(p->in.type, reg);
+	if (tybytes(p->in.type) < 4 || tyunsigned(p->in.type))
+		arm64_widen(p->in.type, reg);
 	res.reg = reg; res.flag = R_REG;
 	return (res);
 }

@@ -264,8 +264,13 @@ v8s_ioctl(int fd, int cmd, char *arg)
  *
  * Asking the terminal for its attributes is how every implementation does this:
  * it succeeds on a terminal and fails with ENOTTY on anything else.
+ *
+ * Returns long, not int, for the reason set out above the WRAP macros in
+ * stubs.c: V8 code compares at 64-bit width, and AAPCS64 leaves the top half of
+ * x0 undefined for an int return.  Every shim function V8 calls by name obeys
+ * that rule.
  */
-int
+long
 isatty(fd)
 	int fd;
 {

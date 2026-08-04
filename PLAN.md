@@ -293,8 +293,8 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 1b ARM64 back end | done | `v8ccom` 62/62 — arithmetic, control flow, pointers, arrays, globals, statics, recursion, structs, bitfields, floats, 12-argument calls |
 | 1c driver | done | `v8cc` 8/8, `make rootfs` |
 | 2a libv8sys | done | `v8sys` 44/44 |
-| 2b V8 libc | done | V8's printf (including %f/%e/%g), fputs, stdio, strings, malloc, perror and IEEE floats all run, compiled by v8cc (`libv8c` 10/10) |
-| 3A Wave A | in progress | Ten real V8 commands run (`wavea` 19/19): `cat`, `echo`, `wc`, `basename`, `tee`, `yes`, `sum`, `rev`, `tr`, `head` |
+| 2b V8 libc | done | 89 objects, compiled by v8cc: stdio (incl. `%f`/`%e`/`%g`), the string family, malloc, ctype, qsort, getenv, the directory routines, `setjmp`/`longjmp`, perror and IEEE floats (`libv8c` 19/19) |
+| 3A Wave A | in progress | Eleven real V8 commands run (`wavea` 29/29): `cat`, `echo`, `wc`, `basename`, `tee`, `yes`, `sum`, `rev`, `tr`, `head`, `cmp` |
 | 3B–3C waves | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
@@ -321,6 +321,29 @@ The second lesson, earned four wrong hypotheses deep into the malloc bug: stop
 reasoning about what a value should be and make the program print what it is.
 `V8DBG=1` type tracing settled that one in seconds, and instrumenting `cat`'s
 decision points settled the diagnostic bug the same way.
+
+### The LP64 seam, which is the deepest structural decision here
+
+V8 assumes `sizeof(int) == sizeof(char *)`. It is not an incidental assumption —
+the tree calls `malloc` without declaring it and casts the `int` result to a
+pointer, which was free on a VAX and is fatal under LP64. The target model is
+LP64 by deliberate choice (`macdefs.h`), so the consequences have to be paid
+somewhere, and where they are paid is a real decision:
+
+* **Not by narrowing at call sites.** Tried, and it breaks `opendir` outright:
+  the compiler cannot distinguish a declared `int` return from K&R's implicit
+  one, because they are the same node.
+* **Not by patching every call site in 290 programs.** Correct C, and what a
+  real 64-bit port does, but it would put a diff on most of the tree and the
+  fidelity contract is the point of the project.
+* **At the seam**, which is where it now lives. Everything clang-compiled that
+  V8 calls by name returns a full 64-bit value (`shim/v8sys/stubs.c`), so V8's
+  "a value in a register is as wide as a register" assumption holds inside the
+  V8 world, and the shim absorbs the difference. That is exactly the shim's job.
+
+The same reasoning settled string literals: they go in **writable** data, as
+V8's own VAX back end put them, because 1985 C had no `const` and the tree
+writes to them.
 
 ### Deliberate gaps in the back end
 

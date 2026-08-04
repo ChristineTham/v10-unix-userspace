@@ -246,13 +246,50 @@ defalign(n)			/* alignment to a multiple of n bits */
 	printx("\t.p2align\t%d\n", p2);
 }
 
+/*
+ * String literals go in WRITABLE data, which is not a modern convention but is
+ * the 1985 one, and the tree depends on it.
+ *
+ * V8's own VAX back end puts ISTRNG and STRNG in `.data 2` and `.data 1`
+ * (src/cmd/ccom/vax/lcatch2.c) -- numbered sub-segments of writable data, not
+ * text.  K&R C had no `const`, and programs of the period wrote to literals
+ * freely.  tr(1) is the example that found this: nextc() ends with
+ *
+ *	if(c==0) *--s->p = 0;
+ *
+ * pushing the NUL back after reading past it, and `tr -d b` supplies only one
+ * string so the other is the literal "".  Emitting into __TEXT,__cstring made
+ * that a SIGBUS -- and only for the one-argument forms, since with two
+ * arguments both strings are argv and writable.
+ *
+ * They must be SEPARATE sections, not just writable ones.  ccom switches the
+ * location counter mid-datum: for
+ *
+ *	static char *sccsid = "@(#)cmp.c ...";
+ *
+ * it emits the label, switches to STRNG for the bytes, then switches back to
+ * emit the .quad pointing at them.  With STRNG collapsed onto .data the string
+ * landed BETWEEN _sccsid and its own initialiser, and ld rejected cmp.o with
+ * "pointer not aligned in '_sccsid'+0x21".  On the VAX the two `.data N`
+ * sub-segments kept them apart and the linker concatenated them afterwards;
+ * __DATA,__v8str1/__v8str2 do the same job here.
+ *
+ * Losing the literal coalescing that __TEXT,__cstring gave is correct, not a
+ * cost: two identical literals were distinct objects in 1985, and a program
+ * that writes to one must not disturb the other.
+ */
 char *locnames[] = {
 	/* location counters: PROG, DATA, ADATA, ISTRNG, STRNG */
 	"\t.text\n",
 	"\t.data\n",
 	"\t.data\n",
-	"\t.section\t__TEXT,__cstring\n",
-	"\t.section\t__TEXT,__cstring\n",
+#ifdef ELF_TARGET
+	"\t.section\t.v8str2,\"aw\",@progbits\n",
+	"\t.section\t.v8str1,\"aw\",@progbits\n",
+#else
+	"\t.section\t__DATA,__v8str2\n",
+	"\t.section\t__DATA,__v8str1\n",
+#endif
 };
 
 bycode(t, i)			/* accumulate bytes of a string constant */

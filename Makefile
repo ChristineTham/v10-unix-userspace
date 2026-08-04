@@ -50,7 +50,10 @@ SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c,$(wildcard $(ROOT)shim/v8sys/*
 
 .PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea clean distclean
 all: stage0
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs
+# libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
+# libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
+# not worked -- which cost a full debugging round on the indirect-call bug.
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c
 
 test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea
 test-cpp: cpp
@@ -199,7 +202,7 @@ $(BUILD)/v8sys/stubs-freestanding.o: $(ROOT)shim/v8sys/stubs.c
 
 libv8sys: $(BUILD)/v8sys/libv8sys.a
 $(BUILD)/v8sys/libv8sys.a: $(SHIM_OBJ)
-	ar rcs $@ $(SHIM_OBJ)
+	@ar rcs $@ $(SHIM_OBJ)
 	@echo "built $@"
 
 # -fno-stack-protector and -fno-stack-check: both emit calls to libc helpers
@@ -221,8 +224,17 @@ $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
 # are the shim; and crt0.
 # ---------------------------------------------------------------------------
 LIBCSRC = $(SRC)/libc
-LIBC_C  = $(LIBCSRC)/gen/malloc.c $(LIBCSRC)/gen/ecvt.c $(LIBCSRC)/gen/ieeefp.c \
-          $(LIBCSRC)/gen/errlst.c $(LIBCSRC)/gen/perror.c \
+# gen/: authentic V8, except ieeefp.c and memops.c, which replace VAX assembly
+# and say so at the top.  isatty is NOT here -- the shim owns it, since it is a
+# question about the host terminal rather than about V8.
+LIBC_GEN = malloc ecvt ieeefp errlst perror memops \
+           ctype atoi atol abs max min sgn gcd lcm \
+           index rindex strrchr strdup strtok strcatn strcmpn strcpyn \
+           calloc getenv qsort swab mktemp abort rand getopt \
+           execvp getwd ftw valloc \
+           opendir readdir closedir seekdir telldir \
+           ctime timezone ttyname cttyname getlogin ttyslot
+LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/data.c $(LIBCSRC)/stdio/doprnt.c \
           $(LIBCSRC)/stdio/printf.c $(LIBCSRC)/stdio/fprintf.c \
           $(LIBCSRC)/stdio/filbuf.c $(LIBCSRC)/stdio/flsbuf.c \
@@ -241,14 +253,22 @@ LIBC_C  = $(LIBCSRC)/gen/malloc.c $(LIBCSRC)/gen/ecvt.c $(LIBCSRC)/gen/ieeefp.c 
 # The string routines ship as .C -- portable references beside the VAX assembly
 # that V8 actually built.  They are what a machine without those instructions
 # was meant to use.
-LIBC_STR = strlen strcpy strcmp strcat strncpy strncmp strchr
+LIBC_STR = strlen strcpy strcmp strcat strncpy strncmp strncat strchr \
+           strcspn strpbrk strspn
 
 LIBC_OBJ = $(patsubst $(LIBCSRC)/%.c,$(BUILD)/libc/%.o,$(LIBC_C)) \
-           $(patsubst %,$(BUILD)/libc/gen/%.o,$(LIBC_STR))
+           $(patsubst %,$(BUILD)/libc/gen/%.o,$(LIBC_STR)) \
+           $(BUILD)/libc/setjmp.o
+
+# setjmp/longjmp: hand-written ARM64, since the VAX version walks call frames.
+# See the note at the top of compiler/setjmp.s.
+$(BUILD)/libc/setjmp.o: $(ROOT)compiler/setjmp.s
+	@mkdir -p $(BUILD)/libc
+	$(HOSTCC) -c $< -o $@
 
 libv8c: $(BUILD)/libc/libv8c.a
 $(BUILD)/libc/libv8c.a: $(LIBC_OBJ)
-	ar rcs $@ $(LIBC_OBJ)
+	@ar rcs $@ $(LIBC_OBJ)
 	@echo "built $@"
 
 # Compiled by v8cc itself -- this is the point.  V8ROOT has to be set for the
@@ -294,6 +314,12 @@ rootfs: cpp v8ccom v8cc
 	@cp $(A64BUILD)/v8ccom $(ROOTFS)/lib/ccom
 	@cp $(BUILD)/cc/v8cc $(ROOTFS)/bin/cc
 	@cp -R $(ROOT)third_party/Research-Unix-v8/v8/usr/include/. $(ROOTFS)/usr/include/
+	@# Patched headers go on LAST, over the pristine ones.  Only headers the
+	@# port genuinely had to change live in src/include -- so far setjmp.h,
+	@# whose jmp_buf is 40 VAX bytes and cannot hold AAPCS64's callee-saved
+	@# set.  src/include/PROVENANCE records the upstream hash of each, so the
+	@# diff against pristine V8 stays reconstructible.
+	@cp -R $(SRC)/include/. $(ROOTFS)/usr/include/
 	@echo "rootfs ready: V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc"
 
 clean:
