@@ -645,8 +645,18 @@ gen(p, want)
 			printx("\tb.%s\tL%d\n", ccsuffix(p->bn.lop),
 			    p->bn.label);
 		} else if (l.flag & R_REG) {
-			printx("\tcbnz\t%s, L%d\n", xreg(l.reg), p->bn.label);
+			/*
+			 * A truth test rather than a relational -- `if (x & 1)`
+			 * and friends.  The polarity still comes from bn.lop,
+			 * which condit() set to the sense it wants: branching
+			 * unconditionally on non-zero here inverts every such
+			 * test, which is subtle enough that the symptom was a
+			 * loop summing the odd numbers instead of the even.
+			 */
+			printx("\tcmp\t%s, #0\n", xreg(l.reg));
 			regfree(l.reg);
+			printx("\tb.%s\tL%d\n", ccsuffix(p->bn.lop),
+			    p->bn.label);
 		} else {
 			cerror("GENBR with no condition");
 		}
@@ -689,9 +699,38 @@ gen(p, want)
 		return (gen(p->in.right, want));
 
 	case INIT:
-		reg = regalloc();
-		genaddr(p->in.left, reg);
-		regfree(reg);
+		/*
+		 * A static initialiser, NOT an expression: this runs with the
+		 * location counter in .data, so emitting code here silently
+		 * plants instructions in the data segment (`mov x9, #123` where
+		 * `.long 123` belonged).
+		 *
+		 * The VAX emitted `.long <operand>` unconditionally because
+		 * every initialiser datum was one 32-bit word.  Under LP64 the
+		 * width has to follow the type, or a pointer initialiser loses
+		 * its top half.
+		 */
+		{
+			NODE *q = p->in.left;
+			char *dir;
+
+			switch (tybytes(p->in.type)) {
+			case 1:  dir = ".byte";  break;
+			case 2:  dir = ".short"; break;
+			case 4:  dir = ".long";  break;
+			default: dir = ".quad";  break;
+			}
+			if (q->in.name && *q->in.name) {
+				/* address of a symbol, optionally offset */
+				if (q->tn.lval)
+					printx("\t%s\t%s+%ld\n", dir, q->in.name,
+					    (long)q->tn.lval);
+				else
+					printx("\t%s\t%s\n", dir, q->in.name);
+			} else {
+				printx("\t%s\t%ld\n", dir, (long)q->tn.lval);
+			}
+		}
 		return (res);
 
 	case FREE:
@@ -746,7 +785,8 @@ gencall(p, want)
 {
 	ret res, f;
 	int regs[MAXARGS];
-	int n, i, reg;
+	int saved[REGVAR];
+	int n, i, reg, nsave;
 	int isunary = (p->in.op == (UNARY CALL) || p->in.op == (UNARY STCALL));
 
 	res.reg = -1; res.flag = R_NONE;
@@ -760,6 +800,27 @@ gencall(p, want)
 	for (i = 0; i < n; i++)
 		regfree(regs[i]);
 
+	/*
+	 * Save any scratch register still holding a live value.
+	 *
+	 * x9-x15 are caller-saved under AAPCS64, so the callee is free to
+	 * destroy them.  Anything computed before the call and still wanted
+	 * after it -- the classic case being the left operand of
+	 * `fib(n-1) + fib(n-2)` -- has to be preserved here.  Without this,
+	 * recursion silently returns garbage: fib(10) came out 0, because every
+	 * inner call flattened the partial sum its caller was holding.
+	 *
+	 * Pairs are pushed so sp keeps its 16-byte alignment.
+	 */
+	nsave = 0;
+	for (i = 0; i < REGVAR; i++)
+		if (inuse[i]) saved[nsave++] = i;
+	for (i = 0; i + 1 < nsave; i += 2)
+		printx("\tstp\t%s, %s, [sp, #-16]!\n", xreg(saved[i]),
+		    xreg(saved[i + 1]));
+	if (nsave & 1)
+		printx("\tstr\t%s, [sp, #-16]!\n", xreg(saved[nsave - 1]));
+
 	if (p->in.left->in.op == ICON && p->in.left->in.name &&
 	    *p->in.left->in.name) {
 		printx("\tbl\t%s\n", p->in.left->in.name);
@@ -771,6 +832,13 @@ gencall(p, want)
 		printx("\tblr\t%s\n", xreg(f.reg));
 		regfree(f.reg);
 	}
+
+	/* restore, in reverse */
+	if (nsave & 1)
+		printx("\tldr\t%s, [sp], #16\n", xreg(saved[nsave - 1]));
+	for (i = (nsave & ~1) - 2; i >= 0; i -= 2)
+		printx("\tldp\t%s, %s, [sp], #16\n", xreg(saved[i]),
+		    xreg(saved[i + 1]));
 
 	if (want == WEFFECT) return (res);
 

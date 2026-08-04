@@ -32,13 +32,15 @@ YACCFIX = sed 's/={/{/g'
 # V8 libc internals that host libc lacks.  Scaffolding; gone in Phase 2b.
 STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax test test-cpp clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom test test-cpp test-v8ccom clean distclean
 all: stage0
-stage0: cpp ccom-pass1
+stage0: cpp v8ccom
 
-test: test-cpp
+test: test-cpp test-v8ccom
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
+test-v8ccom: v8ccom
+	@$(ROOT)tests/v8ccom/run.sh $(A64BUILD)/v8ccom
 
 # ---------------------------------------------------------------------------
 # cpp -- the C preprocessor (Reiser, 1978).  First pass of the compiler.

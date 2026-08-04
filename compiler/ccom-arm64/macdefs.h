@@ -43,7 +43,7 @@
 # define ALSTACK 64		/* AAPCS64 stack slots are 8 bytes.  The 16-byte
 				 * SP alignment requirement is enforced in the
 				 * prologue, not here. */
-# define ALINIT 64
+# define ALINIT 32
 
 	/* Argument slot size: every parameter is widened to this, giving the
 	 * argument block a uniform 8-byte stride.  The VAX used SZINT (the
