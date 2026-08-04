@@ -29,20 +29,29 @@ while (gets1(line))
 	fprintf(tabout, "%s\n", line);
 ```
 
-with `char line[512]` a local array and `tabout` set to `stdout` two lines
-earlier. Print both before the call — that is one line of instrumentation and it
-either exonerates them or names the problem.
+Both arguments were printed before the call and both are sound:
 
-Note also `t0.c`:
-
-```c
-FILE *tabout  /* = stdout */;
+```
+tabout=0000000102520820
+line=  000000016d8f9970
 ```
 
-with the initialiser commented out, so `tabout` is null until `tbl()` assigns
-it. `main` calls `signal(SIGPIPE, badsig)` *before* that assignment, so anything
-that printed on the way would print through a null FILE. Worth confirming the
-order actually holds here.
+a real `FILE *` and a real stack address. So the fault is **inside** `fprintf`,
+not in what it was handed — which moves this out of tbl entirely and into libc.
 
-The header is called `t..c`, which is not a typo — it is included by the `.c`
-files as `#include "t..c"`.
+The distinguishing feature against everything that already works: `tabout` is
+`stdout`, and every `fprintf` exercised so far — cat's and cmp's diagnostics —
+went to `stderr`. stderr is unbuffered; stdout is not. So the suspect is the
+buffered path: `_doprnt` calling `putc`, `putc` calling `_flsbuf`, and `_flsbuf`
+allocating the buffer with `malloc` on first use.
+
+`tests/libv8c/run.sh` covers `printf` to stdout and `fputs` to stdout, both of
+which take that path and pass, so it is narrower still than "buffered output".
+Written as a standalone test — a global `FILE *tabout` assigned `stdout`, a
+global `char line[512]`, `fprintf(tabout, "%s\n", line)` — it **works**. So the
+crash needs more of tbl's state than its arguments, and the next move is not a
+smaller reproduction but a bisection of what runs before it.
+
+`main` calls `signal(SIGPIPE, badsig)` before `tbl()` assigns `tabout`, and
+`setinp` runs between the assignment and the first `fprintf`. Either could have
+left something broken behind; instrument in that order.
