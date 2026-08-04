@@ -43,6 +43,17 @@ ret nodest;
 static ret gen();
 static ret gencall();
 
+/*
+ * Type tracing, enabled by setting V8DBG in the environment.
+ *
+ * Every wrong-width load this back end has produced came from a node carrying
+ * an unexpected T* type, and the types are invisible in the emitted assembly --
+ * a 4-byte load looks perfectly reasonable until you know the node was a
+ * pointer.  Printing them octal makes them directly comparable with mfile2.h,
+ * where TINT is 04 and TPOINT is 04000.
+ */
+#define V8DBG(...) do { if (getenv("V8DBG")) fprintf(stderr, __VA_ARGS__); } while (0)
+
 /* ------------------------------------------------------- register pool */
 
 static char inuse[REGVAR];
@@ -714,6 +725,9 @@ gen(p, want)
 		return (res);
 
 	case STAR:			/* UNARY MUL -- indirection */
+		V8DBG("STAR type=%o bytes=%d unsigned=%d\n",
+		    (unsigned)p->in.type, tybytes(p->in.type),
+		    tyunsigned(p->in.type));
 		l = gen(p->in.left, WVALUE);
 		if (want == WEFFECT) { regfree(l.reg); return (res); }
 		if (tyfloat(p->in.type)) {
@@ -743,6 +757,8 @@ gen(p, want)
 		return (l);
 
 	case CONV: {
+		V8DBG("CONV type=%o from=%o\n", (unsigned)p->in.type,
+		    (unsigned)p->in.left->in.type);
 		TWORD st = p->in.left->in.type;
 		TWORD dt = p->in.type;
 
@@ -818,6 +834,9 @@ gen(p, want)
 			fregfree(r.reg);
 			return (l);
 		}
+		V8DBG("BINOP %d type=%o L=%o R=%o\n", p->in.op,
+		    (unsigned)p->in.type, (unsigned)p->in.left->in.type,
+		    (unsigned)p->in.right->in.type);
 		op = arithop(p->in.op, p->in.type);
 		l = gen(p->in.left, WVALUE);
 		/* fold a small constant right operand into the immediate form */

@@ -76,55 +76,45 @@ echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
 # ---------------------------------------------------------------------------
-# KNOWN BROKEN: malloc faults on a static pointer initialiser.
+# KNOWN BROKEN: malloc, and the tree that causes it
 #
-# The fault is at ialloc+160, reading 0x10fb8:
+# The fault is a 32-bit truncation of a pointer, and the tree responsible is now
+# known exactly. Set V8DBG in the environment and v8ccom prints the T* type of
+# every STAR, CONV and binary node (octal, so it lines up with mfile2.h where
+# TINT is 04 and TPOINT is 04000):
 #
-#	<+144>: add   x9, x9, #0x8     ; allocb
-#	<+148>: ldr   x9, [x9]         ; p = allocb          <- 8 bytes, correct
-#	<+160>: ldrsw x9, [x9]         ; p->ptr
+#   $ cat cb4.c
+#   union store { union store *ptr; long dummy[1]; int calloc; };
+#   union store *f(p) union store *p;
+#   { return (union store *)((long)(p->ptr) & ~1); }
 #
-# 0x10fb8 is `alloca`'s address WITH THE TOP 32 BITS CUT OFF -- nm puts
-# _alloca at 0x100010fb8 and _allocb at 0x100010008. So this is one more
-# 32-bit truncation of a pointer, not a relocation problem: the object's
-# relocations are present and correct (otool -r shows two 8-byte entries in
-# __DATA,__data, exactly _allocb and _allocp).
+#   $ V8DBG=1 v8ccom cb4.i /dev/null
+#   BINOP 14 type=4000 L=4 R=4
+#   STAR type=4 bytes=4 unsigned=0
 #
-# `grep -c ldrsw malloc.s` still reports 4. The opbigsz fix removed some of the
-# narrow pointer loads but not all, so there is at least one more path by which
-# pass 1 or the back end decides a pointer-width load can be done in 32 bits.
-# Finding it means dumping the tree for clearbusy() -- ccom -X flags print it --
-# and seeing what type the STAR node carries. malloc has
+# Read that carefully. The AND (op 14) is correctly typed TPOINT -- 04000 -- but
+# BOTH ITS OPERANDS ARE TINT. The `(long)` cast has vanished and the pointer
+# dereference underneath it has been retyped from TPOINT to TINT, so the back
+# end quite correctly emits a 4-byte `ldrsw` for it.
 #
-#	static union store alloca;
-#	static union store *allocb = &alloca;
+# So this is a PASS 1 problem, not a back-end one. `p->ptr` on its own is typed
+# TPOINT and loads 8 bytes correctly (verified). Something in the cast chain --
+# tymatch's LONG-vs-INT ranking looks right, and bigsize() maps LONG to SZLONG
+# correctly, so the suspect is makety() or the CAST folding in optim.c --
+# collapses the CONV and narrows the operand.
 #
-# and the generated data is right --
+# Next step: instrument makety() and optim.c's CAST handling, or dump the tree
+# before and after doptim() for this expression.
 #
-#	_allocb: .quad _alloca
+# ALREADY FIXED, all the same LP64 root cause -- V8 assumes sizeof(int) ==
+# sizeof(char *), and its own machinery inherits that:
 #
-# -- but in a position-independent image that .quad needs a rebase applied at
-# load time, and the value being read back is the unslid one. So the suspect is
-# no longer malloc or the arena: it is that our static pointer initialisers are
-# not being relocated, which would affect every V8 program with an initialised
-# pointer in static storage.
-#
-# Next step: check whether the .o carries a relocation for that .quad
-# (`otool -r`), and whether linking without -nostdlib -e changes the behaviour.
-# If the relocation is missing, the fix is in how gencode.c emits INIT for an
-# address constant; if it is present but unapplied, it is a link-flags problem.
-#
-# THREE REAL BUGS WERE FIXED GETTING HERE, all LP64 truncation of pointers:
-#
-#  - opbigsz() returned SZCHAR for the bitwise operators, as the VAX did,
-#    letting pass 1 narrow an AND to int width. On a VAX a pointer was 32 bits
-#    so that was safe; here it emitted `ldrsw` for a pointer load. Now SZLONG.
-#  - INT and ALIGN in malloc.c were `int`. The source names both, and BUSY, as
-#    macros a different implementation must redefine, and says outright that
-#    "INT is integer type to which a pointer can be cast".
-#  - BUSY was a plain int, so `~BUSY` was an int and pulled the AND narrow
-#    again by the other route. Now 1L.
-#
-# The sbrk arena is also now mapped above the program data segment, because
-# V8's malloc sorts its free list by address and its header promises only a
-# "noncontiguous, but monotonically linked, arena".
+#  - opbigsz() returned SZCHAR for the bitwise operators, as the VAX did. It
+#    turns out pass 1 never calls it, so this was inert, but it was wrong.
+#  - INT and ALIGN in malloc.c were `int`, and BUSY a plain int so `~BUSY` was
+#    too. The file's own header names all three as macros a different
+#    implementation must redefine, and says outright that "INT is integer type
+#    to which a pointer can be cast".
+#  - The sbrk arena is mapped above the program data segment, because V8's
+#    malloc sorts its free list by address and promises only a "noncontiguous,
+#    but monotonically linked, arena".
