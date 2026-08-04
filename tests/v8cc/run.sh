@@ -164,24 +164,48 @@ if "$CC" -c narrowuse.c 2>err.log && clang -c narrow.c 2>>err.log &&
 else bad "return values across the clang seam" \
     "got [$(./narrow 2>&1)]; $(head -2 err.log)"; fi
 
+
+# --- the driver links the V8 world, so printf works -----------------------
+#
+# Until this landed, `cc -o prog prog.c` linked CLANG's startup and the HOST
+# libc.  The program ran, and most of it behaved, and then printf printed
+# rubbish: v8cc passes every argument in one positional sequence in x0-x7 (see
+# gencall in compiler/ccom-arm64/gencode.c), while Apple's ARM64 ABI passes the
+# VARIADIC arguments of a call on the stack.  A v8cc-compiled caller and the
+# host printf disagreed about where the arguments were, and
+#
+#	printf("lit=%d\n", 42)		printed	lit=1839618368
+#
+# V8's own printf is not variadic in that sense -- it is printf(fmt, args)
+# taking &args and walking forward -- so it wants exactly what v8cc emits.  The
+# two agree only if the driver links V8's, which it now does.
+#
+# This is the whole point of the driver: a program compiled and linked with
+# nothing but `cc` must work.  The other suites link the archives explicitly and
+# would not have caught it.
+cat > hello.c <<'EOF'
+main()
+{
+	printf("lit=%d str=%s\n", 42, "ok");
+	exit(0);
+}
+EOF
+if "$CC" -o hello hello.c 2>cc.err; then
+	got=$(./hello 2>&1)
+	[ "$got" = "lit=42 str=ok" ] && ok || \
+	    bad "cc -o links V8's printf" "want [lit=42 str=ok] got [$got]"
+else
+	bad "cc -o hello hello.c" "$(cat cc.err)"
+fi
+
+# and the same program compiled and linked in two steps
+if "$CC" -c hello.c 2>cc2.err && "$CC" -o hello2 hello.o 2>>cc2.err; then
+	got=$(./hello2 2>&1)
+	[ "$got" = "lit=42 str=ok" ] && ok || \
+	    bad "cc -c then cc -o" "want [lit=42 str=ok] got [$got]"
+else
+	bad "cc -c then cc -o" "$(cat cc2.err)"
+fi
+
 echo "v8cc: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
-
-# ---------------------------------------------------------------------------
-# NOT TESTED HERE, AND NOT A BUG: calling a host variadic function.
-#
-# v8cc passes arguments in one positional sequence in x0-x7 (see gencall in
-# compiler/ccom-arm64/gencode.c).  Apple's ARM64 ABI passes VARIADIC arguments
-# on the stack instead, so a v8cc-compiled call to the host's printf reads
-# garbage -- the first attempt at a hello-world printed
-#
-#	sum 1..10 = 75007320
-#
-# while the same computation returned 55 correctly through a non-variadic call.
-#
-# This resolves itself in Phase 2b: printf will be V8's own, compiled by v8cc,
-# using the same convention as its callers, and V8's varargs.h walks the
-# contiguous argument block the prologue spills.  Until then, code compiled by
-# v8cc must not call host variadic functions, and the drivers above do their
-# printing from the modern-C side.
-# ---------------------------------------------------------------------------

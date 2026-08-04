@@ -51,19 +51,19 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh nroff troff tbl v8yacc v8lex eqn
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex eqn
 
 test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: v8ccom
 	@$(ROOT)tests/v8ccom/run.sh $(A64BUILD)/v8ccom
-test-v8cc: rootfs
+test-v8cc: rootfs-libs
 	@$(ROOT)tests/v8cc/run.sh
 test-v8sys: $(BUILD)/v8sys/test
 	@$(BUILD)/v8sys/test
@@ -600,6 +600,20 @@ rootfs: cpp v8ccom v8cc
 	@mkdir -p $(ROOTFS)/usr/lib/lex
 	@cp $(SRC)/cmd/lex/ncform $(ROOTFS)/usr/lib/lex/ 2>/dev/null || true
 	@$(MAKE) --no-print-directory devtables
+
+# crt0 and the libraries, installed into the rootfs so that `cc -o prog prog.c`
+# links the V8 world rather than clang's startup and the host libc.  See the
+# link step in src/cmd/cc.c for why linking the host libc breaks variadic calls.
+#
+# SEPARATE from rootfs on purpose: the libraries are compiled BY v8cc, which
+# needs the rootfs to exist first (headers, cpp, ccom).  Folding this into
+# rootfs makes the dependency circular.
+rootfs-libs: rootfs crt0 libv8sys libv8c
+	@mkdir -p $(ROOTFS)/lib
+	@cp $(BUILD)/crt0.o $(ROOTFS)/lib/
+	@cp $(BUILD)/libc/libv8c.a $(ROOTFS)/lib/
+	@cp $(BUILD)/v8sys/libv8stubs.a $(ROOTFS)/lib/
+	@cp $(BUILD)/v8sys/libv8sys.a $(ROOTFS)/lib/
 
 # troff's device tables.  makedev compiles the plain-text description in
 # dev202/ into the binary DESC.out and per-font .out files troff opens at

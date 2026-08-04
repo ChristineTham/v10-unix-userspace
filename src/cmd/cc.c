@@ -31,6 +31,9 @@ char	*crt0 = "/lib/crt0.o";
 char	*instrcnt = "/lib/instrcnt";
 char	*v8root;
 char	*libdir;
+char	*libc_a     = "/lib/libv8c.a";
+char	*libstubs_a = "/lib/libv8stubs.a";
+char	*libsys_a   = "/lib/libv8sys.a";
 
 char	tmp0[30];		/* big enough for /tmp/ctm%05.5d */
 char	*tmp1, *tmp2, *tmp3, *tmp4, *tmp5;
@@ -64,6 +67,7 @@ int	nc, nl, np, nxo, na;
 setpaths()
 {
 	static char b1[1024], b2[1024], b3[1024];
+	static char b4[1024], b5[1024], b6[1024];
 	char *r, *getenv();
 
 	if ((r = getenv("V8ROOT")) == 0 || *r == 0)
@@ -72,6 +76,9 @@ setpaths()
 	snprintf(b1, sizeof b1, "%s/lib/cpp", r);    cpp = b1;
 	snprintf(b2, sizeof b2, "%s/lib/ccom", r);   ccom = b2;
 	snprintf(b3, sizeof b3, "%s/lib/crt0.o", r); crt0 = b3;
+	snprintf(b4, sizeof b4, "%s/lib/libv8c.a", r);     libc_a = b4;
+	snprintf(b5, sizeof b5, "%s/lib/libv8stubs.a", r); libstubs_a = b5;
+	snprintf(b6, sizeof b6, "%s/lib/libv8sys.a", r);   libsys_a = b6;
 }
 
 main(argc, argv)
@@ -85,8 +92,12 @@ main(argc, argv)
 
 	setpaths();
 
-	/* ld currently adds upto 5 args; 10 is room to spare */
-	av = (char **)calloc(argc+10, sizeof (char **));
+	/*
+	 * The link step adds 10 of its own: -nostdlib, -e, _v8start, -o, the
+	 * output name, crt0, three archives and -lSystem, plus the terminating
+	 * null.  20 is room to spare.
+	 */
+	av = (char **)calloc(argc+20, sizeof (char **));
 	clist = (char **)calloc(argc, sizeof (char **));
 	llist = (char **)calloc(argc, sizeof (char **));
 	plist = (char **)calloc(argc, sizeof (char **));
@@ -359,18 +370,43 @@ nocom:
 	if (cflag==0 && nl!=0) {
 		i = 0;
 		/*
-		 * The host link editor, via clang.  crt0 and -lc come from the
-		 * V8 world once Phase 2b lands; until then clang supplies its
-		 * own startup and libc, which is what makes v8cc-compiled
-		 * programs runnable today.
+		 * The host link editor, via clang, but linking the V8 world:
+		 * V8's crt0, V8's libc, and the shim.  NOT clang's startup and
+		 * NOT the host libc.
+		 *
+		 * Linking the host libc looks as though it works -- the program
+		 * runs, and most of it behaves -- and then printf prints
+		 * rubbish.  The reason is variadic calls.  v8cc passes every
+		 * argument the ordinary way, in x0-x7 and then on the stack;
+		 * Apple's ARM64 ABI requires the VARIADIC arguments of a call
+		 * to go on the stack instead.  So a v8cc-compiled caller and
+		 * the host printf disagree about where the arguments are, and
+		 * `printf("%d", 42)` printed 1839618368.
+		 *
+		 * V8's own printf is not variadic in that sense -- it is
+		 * printf(fmt, args) taking &args and walking forward -- so it
+		 * wants exactly what v8cc emits.  The two only agree if we link
+		 * V8's.
+		 *
+		 * -lSystem still comes last: the shim is written against the
+		 * host syscall layer, and that is the one place the two worlds
+		 * are meant to meet.
 		 */
 		av[0] = "clang"; na = 1;
+		av[na++] = "-nostdlib";
+		av[na++] = "-e";
+		av[na++] = "_v8start";
 		if (outfile) {
 			av[na++] = "-o";
 			av[na++] = outfile;
 		}
+		av[na++] = crt0;
 		while (i < nl)
 			av[na++] = llist[i++];
+		av[na++] = libc_a;
+		av[na++] = libstubs_a;
+		av[na++] = libsys_a;
+		av[na++] = "-lSystem";
 		av[na++] = 0;
 		eflag |= callsys(ld, av);
 		if (nc==1 && nxo==1 && eflag==0)
