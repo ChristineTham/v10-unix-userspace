@@ -113,11 +113,26 @@ So the argument block is sound and it really is the *value*. `shval` is a
 then passed back to `REL()`, which takes `double`. Two narrowing/widening
 conversions around a float local, in a nine-argument call.
 
-Next: print `shval` at `shift.c:51` — the same three-line hex dump used
-throughout this file — and, if it is already -inf there, walk back to
-`shval = b1 + EM(0.2, ps)` on line 32. `EM` and `REL` both return `double` and
-both are correct in isolation, so the suspect is the float/double round trip
-rather than either function.
+Tested directly, and that works too:
+
+```c
+float shval, b1;  b1 = 1.5;
+shval = b1 + EMx(0.2, ps);
+printf("shval=%.4g rel=%.4g negrel=%.4g\n", shval, RELx(shval,ps), RELx(-shval,ps));
+    -> shval=1.700 rel=3.400 negrel=-3.400
+```
+
+So the float local, the double return, the narrowing assignment, the widening
+back and the unary minus are all sound in isolation. Which is the pattern this
+port keeps producing: **every construct correct alone, wrong in combination.**
+
+What has NOT been checked is where `shval` comes from in the real program — the
+branch above line 32 sets it from `b1 + EM(...)` but the one at line 41 sets it
+from `-(0.4 * (h1-b1)) - b2`, and `eht`/`ebase` are `float` arrays indexed by
+`yyval`. If those arrays hold garbage, everything downstream is -inf honestly.
+
+Next: print `eht[p1]`, `ebase[p1]`, `h1`, `b1` and `shval` at the top of
+`shift()`. That is the first thing in this chain that has not been measured.
 
 Also noticed and not yet chased: `%g` prints `7.25000` where it should print
 `7.25`. V8's `%g` strips trailing zeros; ours does not.
