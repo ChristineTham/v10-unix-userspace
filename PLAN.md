@@ -1,6 +1,6 @@
 # Porting Research Unix V8 Userspace to macOS (ARM64)
 
-**Status:** Phases 0 through 2b complete and tested; **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 238 tests. **Wave B started**: the Bourne shell runs (`src/cmd/sh/PORTING.md`). Waves 3C, 4 and 5 not started.
+**Status:** Phases 0 through 2b complete and tested; **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 259 tests. **Wave B done**: the shell, the file tools and the process tools all run. Wave 3C (troff and friends) next; 4 and 5 not started.
 See "Current state" at the bottom.
 **Project arc:** V8 first (this plan), then V9, then V10 — restoring the original project goal of the last Research Edition, with V8 as the beachhead where the lessons are cheapest.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
@@ -295,7 +295,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 2a libv8sys | done | `v8sys` 44/44 |
 | 2b V8 libc | done | 89 objects, compiled by v8cc: stdio (incl. `%f`/`%e`/`%g`), the string family, malloc, ctype, qsort, getenv, the directory routines, `setjmp`/`longjmp`, perror and IEEE floats (`libv8c` 19/19) |
 | 3A Wave A | done | **156 of 163** single-file commands in `usr/src/cmd` build, including `ls`. 29 of them are exercised with golden output (`wavea` 62/62): `cat`, `cmp`, `col`, `comm`, `cut`, `deroff`, `echo`, `expand`, `fgrep`, `fold`, `grep`, `head`, `join`, `look`, `number`, `od`, `paste`, `pr`, `printenv`, `pwd`, `rev`, `seq`, `sort`, `split`, `sum`, `tail`, `tee`, `tr`, `uniq`, `unexpand`, `vis`, `wc`, `yes`, `ascii`, `basename`, `cal` |
-| 3B Wave B | in progress | The **Bourne shell** runs (`sh` 21/21): assignments, `for`, `while`, `if`, `case`, pipelines, redirection and append, backquotes, functions with arguments, `export` to a child, `&&`/`\|\|`, `$?`, `${}`, `set --`. Four LP64 changes and one null-pointer guard, all in `src/cmd/sh/PORTING.md`. File and process tools next |
+| 3B Wave B | done | The **Bourne shell** runs (`sh` 21/21) — see `src/cmd/sh/PORTING.md`. The file and process tools run too (`waveb` 21/21): `cp`, `mv`, `mkdir`, `rmdir`, `sed`, `ed`, `dc`, `factor`, `primes`, `tsort`. **38 multi-file command directories** compile and link, including `ps`, `w`, `df`, `tbl`, `qed`, `adb`, `yacc`, `man`, `diff3`, `dump`, `su`, `cron`, `compress` |
 | 3C Wave C | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |

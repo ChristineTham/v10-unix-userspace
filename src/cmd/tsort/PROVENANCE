@@ -1,0 +1,11 @@
+# Provenance for src/cmd/tsort
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+3ffd144d635a4e4224937354610687f032dd868e  v8/usr/src/cmd/tsort/tsort.c
+250fdf5b3da1e03faecb073e622ca7516badbf8c  v8/usr/src/cmd/tsort/Makefile
+b73f726f386e3c20514cae6fe788ddf1da6b1d4c  v8/usr/src/cmd/tsort/subs.c
+2319b8c6ac137699978f567b8e41c121982cc53e  v8/usr/src/cmd/tsort/refstore.c
+82a0ccc0b348fe285f87cdd65a8e0357471d831c  v8/usr/src/cmd/tsort/ts.h

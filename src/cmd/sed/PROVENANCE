@@ -1,0 +1,11 @@
+# Provenance for src/cmd/sed
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+b2a062c8c940ffdeb96c3b5dac92f2416fd51bcc  v8/usr/src/cmd/sed/sed0.c
+f58883b75a5574ae2c207863a1625e0ff78d104a  v8/usr/src/cmd/sed/Makefile
+9b013e8e21bf08cbf94bb878ee6c854388725e2c  v8/usr/src/cmd/sed/sed.h
+88cfca9207ccc4e1eaac474688f59db22f5331f9  v8/usr/src/cmd/sed/sed1.c
+0012a61fda029cc33fc4139490e77cf92264587a  v8/usr/src/cmd/sed/fixedbugs

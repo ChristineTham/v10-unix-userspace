@@ -1,0 +1,7 @@
+# Provenance for src/cmd/factor
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+4a7163507ab3464977d3d7fb49c106bd1009e32d  v8/usr/src/cmd/factor/factor.c

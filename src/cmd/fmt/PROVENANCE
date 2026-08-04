@@ -1,0 +1,12 @@
+# Provenance for src/cmd/fmt
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+fdd453aee7e817dda274ff3e1c2eaa46cd1f225b  v8/usr/src/cmd/fmt/Makefile
+ca9a27eccb226453e36a1ec11bf79c8e03f510e2  v8/usr/src/cmd/fmt/head.c
+44ee7e3de00b17c3b463084acb6c2a93079cc9e0  v8/usr/src/cmd/fmt/rcv.h
+2a469ff43bbbf558971f5cb035c98607699f7abd  v8/usr/src/cmd/fmt/def.h
+cdba6111629289c46dee7ff9adefe99f9aab58db  v8/usr/src/cmd/fmt/glob.h
+e891d9917edd65a5812602ae800283915b01e00f  v8/usr/src/cmd/fmt/fmt.c

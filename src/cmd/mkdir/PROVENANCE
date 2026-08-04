@@ -1,0 +1,7 @@
+# Provenance for src/cmd/mkdir
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+098321a2fae67d770b53a2ddecb98671f9cb5ef0  v8/usr/src/cmd/mkdir/mkdir.c

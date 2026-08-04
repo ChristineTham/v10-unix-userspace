@@ -27,6 +27,8 @@ extern void v8sys_dirinit(void);
 extern long v8sys_dirseek(int, long, int);
 extern v8_ino_t v8sys_fold_ino(unsigned long long);
 int v8s_fstat();
+int v8s_stat();
+int v8s_lstat();
 
 /* ------------------------------------------------------ errno mapping */
 
@@ -100,6 +102,31 @@ v8sys_faile(int hosterr)
 	return (-1);
 }
 
+/*
+ * An EMPTY PATH MEANS THE CURRENT DIRECTORY.
+ *
+ * V7's namei() resolved "" to the working directory, and V8 code uses that:
+ * rmdir(1) stats the parent with
+ *
+ *	if (stat("", &cst) < 0)
+ *
+ * and there is no other way it could have meant.  POSIX made the empty path an
+ * error (ENOENT), so on macOS that branch always fired and rmdir refused to
+ * remove anything -- with a garbled message, because the line beneath it has a
+ * quoting bug of its own that is genuinely upstream's:
+ *
+ *	fprintf(stderr, "%s: cannot stat \", cmdname\"");
+ *
+ * Translating here rather than patching each caller: it is a kernel behaviour,
+ * and standing in for the kernel is what this file does.  Same class as V7
+ * reading address 0 as zero -- an assumption the tree makes silently.
+ */
+static char *
+vpath(char *p)
+{
+	return (p && *p == '\0') ? "." : p;
+}
+
 /* ------------------------------------------------------- PASSTHROUGH */
 
 /*
@@ -119,16 +146,108 @@ int v8s_close(int fd)
 }
 
 long v8s_write(int fd, char *b, long n)  { RET(rawsys3(SYS_write, fd, (long)b, n)); }
-int v8s_link(char *a, char *b)           { RET(rawsys2(SYS_link, (long)a, (long)b)); }
-int v8s_unlink(char *p)                  { RET(rawsys1(SYS_unlink, (long)p)); }
-int v8s_chdir(char *p)                   { RET(rawsys1(SYS_chdir, (long)p)); }
-int v8s_chmod(char *p, int m)            { RET(rawsys2(SYS_chmod, (long)p, m)); }
-int v8s_chown(char *p, int u, int g)     { RET(rawsys3(SYS_chown, (long)p, u, g)); }
+/*
+ * link.  One special case, for V7 directory semantics.
+ *
+ * V7 had no mkdir(2).  mkdir(1) made a directory with mknod(2) and then linked
+ * its own "." and ".." into place by hand -- which is why it was setuid root.
+ * V8's mkdir.c still does exactly that, and the host will not: macOS refuses to
+ * hard-link a directory at all, and its mkdir(2) has already created both
+ * entries anyway.
+ *
+ * So a link whose target basename is "." or ".." inside a directory succeeds
+ * and does nothing.  It is not a fiction: the entry the caller is asking for
+ * already exists, with the meaning it wanted.  Anything else is a real link.
+ */
+static int
+dotlink(const char *b)
+{
+	const char *p, *base;
+
+	for (p = base = b; *p; p++)
+		if (*p == '/') base = p + 1;
+	return (base[0] == '.' &&
+	    (base[1] == '\0' || (base[1] == '.' && base[2] == '\0')));
+}
+
+int v8s_link(char *a, char *b)
+{
+	if (dotlink(b)) {
+		struct v8_stat st;
+
+		/* only if the directory really is there */
+		if (v8s_stat(a, &st) == 0 &&
+		    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
+			return (0);
+	}
+	RET(rawsys2(SYS_link, (long)a, (long)b));
+}
+
+/*
+ * mknod.  V7's way of creating a directory, and the reason mkdir(1) was setuid.
+ *
+ * Nothing else in the tree makes a device node that we can honour -- the host
+ * would refuse, and a V8 program has no business creating one on a Mac -- so
+ * the only mode that does anything here is S_IFDIR, which becomes mkdir(2).
+ * Without this, mknod fell through to libSystem's, which needs root for a
+ * directory, and mkdir(1) reported "cannot make directory".
+ */
+int v8s_mknod(char *p, int mode, int dev)
+{
+	if ((mode & 0170000) == 0040000)
+		RET(rawsys2(SYS_mkdir, (long)p, mode & 07777));
+	v8_errno = v8sys_errno(EPERM);
+	return (-1);
+}
+/*
+ * unlink.  The mirror of mknod/link above, completing V7's directory story.
+ *
+ * V7 had no rmdir(2) either.  rmdir(1) takes a directory apart by hand:
+ *
+ *	unlink("d/..");  unlink("d/.");  unlink("d");
+ *
+ * which is why it, like mkdir(1), was setuid root.  macOS will do none of it --
+ * unlink refuses a directory outright, and the dot entries are not separately
+ * removable.
+ *
+ * So the two dot entries succeed and do nothing (the host removes them with the
+ * directory), and unlinking the directory itself becomes rmdir(2).  A plain
+ * file is still a plain unlink.
+ */
+int v8s_unlink(char *p)
+{
+	struct v8_stat st;
+
+	p = vpath(p);
+	if (dotlink(p)) {
+		/*
+		 * "d/." or "d/.." -- succeed only if the directory is really
+		 * there, so a genuine mistake still reports ENOENT.
+		 */
+		char parent[1024];
+		int i, base = 0;
+
+		for (i = 0; p[i] && i < (int)sizeof parent - 1; i++)
+			if (p[i] == '/') base = i;
+		for (i = 0; i < base; i++) parent[i] = p[i];
+		parent[base] = '\0';
+		if (base == 0) return (0);		/* bare "." or ".." */
+		if (v8s_stat(parent, &st) == 0 &&
+		    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
+			return (0);
+	}
+	if (v8s_lstat(p, &st) == 0 && (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
+		RET(rawsys1(SYS_rmdir, (long)p));
+	RET(rawsys1(SYS_unlink, (long)p));
+}
+int v8s_chdir(char *p)                   { RET(rawsys1(SYS_chdir, (long)vpath(p))); }
+int v8s_chmod(char *p, int m)            { RET(rawsys2(SYS_chmod, (long)vpath(p), m)); }
+int v8s_chown(char *p, int u, int g)     { RET(rawsys3(SYS_chown, (long)vpath(p), u, g)); }
 int v8s_fchmod(int f, int m)             { RET(rawsys2(SYS_fchmod, f, m)); }
 int v8s_fchown(int f, int u, int g)      { RET(rawsys3(SYS_fchown, f, u, g)); }
-int v8s_access(char *p, int m)           { RET(rawsys2(SYS_access, (long)p, m)); }
+int v8s_access(char *p, int m)           { RET(rawsys2(SYS_access, (long)vpath(p), m)); }
 int v8s_mkdir(char *p, int m)            { RET(rawsys2(SYS_mkdir, (long)p, m)); }
-int v8s_rmdir(char *p)                   { RET(rawsys1(SYS_rmdir, (long)p)); }
+int v8s_rmdir(char *p)                   { RET(rawsys1(SYS_rmdir, (long)vpath(p))); }
 int v8s_symlink(char *a, char *b)        { RET(rawsys2(SYS_symlink, (long)a, (long)b)); }
 int v8s_dup(int f)                       { RET(rawsys1(SYS_dup, f)); }
 int v8s_dup2(int a, int b)               { RET(rawsys2(SYS_dup2, a, b)); }
@@ -253,6 +372,7 @@ void v8s_exit(int c) { rawsys1(SYS_exit, c); for (;;) ; }
 int
 v8s_open(char *path, int flags, int mode)
 {
+	path = vpath(path);
 	long fd;
 	struct v8_stat st;
 
@@ -387,7 +507,7 @@ v8sys_host_ino_at(int dirfd, const char *name)
 int v8s_stat(char *p, struct v8_stat *vs)
 {
 	struct hoststat64 hs;
-	long r = rawsys2(SYS_stat64, (long)p, (long)&hs);
+	long r = rawsys2(SYS_stat64, (long)vpath(p), (long)&hs);
 	if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
 	stat_translate(&hs, vs);
 	return (0);
@@ -396,7 +516,7 @@ int v8s_stat(char *p, struct v8_stat *vs)
 int v8s_lstat(char *p, struct v8_stat *vs)
 {
 	struct hoststat64 hs;
-	long r = rawsys2(SYS_lstat64, (long)p, (long)&hs);
+	long r = rawsys2(SYS_lstat64, (long)vpath(p), (long)&hs);
 	if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
 	stat_translate(&hs, vs);
 	return (0);
