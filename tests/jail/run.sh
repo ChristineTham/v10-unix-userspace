@@ -322,5 +322,24 @@ ck 'and at the root itself' '/' \
 ck 'a nested V8 directory too' '/usr/lib' \
    "$(cd "$V8ROOT/usr/lib" && "$V8ROOT/bin/sh" -c pwd 2>&1)"
 
+# --- PHASE 6c: /etc is not decoration ---------------------------------------
+# getpw.c, getlogin.c and ttyslot.c read it, and without a passwd `ls -l` prints
+# a bare numeric uid for every file.  group, fstab, hosts and ttys are genuine
+# V8 files imported with provenance; passwd is synthesized at build time because
+# it has to name the REAL user -- V8's own names 1985 Bell Labs staff, and
+# getpwuid() would not find whoever is running this.
+for f in group fstab hosts ttys passwd; do
+	ck "/etc/$f is installed" yes "$([ -s "$V8ROOT/etc/$f" ] && echo yes || echo no)"
+done
+ck 'a V8 program reads V8 /etc, not the host s' 'other::1' \
+   "$("$V8ROOT/bin/cat" /etc/group 2>&1 | head -1)"
+ck 'the synthesized passwd names the real user' yes \
+   "$(grep -q "^$(id -un):" "$V8ROOT/etc/passwd" && echo yes || echo no)"
+# The functional point: a name, not a number.
+case "$("$V8ROOT/bin/ls" -l "$V8ROOT/etc/group" 2>&1)" in
+*"$(id -un)"*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL ls -l shows a bare uid, not a name" ;;
+esac
+
 echo "jail: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -192,6 +192,8 @@ dep 'cc -> rootfs copy'        $B/cc/v8cc                      rootfs/bin/cc
 dep 'ccom -> rootfs copy'      $B/ccom-arm64/v8ccom            rootfs/lib/ccom
 dep 'yaccpar -> rootfs copy'   src/cmd/yacc/yaccpar            rootfs/usr/lib/yaccpar
 dep 'ncform -> rootfs copy'    src/cmd/lex/ncform              rootfs/usr/lib/lex/ncform
+dep '/etc/group -> rootfs'     src/v8/etc/group                rootfs/etc/group
+dep '/etc/ttys -> rootfs'      src/v8/etc/ttys                 rootfs/etc/ttys
 
 # --- /bin: the jail's contents must track the shim --------------------------
 # These are the rules that had no library dependency at all.  Editing the shim

@@ -1,0 +1,10 @@
+# Provenance for src/v8/etc
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+1db15248a7124a6aab78e93cc48785ea6a1c8f00  v8/etc/group
+f9294f8619523c3ca514c6e5070b55b3e84cc28d  v8/etc/fstab
+8d86d5df8cad1f67c320cbd6c4654a43adb9fe2d  v8/etc/hosts
+8bbe8b6b089aa4d7e32b6f2d2d623d3bc6279107  v8/etc/ttys

@@ -44,6 +44,12 @@ ROOTFS_CC      := $(ROOTFS)/bin/cc
 ROOTFS_INC     := $(ROOTFS)/usr/include/.stamp
 ROOTFS_YACCPAR := $(ROOTFS)/usr/lib/yaccpar
 ROOTFS_NCFORM  := $(ROOTFS)/usr/lib/lex/ncform
+# /etc is not decoration: getpw.c, getlogin.c and ttyslot.c read it, and
+# `ls -l` prints bare uids without a passwd.  group, fstab, hosts and ttys are
+# genuine V8 files imported with provenance like any other source; passwd is
+# the one that cannot be, because it has to name the real user (see below).
+ROOTFS_ETC     := $(patsubst $(SRC)/v8/etc/%,$(ROOTFS)/etc/%, \
+                    $(wildcard $(SRC)/v8/etc/[a-z]*)) $(ROOTFS)/etc/passwd
 
 # One target per installed file, NOT a directory stamp.  A stamp records "the
 # install ran", which is not the question make needs answered -- deleting
@@ -977,7 +983,7 @@ $(EQN_OBJ): $(EQNSRC)/e.h
 # A phony ALIAS over real files, not a recipe.  Nothing depends on this name
 # any more; the things that used to say `| rootfs` now name the files they
 # actually read, so make can tell when they change.
-rootfs: $(V8CC_DEPS) $(ROOTFS_YACCPAR) $(ROOTFS_NCFORM) $(ROOTFS_TERM) $(ROOTFS_FONT)
+rootfs: $(V8CC_DEPS) $(ROOTFS_YACCPAR) $(ROOTFS_NCFORM) $(ROOTFS_TERM) $(ROOTFS_FONT) $(ROOTFS_ETC)
 
 # The three passes v8cc execs, each tracking its build-tree original.
 $(ROOTFS_CPP): $(BUILD)/cpp/cpp
@@ -1015,6 +1021,30 @@ $(ROOTFS_YACCPAR): $(YACCSRC)/yaccpar
 	@mkdir -p $(@D) && cp $< $@
 $(ROOTFS_NCFORM): $(LEXSRC)/ncform
 	@mkdir -p $(@D) && cp $< $@
+
+# The genuine V8 /etc files, installed unchanged.
+$(ROOTFS)/etc/%: $(SRC)/v8/etc/%
+	@mkdir -p $(@D) && cp $< $@
+
+# passwd is SYNTHESIZED, and it is the one file here that has to be.
+#
+# V8's own /etc/passwd names Bell Labs people with 1985 uids and encrypted
+# passwords, and installing it would be worse than useless: getpwuid() would
+# fail to find the person actually running the system, so `ls -l` would print a
+# bare numeric uid for every file they own, and `whoami` would have nothing to
+# say.  The V8 world has to know who you are.
+#
+# So this is generated from the real user at build time -- name, uid and gid
+# from the host, home as V8 would have spelled it, and V8's own shell.  The
+# password field is `*`: nothing authenticates against this file, and a
+# plausible-looking hash in a checked-out tree would be a lie of a kind worth
+# avoiding.  root is included because file listings and `chown` reference uid 0.
+$(ROOTFS)/etc/passwd:
+	@mkdir -p $(@D)
+	@{ echo "root:*:0:0:Superuser:/:/bin/sh"; \
+	   echo "$$(id -un):*:$$(id -u):$$(id -g):$$(id -F 2>/dev/null || id -un):/usr/$$(id -un):/bin/sh"; \
+	 } > $@
+	@echo "built $@ (synthesized for $$(id -un))"
 $(ROOTFS)/usr/lib/term/tab.%: $(TROFFSRC)/term/tab.%
 	@mkdir -p $(@D) && cp $< $@
 

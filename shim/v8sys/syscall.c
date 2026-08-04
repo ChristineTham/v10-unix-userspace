@@ -174,7 +174,7 @@ v8sys_faile(int hosterr)
  */
 static const char *v8dirs[] = {
 	"/usr/lib/", "/usr/share/", "/usr/dict/", "/lib/", "/usr/pub/",
-	"/bin/", "/usr/bin/", 0
+	"/bin/", "/usr/bin/", "/etc/", 0
 };
 
 /*
