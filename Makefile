@@ -38,11 +38,11 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 # with -nostartfiles, never into anything that also uses host libc.
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c,$(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea clean distclean
 all: stage0
 stage0: cpp v8ccom v8cc libv8sys crt0 rootfs
 
-test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c
+test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: v8ccom
@@ -55,6 +55,8 @@ test-freestanding: rootfs libv8sys crt0
 	@$(ROOT)tests/freestanding/run.sh
 test-libv8c: rootfs libv8sys crt0 libv8c
 	@$(ROOT)tests/libv8c/run.sh
+test-wavea: rootfs libv8sys crt0 libv8c
+	@$(ROOT)tests/wavea/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
 	@mkdir -p $(BUILD)/v8sys

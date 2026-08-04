@@ -1,6 +1,6 @@
 # Porting Research Unix V8 Userspace to macOS (ARM64)
 
-**Status:** Phases 0 through 2b complete and tested (144 tests). Waves 3A-3C, 4 and 5 not started.
+**Status:** Phases 0 through 2b complete and tested; Wave A begun. 147 tests. Waves 3B-3C, 4 and 5 not started.
 See "Current state" at the bottom.
 **Project arc:** V8 first (this plan), then V9, then V10 — restoring the original project goal of the last Research Edition, with V8 as the beachhead where the lessons are cheapest.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
@@ -294,7 +294,8 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 1c driver | done | `v8cc` 8/8, `make rootfs` |
 | 2a libv8sys | done | `v8sys` 44/44 |
 | 2b V8 libc | done | V8's printf (including %f/%e/%g), fputs, stdio, strings, malloc and IEEE floats all run, compiled by v8cc (`libv8c` 10/10) |
-| 3A–3C waves | not started | |
+| 3A Wave A | started | V8's `cat` compiles, links and runs on real files (`wavea` 3/3). Two defects recorded in `tests/wavea/run.sh`: stdin path, and perror/exit status |
+| 3B–3C waves | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
 
