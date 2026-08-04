@@ -38,6 +38,68 @@ four bytes and reloaded from four, no conversion anywhere. Exactly `tbl`'s
 The 8192-byte output was a red herring: it was simply the last flushed stdio
 buffer before the crash, not a truncation.
 
+## It works
+
+`lex` builds and runs. On pic's own lexer:
+
+```
+1323/1700 nodes(%e), 3659/5000 positions(%p), 534/700 (%n), 29275 transitions
+105/120 packed char classes(%k), 1544/1800 packed transitions(%a),
+1217/1500 output slots(%o)
+```
+
+## The two bugs, and why only one was real
+
+`myalloc` held `calloc`'s result in an `int`:
+
+```c
+register int i;
+i = calloc(a, b);
+if (i == 0) warning("OOPS - calloc returns a 0");
+```
+
+The shim's sbrk arena starts at **0x300000000**, whose low word is exactly zero,
+so a truncated pointer from it *is* 0 and the test fired on a perfectly good
+allocation. A rare truncation that announces itself; usually half a pointer is a
+plausible-looking address and the program dies somewhere else entirely. Fixed to
+`register char *i`.
+
+The second was not a lex bug at all — it was a **stale object**, and it cost
+far more than it should have.
+
+`left[]` and `right[]` hold two different things: a node index, and, for a
+character class, a `char *` into the packed-character array. They are widened to
+`long` in `once.c`. But they are *allocated* in `parser.y`:
+
+```c
+left = myalloc(treesize, sizeof(*left));
+```
+
+`once.c` is `#include`d by `lmain.c`; `parser.y` becomes `y.tab.c`. Widening the
+declaration changes `sizeof(*left)` from 4 to 8, so a `y.tab.o` built before the
+change allocates `1700 * 4` bytes for an array that is then written as 8-byte
+longs — a **2x overrun**, straight through the next block's malloc header.
+
+What that looked like from the outside was `malloc` returning 0 for requests
+above about 2800 bytes while smaller ones succeeded, which is a very convincing
+impression of an allocator bug. It is not. Ritchie's malloc keeps its free list
+*in* the arena, one link word per block, so the first thing a heap overrun
+destroys is the allocator's own bookkeeping. The clobbering value was `0x351` —
+849, a node index — sitting where a forward pointer belonged.
+
+Two reproductions were written and both passed, because neither had lex's array
+layout. What settled it was logging every header malloc wrote and comparing it
+with the value found there later: malloc had written `0x1074a46b1`, exactly
+right. That one measurement exonerated the allocator and turned an allocator bug
+into a bounds bug.
+
+**The build now encodes the dependency** (see the `v8lex` section of the top
+Makefile): every lex object depends on `ldefs.c` and `once.c`, neither of which
+is visible to the compiler as a dependency because both are `#include`d source
+files. This is the third stale-object incident in this port. The rule that
+follows from it: when a *type width* changes, rebuild everything, and make the
+build know why.
+
 ## Where it is now
 
 `myalloc` held `calloc`'s result in an `int`, which is fixed — and worth

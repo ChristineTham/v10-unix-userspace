@@ -51,12 +51,12 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff tbl v8yacc eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh nroff troff tbl v8yacc eqn
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh nroff troff tbl v8yacc v8lex eqn
 
 test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 test-cpp: cpp
@@ -465,6 +465,45 @@ $(BUILD)/yacc/%.o: $(YACCSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
 	@mkdir -p $(BUILD)/yacc
 	$(V8CCRUN) -I$(YACCSRC) -c -o $@ $<
 
+# ---------------------------------------------------------------------------
+# lex.  The tree arrays name/left/right/parent/nullstr are DECLARED in once.c
+# and ALLOCATED in parser.y, using sizeof(*left) so the size follows the type.
+# That split is why the dependencies below are spelled out rather than left to
+# the pattern rule: once.c widening left[] to `long` changes sizeof(*left) from
+# 4 to 8, and a y.tab.o built before that change allocates 1700*4 bytes for an
+# array written as 8-byte longs -- a 2x overrun straight through the next
+# block's malloc header.  See src/cmd/lex/PORTING.md.
+#
+# Every lex source #includes ldefs.c, and lmain.c also #includes once.c, so
+# neither shows up as a compiler-visible dependency.  Both are listed here.
+# ---------------------------------------------------------------------------
+LEXSRC = $(SRC)/cmd/lex
+LEX_NAMES = lmain sub1 sub2 header
+LEX_OBJ = $(patsubst %,$(BUILD)/lex/%.o,$(LEX_NAMES)) $(BUILD)/lex/y.tab.o
+
+v8lex: $(BUILD)/lex/lex
+$(BUILD)/lex/lex: $(LEX_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                  $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(LEX_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+
+$(BUILD)/lex/y.tab.c: $(LEXSRC)/parser.y v8yacc | rootfs
+	@mkdir -p $(BUILD)/lex
+	cd $(BUILD)/lex && V8ROOT=$(ROOTFS) $(BUILD)/yacc/yacc $(LEXSRC)/parser.y
+
+$(BUILD)/lex/y.tab.o: $(BUILD)/lex/y.tab.c $(A64BUILD)/v8ccom | rootfs
+	$(V8CCRUN) -I$(LEXSRC) -c -o $@ $(BUILD)/lex/y.tab.c
+$(BUILD)/lex/%.o: $(LEXSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+	@mkdir -p $(BUILD)/lex
+	$(V8CCRUN) -I$(LEXSRC) -c -o $@ $<
+
+# The two files that are #included, not compiled.  Every object depends on
+# ldefs.c; lmain.o and y.tab.o additionally depend on once.c, which is where
+# the widths live.
+$(LEX_OBJ): $(LEXSRC)/ldefs.c $(LEXSRC)/once.c
+
 EQNSRC = $(SRC)/cmd/eqn
 EQN_NAMES = main diacrit eqnbox font fromto funny glob integral input lex \
             lookup mark matrix move over paren pile shift size sqrt text
@@ -518,6 +557,9 @@ rootfs: cpp v8ccom v8cc
 	@cp $(SRC)/cmd/troff/term/tab.* $(ROOTFS)/usr/lib/term/ 2>/dev/null || true
 	@# yaccpar, which V8's yacc opens as /usr/lib/yaccpar.
 	@cp $(SRC)/cmd/yacc/yaccpar $(ROOTFS)/usr/lib/ 2>/dev/null || true
+	@# ncform, the skeleton lex copies out after its tables.
+	@mkdir -p $(ROOTFS)/usr/lib/lex
+	@cp $(SRC)/cmd/lex/ncform $(ROOTFS)/usr/lib/lex/ 2>/dev/null || true
 	@$(MAKE) --no-print-directory devtables
 
 # troff's device tables.  makedev compiles the plain-text description in
