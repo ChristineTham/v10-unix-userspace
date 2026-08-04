@@ -133,9 +133,37 @@ echo "wavea: $pass passed, $fail failed"
 #                 which is x0. So the fast-path arm is not moving its loaded byte
 #                 into x0 -- the value left there is the address instead.
 #
-#                 Look at gen()'s handling of GENLAB and QNODE, and at what
-#                 happens to a STAR result that has to be funnelled into the
-#                 rendezvous register.
+#                 ROOT CAUSE FOUND -- it is structural, in gencall(), and it is
+#                 not about stdio or QNODE at all.
+#
+#                 gencall() allocates its outgoing-argument area with a
+#                 `sub sp, sp, #N` before the call and releases it with a
+#                 matching `add` after. That is only correct when control flows
+#                 straight through. condit() lowers `a ? b : c` into branches,
+#                 so when a call sits in one arm the sub and the add end up on
+#                 DIFFERENT PATHS. Visible directly in the generated main() for
+#                 `while ((c = getchar()) != EOF)`:
+#
+#                     sub sp, sp, #16
+#                     b   L21           <- branches away, never restores sp
+#
+#                 The stack drifts by 16 bytes per iteration, so locals and
+#                 spill slots read back as garbage -- which is exactly the
+#                 pointer-shaped value getchar() appeared to return.
+#
+#                 THE FIX: stop adjusting sp per call. Compute the maximum
+#                 outgoing-argument area over all calls in the function while
+#                 generating its body, reserve that once in the prologue
+#                 (emit.c already emits the prologue after the body is captured,
+#                 so the maximum is known by then), and address arguments at
+#                 fixed offsets from sp. That is what every ABI-conformant
+#                 compiler does and it is branch-safe by construction.
+#
+#                 This also explains why calls worked in every earlier test: the
+#                 62 back-end tests and the libc tests all call functions in
+#                 straight-line code or in loops without a conditional AROUND
+#                 the call. It needs a call inside a ternary arm, which is
+#                 exactly what getc and putc are.
 #
 #   tr         -- `echo abc | tr a-z A-Z` gives "A000" instead of "ABC", so the
 #                 a-z range expansion is filling its table wrongly. tr builds
