@@ -11,6 +11,16 @@ SRC     := $(ROOT)src
 
 HOSTCC  ?= clang
 
+# Automatic header dependencies.
+#
+# Not a nicety here.  This port is driven by headers -- macdefs.h alone fixes
+# the whole target model (type widths, register numbering, which hooks exist) --
+# and without these, editing one left every pass-1 object stale while the build
+# reported success.  That is precisely the shape of the cpp COFF-bias bug, where
+# two halves of one program disagreed about a constant, so the build system is
+# not allowed to reintroduce it.
+DEPFLAGS = -MMD -MP
+
 # Dialect flags: what a 1985 K&R program needs from a 2026 compiler.
 #   gnu89                     -- K&R definitions, no C99/C23 strictness
 #   fcommon                   -- tentative definitions merge across TUs
@@ -118,7 +128,7 @@ CCOM_P1  = $(patsubst %,$(BUILD)/ccom/%.o,$(CCOM_MI) local local2 debug memcpy p
 
 ccom-pass1: $(BUILD)/ccom/ccom-pass1
 $(BUILD)/ccom/ccom-pass1: $(CCOM_P1) $(ROOT)compiler/ccom-arm64/gencode.c
-	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -c $(ROOT)compiler/ccom-arm64/gencode.c \
+	$(HOSTCC) $(KRFLAGS) $(DEPFLAGS) $(CCOM_INC) -c $(ROOT)compiler/ccom-arm64/gencode.c \
 		-o $(BUILD)/ccom/gencode-arm64.o
 	$(HOSTCC) $(KRFLAGS) -o $@ $(CCOM_P1) $(BUILD)/ccom/gencode-arm64.o
 	@echo "built $@ (pass 1 + ARM64 backend stub)"
@@ -130,17 +140,17 @@ ccom-vax: $(CCOM_OBJ)
 
 $(BUILD)/ccom/%.o: $(CCOM_M)/%.c
 	@mkdir -p $(BUILD)/ccom
-	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -DVAX -c $< -o $@
+	$(HOSTCC) $(KRFLAGS) $(DEPFLAGS) $(CCOM_INC) -DVAX -c $< -o $@
 
 $(BUILD)/ccom/%.o: $(CCOM_V)/%.c
 	@mkdir -p $(BUILD)/ccom
-	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -DVAX -c $< -o $@
+	$(HOSTCC) $(KRFLAGS) $(DEPFLAGS) $(CCOM_INC) -DVAX -c $< -o $@
 
 # cgram.c is the checked-in yacc output, so the 1978 grammar needs no yacc run.
 $(BUILD)/ccom/cgram.o: $(CCOM_M)/cgram.c
 	@mkdir -p $(BUILD)/ccom
 	cp $(CCOM_V)/y.debug.sv $(BUILD)/ccom/y.debug
-	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -I$(BUILD)/ccom -DVAX -DYYDEBUG -c $< -o $@
+	$(HOSTCC) $(KRFLAGS) $(DEPFLAGS) $(CCOM_INC) -I$(BUILD)/ccom -DVAX -DYYDEBUG -c $< -o $@
 
 # ---------------------------------------------------------------------------
 # v8ccom -- the real thing: V8's pass 1 with our ARM64 back end.
@@ -159,16 +169,16 @@ $(A64BUILD)/v8ccom: $(A64_MI) $(A64_MD)
 
 $(A64BUILD)/%.o: $(CCOM_M)/%.c
 	@mkdir -p $(A64BUILD)
-	$(HOSTCC) $(KRFLAGS) $(A64INC) -c $< -o $@
+	$(HOSTCC) $(KRFLAGS) $(DEPFLAGS) $(A64INC) -c $< -o $@
 
 $(A64BUILD)/%.o: $(A64)/%.c
 	@mkdir -p $(A64BUILD)
-	$(HOSTCC) $(KRFLAGS) $(A64INC) -c $< -o $@
+	$(HOSTCC) $(KRFLAGS) $(DEPFLAGS) $(A64INC) -c $< -o $@
 
 $(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
 	@mkdir -p $(A64BUILD)
 	cp $(CCOM_V)/y.debug.sv $(A64BUILD)/y.debug
-	$(HOSTCC) $(KRFLAGS) $(A64INC) -I$(A64BUILD) -DYYDEBUG -c $< -o $@
+	$(HOSTCC) $(KRFLAGS) $(DEPFLAGS) $(A64INC) -I$(A64BUILD) -DYYDEBUG -c $< -o $@
 
 # ---------------------------------------------------------------------------
 # libv8sys -- the shim standing in for the VAX kernel.  Modern C, clang-built:
@@ -200,7 +210,7 @@ SHIMFLAGS = -std=gnu99 -Wall -Wno-unused-function \
 
 $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
 	@mkdir -p $(BUILD)/v8sys
-	$(HOSTCC) $(SHIMFLAGS) -c $< -o $@
+	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # ---------------------------------------------------------------------------
 # libv8c -- V8's own libc, compiled by v8cc, on top of the shim.
@@ -291,3 +301,20 @@ clean:
 
 distclean: clean
 	rm -rf $(ROOT)build
+
+# ---------------------------------------------------------------------------
+# Header dependencies.
+#
+# Host-compiled objects get theirs from clang (-MMD, see DEPFLAGS).  Objects
+# built by v8cc cannot: V8's driver has no dependency-generation flag and is not
+# getting one, since inventing options the original never had is the sort of
+# convenience that erodes the thing being preserved.  They get a coarse
+# dependency on every header they could include instead -- overbuilds sometimes,
+# never underbuilds, and libc is small enough that it does not matter.
+# ---------------------------------------------------------------------------
+V8HDRS := $(wildcard $(LIBCSRC)/stdio/*.h) \
+          $(wildcard $(ROOT)third_party/Research-Unix-v8/v8/usr/include/*.h) \
+          $(wildcard $(ROOT)third_party/Research-Unix-v8/v8/usr/include/sys/*.h)
+$(LIBC_OBJ): $(V8HDRS)
+
+-include $(shell find $(BUILD) -name '*.d' 2>/dev/null)

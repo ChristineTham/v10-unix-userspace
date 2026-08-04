@@ -143,36 +143,38 @@ echo "wavea: $pass passed, $fail failed"
 #
 #   cmp        -- does not compile.
 #
-#   cat nosuchfile prints the WRONG diagnostic. perror and sys_errlist are now
-#   ported (V8 has errlst.c and perror.c in libc/gen; the ed script in
-#   libc/Makefile was only a VAX trick to move the table into read-only text),
-#   so an error IS reported and the exit status is now 1. But the message is
-#   "cat: input nosuchfile is output" -- cat's dev/ino guard -- rather than the
-#   perror one, meaning cat took the `fi = 0` branch instead of the open branch.
+# ---------------------------------------------------------------------------
+# SOLVED, kept because the search was long and the shape of it is the point:
 #
-#   Ruled out by direct test, all three:
-#     - open() returns -1 with errno 2 correctly.
-#     - the && / || lowering is right: `f || *s == '-' && s[1] == 0` with
-#       s="nosuchfile" evaluates false, as does `f || 0 && 1`, while
-#       `1 || 0 && 0` is true.
-#     - `**++argv` is right: it yields 'n' for argv[1]="nosuchfile".
+#   `cat nosuchfile` printed "cat: input nosuchfile is output" -- its dev/ino
+#   guard -- instead of a perror message.
 #
-#   Instrumented inside cat itself: argc=2 and fflg=0 at the branch, with
-#   argv[1][0]=='n'. So the condition IS false and the else branch DOES run --
-#   which means open() returned -1 and `(fi = open(...)) < 0` failed to detect
-#   it, letting control fall through to fstat(-1) and the dev/ino guard.
+#   Six hypotheses were eliminated by direct test, each correct in isolation:
+#   argc, fflg, `**++argv`, the `&&`/`||` lowering on cat's exact expression,
+#   open()'s return value and errno, and assignment-in-condition against -1 in
+#   both `int` and `register int`.
 #
-#   But that construct is also correct in isolation, with `int fi` and with
-#   `register int fi` (cat uses the latter): `(fi = neg()) < 0` takes the true
-#   branch and prints -1.
+#   What finally settled it was instrumenting cat's own decision points instead
+#   of writing a seventh test case:
 #
-#   ELIMINATED SO FAR, each by direct test: argc, fflg, `**++argv`, the && / ||
-#   lowering on cat's exact expression, open()'s return value and errno, and
-#   assignment-in-condition against a negative value in both storage classes.
+#       DBG fi=-1
+#       DBG fstat=-1 dev=15 ino=23002 sd=15 si=23002
+#       cat: input nosuchfile is output
 #
-#   Every part works alone; only the assembled function misbehaves. That is the
-#   signature of the bugs already found here -- register-variable clobbering,
-#   lvalues evaluated twice, the conditional join -- all of which needed several
-#   features interacting. Next: read the generated assembly for cat's argument
-#   loop directly rather than testing more constructs, and diff it against what
-#   the same source compiles to under clang.
+#   open() returned -1 and `fi < 0` was FALSE; fstat() returned -1 and `>= 0`
+#   was TRUE. Not one bug in cat's argument loop -- every signed comparison
+#   against a syscall result was inverted, and statb still held stdout's stat
+#   from the top of main, so the dev/ino guard matched.
+#
+#   Cause: AAPCS64 defines only w0 for a function returning int; the top half of
+#   x0 is unspecified. This back end computes at 64-bit width and compares with
+#   an x-form `cmp`, so -1 arriving as 0x00000000ffffffff tested as positive.
+#   The whole shim is clang-compiled, so EVERY syscall error check in EVERY V8
+#   program was broken -- and could not show up in a self-contained test,
+#   because v8cc's own callees return a properly extended x0 and only disagree
+#   with foreign ones. Fixed by arm64_widen() in ccom-arm64/gencode.c; the
+#   regression test lives in tests/v8cc/run.sh, which spans both compilers.
+#
+#   Worth remembering: the recorded next step was to read the generated assembly
+#   and diff it against clang's. Instrumenting the program was faster and
+#   pointed straight at the seam.

@@ -94,6 +94,59 @@ if "$CC" -c real.c 2>err.log && clang drv.c real.o -o real 2>>err.log &&
    [ "$(./real)" = "21" ]; then ok
 else bad "gcd(1071,462) == 21" "$(head -2 err.log)"; fi
 
+# --- narrow return values across the clang seam --------------------------
+# AAPCS64 defines only w0 for a function returning int; the top half of x0 is
+# unspecified and clang leaves whatever was there.  This back end computes at
+# 64-bit width and compares with an x-form `cmp`, so a returned -1 that is not
+# sign-extended tests as 4294967295 -- positive.
+#
+# That broke EVERY syscall error check in every V8 program, since the whole shim
+# is clang-compiled and V8 code checks syscalls with `< 0`.  `cat nosuchfile`
+# reported "input nosuchfile is output": open() returned -1, `fi < 0` was false,
+# and then fstat() returned -1 and `>= 0` was true, so cat fell into the
+# same-file guard with statb still holding stdout's stat from the top of main.
+#
+# It could not show up in a self-contained test: v8cc's own callees return a
+# properly extended x0, so V8-to-V8 calls agree with each other and only the
+# foreign seam disagrees.  Hence this test spans both compilers, and covers the
+# three ways the value is consumed -- through memory, in a register variable,
+# and straight out of the assignment.
+cat > narrow.c <<'EOF'
+int  cneg(void)  { return -1; }
+char cnegc(void) { return -1; }
+short cnegs(void){ return -1; }
+unsigned cnegu(void) { return 0xffffffffu; }
+EOF
+cat > narrowuse.c <<'EOF'
+extern int cneg(); extern char cnegc(); extern short cnegs();
+/*
+ * cnegu must be declared.  Left undeclared, K&R says it returns int, so the
+ * compiler sign-extends and 0xffffffff correctly tests negative -- the right
+ * answer to a different question.
+ */
+extern unsigned cnegu();
+long entry()
+{
+	int mem; register int rvar;
+
+	mem = cneg();
+	rvar = cneg();
+	if (!(mem < 0))            return 1;	/* via memory (ldrsw) */
+	if (!(rvar < 0))           return 2;	/* in a register variable */
+	if (!((mem = cneg()) < 0)) return 3;	/* value of the assignment */
+	if (!(cneg() < 0))         return 4;	/* used directly */
+	if (!(cnegc() < 0))        return 5;	/* char return */
+	if (!(cnegs() < 0))        return 6;	/* short return */
+	if (cnegu() < 0)           return 7;	/* unsigned must NOT go negative */
+	return 0;
+}
+EOF
+if "$CC" -c narrowuse.c 2>err.log && clang -c narrow.c 2>>err.log &&
+   clang drv.c narrowuse.o narrow.o -o narrow 2>>err.log &&
+   [ "$(./narrow)" = "0" ]; then ok
+else bad "narrow return values are extended at the clang seam" \
+    "got [$(./narrow 2>&1)]; $(head -2 err.log)"; fi
+
 echo "v8cc: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

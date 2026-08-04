@@ -125,3 +125,14 @@
 
 	/* decide what ops can be shortened */
 # define OPBIGSZ
+
+	/*
+	 * End-of-translation-unit hook, called by scan.c's main().  Mach-O
+	 * objects need `.subsections_via_symbols` to tell ld that each symbol
+	 * begins its own atom; without it ld cannot work out where one datum
+	 * ends and the next begins, and every link of a program using perror
+	 * warned that sys_nerr's "real definition" had size 0.  clang emits it
+	 * on every Mach-O object it produces.  ENDJOB is ccom's own hook for
+	 * exactly this, so no original file needs changing.
+	 */
+# define ENDJOB arm64_endjob

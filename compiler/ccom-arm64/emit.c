@@ -148,6 +148,25 @@ eobl2()				/* end of function stuff */
 {
 }
 
+/*
+ * ENDJOB: last thing emitted for a translation unit (see macdefs.h).
+ *
+ * Mach-O has no .size directive, so ld derives a symbol's extent from where the
+ * next atom starts -- and only knows atoms exist if the object says so.  With
+ * the file's last datum unbounded, ld reported sys_nerr's definition as size 0
+ * and warned on every link.  ELF carries sizes explicitly and has no equivalent.
+ */
+arm64_endjob(status)
+	int status;
+{
+#ifndef ELF_TARGET
+	if (status == 0)
+		printx("\n.subsections_via_symbols\n");
+#endif
+	flushx();
+	return (0);
+}
+
 char *
 exname(ix)			/* make a name look external on this machine */
 	char *ix;

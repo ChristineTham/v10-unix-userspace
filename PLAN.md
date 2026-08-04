@@ -293,8 +293,8 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 1b ARM64 back end | done | `v8ccom` 62/62 — arithmetic, control flow, pointers, arrays, globals, statics, recursion, structs, bitfields, floats, 12-argument calls |
 | 1c driver | done | `v8cc` 8/8, `make rootfs` |
 | 2a libv8sys | done | `v8sys` 44/44 |
-| 2b V8 libc | done | V8's printf (including %f/%e/%g), fputs, stdio, strings, malloc and IEEE floats all run, compiled by v8cc (`libv8c` 10/10) |
-| 3A Wave A | started | V8's `cat` compiles, links and runs on real files (`wavea` 3/3). Two defects recorded in `tests/wavea/run.sh`: stdin path, and perror/exit status |
+| 2b V8 libc | done | V8's printf (including %f/%e/%g), fputs, stdio, strings, malloc, perror and IEEE floats all run, compiled by v8cc (`libv8c` 10/10) |
+| 3A Wave A | in progress | Ten real V8 commands run (`wavea` 19/19): `cat`, `echo`, `wc`, `basename`, `tee`, `yes`, `sum`, `rev`, `tr`, `head` |
 | 3B–3C waves | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
@@ -307,21 +307,20 @@ V8's own preprocessor and compiler, with a new ARM64 back end, driven by V8's
 own `cc`, produce object code that assembles, links and runs correctly on Apple
 Silicon. Everything above the code generator is untouched 1985 Bell Labs source.
 
-### The next thing to do
+### The lesson this port keeps teaching
 
-Two things, both bounded and both written up where they live:
+Every back-end bug found so far has lived in a *combination* of features that
+real code uses and unit tests do not — register-variable clobbering, lvalues
+evaluated twice, the conditional join, `sp` moved per call, and now narrow
+return values at the clang seam. 62 synthetic tests passed while the first real
+libc function died; 163 passed while the first syscall error check was broken.
+So the suites lead with authentic V8 sources, and a new synthetic test is only
+worth writing once a real program has shown which combination to test.
 
-1. **malloc hangs** — `tests/libv8c/run.sh` has the analysis. INT and ALIGN are
-   fixed for LP64; the remaining suspect is that our `sbrk` arena is nowhere
-   near the data segment, so the coalescing walk never terminates.
-2. **`%f` loses precision** — `printf("%f", 3.14159)` gives `3.146509`. `%e` and
-   `%g` are correct and share `ecvt`, so it is the `fcvt` digit loop. The same
-   source under clang produces the right digits, so it is codegen, not source.
-
-Then Wave A, which is where the world starts to look like Unix. Wave A should
-lead with a real program rather than more synthetic tests: every compiler bug
-found so far has lived in the *combination* of features that real code uses and
-unit tests do not.
+The second lesson, earned four wrong hypotheses deep into the malloc bug: stop
+reasoning about what a value should be and make the program print what it is.
+`V8DBG=1` type tracing settled that one in seconds, and instrumenting `cat`'s
+decision points settled the diagnostic bug the same way.
 
 ### Deliberate gaps in the back end
 

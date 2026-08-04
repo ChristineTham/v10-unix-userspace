@@ -263,6 +263,52 @@ freg(t, r)
 	return (t & TDOUBLE) ? dreg(r) : sreg(r);
 }
 
+/*
+ * Re-establish the invariant that a value narrower than a register is held
+ * sign- (or zero-) extended to the full 64 bits.
+ *
+ * The whole back end computes at 64-bit width and relies on that invariant, so
+ * every comparison is an x-form `cmp`.  Our own code maintains it -- loads use
+ * ldrsw, SCONV re-extends after a narrowing conversion -- but AAPCS64 does NOT.
+ * A function returning `int` is only required to set w0; the top half of x0 is
+ * explicitly unspecified, and clang leaves whatever was there.
+ *
+ * So a `register int fi = open(...)` holding -1 arrived as 0x00000000ffffffff,
+ * and `fi < 0` -- an x-form compare -- was false.  Every syscall error check in
+ * every program was silently broken, because the entire shim is clang-compiled
+ * and V8 code checks syscalls with `< 0`.  It never showed in a self-contained
+ * test: our own callees return a properly extended x0, so V8-to-V8 calls agree
+ * with each other and only the foreign seam disagrees.
+ *
+ * Both directions of that seam need it, so it lives in one place: after a call
+ * returns (below, in gencall) and on narrow parameters at function entry
+ * (arm64_extendarg, used by the prologue for signal handlers and the like).
+ */
+void
+arm64_widen(t, r)
+	TWORD t;
+	int r;
+{
+	if (ISPTR(t) || ISARY(t) || tyfloat(t))
+		return;
+	switch (tybytes(t)) {
+	case 1:
+		printx("\t%s\t%s, %s\n", tyunsigned(t) ? "uxtb" : "sxtb",
+		    xreg(r), wreg(r));
+		break;
+	case 2:
+		printx("\t%s\t%s, %s\n", tyunsigned(t) ? "uxth" : "sxth",
+		    xreg(r), wreg(r));
+		break;
+	case 4:
+		if (tyunsigned(t))
+			printx("\tmov\t%s, %s\n", wreg(r), wreg(r));
+		else
+			printx("\tsxtw\t%s, %s\n", xreg(r), wreg(r));
+		break;
+	}
+}
+
 /* ------------------------------------------------------------ addresses */
 
 static void
@@ -972,21 +1018,7 @@ gen(p, want)
 		}
 
 		if (!(l.flag & R_REG)) return (l);
-		sz = tybytes(p->in.type);
-		if (sz == 1)
-			printx("\t%s\t%s, %s\n",
-			    tyunsigned(p->in.type) ? "uxtb" : "sxtb",
-			    xreg(l.reg), wreg(l.reg));
-		else if (sz == 2)
-			printx("\t%s\t%s, %s\n",
-			    tyunsigned(p->in.type) ? "uxth" : "sxth",
-			    xreg(l.reg), wreg(l.reg));
-		else if (sz == 4) {
-			if (tyunsigned(p->in.type))
-				printx("\tmov\t%s, %s\n", wreg(l.reg), wreg(l.reg));
-			else
-				printx("\tsxtw\t%s, %s\n", xreg(l.reg), wreg(l.reg));
-		}
+		arm64_widen(p->in.type, l.reg);
 		return (l);
 	}
 
@@ -1628,6 +1660,12 @@ gencall(p, want)
 	}
 	reg = regalloc();
 	printx("\tmov\t%s, x0\n", xreg(reg));
+	/*
+	 * AAPCS64 defines only the low bits of x0 for a return type narrower
+	 * than a register.  See arm64_widen() -- without this, `open()` returning
+	 * -1 tested as positive.
+	 */
+	arm64_widen(p->in.type, reg);
 	res.reg = reg; res.flag = R_REG;
 	return (res);
 }
