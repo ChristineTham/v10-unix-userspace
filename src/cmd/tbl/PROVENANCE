@@ -1,0 +1,33 @@
+# Provenance for src/cmd/tbl
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+daab995439ae4650049893dfb11ece3f07774cae  v8/usr/src/cmd/tbl/jcompr
+89757d1d874c85ac444d5adbbeba51bbda0e62d9  v8/usr/src/cmd/tbl/makefile
+9f8b7ab5f1fecf3f6e76eee3278db29a210bbe81  v8/usr/src/cmd/tbl/t..c
+2ce0d3bbc1c7bdf99f3f51c9d693b7a0b8071d04  v8/usr/src/cmd/tbl/tf.c
+b5512928b21c36f374b9260e6e44730c1cc2d05e  v8/usr/src/cmd/tbl/t6.c
+9609edc8bd52e47ff542a9b3a461cdc2d0065e40  v8/usr/src/cmd/tbl/tt.c
+775ea7ea6fb6dfb8d2ddc7db92dbb1753b292e30  v8/usr/src/cmd/tbl/t8.c
+83b2316eaa0893a634a9a9841b9f5ebbcd066e13  v8/usr/src/cmd/tbl/t2.c
+b0bd61e2fc4bf8244dcede7532ae62ef571dea22  v8/usr/src/cmd/tbl/README
+3c267c628183e0097402d4b8c6d1068ba02a7685  v8/usr/src/cmd/tbl/tc.c
+107a3306eb95b286db565e671f91a974930288e0  v8/usr/src/cmd/tbl/compnr
+61672222589b77c3b0e66e3966fe00b27a7915ac  v8/usr/src/cmd/tbl/ti.c
+bc809365bc40ea9465bc53ad2609db8bf3fb0031  v8/usr/src/cmd/tbl/compms
+e343d92376265f08887c999e210083313eb271b5  v8/usr/src/cmd/tbl/tm.c
+d1f8ca0897ad494efe748d8a8a7869c6f6fdbfca  v8/usr/src/cmd/tbl/tg.c
+a9705f584acb7b10ebf6f89f7402054df8cf09a5  v8/usr/src/cmd/tbl/t7.c
+5e7a3a4e920526d3addb4e6ebcd056cd18afaf09  v8/usr/src/cmd/tbl/tu.c
+d3e69f433e1cb715d8e7f87259b7de1010754d1d  v8/usr/src/cmd/tbl/t3.c
+b4ee8b02900e458f4ad703f4cda9c4bfc1eae8e9  v8/usr/src/cmd/tbl/t9.c
+ab189bf5c727ee778ac38e5c7598471b60168308  v8/usr/src/cmd/tbl/jcompeq
+f97778b2a0050cd7b831776c0c4f389ba26ec628  v8/usr/src/cmd/tbl/compr
+35e35fbe74cdcacd3cd680d8f29c6cd1b7e46f5b  v8/usr/src/cmd/tbl/tr.c
+63224bba29ea2a2fa062b10e39f11fdd65db36e2  v8/usr/src/cmd/tbl/t4.c
+3cc57c7f172ab7bf14a33d2762ea6169cb046758  v8/usr/src/cmd/tbl/t0.c
+272bf2c05a54cca33d29739756bd2c788eeb046f  v8/usr/src/cmd/tbl/compeq
+39b63648b2c06becd50273fae57ac4ebc4dab9e8  v8/usr/src/cmd/tbl/samples.a
+099ee0fd18c47fc1769a0da948fc553c7c743fc4  v8/usr/src/cmd/tbl/tv.c
