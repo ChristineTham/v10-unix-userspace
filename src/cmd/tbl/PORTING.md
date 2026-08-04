@@ -76,9 +76,24 @@ table[nlin] = (struct colstr *) alocv((ncol+2)*sizeof(table[0][0]));
 which uses `sizeof`, so it sizes correctly under LP64; and a three-row,
 two-column table needs a few hundred bytes of the 2000 (`MAXCHS`) a block holds.
 
-`putline` is the next and last function to bracket. It walks a row's cells and
-prints each through `fprintf`, so the same marker technique will name the
-statement.
+`putline` (in `t8.c`, not `t7.c`) walks a row's cells, and it uses an idiom
+worth looking at first:
+
+```c
+s = table[nl][c].col;
+...
+if ((int)s>0 && (int)s<128)
+```
+
+That is V7's trick of keeping **small markers in pointer slots** — a cell whose
+`col` is a number under 128 is a code, not an address. `vspen(s)` and friends
+test the same way. The compiler no longer truncates a pointer cast to `int`
+(`PTRCONVFULL`, see `common/optim.c`), which is what makes a real pointer
+correctly fail the `< 128` test — but every one of these comparisons deserves
+reading, because the idiom depends on the exact behaviour that changed.
+
+Bracket `putline`'s cell loop and print `s` for each cell; a marker and an
+address are immediately distinguishable in hex.
 
 ## A note on the file list
 
