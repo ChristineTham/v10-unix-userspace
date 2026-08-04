@@ -297,13 +297,20 @@ fincode(d, sz)			/* initialise sz bits to the value d */
 	 * the rest of the format string, including the newline, and welded the
 	 * next directive onto the comment.
 	 */
+	/*
+	 * sprintf, not snprintf: snprintf is C99, absent from libv8c, and
+	 * variadic -- so under v8cc it resolved from -lSystem and disagreed
+	 * about where its arguments were.  note[64] against a %.17g double,
+	 * whose widest output is "-1.2345678901234567e-308" at 24 characters,
+	 * so the bound was never the thing doing the work here.
+	 */
 	if (sz == SZDOUBLE) {
 		du.d = d;
-		snprintf(note, sizeof note, "%.17g", d);
+		sprintf(note, "%.17g", d);
 		printx("\t.quad\t0x%lx\t// %s\n", du.l, note);
 	} else {
 		fu.f = (float)d;
-		snprintf(note, sizeof note, "%.9g", (double)fu.f);
+		sprintf(note, "%.9g", (double)fu.f);
 		printx("\t.long\t0x%x\t// %s\n", (long)fu.i, note);
 	}
 	inoff += sz;

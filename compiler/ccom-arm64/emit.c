@@ -33,10 +33,31 @@
  */
 
 # include <stdio.h>
-# include <stdlib.h>
 # include <string.h>
 # include "mfile2.h"
 # include "gencode.h"
+
+/*
+ * <stdlib.h> is not here because V8 does not have one -- ANSI C postdates this
+ * source by four years -- and this file has to compile under BOTH clang and
+ * v8cc, against whichever include tree it is pointed at.  So it declares what
+ * it uses, which is exactly what V8's own libc does: src/libc/stdio/flsbuf.c
+ * opens with `char *malloc();` for the same reason.
+ *
+ * An earlier version made the include conditional on __STDC__.  That asks the
+ * wrong question -- it tests which COMPILER is running, when what matters is
+ * which HEADERS are on the path, and the two come apart the moment clang is
+ * aimed at $V8ROOT/usr/include.  Declaring unconditionally has no such seam,
+ * and it makes both builds of this file see identical declarations, which the
+ * fixpoint comparison in tests/selfhost depends on.
+ *
+ * char *, not void *: V8's libc returns char *, and both call sites cast.
+ * Getting this wrong is not a style question -- an undeclared malloc returns
+ * int, which on LP64 truncates the heap pointer, and that is the single most
+ * common bug class in this port.
+ */
+extern char *malloc();
+extern char *realloc();
 
 FILE *outfile;			/* set by reader.c/local.c; defaults to stdout */
 

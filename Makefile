@@ -126,7 +126,8 @@ DEPFLAGS = -MMD -MP
 KRFLAGS = -std=gnu89 -fcommon -fsigned-char -O1 \
           -Wno-comment -Wno-return-mismatch -Wno-implicit-int \
           -Wno-implicit-function-declaration -Wno-deprecated-non-prototype \
-          -Wno-parentheses -Wno-unused-value
+          -Wno-parentheses -Wno-unused-value \
+          -Wno-incompatible-library-redeclaration
 
 # 1978 yacc spelled actions '={ ... }'; modern yacc/bison wants '{ ... }'.
 # This is a host-tool incompatibility, not a defect, so the .y files stay

@@ -51,8 +51,36 @@ static ret gencall();
  * a 4-byte load looks perfectly reasonable until you know the node was a
  * pointer.  Printing them octal makes them directly comparable with mfile2.h,
  * where TINT is 04 and TPOINT is 04000.
+ *
+ * NOT A VARIADIC MACRO.  This was `#define V8DBG(...)` with __VA_ARGS__, which
+ * V8's cpp cannot preprocess -- it predates the idea by fourteen years, and the
+ * self-hosted compiler therefore could not build its own back end ("bad formal:
+ * ." three times over, at the #define, before a single call was reached).
+ *
+ * A K&R function with fixed named parameters is the 1985 spelling, and on this
+ * target it is also the correct one, for the reason printx.c documents at
+ * length: an unprototyped call passes its arguments in x0-x7, while a variadic
+ * callee under AAPCS64 reads them from the stack.  Six longs covers the widest
+ * call site (SCONV and CALLEE, five values each).
  */
-#define V8DBG(...) do { if (getenv("V8DBG")) fprintf(stderr, __VA_ARGS__); } while (0)
+static int v8dbgon = -1;
+
+/* VARARGS1 */
+static
+v8dbg(fmt, a1, a2, a3, a4, a5, a6)
+	char *fmt;
+	long a1, a2, a3, a4, a5, a6;
+{
+	char *getenv();
+
+	if (v8dbgon < 0)
+		v8dbgon = getenv("V8DBG") != 0;
+	if (v8dbgon)
+		fprintf(stderr, fmt, a1, a2, a3, a4, a5, a6);
+	return (0);
+}
+
+#define V8DBG	v8dbg
 
 /* ------------------------------------------------------- register pool */
 
@@ -130,15 +158,26 @@ fregfree(r)
 }
 
 /* d-form (double) and s-form (float) names for FP register r. */
+/*
+ * sprintf, not snprintf.  snprintf is C99 and libv8c does not have it, so under
+ * v8cc the call resolved from -lSystem -- and being VARIADIC that is the one
+ * shape where the silent fallback is wrong rather than merely inauthentic:
+ * v8cc passes arguments positionally in x0-x7, Apple's ARM64 ABI passes
+ * variadic ones on the stack.  See src/cmd/cc.c setpaths() for the same fix.
+ *
+ * The bound is not lost, it is moved into the type: r is a register number, so
+ * the widest result is "d31" -- three characters.  16 leaves room for a
+ * hypothetical FREG0 offset without anyone having to re-derive this.
+ */
 static char *
 dreg(r)
 	int r;
 {
-	static char buf[6][8];
+	static char buf[6][16];
 	static int i;
 
 	i = (i + 1) % 6;
-	snprintf(buf[i], sizeof buf[i], "d%d", FREG0 + r);
+	sprintf(buf[i], "d%d", FREG0 + r);
 	return (buf[i]);
 }
 
@@ -146,11 +185,11 @@ static char *
 sreg(r)
 	int r;
 {
-	static char buf[6][8];
+	static char buf[6][16];
 	static int i;
 
 	i = (i + 1) % 6;
-	snprintf(buf[i], sizeof buf[i], "s%d", FREG0 + r);
+	sprintf(buf[i], "s%d", FREG0 + r);
 	return (buf[i]);
 }
 
@@ -383,7 +422,13 @@ addconst(r, off)
 		printx("\t%s\t%s, %s, #%lu\n", op, xreg(r), xreg(r), u);
 		return;
 	}
-	if (u < (1UL << 24)) {
+	/*
+	 * (unsigned long)1, not 1UL.  The U suffix is ANSI C, which postdates
+	 * this compiler by four years -- V8's own scanner rejects it outright
+	 * ("syntax error ... saw NAME"), so the self-hosted build could not get
+	 * past this line.  The cast is the K&R spelling and means the same thing.
+	 */
+	if (u < ((unsigned long)1 << 24)) {
 		if (u & 0xfff)
 			printx("\t%s\t%s, %s, #%lu\n", op, xreg(r), xreg(r),
 			    u & 0xfff);
@@ -914,7 +959,9 @@ lvstore(lv, src)
 
 	if (lv->fldoff >= 0) {
 		/* read the containing word, splice the bits in, write it back */
-		ret c = lvload(lv->cont);
+		ret c;
+
+		c = lvload(lv->cont);
 		printx("\tbfi\t%s, %s, #%d, #%d\n", xreg(c.reg), xreg(src),
 		    lv->fldoff, lv->fldsiz);
 		lvstore(lv->cont, c.reg);
@@ -1098,10 +1145,20 @@ gen(p, want)
 		return (l);
 
 	case CONV: {
+		TWORD st;
+		TWORD dt;
+
+		/*
+		 * Declarations first, then statements.  A declaration after a
+		 * statement is C99; K&R wants every declaration at the head of
+		 * its block, and V8's own parser says so plainly -- "syntax
+		 * error ... saw TYPE", followed by st and dt undefined for the
+		 * rest of the function.
+		 */
 		V8DBG("CONV type=%o from=%o\n", (unsigned)p->in.type,
 		    (unsigned)p->in.left->in.type);
-		TWORD st = p->in.left->in.type;
-		TWORD dt = p->in.type;
+		st = p->in.left->in.type;
+		dt = p->in.type;
 
 		V8DBG("SCONV op=%d src=%o (%d bytes) dst=%o (%d bytes)\n",
 		    p->in.left->in.op, st, tybytes(st), dt, tybytes(dt));
@@ -1834,11 +1891,18 @@ gencall(p, want)
 	 * qsort was the first thing to need one; sh, awk and troff are full of
 	 * them.  Set V8DBG to see the trace above.
 	 */
+	/*
+	 * The two (long) casts are the price of v8dbg being a real function
+	 * with named parameters rather than a variadic macro.  printx gets away
+	 * without them only because it lives in its own file and every call to
+	 * it is therefore unprototyped -- see the header of printx.c.  Widths
+	 * match on LP64, so the cast moves no bits; it just says so out loud.
+	 */
 	V8DBG("CALLEE op=%d name=[%s] calltype=%o (%d bytes%s)\n",
 	    p->in.left->in.op,
-	    p->in.left->in.name ? p->in.left->in.name : "",
+	    (long)(p->in.left->in.name ? p->in.left->in.name : ""),
 	    p->in.type, tybytes(p->in.type),
-	    tyunsigned(p->in.type) ? ", unsigned" : "");
+	    (long)(tyunsigned(p->in.type) ? ", unsigned" : ""));
 	if (p->in.left->in.op == ICON &&
 	    p->in.left->in.name && *p->in.left->in.name) {
 		printx("\tbl\t%s\n", p->in.left->in.name);

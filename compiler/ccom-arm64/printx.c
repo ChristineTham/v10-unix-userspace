@@ -44,16 +44,33 @@ printx(fmt, a1, a2, a3, a4, a5, a6, a7, a8)
 	av[4] = a5; av[5] = a6; av[6] = a7; av[7] = a8;
 	ai = 0;
 	o = buf;
-	e = buf + sizeof buf - 64;
+	/*
+	 * The guard band is what replaces snprintf's length argument (see the
+	 * conversions below).  256 bytes is room for one numeric conversion of
+	 * any width this compiler's own format strings can ask for; the loop
+	 * stops before o reaches e, so a conversion always has that much.
+	 */
+	e = buf + sizeof buf - 256;
 
 	for (f = fmt; *f && o < e; f++) {
 		if (*f != '%') { *o++ = *f; continue; }
 		if (f[1] == '%') { *o++ = '%'; f++; continue; }
 
 		/*
-		 * Copy the conversion spec verbatim and hand it to snprintf with
-		 * exactly one argument, so %ld, %#x, %.3s and the rest keep
-		 * working without reimplementing printf here.
+		 * Copy the conversion spec verbatim and hand it to sprintf with
+		 * exactly one argument, so %ld, %#x and the rest keep working
+		 * without reimplementing printf here.
+		 *
+		 * sprintf, not snprintf, because snprintf is C99: libv8c does
+		 * not have it, so under v8cc the call resolved from -lSystem,
+		 * and being variadic it then disagreed with v8cc about where
+		 * its arguments were (positional in x0-x7 versus AAPCS64's
+		 * stack).  V8's sprintf returns the count, like the 4.1BSD one
+		 * it is, so `o +=` still reads correctly.
+		 *
+		 * The length bound moves to the guard band above -- except for
+		 * %s, whose argument has no bound at all and so is copied by
+		 * hand below rather than formatted.
 		 */
 		si = 0;
 		spec[si++] = *f++;
@@ -66,14 +83,29 @@ printx(fmt, a1, a2, a3, a4, a5, a6, a7, a8)
 		if (ai >= 8) cerror("printx: more than 8 arguments: %s", fmt);
 
 		if (*f == 's') {
-			spec[si++] = 's';
-			spec[si] = '\0';
+			/*
+			 * Copied, not formatted.  A string argument is the one
+			 * conversion whose length no guard band can bound -- a
+			 * symbol name under FLEXNAMES is arbitrarily long -- so
+			 * this is the case snprintf's bound was actually doing
+			 * work for, and dropping to sprintf here would be a
+			 * buffer overrun in the compiler rather than a style
+			 * change.  Bounded by e, exactly as before.
+			 *
+			 * Every %s printx is handed in this tree is the plain
+			 * form: 253 of them, no width and no precision.  A width
+			 * would have to be reinstated here if one ever appears,
+			 * which is why the spec is still parsed above.
+			 */
 			s = (char *)av[ai++];
-			o += snprintf(o, e - o, spec, s ? s : "<null>");
+			if (s == 0)
+				s = "<null>";
+			while (*s && o < e)
+				*o++ = *s++;
 		} else if (*f == 'c') {
 			spec[si++] = 'c';
 			spec[si] = '\0';
-			o += snprintf(o, e - o, spec, (int)av[ai++]);
+			o += sprintf(o, spec, (int)av[ai++]);
 		} else {
 			/*
 			 * Force the long form.  Callers pass ints and longs
@@ -85,7 +117,7 @@ printx(fmt, a1, a2, a3, a4, a5, a6, a7, a8)
 				spec[si++] = 'l';
 			spec[si++] = *f;
 			spec[si] = '\0';
-			o += snprintf(o, e - o, spec, av[ai++]);
+			o += sprintf(o, spec, av[ai++]);
 		}
 	}
 	*o = '\0';
