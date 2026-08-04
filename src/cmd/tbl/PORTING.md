@@ -58,8 +58,27 @@ Those strings live in tbl's private arena: `alocv()` in `tb.c` hands out slices
 of `calloc`'d blocks, and the cells are `struct colstr` — which contains
 pointers, so it doubled under LP64. Worth checking whether every allocation for
 it is computed with `sizeof` rather than a literal, since a literal would now be
-half what is needed and the table would overlap itself. Instrument `putline`
-first to confirm the fault is a cell string, then read `alocv`'s callers.
+half what is needed and the table would overlap itself. Narrowed once more, inside `runout`:
+
+```
+11        runout() entered
+R1 R2     deftail() completed
+R3        putline(0,0) entered -- and never returns
+```
+
+So it is `putline`, on the **first row**, in `t7.c`. And the arena is probably
+not the cause: `alocv`'s only call site is
+
+```c
+table[nlin] = (struct colstr *) alocv((ncol+2)*sizeof(table[0][0]));
+```
+
+which uses `sizeof`, so it sizes correctly under LP64; and a three-row,
+two-column table needs a few hundred bytes of the 2000 (`MAXCHS`) a block holds.
+
+`putline` is the next and last function to bracket. It walks a row's cells and
+prints each through `fprintf`, so the same marker technique will name the
+statement.
 
 ## A note on the file list
 
