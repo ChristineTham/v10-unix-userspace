@@ -1,0 +1,28 @@
+# Provenance for src/libc/stdio
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+021d7b8a9d88410ac31eb358f2159bed53023fa9  v8/usr/src/libc/stdio/data.c
+94fd358c600797807dc58794169143b67786bea6  v8/usr/src/libc/stdio/fopen.c
+a3f4acba68b496de9aa3ffbc496f53bf1fa5f3fe  v8/usr/src/libc/stdio/filbuf.c
+ad1ddcf76144185de5db5469d4bbe1303f773db4  v8/usr/src/libc/stdio/flsbuf.c
+feee5b1ea23ee437519e62ec2e9c1e160e573fa0  v8/usr/src/libc/stdio/fputs.c
+6ce66cd95f2d851f2111c47d02d6cdaf23c3601a  v8/usr/src/libc/stdio/fgets.c
+b00cd7ab56acdf9e1218f01e5e1d17733f79d98b  v8/usr/src/libc/stdio/printf.c
+2362269bf68e1201404ded3162ba59a71318669d  v8/usr/src/libc/stdio/fprintf.c
+1623f5ceb5be64633bf1c579c891d34220dbf08f  v8/usr/src/libc/stdio/sprintf.c
+883600afc489fa4494e74d42908a19abe23d65b5  v8/usr/src/libc/stdio/stdio.h
+860385f327babd060c7869bb90c891132264b2a5  v8/usr/src/libc/stdio/fgetc.c
+c25ca07a2408ed85f5c92792ecfc453f5c176b15  v8/usr/src/libc/stdio/fputc.c
+b0181b3a1b87626aeff25b1c1752a9638b119d55  v8/usr/src/libc/stdio/ungetc.c
+c1c1cd56f2a43ff01cc6e43daa4101f791a0cb5b  v8/usr/src/libc/stdio/rew.c
+ca03bfe1fc0a64f779ed6f4d3aa4ba7a9eaab626  v8/usr/src/libc/stdio/setbuf.c
+f7ce9cae63771c7043a5036dead6cdb672ce2ad9  v8/usr/src/libc/stdio/clrerr.c
+a3a4a0b365f86dc7276d1cf534c432b6642fb57f  v8/usr/src/libc/stdio/error.c
+c9f0c662a91d5a8fd7245ed06686218ad2174f3a  v8/usr/src/libc/stdio/puts.c
+dc076de72e2573c69c7491e5d5b3d2498b84514f  v8/usr/src/libc/stdio/gets.c
+a152cae803a98382eb69b02d4e2aceae4589b797  v8/usr/src/libc/stdio/getchar.c
+fd3dcfdda2c827c9aee6471d545a0c02ee21bcab  v8/usr/src/libc/stdio/putchar.c
+d52f2e61722b096427ea2f6862e729d3759f89b4  v8/usr/src/libc/stdio/rdwr.c

@@ -1,0 +1,15 @@
+# Provenance for src/libc/gen
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+73ff252edeafd19ba17b689a1b6a3d8cf7362053  v8/usr/src/libc/gen/malloc.c
+2abf6a5c690daa67b11ae6709898b312d5653c89  v8/usr/src/libc/gen/strlen.C
+da2acb57e7fd2e689e7cfad1ba2d46cabeaafee8  v8/usr/src/libc/gen/strcpy.C
+31597198428fab9e98ff0a3c64fc409c61c1e85f  v8/usr/src/libc/gen/strcmp.C
+9d2a52cb99699b2662479440276f310ccdf0c328  v8/usr/src/libc/gen/strcat.C
+40c511e7f7b55de6e12ac22645a4af64e9cd180d  v8/usr/src/libc/gen/strncpy.C
+a46514e58d5db010f386767fcbf16b69a1e687ce  v8/usr/src/libc/gen/strncmp.C
+3c5b8ded82bae92692af27b4279f828141d01de7  v8/usr/src/libc/gen/strchr.C
+43d17fc4047e2e3d723dcffc618f73e3cc83a5f1  v8/usr/src/libc/gen/ecvt.c

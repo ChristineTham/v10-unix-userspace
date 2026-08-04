@@ -38,7 +38,7 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 # with -nostartfiles, never into anything that also uses host libc.
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c,$(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding clean distclean
 all: stage0
 stage0: cpp v8ccom v8cc libv8sys crt0 rootfs
 
@@ -197,6 +197,57 @@ SHIMFLAGS = -std=gnu99 -Wall -Wno-unused-function \
 $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) $(SHIMFLAGS) -c $< -o $@
+
+# ---------------------------------------------------------------------------
+# libv8c -- V8's own libc, compiled by v8cc, on top of the shim.
+#
+# This is authentic V8 source with three kinds of exception, each marked in the
+# file that replaces it: the VAX assembly leaf routines (string ops, doprnt,
+# the float primitives), which had to be rewritten; the syscall stubs, which
+# are the shim; and crt0.
+# ---------------------------------------------------------------------------
+LIBCSRC = $(SRC)/libc
+LIBC_C  = $(LIBCSRC)/gen/malloc.c $(LIBCSRC)/gen/ecvt.c $(LIBCSRC)/gen/ieeefp.c \
+          $(LIBCSRC)/stdio/data.c $(LIBCSRC)/stdio/doprnt.c \
+          $(LIBCSRC)/stdio/printf.c $(LIBCSRC)/stdio/fprintf.c \
+          $(LIBCSRC)/stdio/filbuf.c $(LIBCSRC)/stdio/flsbuf.c \
+          $(LIBCSRC)/stdio/fputs.c $(LIBCSRC)/stdio/fgets.c \
+          $(LIBCSRC)/stdio/fopen.c $(LIBCSRC)/stdio/fgetc.c \
+          $(LIBCSRC)/stdio/fputc.c $(LIBCSRC)/stdio/ungetc.c \
+          $(LIBCSRC)/stdio/rew.c $(LIBCSRC)/stdio/setbuf.c \
+          $(LIBCSRC)/stdio/clrerr.c $(LIBCSRC)/stdio/error.c \
+          $(LIBCSRC)/stdio/puts.c $(LIBCSRC)/stdio/gets.c \
+          $(LIBCSRC)/stdio/getchar.c $(LIBCSRC)/stdio/putchar.c \
+          $(LIBCSRC)/stdio/rdwr.c $(LIBCSRC)/stdio/sprintf.c
+# The string routines ship as .C -- portable references beside the VAX assembly
+# that V8 actually built.  They are what a machine without those instructions
+# was meant to use.
+LIBC_STR = strlen strcpy strcmp strcat strncpy strncmp strchr
+
+LIBC_OBJ = $(patsubst $(LIBCSRC)/%.c,$(BUILD)/libc/%.o,$(LIBC_C)) \
+           $(patsubst %,$(BUILD)/libc/gen/%.o,$(LIBC_STR))
+
+libv8c: $(BUILD)/libc/libv8c.a
+$(BUILD)/libc/libv8c.a: $(LIBC_OBJ)
+	ar rcs $@ $(LIBC_OBJ)
+	@echo "built $@"
+
+# Compiled by v8cc itself -- this is the point.  V8ROOT has to be set for the
+# driver to find its passes.
+V8CCRUN = V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc -I$(LIBCSRC)/stdio
+
+$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.c | rootfs
+	@mkdir -p $(BUILD)/libc/gen
+	$(V8CCRUN) -c -o $@ $<
+
+$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.C | rootfs
+	@mkdir -p $(BUILD)/libc/gen
+	cp $< $(BUILD)/libc/gen/$*.c
+	$(V8CCRUN) -c -o $@ $(BUILD)/libc/gen/$*.c
+
+$(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c | rootfs
+	@mkdir -p $(BUILD)/libc/stdio
+	$(V8CCRUN) -c -o $@ $<
 
 # ---------------------------------------------------------------------------
 # v8cc -- V8's cc(1) driver, retargeted.

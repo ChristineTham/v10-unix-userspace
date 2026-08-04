@@ -58,3 +58,54 @@ second, and the aliasing bug lived entirely in the gap between them.
 `stubs.c` provides a placeholder `exit()` that skips straight to the syscall.
 V8's real one calls `_cleanup()` to flush stdio first (`libc/sys/exit.s`), and
 should replace it as soon as stdio is ported.
+
+---
+
+# libv8c (V8's libc), current state
+
+`make libv8c` builds `libv8c.a` **with v8cc** from authentic V8 sources:
+malloc, ecvt/fcvt, the seven portable string routines (V8's own `.C` reference
+implementations, which is what a machine without the VAX string instructions
+was meant to use), and 20 stdio files.
+
+Two files replace VAX assembly and are new code, each saying so at the top:
+
+* `src/libc/stdio/doprnt.c` for `doprnt.S` (765 lines of VAX assembly using
+  decimal-string instructions and a `locc` translate table). Walks the argument
+  block with an 8-byte stride, which is exactly what v8cc's arg-spilling
+  prologue guarantees — `printf(fmt, args) { _doprnt(fmt, &args, stdout); }`
+  compiles and runs unmodified because of it.
+* `src/libc/gen/ieeefp.c` for `modf`, `frexp`, `ldexp`, `fabs`. Verified
+  against V8's own `ecvt.c`, which is portable C and needed no changes beyond
+  a `static` on a forward declaration that K&R allowed to disagree with the
+  definition.
+
+One source change, in `ieeefp.c` itself: it was first written in C99 and V8's
+compiler rejected it. No `long long` (the type did not exist in 1985), no `ULL`
+suffixes. Under LP64 a plain `long` is already the 64 bits an IEEE double needs.
+
+## Open: stdio faults inside putc
+
+`fputs("...", stdout)` dies with `EXC_BAD_ACCESS` reading `0xffffffffffffffff`
+at `fputs+76` — inside the `putc` macro, before `_flsbuf` is reached.
+
+Ruled out so far:
+
+* `_iob` links and is correctly initialised; `_iob[0]` reads
+  `{0, _sibuf, _sibuf, _IOREAD, 0}` at runtime, and the struct is the expected
+  32 bytes.
+* The pre-decrement through a struct pointer — `--(p)->_cnt >= 0`, the awkward
+  half of the macro — compiles correctly on its own; the generated code was
+  read and is right.
+* The only undefined symbol in the image is `_isatty`, which `_flsbuf` calls
+  and which we have not ported yet.
+
+So the remaining suspects are the *other* half of the macro,
+`*(p)->_ptr++ = (unsigned char)(x)` — a post-increment through a pointer field
+combined with a narrowing store — or something about how the two arms of the
+conditional expression are joined. Next step is to compile that expression
+alone, the way the pre-decrement was, and read the code.
+
+Note the shape of this: the compiler passes 62 tests including post-increment,
+struct pointers and narrowing stores *individually*. Whatever this is, it is in
+their combination, which is what real libc code does and synthetic tests do not.
