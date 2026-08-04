@@ -1,0 +1,27 @@
+# Provenance for src/cmd/pic
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+3f5d2e2639cdab93488dbb2b0a5ab73fe8d1d078  v8/usr/src/cmd/pic/movegen.c
+98e1ed31d5b36170977e37bb37d90740ad53828a  v8/usr/src/cmd/pic/picl.l
+76bb4b0f0ef9308b7566ea9509fc1b219c848b08  v8/usr/src/cmd/pic/boxgen.c
+407813c8d78ce5cff9cd749ccfe9948172a907d7  v8/usr/src/cmd/pic/linegen.c
+e7ba1525c417aa8538bc12c4320ff77a755db46a  v8/usr/src/cmd/pic/print.c
+f0e56a666293d13ddd1dad811e1f5aedd41cac09  v8/usr/src/cmd/pic/blockgen.c
+d1073dbe60745291ceb496cde1cce729e7f30c8e  v8/usr/src/cmd/pic/makefile
+434d2f6d8d74e9253548677a7905e91fb76a70ab  v8/usr/src/cmd/pic/arcgen.c
+52b5c9ac725339bb4b878bc37f222ff14de197a7  v8/usr/src/cmd/pic/PS-PEmacros
+9212153fe55baf96496a9d436c3c56873f0ec700  v8/usr/src/cmd/pic/UNDOC
+228dd8a23b13b6a068cdc8e2b09e7315219cbfa6  v8/usr/src/cmd/pic/pictest.a
+d10ef8c75896610d2442c053e28f1ee6cb9a2cc0  v8/usr/src/cmd/pic/picy.y
+1c89e7ecf547f968eb66b54327054d3ce1180132  v8/usr/src/cmd/pic/input.c
+6d819cb157a210f277a27bce8adee05219d8af13  v8/usr/src/cmd/pic/main.c
+342df0bc39695315e27574a4bd7df96f69efa294  v8/usr/src/cmd/pic/pic.h
+fd05dfea1e33fab1d673e8e4bc08ff9dbb06a01b  v8/usr/src/cmd/pic/for.c
+da98799b1d18161caac691b1c48a7e5138dd6b48  v8/usr/src/cmd/pic/circgen.c
+241ce8acf622eca8c69a0f67ebd18dbffc98ceaa  v8/usr/src/cmd/pic/textgen.c
+5c7f1f6e9bda05938a50b226a92066c03151e6d7  v8/usr/src/cmd/pic/misc.c
+8ef8b2d641b53d3a1bb42a089c306fb07a251fa1  v8/usr/src/cmd/pic/symtab.c
+cf8d2381bb6369e60321433a6cb55da85ae3d4aa  v8/usr/src/cmd/pic/pltroff.c

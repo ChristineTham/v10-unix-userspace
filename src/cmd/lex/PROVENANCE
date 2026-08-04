@@ -1,0 +1,15 @@
+# Provenance for src/cmd/lex
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+ce0741dc5f1273d59974332408aa42a7e18cb038  v8/usr/src/cmd/lex/sub2.c
+f9b524975d90a34d226fa07dfe73ba98f729dc3e  v8/usr/src/cmd/lex/once.c
+b844b18556c9caf9ddc44f9ccd53ecd78c718990  v8/usr/src/cmd/lex/Makefile
+45dc1a99eb436c3eab1a523628635cdf42c712bf  v8/usr/src/cmd/lex/sub1.c
+3ef43af2ef7d3ab9172af4f19e01cd7256342733  v8/usr/src/cmd/lex/lmain.c
+f874c87184a45393309e52b20ff5e3a50c5e958c  v8/usr/src/cmd/lex/ldefs.c
+8ca51b4cb5553a0f42db5d5d0080058fa98de7f8  v8/usr/src/cmd/lex/ncform
+1e9561cc3fa6d24db6b90e8cb06e9472468497f6  v8/usr/src/cmd/lex/header.c
+81df2d0387077a0d018aa2d878c51c768dcd32ac  v8/usr/src/cmd/lex/parser.y
