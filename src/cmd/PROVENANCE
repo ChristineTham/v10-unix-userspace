@@ -45,3 +45,4 @@ f0fbd70e357744ee1ccc3f70ba8220f6f0b2b3a6  v8/usr/src/cmd/ascii.c
 160f8654bd0c1528da58c5c2be38b456671b04ac  v8/usr/src/cmd/deroff.c
 d92b26763a28dca4a5dd1f411a37bc3468c762d5  v8/usr/src/cmd/ptx.c
 eb11d36bac52450a576f6aacdf584a6f2427d98b  v8/usr/src/cmd/units.c
+7cc7378a7ee2b29846e0e19c6116d7de7ce68387  v8/usr/src/cmd/ls.c

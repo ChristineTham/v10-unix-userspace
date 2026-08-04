@@ -370,6 +370,9 @@ rootfs: cpp v8ccom v8cc
 	@# set.  src/include/PROVENANCE records the upstream hash of each, so the
 	@# diff against pristine V8 stays reconstructible.
 	@cp -R $(SRC)/include/. $(ROOTFS)/usr/include/
+	@# The jerq headers, which ls(1) and mc(1) reach for by absolute path.
+	@# Unchanged upstream files; only their location moves.
+	@cp $(ROOT)third_party/Research-Unix-v8/jerq/include/jioctl.h $(ROOTFS)/usr/include/
 	@echo "rootfs ready: V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc"
 
 clean:

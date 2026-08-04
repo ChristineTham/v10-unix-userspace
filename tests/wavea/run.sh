@@ -219,6 +219,14 @@ try vis    'vis'             'a-BS-001b' "printf 'a\001b\n' | ./vis | head -1 | 
 try ascii  'ascii'           '1' "./ascii | grep -c 'nul'"
 try deroff 'deroff'          'text' "printf '.PP\ntext\n' | ./deroff | tr -d ' \n'"
 
+# ls exercises more of the shim than anything else here: the directory layer,
+# stat translation, the uid/gid lookups and ctime(3) all at once.
+mkdir -p lsdir && : > lsdir/alpha && : > lsdir/beta && mkdir -p lsdir/sub
+try ls     'ls'               'alpha beta sub' "./ls lsdir | tr '\n' ' ' | sed 's/ \$//'"
+try ls     'ls -a includes .' '2' "./ls -a lsdir | grep -c '^\\.'"
+try ls     'ls -l is one line per file, plus total' '4' "./ls -l lsdir | wc -l | tr -d ' '"
+try ls     'ls -l marks the directory' 'd' "./ls -l lsdir | awk '\$NF==\"sub\"{print substr(\$1,1,1)}'"
+
 # pwd is here rather than with the filters because it exercises the shim's
 # directory layer end to end: getwd(3) walks to the root matching each entry
 # against stat("."), which is what caught the APFS firmlink problem.
@@ -288,4 +296,28 @@ echo "wavea: $pass passed, $fail failed"
 #
 # The general shape again: neither was a defect in the ported program.  One was
 # a target-model decision made wrongly, one was a missing library file.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# NOT PORTED, and why. Compiling every command in usr/src/cmd leaves seven that
+# do not build and two that do not link; none of them is a compiler defect.
+#
+#   512restor, fsck  filesystem repair on a raw device. PLAN.md S1 rule 5 puts
+#                    the V8 filesystem out of scope, and these read disk
+#                    structures the shim does not present.
+#   ld               embeds VAX assembly: `movc3 r8,(r11),(r7)`. The host link
+#                    editor is used by design (S1 rule 2).
+#   fstat            a /dev/kmem groveler, and its own `long getw()` collides
+#                    with stdio's. Phase 4.
+#   mc               a jerq (Blit) client. Phase 5.
+#   tcat             `char *asctab[128] { ... }` -- an initialiser with no `=`,
+#                    which V8's own grammar rejects too. An upstream defect, not
+#                    a porting one.
+#   init, stty       want tty_ld and ntty_ld, the kernel's line-discipline
+#                    numbers. Genuinely kernel state; a case-by-case decision
+#                    under S7 rather than something to emulate.
+#
+# ls(1) needed one source change, marked in src/cmd/ls.c: it includes
+# "/usr/jerq/include/jioctl.h" by absolute path, which is the one form of
+# include no -I can redirect. The header itself is unchanged.
 # ---------------------------------------------------------------------------

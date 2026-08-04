@@ -1349,6 +1349,25 @@ gen(p, want)
 			regfree(l.reg);
 			printx("\tb.%s\tL%d\n", ccsuffix(p->bn.lop),
 			    p->bn.label);
+		} else if (l.flag & R_FREG) {
+			/*
+			 * The same truth test on a FLOATING value, which is
+			 * what `n ? n : 1` compiles to when n is a double.
+			 * sa(1) has exactly that inside a printf argument:
+			 *
+			 *	printf("%10.0favio", e/(n?n:1));
+			 *
+			 * fcmp against zero sets the same flags an integer cmp
+			 * would, so the polarity in bn.lop carries over
+			 * unchanged.  Comparing NaN leaves the unordered flags,
+			 * which makes every ordered condition false -- the same
+			 * answer C gives for `if (nan)`.
+			 */
+			printx("\tfcmp\t%s, #0.0\n",
+			    freg(p->in.left->in.type, l.reg));
+			fregfree(l.reg);
+			printx("\tb.%s\tL%d\n", ccsuffix(p->bn.lop),
+			    p->bn.label);
 		} else {
 			cerror("GENBR with no condition");
 		}
