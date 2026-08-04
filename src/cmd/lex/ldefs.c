@@ -109,8 +109,8 @@ extern int prev;	/* previous input character */
 extern int pres;	/* present input character */
 extern int peek;	/* next input character */
 extern int *name;
-extern int *left;
-extern int *right;
+extern long *left;
+extern long *right;
 extern int *parent;
 extern char *nullstr;
 extern int tptr;

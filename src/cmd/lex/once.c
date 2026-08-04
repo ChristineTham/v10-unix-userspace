@@ -88,8 +88,27 @@ int chset;	/* 1 = char set modified */
 FILE *fin, *fother;
 int fptr;
 int *name;
-int *left;
-int *right;
+/*
+ * PORT: long, not int.
+ *
+ * left[] holds two different things: a node index into the parse tree, and --
+ * for a character class -- a POINTER into the packed-character array.  cfoll()
+ * in sub2.c does
+ *
+ *	char *p;
+ *	p = left[v];
+ *
+ * and then scans it for a NUL.  On the VAX an int held a pointer exactly; under
+ * LP64 it holds half of one, and lex died scanning 0x4995010.  right[] is the
+ * same shape and widens with it.
+ *
+ * The compiler cannot rescue this: these are genuine int arrays, so the value is
+ * stored into four bytes and reloaded from four, and nothing about that is a
+ * conversion.  Same as tbl's `ct = reg(...)`.  Every allocation uses
+ * sizeof(*left), so the size follows automatically.
+ */
+long *left;
+long *right;
 int *parent;
 char *nullstr;
 int tptr;
