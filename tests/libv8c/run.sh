@@ -84,7 +84,17 @@ echo "libv8c: $pass passed, $fail failed"
 #	<+148>: ldr   x9, [x9]         ; p = allocb          <- 8 bytes, correct
 #	<+160>: ldrsw x9, [x9]         ; p->ptr
 #
-# 0x10fb8 is `alloca`'s LINK-TIME address. malloc has
+# 0x10fb8 is `alloca`'s address WITH THE TOP 32 BITS CUT OFF -- nm puts
+# _alloca at 0x100010fb8 and _allocb at 0x100010008. So this is one more
+# 32-bit truncation of a pointer, not a relocation problem: the object's
+# relocations are present and correct (otool -r shows two 8-byte entries in
+# __DATA,__data, exactly _allocb and _allocp).
+#
+# `grep -c ldrsw malloc.s` still reports 4. The opbigsz fix removed some of the
+# narrow pointer loads but not all, so there is at least one more path by which
+# pass 1 or the back end decides a pointer-width load can be done in 32 bits.
+# Finding it means dumping the tree for clearbusy() -- ccom -X flags print it --
+# and seeing what type the STAR node carries. malloc has
 #
 #	static union store alloca;
 #	static union store *allocb = &alloca;
