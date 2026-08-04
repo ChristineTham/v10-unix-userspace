@@ -52,6 +52,18 @@ global `char line[512]`, `fprintf(tabout, "%s\n", line)` — it **works**. So th
 crash needs more of tbl's state than its arguments, and the next move is not a
 smaller reproduction but a bisection of what runs before it.
 
-`main` calls `signal(SIGPIPE, badsig)` before `tbl()` assigns `tabout`, and
-`setinp` runs between the assignment and the first `fprintf`. Either could have
-left something broken behind; instrument in that order.
+Eliminated since:
+
+* **`setinp` does nothing** in the failing case. With input on stdin `argc` is 1,
+  so `sargc` is 0 after the decrement and `swapin()` is never called — yet it
+  still crashes.
+* **`fgets` is correct.** `gets1` fills `line` with `fgets(s, 512, tabin)` and
+  then walks it with `while (*s) s++`, so a missing terminator would land
+  exactly here. Tested directly: `fgets` reads `hello\n` as six bytes and
+  NUL-terminates.
+
+What is left before the first `fprintf` is `signal(SIGPIPE, badsig)` in `main`,
+`tabin=stdin; tabout=stdout` in `tbl()`, and `gets1`'s own tail after the fgets
+— `while (*s) s++`, the newline strip, and the continuation-line handling.
+Instrument `gets1`'s return value and the first sixteen bytes of `line`, which
+is the one thing still unprinted at the point of the crash.
