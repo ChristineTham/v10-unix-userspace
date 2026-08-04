@@ -121,16 +121,21 @@ else
 	fail=$((fail+1))
 fi
 
+# ---- head ---------------------------------------------------------------
+if build head "$ROOT/src/cmd/head.c"; then
+	check 'head -2'      'alpha beta' "$(./head -2 in.txt | tr '\n' ' ' | sed 's/ $//')"
+	check 'head default' 'alpha beta gamma' \
+	    "$(./head in.txt | tr '\n' ' ' | sed 's/ $//')"
+	check 'head stdin'   'alpha' "$(./head -1 < in.txt)"
+else
+	fail=$((fail+3))
+fi
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
 # ---------------------------------------------------------------------------
 # STILL BROKEN, recorded rather than left to be rediscovered:
-#
-#   head       -- builds and links, produces nothing. rev, tr and the raw
-#                 getchar/putchar round trip all work now, so stdio itself is
-#                 sound; head parses a `-N` argument, so look at its argument
-#                 handling first.
 #
 #   tr -d      -- `tr -d b` produces nothing, though `tr a-z A-Z` and
 #                 `tr abc xyz` are both correct. The delete path is separate

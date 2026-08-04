@@ -222,7 +222,11 @@ LIBC_C  = $(LIBCSRC)/gen/malloc.c $(LIBCSRC)/gen/ecvt.c $(LIBCSRC)/gen/ieeefp.c 
           $(LIBCSRC)/stdio/clrerr.c $(LIBCSRC)/stdio/error.c \
           $(LIBCSRC)/stdio/puts.c $(LIBCSRC)/stdio/gets.c \
           $(LIBCSRC)/stdio/getchar.c $(LIBCSRC)/stdio/putchar.c \
-          $(LIBCSRC)/stdio/rdwr.c $(LIBCSRC)/stdio/sprintf.c
+          $(LIBCSRC)/stdio/rdwr.c $(LIBCSRC)/stdio/sprintf.c \
+          $(LIBCSRC)/stdio/freopen.c $(LIBCSRC)/stdio/fdopen.c \
+          $(LIBCSRC)/stdio/fseek.c $(LIBCSRC)/stdio/ftell.c \
+          $(LIBCSRC)/stdio/strout.c $(LIBCSRC)/stdio/getw.c \
+          $(LIBCSRC)/stdio/putw.c $(LIBCSRC)/stdio/tmpnam.c
 # The string routines ship as .C -- portable references beside the VAX assembly
 # that V8 actually built.  They are what a machine without those instructions
 # was meant to use.

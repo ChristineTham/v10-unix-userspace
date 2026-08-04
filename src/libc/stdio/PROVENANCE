@@ -26,3 +26,15 @@ dc076de72e2573c69c7491e5d5b3d2498b84514f  v8/usr/src/libc/stdio/gets.c
 a152cae803a98382eb69b02d4e2aceae4589b797  v8/usr/src/libc/stdio/getchar.c
 fd3dcfdda2c827c9aee6471d545a0c02ee21bcab  v8/usr/src/libc/stdio/putchar.c
 d52f2e61722b096427ea2f6862e729d3759f89b4  v8/usr/src/libc/stdio/rdwr.c
+760c9d074ece3a3480b3fee973bb738a9d8eb91e  v8/usr/src/libc/stdio/freopen.c
+1cbf8ee48060f13597b4ac36501affb9ac170d18  v8/usr/src/libc/stdio/fseek.c
+e2226c865698bbecf69e72050da7813cb87efcb2  v8/usr/src/libc/stdio/ftell.c
+7ebf10b7ef67a88f70ce5c4ce4ddd7eb5303ee22  v8/usr/src/libc/stdio/fdopen.c
+77c634c3dc8263841d4faf89d353015984f3f225  v8/usr/src/libc/stdio/doscan.c
+4e23d320f461edbcdce953456b44722122fc682d  v8/usr/src/libc/stdio/scanf.c
+5fc16c47ebb49c778fb96d4c6c841088d9a69a09  v8/usr/src/libc/stdio/strout.c
+9113334c320e21e5cd6a931dc553d7f25f32c4f3  v8/usr/src/libc/stdio/getw.c
+f284f6fc4a4b0df31e219ef20f401dd24edf217b  v8/usr/src/libc/stdio/putw.c
+3e3154b6ea522a581e2bff52891dac2fee836c1a  v8/usr/src/libc/stdio/popen.c
+bcb4379351a2583dcdedd2d40715e64ecce4d306  v8/usr/src/libc/stdio/system.c
+8b7af03364d85715e0e707b60c0ab14927f54fcf  v8/usr/src/libc/stdio/tmpnam.c
