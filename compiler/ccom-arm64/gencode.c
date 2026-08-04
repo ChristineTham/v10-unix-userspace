@@ -621,6 +621,128 @@ tofp(r, t)
 	return (r);
 }
 
+
+/*
+ * An lvalue's address, computed ONCE.
+ *
+ * Read-modify-write operators -- `x op= y`, `x++`, `--x` -- have to read the
+ * lvalue and then store back to it.  Generating the lvalue twice, once for each
+ * half, re-runs any side effect inside it.  For `++*--p1`, which is exactly
+ * what V8's ecvt() rounding loop does, that decrements p1 twice and increments
+ * through it twice:
+ *
+ *	"123" with p1 at [2]   ->   expected "133", p1 at [1]
+ *	                            got      "323", p1 at [0]
+ *
+ * So the address is materialised once here and both halves work through it.
+ * `dir` comes back non-zero for a frame-relative operand, which needs no
+ * register at all; `reg` is otherwise the register holding the address.
+ */
+struct lval {
+	NODE *node;	/* the lvalue node, for its type and direct offset */
+	int reg;	/* register holding the address, or -1 */
+	int direct;	/* frame-relative: use the node's own offset */
+	int isreg;	/* the lvalue IS a register (REG/RNODE/SNODE/QNODE) */
+	int rval;	/* which register, when isreg */
+};
+
+static void
+lvaddr(p, lv)
+	NODE *p;
+	struct lval *lv;
+{
+	ret a;
+
+	lv->node = p;
+	lv->reg = -1;
+	lv->direct = 0;
+	lv->isreg = 0;
+	lv->rval = 0;
+
+	if (isdirect(p)) { lv->direct = 1; return; }
+
+	switch (p->in.op) {
+	case REG:
+		lv->isreg = 1; lv->rval = p->tn.rval; return;
+	case RNODE:
+	case SNODE:
+	case QNODE:
+		lv->isreg = 1; lv->rval = -1; return;	/* x0 */
+	case NAME:
+		lv->reg = regalloc();
+		genaddr(p, lv->reg);
+		return;
+	case STAR:
+		a = gen(p->in.left, WVALUE);	/* evaluated exactly once */
+		lv->reg = a.reg;
+		return;
+	}
+	cerror("assignment to unsupported lvalue op %d", p->in.op);
+}
+
+/* Load the lvalue's current value into a fresh register. */
+static ret
+lvload(lv)
+	struct lval *lv;
+{
+	ret r;
+	TWORD t = lv->node->in.type;
+	int reg;
+
+	r.reg = -1; r.flag = R_NONE;
+	if (lv->isreg) {
+		reg = regalloc();
+		printx("\tmov\t%s, %s\n", xreg(reg),
+		    lv->rval < 0 ? "x0" : xreg(lv->rval));
+		r.reg = reg; r.flag = R_REG;
+		return (r);
+	}
+	if (lv->direct) {
+		reg = tyfloat(t) ? fregalloc() : regalloc();
+		loaddirect(lv->node, reg);
+		r.reg = reg; r.flag = tyfloat(t) ? R_FREG : R_REG;
+		return (r);
+	}
+	if (tyfloat(t)) {
+		reg = fregalloc();
+		printx("\tldr\t%s, [%s]\n", freg(t, reg), xreg(lv->reg));
+		r.reg = reg; r.flag = R_FREG;
+		return (r);
+	}
+	reg = regalloc();
+	printx("\t%s\t%s, [%s]\n", ldinsn(t), ldreg(t, reg), xreg(lv->reg));
+	r.reg = reg; r.flag = R_REG;
+	return (r);
+}
+
+/* Store a value back through an already-computed lvalue. */
+static void
+lvstore(lv, src)
+	struct lval *lv;
+	int src;
+{
+	TWORD t = lv->node->in.type;
+
+	if (lv->isreg) {
+		if (lv->rval < 0) printx("\tmov\tx0, %s\n", xreg(src));
+		else printx("\tmov\t%s, %s\n", xreg(lv->rval), xreg(src));
+		return;
+	}
+	if (lv->direct) { storedirect(lv->node, src); return; }
+	if (tyfloat(t))
+		printx("\tstr\t%s, [%s]\n", freg(t, src), xreg(lv->reg));
+	else
+		printx("\t%s\t%s, [%s]\n", stinsn(t), streg(t, src),
+		    xreg(lv->reg));
+}
+
+static void
+lvfree(lv)
+	struct lval *lv;
+{
+	if (lv->reg >= 0) regfree(lv->reg);
+}
+
 static ret
 gen(p, want)
 	NODE *p;
@@ -886,11 +1008,13 @@ gen(p, want)
 	case ASG PLUS: case ASG MINUS: case ASG MUL: case ASG DIV:
 	case ASG MOD: case ASG AND: case ASG OR: case ASG ER:
 	case ASG LS: case ASG RS: {
-		NODE tmp;
+		struct lval lv;
 		int base = p->in.op - (ASG 0);
 
-		/* value of the left operand */
-		l = gen(p->in.left, WVALUE);
+		/* the lvalue is generated ONCE -- see lvaddr() */
+		lvaddr(p->in.left, &lv);
+		l = lvload(&lv);
+
 		if (tyfloat(p->in.type)) {
 			char *fop;
 			switch (base) {
@@ -908,10 +1032,12 @@ gen(p, want)
 			printx("\t%s\t%s, %s, %s\n", fop, freg(p->in.type, l.reg),
 			    freg(p->in.type, l.reg), freg(p->in.type, r.reg));
 			fregfree(r.reg);
-			storeto(p->in.left, l.reg);
+			lvstore(&lv, l.reg);
+			lvfree(&lv);
 			if (want == WEFFECT) { fregfree(l.reg); return (res); }
 			return (l);
 		}
+
 		if (base == MOD) {
 			r = gen(p->in.right, WVALUE);
 			reg = regalloc();
@@ -930,18 +1056,23 @@ gen(p, want)
 			    xreg(l.reg), xreg(r.reg));
 			regfree(r.reg);
 		}
-		storeto(p->in.left, l.reg);
+		lvstore(&lv, l.reg);
+		lvfree(&lv);
 		if (want == WEFFECT) { regfree(l.reg); return (res); }
 		return (l);
 	}
 
 	case INCR:
 	case DECR: {
+		struct lval lv;
 		int reg2;
 
-		l = gen(p->in.left, WVALUE);
+		/* the lvalue is generated ONCE -- see lvaddr() */
+		lvaddr(p->in.left, &lv);
+		l = lvload(&lv);
+
 		if (want != WEFFECT) {
-			/* postfix: keep the old value */
+			/* postfix: hand back the value from before the change */
 			reg2 = regalloc();
 			printx("\tmov\t%s, %s\n", xreg(reg2), xreg(l.reg));
 			r = gen(p->in.right, WVALUE);
@@ -949,7 +1080,8 @@ gen(p, want)
 			    p->in.op == INCR ? "add" : "sub",
 			    xreg(l.reg), xreg(l.reg), xreg(r.reg));
 			regfree(r.reg);
-			storeto(p->in.left, l.reg);
+			lvstore(&lv, l.reg);
+			lvfree(&lv);
 			regfree(l.reg);
 			res.reg = reg2; res.flag = R_REG;
 			return (res);
@@ -958,7 +1090,8 @@ gen(p, want)
 		printx("\t%s\t%s, %s, %s\n", p->in.op == INCR ? "add" : "sub",
 		    xreg(l.reg), xreg(l.reg), xreg(r.reg));
 		regfree(r.reg);
-		storeto(p->in.left, l.reg);
+		lvstore(&lv, l.reg);
+		lvfree(&lv);
 		regfree(l.reg);
 		return (res);
 	}

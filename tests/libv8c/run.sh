@@ -107,42 +107,32 @@ echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
 # ---------------------------------------------------------------------------
-# KNOWN BROKEN: printf("%f") -- 3.14159 prints as 3.146509.
+# ---------------------------------------------------------------------------
+# FIXED: printf("%f") -- it was lvalues being evaluated twice.
 #
-# The bug is isolated to a ten-line loop, and the input to that loop is proven
-# identical under both compilers. Instrumenting cvt() in src/libc/gen/ecvt.c
-# just before its rounding tail:
+# Read-modify-write operators (`x op= y`, `x++`, `--x`) must read the lvalue and
+# store back to it. The back end generated the lvalue once for each half, which
+# re-ran any side effect inside it. V8's ecvt() rounding loop contains
 #
-#	TAIL p=8 p1=7 r2=1 dec=1 buf=[31415899]     <- v8cc
-#	TAIL p=8 p1=7 r2=1 dec=1 buf=[31415899]     <- clang
-#	v8cc  digits=[3146509]
-#	clang digits=[3141590]
+#	if (p1>buf) ++*--p1;
 #
-# Same p, same p1, same r2, same decpt, same buffer -- different answers. So
-# everything upstream is correct and the fault is entirely in:
+# and that decremented p1 twice and incremented through it twice:
 #
-#	p = p1;
-#	*p1 += 5;
-#	while (*p1 > '9') {
-#		*p1 = '0';
-#		if (p1>buf) ++*--p1;
-#		else { *p1 = '1'; (*decpt)++; ... }
-#	}
+#	"123" with p1 at [2]  ->  expected "133" p1 at [1]
+#	                          got      "323" p1 at [0]
 #
-# Executed by hand on buf=[31415899] with p1=7 this gives 31415900, then
-# *p='\0' at p=7 yields 3141590 -- clang's answer. v8cc puts a '6' at buf[3],
-# which is '1'+5, so its `*p1 += 5` hit buf[3] rather than buf[7] even though
-# p1 printed as 7 immediately before.
+# lvaddr()/lvload()/lvstore() in gencode.c now materialise the address once and
+# both halves work through it.
 #
-# RULED OUT already, each tested in isolation: the digit loop and modf (both
-# give the identical 1415899 under clang, so that trailing 899 is just binary
-# floating point); 64-bit shifts and masks; `*p1 += 5` and `*p++ = c` as
-# standalone patterns; and `p1 = &buf[n]; p1 += r2` pointer arithmetic.
+# How it was found, which is the reusable part: instrumenting cvt() showed BOTH
+# compilers entering the rounding tail with identical state --
 #
-# What has NOT been tested: the combination in that loop -- `++*--p1`, a
-# pre-decrement of a register pointer and a pre-increment through it in one
-# expression, and `p = p1` between two register variables. Both p and p1 are
-# `register char *` in cvt(). Note that the one back-end bug of this shape
-# already found -- gen() handing out a register variable's own register, which
-# operators then clobbered -- was exactly this kind of thing, and only showed up
-# in real libc code. Start with `++*--p1`.
+#	TAIL p=8 p1=7 r2=1 dec=1 buf=[31415899]
+#
+# -- and leaving with different answers, which localised the bug to ten lines.
+# Everything else had been eliminated by testing it standalone: the digit loop
+# and modf (both give the same 1415899 under clang, so the trailing 899 is just
+# binary floating point), 64-bit shifts and masks, `*p1 += 5`, `*p++ = c`, and
+# `p1 = &buf[n]; p1 += r2`. What was left was the one construct never tested
+# alone -- and it failed the moment it was.
+# ---------------------------------------------------------------------------

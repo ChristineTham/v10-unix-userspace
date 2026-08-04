@@ -1,6 +1,6 @@
 # Porting Research Unix V8 Userspace to macOS (ARM64)
 
-**Status:** Phases 0, 1a, 1b, 1c and 2a complete and tested; 2b in progress.
+**Status:** Phases 0 through 2b complete and tested (144 tests). Waves 3A-3C, 4 and 5 not started.
 See "Current state" at the bottom.
 **Project arc:** V8 first (this plan), then V9, then V10 — restoring the original project goal of the last Research Edition, with V8 as the beachhead where the lessons are cheapest.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
@@ -293,7 +293,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 1b ARM64 back end | done | `v8ccom` 62/62 — arithmetic, control flow, pointers, arrays, globals, statics, recursion, structs, bitfields, floats, 12-argument calls |
 | 1c driver | done | `v8cc` 8/8, `make rootfs` |
 | 2a libv8sys | done | `v8sys` 44/44 |
-| 2b V8 libc | in progress | V8's printf, fputs, strings and stdio run, compiled by v8cc (`libv8c` 7/7). malloc hangs — see the note in `tests/libv8c/run.sh`; %f loses precision |
+| 2b V8 libc | done | V8's printf (including %f/%e/%g), fputs, stdio, strings, malloc and IEEE floats all run, compiled by v8cc (`libv8c` 10/10) |
 | 3A–3C waves | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
