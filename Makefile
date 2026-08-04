@@ -8,6 +8,10 @@
 ROOT    := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 BUILD   := $(ROOT)build/stage0
 SRC     := $(ROOT)src
+# Defined up here, not beside the rootfs target: make expands variables in a
+# TARGET name as soon as it reads the rule, so any rule building something
+# under the rootfs must come after this line.
+ROOTFS  := $(ROOT)rootfs
 
 HOSTCC  ?= clang
 
@@ -51,12 +55,12 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell eqn
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn
 
 test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 test-cpp: cpp
@@ -287,7 +291,7 @@ LIBC_GEN = malloc ecvt ieeefp errlst perror memops \
            ctype atoi atol abs max min sgn gcd lcm \
            index rindex strrchr strdup strtok strcatn strcmpn strcpyn \
            calloc getenv qsort swab mktemp abort rand getopt stty \
-           execvp getwd ftw valloc tell iread l3tol ltol3 nlist \
+           execvp exec getwd ftw valloc tell iread l3tol ltol3 nlist \
            opendir readdir closedir seekdir telldir \
            ctime timezone ttyname cttyname getlogin ttyslot
 LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
@@ -597,6 +601,58 @@ $(BUILD)/spell/%.o: $(SPELLSRC)/%.c $(SPELLSRC)/hash.h $(A64BUILD)/v8ccom | root
 	@mkdir -p $(BUILD)/spell
 	$(V8CCRUN) -I$(SPELLSRC) -c -o $@ $<
 
+# ---------------------------------------------------------------------------
+# refer -- the bibliographic preprocessor, and the four helpers it EXECS.
+#
+# refer(1) is a front end: it shells out to /usr/lib/refer/mkey and hunt to do
+# the actual lookup, so those have to exist in the rootfs before refer works at
+# all.  Its first failure here was not a hang but an interactive shell -- see
+# src/libc/gen/exec.c for why.
+#
+# whatabout/ and the six files it needs (flagger, kaiser, thash, what1/2/4) are
+# NOT built: they are not in upstream's `all` either, and they use a pre-C89
+# initialiser syntax (`int x 5;`) that V8's own grammar rejects.
+# ---------------------------------------------------------------------------
+REFERSRC = $(SRC)/cmd/refer
+REFER_MAIN = glue1 glue2 glue3 glue4 glue5 refer0 refer1 refer2 refer4 refer5 \
+             refer6 refer7 refer8 hunt2 hunt3 hunt5 hunt6 hunt7 hunt8 hunt9 \
+             mkey3 shell deliv2
+REFER_MKEY = mkey1 mkey2 mkey3 deliv2
+REFER_INV  = inv1 inv2 inv3 inv5 inv6 deliv2
+REFER_HUNT = hunt1 hunt2 hunt3 hunt5 hunt6 hunt7 glue5 refer3 hunt9 shell \
+             deliv2 hunt8 glue4 tick
+REFER_DELIV = deliv1 deliv2
+REFER_PROGS = refer mkey inv hunt deliv
+
+refer: $(patsubst %,$(ROOTFS)/usr/lib/refer/%,mkey inv hunt deliv) \
+       $(BUILD)/refer/refer
+
+$(BUILD)/refer/refer: $(patsubst %,$(BUILD)/refer/%.o,$(REFER_MAIN)) $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o \
+	    $(patsubst %,$(BUILD)/refer/%.o,$(REFER_MAIN)) $(V8LIBS)
+	@echo "built $@"
+$(BUILD)/refer/mkey: $(patsubst %,$(BUILD)/refer/%.o,$(REFER_MKEY)) $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o \
+	    $(patsubst %,$(BUILD)/refer/%.o,$(REFER_MKEY)) $(V8LIBS)
+$(BUILD)/refer/inv: $(patsubst %,$(BUILD)/refer/%.o,$(REFER_INV)) $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o \
+	    $(patsubst %,$(BUILD)/refer/%.o,$(REFER_INV)) $(V8LIBS)
+$(BUILD)/refer/hunt: $(patsubst %,$(BUILD)/refer/%.o,$(REFER_HUNT)) $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o \
+	    $(patsubst %,$(BUILD)/refer/%.o,$(REFER_HUNT)) $(V8LIBS)
+$(BUILD)/refer/deliv: $(patsubst %,$(BUILD)/refer/%.o,$(REFER_DELIV)) $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o \
+	    $(patsubst %,$(BUILD)/refer/%.o,$(REFER_DELIV)) $(V8LIBS)
+
+# refer execs these by absolute path; the shim resolves /usr/lib inside $$V8ROOT.
+$(ROOTFS)/usr/lib/refer/%: $(BUILD)/refer/% | rootfs
+	@mkdir -p $(ROOTFS)/usr/lib/refer
+	@cp $< $@
+
+$(BUILD)/refer/%.o: $(REFERSRC)/%.c $(A64BUILD)/v8ccom | rootfs
+	@mkdir -p $(BUILD)/refer
+	$(V8CCRUN) -I$(REFERSRC) -c -o $@ $<
+
 EQNSRC = $(SRC)/cmd/eqn
 EQN_NAMES = main diacrit eqnbox font fromto funny glob integral input lex \
             lookup mark matrix move over paren pile shift size sqrt text
@@ -627,7 +683,6 @@ $(EQN_OBJ): $(EQNSRC)/e.h
 # ---------------------------------------------------------------------------
 # rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.
 # ---------------------------------------------------------------------------
-ROOTFS = $(ROOT)rootfs
 
 rootfs: cpp v8ccom v8cc
 	@mkdir -p $(ROOTFS)/lib $(ROOTFS)/bin $(ROOTFS)/usr/include

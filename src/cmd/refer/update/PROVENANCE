@@ -1,0 +1,19 @@
+# Provenance for src/cmd/refer/update
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+75b3698c995e684c7a631fca62a3aa91e7ff6e48  v8/usr/src/cmd/refer/update/runup.h
+ca522b227d275460e8803693282b07e1529ba534  v8/usr/src/cmd/refer/update/runup3.c
+b45f99625a1a727f6f65df366f16038d67f12214  v8/usr/src/cmd/refer/update/runup7.c
+bdb432eb34324a8c5919e28f5a550f0396609c6d  v8/usr/src/cmd/refer/update/makefile
+b8535740e0e5580f3fd6e98a40ff2b4254daaf40  v8/usr/src/cmd/refer/update/look.c
+baa269045eb34ca13117201df0024c16be9e4f55  v8/usr/src/cmd/refer/update/drop.c
+5616a67c36c788d3f714113a307431edc65b9e66  v8/usr/src/cmd/refer/update/runup4.c
+ed180648e1ec6e2e00dee0f80f100522d098a5a3  v8/usr/src/cmd/refer/update/shell.c
+698a19f83389f184b721d58fa9bd9e2a0cd9c997  v8/usr/src/cmd/refer/update/runup1.c
+cc11904a4c8f149702684ec0bb2b42c5caf90dde  v8/usr/src/cmd/refer/update/runup8.c
+fac7ffdf222e0b08e0ffd1228a6d88113a7307ca  v8/usr/src/cmd/refer/update/runup2.c
+49f51978a31239dd8f4c31020ece7c7e0b79e12a  v8/usr/src/cmd/refer/update/extr.c
+b9cf16f2a836cfa941e2361fc50658ca3903705f  v8/usr/src/cmd/refer/update/runup6.c

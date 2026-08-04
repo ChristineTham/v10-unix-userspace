@@ -1,0 +1,50 @@
+# Provenance for src/cmd/refer
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+0225278bed4e867b756175dca08ba0c04a2cd8c0  v8/usr/src/cmd/refer/glue2.c
+24e6796ce4723267726257199e8079a492b7b62c  v8/usr/src/cmd/refer/ml2.c
+7ef7cace4d12693273b21b1c21ad8501ad37d7dd  v8/usr/src/cmd/refer/refer..c
+037800c81e7217bd706f481ed36c2d02be7c1158  v8/usr/src/cmd/refer/thash.c
+0fb8b47f76c36d72756490fa722690f426f4c8f0  v8/usr/src/cmd/refer/hunt7.c
+839714c5784138ad616c83f4f0f7c67440a65917  v8/usr/src/cmd/refer/hunt3.c
+73b615f5612b2cba83ffc20b6903c64176be8ca6  v8/usr/src/cmd/refer/hunt9.c
+1b866f277a751b05b27b232a42f0bd9aa0c29e35  v8/usr/src/cmd/refer/ml1.c
+595d9984b01d4daa76bf90895a2eebf089429ef6  v8/usr/src/cmd/refer/makefile
+0787400eeb663f4d2402e0164a4d0626aec3feb9  v8/usr/src/cmd/refer/mkey3.c
+2a38fdace5db6bd02ae0ea0844bcc9d3f5c4100f  v8/usr/src/cmd/refer/refer5.c
+1e996389525baa8bf45936110d10ff4274c9d745  v8/usr/src/cmd/refer/glue1.c
+2caeaffcd5148cceedb61e8c7de69d256923e67b  v8/usr/src/cmd/refer/refer1.c
+7e37508ce06ce2a4e459e19937f128758eb61e0a  v8/usr/src/cmd/refer/glue5.c
+0448f4e4860e708ea08549b426d99e00b7160195  v8/usr/src/cmd/refer/inv3.c
+a2eac292b2ab2f913d562e39c1c61fc335981ccd  v8/usr/src/cmd/refer/mkey2.c
+ed180648e1ec6e2e00dee0f80f100522d098a5a3  v8/usr/src/cmd/refer/shell.c
+2405991de66bb5ba297263fa2301ced9eb027a10  v8/usr/src/cmd/refer/deliv2.c
+020c70a73b802028c11ff6077210f5e595305bea  v8/usr/src/cmd/refer/refer4.c
+b46f9720ad715ee0690fe73ad67ed9bc1ef27f33  v8/usr/src/cmd/refer/pubindex
+694d9ad7d2bc504f7986ce5f30aeb5f2abafd280  v8/usr/src/cmd/refer/refer0.c
+3a38c640dd678efd8b8572e37f8ca3f851a1f810  v8/usr/src/cmd/refer/glue4.c
+1cc2d984b67f047cd1b8fa2b61f359b15b6ffae9  v8/usr/src/cmd/refer/lookbib
+0aa00a517d60178377e0e669787868249255708e  v8/usr/src/cmd/refer/what..c
+fa231ccced3a11de00d9ef19a364a8f0679abbd9  v8/usr/src/cmd/refer/hunt5.c
+d9348e65428216c0999d0337819e7048fc05439f  v8/usr/src/cmd/refer/types.c
+62ff61c57c7f883ba5cbef02a1a175601290aad6  v8/usr/src/cmd/refer/inv6.c
+bb020a8e4629c68c9f261c351909adddd85ada7f  v8/usr/src/cmd/refer/what2.c
+cd1ddfbf8f959831fbfa5b94a8976a4ffa7691a3  v8/usr/src/cmd/refer/kaiser.c
+058245d5f96a612269a603b78cf747c6356c001b  v8/usr/src/cmd/refer/inv2.c
+2443aee2a47f46b92a6f119b6f3b9e4335c2c758  v8/usr/src/cmd/refer/hunt1.c
+b7bc1aad3e6fc1ce944b85afe06ce26dbde7d2cf  v8/usr/src/cmd/refer/glue3.c
+ebe76257be5f91dcd58d56b60f7d4263d4c4997e  v8/usr/src/cmd/refer/refer7.c
+307282ee8e32a2a01978ea95ccce1a1c2e034d00  v8/usr/src/cmd/refer/mkey1.c
+1eb6aa61e327f5ff415ccb75d8922b20200031da  v8/usr/src/cmd/refer/deliv1.c
+7bd2c971f61d902d067824a107b2717c92c36861  v8/usr/src/cmd/refer/tick.c
+435cd5a50525b7829e616390317d34e87f843add  v8/usr/src/cmd/refer/flagger.c
+10dfaca5020d4abca05bd7838489b24f673c19cc  v8/usr/src/cmd/refer/refer3.c
+e102de181eedd14a05b437107b31e6072e75e0a3  v8/usr/src/cmd/refer/inv5.c
+6fbb4c1cc9dd4809ac9b17d5d50c3c70667685b7  v8/usr/src/cmd/refer/what1.c
+51c5a5d74b63260defa65e4bcae1f4fae70b23c0  v8/usr/src/cmd/refer/hunt6.c
+434c6d8f279981cce8b302d8393af58828e3eed6  v8/usr/src/cmd/refer/hunt8.c
+c7c8dffe1abd3a2289f8fd23987dab10423fc314  v8/usr/src/cmd/refer/hunt2.c
+a2534201774fe4cf10502e814b3e9d7893648260  v8/usr/src/cmd/refer/inv1.c

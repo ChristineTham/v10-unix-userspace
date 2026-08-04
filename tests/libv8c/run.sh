@@ -349,6 +349,56 @@ main()
 }
 EOF
 
+# --- no V8 program may resolve a VARIADIC function from the host -----------
+#
+# This has bitten three times, each time looking like something else:
+#
+#   scanf   spellin's scanf("%lo") faulted inside __svfscanf_l
+#   execl   system() started an INTERACTIVE /bin/sh, so refer looked hung
+#   printf  cc -o linked the host libc entirely, printing 1839618368 for 42
+#
+# The mechanism is always the same.  A function missing from libv8c.a does not
+# fail the link: it is resolved from -lSystem.  For a NON-variadic function that
+# is usually harmless and the gap stays hidden.  For a variadic one it is an ABI
+# mismatch -- v8cc passes every argument in x0-x7, Apple's ARM64 ABI passes the
+# variadic arguments of a call on the stack -- so the callee reads rubbish.
+#
+# Checking the shape rather than waiting to trip over it again.  Anything on
+# this list must come from V8's own libc; if one is undefined in a linked
+# program, it will be satisfied by the host at run time.
+VARIADIC="printf fprintf sprintf scanf fscanf sscanf execl execle execlp"
+
+cat > vt.c <<'EOF'
+main()
+{
+	char b[64];
+	sprintf(b, "%d", 1);
+	printf("%s\n", b);
+	sscanf("2", "%d", &b[0]);
+	system("true");		/* pulls execl */
+	exit(0);
+}
+EOF
+if "$CC" -c vt.c 2>vt.err && \
+   clang -nostdlib -e _v8start -o vt "$CRT" vt.o "$LIBC" "$STUBS" "$SHIM" -lSystem 2>>vt.err; then
+	leaked=
+	for f in $VARIADIC; do
+		if nm -u vt 2>/dev/null | grep -q "^_$f\$"; then
+			leaked="$leaked $f"
+		fi
+	done
+	if [ -z "$leaked" ]; then
+		pass=$((pass+1))
+	else
+		fail=$((fail+1))
+		echo "FAIL variadic libc functions left for the host:$leaked"
+	fi
+else
+	fail=$((fail+1)); echo "FAIL variadic-leak probe did not build"
+	cat vt.err
+fi
+
+
 echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
