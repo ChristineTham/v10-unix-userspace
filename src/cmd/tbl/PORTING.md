@@ -133,8 +133,37 @@ just is not where this bug is.
 
 Everything before that point is now eliminated by direct measurement: the read
 loop, the first `fprintf`, `setinp`, `fgets`, `tableput`'s first eleven stages,
-`deftail`, the cell pointers, and both cell loops. What is left is the tail of
-`putline` — `puttext`, the font and size handling, and `funnies`.
+`deftail`, the cell pointers, and both cell loops. Narrowed once more. Bracketing the tail statement by statement:
+
+```
+T1 T3 T4 T5     then nothing
+```
+
+T5 sits immediately before
+
+```c
+if (allh(i) && !pr1403)
+	{ ... }        /* T6, T7, T8 -- none printed, so this branch is skipped */
+else
+	fprintf(tabout, ".nr 35 1m\n");
+if (chfont)
+	fprintf(tabout, ".nr %2d \n(.f\n", S1);
+fprintf(tabout, "\\&");
+vct = 0;
+for(c=0; c<ncol; c++)
+	{
+	uphalf=0;
+	if (watchout==0 && i+1<nlin && (lf=left(i,c, &lwid))>=0)
+```
+
+so the condition was simply false and the fault is in that handful of lines. The
+`fprintf`s there take no pointer arguments, which leaves `left(i, c, &lwid)` —
+and `&lwid` is the address of a local `int` passed to what may well be an
+undeclared parameter. That is the `look(1)` shape again, and while `acctype()`
+covers an `int` parameter read at full width, a parameter *written through* is
+worth checking separately.
+
+Bracket `left()` next, and print `&lwid` on both sides of the call.
 
 ## A note on the file list
 
