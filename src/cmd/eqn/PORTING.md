@@ -72,12 +72,52 @@ took the value out of `x0` regardless. `max(x,y)` is a ternary, so
 `printf(".nr 10 %gm\n", max(REL(...), 0))` is exactly the shape. There is a
 regression test in `tests/libv8c/run.sh`.
 
-**It did not fix eqn**, which still reaches `cvt` with -inf, so the value is
-coming from somewhere else — `REL()` itself, or the arithmetic feeding it. `REL`
-and `EM` are declared `extern double` in `e.h`; check they are *defined* as
-double too, since an implicit-int definition would return an integer in x0 while
-the caller reads d0. That mismatch produces exactly this: a bit pattern with
-every exponent bit set.
+**It did not fix eqn.** `REL` and `EM` are properly defined as `double`, and
+returning an int constant from a `double` function works (tested directly). The
+caller is elsewhere.
+
+Making `_doprnt` print the format string when it reaches a float conversion
+names it at once:
+
+```
+FMT[%gm'%s%s\*(%d%s%s\v'%gm'
+]
+```
+
+which is `shift.c:51`:
+
+```c
+printf(".as %d \v'%gm'%s%s\*(%d%s%s\v'%gm'\n",
+	yyval, REL(shval,ps), DPS(ps,subps), sh1, p2,
+	DPS(subps,ps), sh2, REL(-shval,ps));
+```
+
+**Nine arguments.** That is the interesting part: `fmt` takes x0 and the eight
+varargs take x1–x7 and then *the stack*. Every `printf` the port has run so far
+fitted in registers, so this is the first time V8's `&args` walk has had to cross
+from the spill block into the caller's stack arguments.
+
+The prologue is built for exactly that — it allocates the 64-byte spill block
+*before* pushing x29/x30 so the eight spilled registers sit immediately below the
+caller's stack arguments and the two read as one contiguous array (see the frame
+diagram at the top of `compiler/ccom-arm64/local.c`). So the design is right;
+what needs checking is whether the arithmetic agrees at the boundary.
+
+Tested directly, and **it works**: nine arguments print correctly, ninth
+included, and so does a `double` in the spilled position. Both are now in
+`tests/libv8c/run.sh`, because that seam deserves a test whether or not eqn
+needs one.
+
+So the argument block is sound and it really is the *value*. `shval` is a
+`float` local (`shift.c:19`) assigned from `EM()`, which returns `double`, and
+then passed back to `REL()`, which takes `double`. Two narrowing/widening
+conversions around a float local, in a nine-argument call.
+
+Next: print `shval` at `shift.c:51` — the same three-line hex dump used
+throughout this file — and, if it is already -inf there, walk back to
+`shval = b1 + EM(0.2, ps)` on line 32. `EM` and `REL` both return `double` and
+both are correct in isolation, so the suspect is the float/double round trip
+rather than either function.
 
 Also noticed and not yet chased: `%g` prints `7.25000` where it should print
 `7.25`. V8's `%g` strips trailing zeros; ours does not.

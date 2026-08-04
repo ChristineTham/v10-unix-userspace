@@ -294,6 +294,34 @@ main()
 }
 EOF
 
+
+# --- more arguments than there are registers --------------------------------
+# The whole varargs design rests on this: printf takes &args and walks forward,
+# so the eight spilled argument registers must read as one contiguous array with
+# the caller's stack arguments above them.  The prologue allocates the spill
+# block BEFORE pushing x29/x30 for exactly that reason (see the frame diagram in
+# compiler/ccom-arm64/local.c).  Nine arguments is the first call that crosses
+# the boundary -- fmt in x0, eight varargs in x1-x7 and then the stack.
+run 'printf across the register boundary' '1 a 2 b 3 c 4 d 999' <<'EOF'
+#include <stdio.h>
+main()
+{
+	printf("%d %s %d %s %d %s %d %s %d\n",
+	    1, "a", 2, "b", 3, "c", 4, "d", 999);
+	fflush(stdout); return 0;
+}
+EOF
+
+# and the same with a double in the spilled position
+run 'a double past the boundary' '1 2 3 4 5 6 7 2.5' <<'EOF'
+#include <stdio.h>
+main()
+{
+	printf("%d %d %d %d %d %d %d %.2g\n", 1, 2, 3, 4, 5, 6, 7, 2.5);
+	fflush(stdout); return 0;
+}
+EOF
+
 echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
