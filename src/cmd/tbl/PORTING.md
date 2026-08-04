@@ -92,8 +92,19 @@ test the same way. The compiler no longer truncates a pointer cast to `int`
 correctly fail the `< 128` test — but every one of these comparisons deserves
 reading, because the idiom depends on the exact behaviour that changed.
 
-Bracket `putline`'s cell loop and print `s` for each cell; a marker and an
-address are immediately distinguishable in hex.
+Done, and the cells are sound:
+
+```
+R3                          putline(0,0) entered
+cell 0000000300000c78       both real addresses in the sbrk arena,
+cell 0000000300000c7d       neither a marker, both processed
+```
+
+So the cell loop completes and the fault is in what follows it in `putline` —
+the per-cell output, the vertical-spacing pass, or `puttext`. Bracket those the
+same way. Everything before that point is now eliminated by direct measurement:
+the read loop, the first `fprintf`, `setinp`, `fgets`, `tableput`'s first eleven
+stages, `deftail`, and the cell pointers themselves.
 
 ## A note on the file list
 
