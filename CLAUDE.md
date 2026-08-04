@@ -107,10 +107,12 @@ jailed by construction.
 ## The bug classes that actually bite
 
 **LP64 is the dominant one.** V8 assumes `sizeof(int) == sizeof(char *)`. The
-tree calls `malloc` without declaring it and casts the `int` result to a pointer;
-undeclared K&R parameters are `int` but hold pointers (271 of them across 109
-files). Symptoms are wild pointers and heap corruption far from the cause. When
-something is mysteriously broken, check widths first.
+tree calls `malloc` without declaring it and casts the `int` result to a pointer,
+and undeclared K&R parameters are `int` but routinely hold pointers — common
+enough that the compiler widens them deliberately, at `acctype()` in
+`compiler/ccom-arm64/gencode.c`, which carries a note on the one case where that
+widening is wrong. Symptoms are wild pointers and heap corruption far from the
+cause. When something is mysteriously broken, check widths first.
 
 **A missing libc function does not fail the link — it resolves from `-lSystem`.**
 For a non-variadic function that silently works and hides the gap. For a
@@ -151,6 +153,38 @@ changing it:
 `tests/deps` asserts the graph with `make -q` (nothing is compiled) and includes
 negative controls. If you add build rules, add cases — and verify by mutation
 that they can fail.
+
+## Porting a program
+
+The recurring task. Steps 4 and 6 are the ones most often skipped and the two
+with a history of costing multi-round debugging.
+
+1. `tools/import.sh v8/usr/src/cmd/NAME` — never copy by hand; this records the
+   upstream blob hash in `PROVENANCE` so the diff against pristine V8 stays
+   reconstructible.
+2. LP64 audit before building, not after. The hazard shapes:
+   ```bash
+   grep -nE 'char \*[a-z_]*\(\);|\(int\) *signal|int +[a-z]+ *= *(malloc|sbrk)' src/cmd/NAME/*.c
+   ```
+3. Makefile block. Use `$(V8CC_DEPS)` on object rules and `$(V8DEPS)` /
+   `$(V8LIBS)` / `$(V8LDFLAGS)` on the link rule — never respell the library
+   list, and never introduce a variable below its first use.
+4. **Declare any `#include`d file that is not a `.h`.** Invisible to every
+   dependency scanner *and* to a `*.c` glob. Note the `[ \t]*` after the `#` —
+   V8 writes `# include`, so a pattern anchored on `#include` silently finds
+   nothing, which is the failure this step exists to prevent:
+   ```bash
+   grep -rnE '#[ \t]*include[ \t]*"[^"]*"' src/cmd/NAME | grep -v '\.h"'
+   ```
+5. Add the program to `.PHONY` and to the `stage0` target.
+6. Add cases to `tests/deps` for the new rules, including step 4's. Verify by
+   mutation that they can fail.
+7. Write `src/cmd/NAME/PORTING.md`: what changed and why, what was eliminated by
+   measurement, what is still open. Then add cases to the relevant wave suite.
+
+Object files land in `build/stage0/NAME/`; `rootfs/` is the installed view that
+`$V8ROOT` points at, and the copies there are real make targets — a program is
+not testable until it is installed.
 
 ## Conventions
 
