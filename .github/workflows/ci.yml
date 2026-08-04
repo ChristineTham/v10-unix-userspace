@@ -25,14 +25,30 @@ permissions:
 
 jobs:
   build-and-test:
-    # ARM64. The port targets Apple Silicon, and several of the bugs it has
-    # found are AAPCS64-specific -- the Apple variadic deviation above all --
-    # so an x86 runner would test something this project does not claim.
-    runs-on: macos-14
+    # ARM64, and pinned rather than `macos-latest`.
+    #
+    # Architecture is not a preference here: several of the bugs this port has
+    # found are AAPCS64-specific -- Apple's variadic deviation above all -- so an
+    # x64 runner would test something the project does not claim. The plain
+    # `macos-26` and `macos-15` labels are arm64; x64 is now `-intel`/`-large`.
+    #
+    # macos-26 matches the machine this is developed on (Darwin 25.x). Pinned
+    # because `macos-latest` migrates to the next OS over a 1-2 month window,
+    # and this build is sensitive to its host toolchain -- make 3.81's
+    # whole-second mtimes and lack of grouped targets are load-bearing here.
+    #
+    # NOT macos-14: deprecated, see actions/runner-images#13518.
+    runs-on: macos-26
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      # v7 is current (v7.0.1, 2026-07-20). Pinned to the major tag so security
+      # patches arrive without a workflow edit -- GitHub backported a breaking
+      # `allow-unsafe-pr-checkout` change across every live major line in June
+      # 2026, which is the kind of thing you want automatically. It concerns
+      # `pull_request_target`; this workflow uses plain `pull_request`, so it
+      # does not apply here.
+      - uses: actions/checkout@v7
 
       - name: Toolchain versions
         # Recorded because two of them are load-bearing and version-sensitive:
