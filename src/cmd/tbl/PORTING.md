@@ -43,8 +43,23 @@ each by direct test:
 * `setinp`, which does nothing at all when reading stdin
 * `fgets`, which reads `hello\n` as six bytes and NUL-terminates
 
-Next: instrument `tableput()` the same way — it is one function, and the same
-G/L/P bracketing will name the call.
+`tableput()` is a list of seventeen calls, and bracketing each one puts the
+fault in the twelfth:
+
+```
+06 07 08 09 10 11      <- printed before each call; 11 is runout()
+```
+
+`runout` (in `t7.c`) is the output generator — `deftail()`, then `putline(i,i)`
+for every row — so it is where the table's own strings are first printed, which
+matches a `%s` fault in `_doprnt`.
+
+Those strings live in tbl's private arena: `alocv()` in `tb.c` hands out slices
+of `calloc`'d blocks, and the cells are `struct colstr` — which contains
+pointers, so it doubled under LP64. Worth checking whether every allocation for
+it is computed with `sizeof` rather than a literal, since a literal would now be
+half what is needed and the table would overlap itself. Instrument `putline`
+first to confirm the fault is a cell string, then read `alocv`'s callers.
 
 ## A note on the file list
 
