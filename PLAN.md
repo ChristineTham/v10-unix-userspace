@@ -243,10 +243,16 @@ is fixed (`case ASSIGN` in `gencode.c` now calls `arm64_widen`), and the
 emitted code is demonstrably right: `sxtw x11, w11` now appears before the
 argument is set up.
 
-**It did not fix the crash**, and the disassembly of the linked `savestr` shows
-`malloc` now receiving a properly narrowed size. So the arena is *already*
-corrupted before the compiler's first allocation — which moves the search to
-everything that runs ahead of it: `v8start`, `main`, and `mainp1`'s setup.
+**It did not fix the crash.** The real cause was next door, in `commdec()`:
+v8cc emitted `.comm _stab,80040` with **no alignment argument** where clang
+emits `.comm _stab,80040,3`. Omitting it is not the same as asking for natural
+alignment — the assembler infers one from the *size*, and for an 80KB object
+it inferred 0x8000, which is what the linker had been reporting all along
+("reducing alignment of section `__DATA,__common` from 0x8000 to 0x4000").
+Every common symbol in the compiler was being placed by an alignment derived
+from how big it happened to be, which is precisely the link-order sensitivity
+this section describes. With the alignment emitted, **the self-hosted ccom
+runs**, and a ccom₂ built by it runs too.
 
 Note on the ASSIGN change: it is correct C, and all 401 tests pass with it, but
 it carries **no regression test**. Two attempts to build one failed — a folded
@@ -255,6 +261,29 @@ some other path — and by this project's own rule an unexercised guard is not a
 guard. Either find the case that distinguishes it or reconsider the change;
 `arm64_widen` mutates the register in place, which is only safe if the
 right-hand value is genuinely dead at that point.
+
+### What is left of the fixpoint
+
+ccom₁ (built by the stage-0 compiler) and ccom₂ (built by ccom₁) both run, and
+their output on the same input differs by **exactly two instructions**:
+
+```
+172d171
+< 	mov	w10, w10
+179d177
+< 	mov	w10, w10
+```
+
+That is `arm64_widen`'s unsigned 4-byte case, and it is not the no-op it looks
+like — writing a `w` register zeroes the upper half, which is the whole point.
+So the two compilers disagree about whether some node is unsigned, and the
+disagreement is in code the compiler generates *for itself*. Everything else,
+in a 4.7KB translation unit, is identical.
+
+Finding it: compile the file where the difference appears with both, and trace
+the node types (`V8DBG=1`) at the two sites. One of the two is wrong about
+`tyunsigned`, and since ccom₂'s only difference from ccom₁ is which compiler
+built it, the fault is in how one of them compiles ccom's own type handling.
 
 Until this closes, rung 3 is open, and with it B3 (V8 make rebuilding the
 compiler) and B6.

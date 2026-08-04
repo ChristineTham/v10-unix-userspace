@@ -359,22 +359,54 @@ defnam(psym)			/* define this location as psym's name */
 	printx("%s:\n", exname(psym->sname));
 }
 
+/*
+ * log2 of a common symbol's required alignment, which is what Mach-O's .comm
+ * and .lcomm take as their third argument.
+ *
+ * Emitting NO third argument -- which this file did -- is not the same as
+ * asking for natural alignment.  The assembler then infers one from the SIZE,
+ * and for a large object it infers an absurd one: ccom's 80040-byte `stab`
+ * came out wanting 0x8000, which the linker then reported reducing to 0x4000
+ * "because it exceeds segment maximum alignment".  Two objects whose alignment
+ * is decided by their size rather than their type land wherever that arithmetic
+ * puts them, and change places when anything around them changes -- which is
+ * exactly the link-order sensitivity PLAN.md S4c describes.
+ *
+ * clang emits `.comm _stab,80040,3` for the same declaration.  8 bytes is the
+ * ceiling that matters here: it is what a pointer and a double need, and
+ * nothing in the V8 world wants more.
+ */
+static int
+commalign(psym)
+	register struct symtab *psym;
+{
+	int a = talign(psym->stype, psym->sizoff) / SZCHAR;
+
+	if (a >= 8) return (3);
+	if (a >= 4) return (2);
+	if (a >= 2) return (1);
+	return (0);
+}
+
 commdec(id)			/* a .comm or .lcomm from stab index id */
 	int id;
 {
 	register struct symtab *psym;
 	OFFSZ n;
+	int al;
 
 	psym = &stab[id];
 	psym->sflags |= SBSS;
 	n = tsize(psym->stype, psym->dimoff, psym->sizoff) / SZCHAR;
+	al = commalign(psym);
 	if (psym->sclass == STATIC) {
 		if (psym->slevel)
-			printx("\t.lcomm\tL%d,%ld\n", psym->offset, (long)n);
+			printx("\t.lcomm\tL%d,%ld,%d\n", psym->offset, (long)n, al);
 		else
-			printx("\t.lcomm\t%s,%ld\n", exname(psym->sname), (long)n);
+			printx("\t.lcomm\t%s,%ld,%d\n", exname(psym->sname),
+			    (long)n, al);
 	} else if (psym->sclass == EXTERN) {
-		printx("\t.comm\t%s,%ld\n", exname(psym->sname), (long)n);
+		printx("\t.comm\t%s,%ld,%d\n", exname(psym->sname), (long)n, al);
 	} else {
 		cerror("Non-static/external in common");
 	}
