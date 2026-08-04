@@ -106,9 +106,17 @@ asserts it. Note ccom1 == ccom2 is *false* by two instructions and that is
 correct — ccom1 inherits one generation of the clang-built stage-0's beliefs,
 and stage 2 washes it out. That is what a three-stage bootstrap is for.
 
-Rungs 4–5 are unfinished. The *installed* `cpp` and `ccom` are still the
-clang-built ones (`nm` shows 0 V8 symbols); they sit inside the rootfs without
-obeying the jail. Rung 4 is where V8 make rebuilds the compiler in place.
+**Rung 4 is closed too.** `tests/jail` drives a full rebuild of `ccom` with
+V8's make, under `V8JAIL=strict`: V8's make reads the makefile, V8's sh runs the
+recipes, V8's cc drives V8's cpp and ccom, and the only thing permitted out is
+the documented as/ld exception. The makefile is plain 1985 make — no pattern
+rules, no automatic variables past `$@`. The result compiles real source, the
+build settles, and a second build from clean generates identical code.
+
+Rung 5 is unfinished, and so is installation. The *installed* `cpp` and `ccom`
+are still the clang-built ones (`nm` shows 0 V8 symbols); they sit inside the
+rootfs without obeying the jail. Swapping them for the self-hosted ones is
+Phase 6 work, not a ladder rung.
 
 ### The jail
 

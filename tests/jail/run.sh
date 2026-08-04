@@ -173,5 +173,104 @@ case "$warnout" in
 *) pass=$((pass+1)) ;;
 esac
 
+# --- RUNG 4: V8 make rebuilds the C compiler, inside the jail ---------------
+# The ladder's whole point, and the first time every part of it is V8's at once:
+# V8's make reads the makefile, V8's sh runs the recipes, V8's cc drives V8's
+# cpp and V8's ccom, and the result is a working compiler -- all under
+# V8JAIL=strict, so the only thing permitted to leave is the documented
+# as/ld exception.
+#
+# The makefile is deliberately plain 1985 make: no pattern rules, no automatic
+# variables beyond $@, no GNU anything. If it needs a feature V8's make does not
+# have, that is a finding, not something to work around.
+A64=$ROOT/compiler/ccom-arm64
+MI=$ROOT/src/cmd/ccom/common
+cp "$ROOT/src/cmd/ccom/vax/y.debug.sv" y.debug
+
+cat > mkccom <<EOF
+CC = cc
+INC = -I$A64 -I$MI -I.
+OBJ = xdefs.o scan.o pftn.o trees.o optim.o reader.o common1.o pjw.o \\
+      lookup.o catch2.o t2print.o cgram.o \\
+      local.o local2.o emit.o printx.o gencode.o dbstubs.o
+
+ccom: \$(OBJ)
+	\$(CC) -o ccom \$(OBJ)
+
+xdefs.o: $MI/xdefs.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o xdefs.o $MI/xdefs.c
+scan.o: $MI/scan.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o scan.o $MI/scan.c
+pftn.o: $MI/pftn.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o pftn.o $MI/pftn.c
+trees.o: $MI/trees.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o trees.o $MI/trees.c
+optim.o: $MI/optim.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o optim.o $MI/optim.c
+reader.o: $MI/reader.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o reader.o $MI/reader.c
+common1.o: $MI/common1.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o common1.o $MI/common1.c
+pjw.o: $MI/pjw.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o pjw.o $MI/pjw.c
+lookup.o: $MI/lookup.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o lookup.o $MI/lookup.c
+catch2.o: $MI/catch2.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o catch2.o $MI/catch2.c
+t2print.o: $MI/t2print.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o t2print.o $MI/t2print.c
+cgram.o: $MI/cgram.c
+	\$(CC) \$(INC) -DYYDEBUG -c -o cgram.o $MI/cgram.c
+local.o: $A64/local.c
+	\$(CC) \$(INC) -c -o local.o $A64/local.c
+local2.o: $A64/local2.c
+	\$(CC) \$(INC) -c -o local2.o $A64/local2.c
+emit.o: $A64/emit.c
+	\$(CC) \$(INC) -c -o emit.o $A64/emit.c
+printx.o: $A64/printx.c
+	\$(CC) \$(INC) -c -o printx.o $A64/printx.c
+gencode.o: $A64/gencode.c
+	\$(CC) \$(INC) -c -o gencode.o $A64/gencode.c
+dbstubs.o: $A64/dbstubs.c
+	\$(CC) \$(INC) -c -o dbstubs.o $A64/dbstubs.c
+EOF
+
+out=$(V8JAIL=strict "$MAKE8" -f mkccom 2>&1)
+ck 'V8 make rebuilds ccom under strict' yes "$([ -x ./ccom ] && echo yes || echo no)"
+
+# Nothing unsanctioned may have escaped.  clang for the link is on the list and
+# is silent under strict; anything else prints "leaves the jail".
+case "$out" in
+*"leaves the jail"*) fail=$((fail+1)); echo "FAIL rung 4 escaped: $out" ;;
+*) pass=$((pass+1)) ;;
+esac
+
+# And the compiler it produced actually compiles.
+"$V8ROOT/lib/cpp" "$ROOT/src/cmd/cat.c" "-I$V8ROOT/usr/include" > r4.i 2>/dev/null
+./ccom r4.i r4.s >/dev/null 2>&1
+ck 'the ccom V8 make built compiles a real file' yes \
+   "$([ "$(wc -c < r4.s 2>/dev/null || echo 0)" -gt 1000 ] && echo yes || echo no)"
+
+# NOT compared against $V8ROOT/lib/ccom.  That one is still the clang-built
+# stage-0 compiler, and this one was built by v8cc, so they differ by exactly
+# the generation PLAN.md S4c describes -- two instructions, and correctly so.
+# Comparing them would fail for the right reason, which makes it a bad test.
+#
+# What must hold is that the makefile is REPRODUCIBLE: run it again from clean
+# and it produces a compiler that generates the same code. A build driven by a
+# makefile that does not is not a build.
+mkdir -p again && cp y.debug again/
+( cd again && V8JAIL=strict "$MAKE8" -f ../mkccom >/dev/null 2>&1 )
+./again/ccom r4.i r4b.s >/dev/null 2>&1
+ck 'a second V8 make build generates identical code' yes \
+   "$(cmp -s r4.s r4b.s && echo yes || echo no)"
+
+# make must settle: a second run does no work.
+again=$(V8JAIL=strict "$MAKE8" -f mkccom 2>&1)
+case "$again" in
+*"-c -o"*) fail=$((fail+1)); echo "FAIL rung 4 does not settle: $again" ;;
+*) pass=$((pass+1)) ;;
+esac
+
 echo "jail: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
