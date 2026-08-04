@@ -309,5 +309,18 @@ else
 	fail=$((fail+1)); echo "FAIL rung 5: no lex to run"
 fi
 
+# --- PHASE 6b: pwd tells the truth about the jail ---------------------------
+# "/" means $V8ROOT.  getwd() does not ask the kernel for a path -- V8 has no
+# such syscall -- it stats "/" for the root's dev/ino and walks ".." up until it
+# matches, building the name from directory entries.  With "/" meaning the
+# host's root that walk ran straight past $V8ROOT, and pwd printed the Mac's
+# path for a directory the V8 world calls /bin.
+ck 'pwd inside the jail reports a V8 path' '/bin' \
+   "$(cd "$V8ROOT/bin" && "$V8ROOT/bin/sh" -c pwd 2>&1)"
+ck 'and at the root itself' '/' \
+   "$(cd "$V8ROOT" && "$V8ROOT/bin/sh" -c pwd 2>&1)"
+ck 'a nested V8 directory too' '/usr/lib' \
+   "$(cd "$V8ROOT/usr/lib" && "$V8ROOT/bin/sh" -c pwd 2>&1)"
+
 echo "jail: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

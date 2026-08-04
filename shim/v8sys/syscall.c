@@ -215,6 +215,29 @@ rootpath(char *p)
 	int i, n, m;
 
 	if (p == 0 || *p != '/') return (p);
+
+	/*
+	 * "/" IS THE JAIL ROOT.  The most basic thing a chroot does, and it was
+	 * missing: every other path was resolved inside $V8ROOT while the root
+	 * itself still meant the host's.
+	 *
+	 * It is what makes pwd tell the truth.  getwd() in src/libc/gen/getwd.c
+	 * does not ask the kernel for a path -- there is no such syscall in V8 --
+	 * it stats "/" to learn the root's dev/ino and then walks ".." upwards
+	 * until it matches, assembling the name from directory entries.  With "/"
+	 * meaning the host's root, that walk ran past $V8ROOT and printed
+	 * /Users/.../rootfs/bin for a directory the V8 world calls /bin.
+	 *
+	 * No existence check here, unlike below: $V8ROOT is the root by
+	 * definition, and if it does not exist nothing else works either.
+	 */
+	if (p[1] == '\0') {
+		if ((root = v8root()) == 0) return (p);
+		for (n = 0; root[n] && n < (int)sizeof buf - 1; n++) buf[n] = root[n];
+		buf[n] = '\0';
+		return (buf);
+	}
+
 	for (i = 0; v8dirs[i]; i++) {
 		const char *d = v8dirs[i];
 		int k;
