@@ -1,0 +1,16 @@
+# Provenance for src/cmd/yacc
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+f68497880ead2358c066f8d015db9e88f145dcce  v8/usr/src/cmd/yacc/dextern
+7e88e77cc5754387408e4ce6b9c5a387084ecc2c  v8/usr/src/cmd/yacc/y3.c
+f1e61947a3949ae05064970ed701e70f4d071617  v8/usr/src/cmd/yacc/yaccnews
+bf74eb7009ff784600e7faaec7aaad185d97f30b  v8/usr/src/cmd/yacc/Makefile
+9e0f1aa5fcd94f43e274edf37643a1c9a6946eda  v8/usr/src/cmd/yacc/y4.c
+081156ca27c931111d20864d883a85596be9c28f  v8/usr/src/cmd/yacc/y1.c
+59cec0405766727b0ddb2e1b240fcb81769293c0  v8/usr/src/cmd/yacc/yaccpar
+09b649ae32e23fb7e5fd2d2f13e395c9f1ff8515  v8/usr/src/cmd/yacc/files
+e51f9e9474bc68e8a860d490efc6202a9e704398  v8/usr/src/cmd/yacc/y2.c
+e5f7f4fda62a79d68d39dfed0c5b9745e85718e6  v8/usr/src/cmd/yacc/yaccdiffs

@@ -1,0 +1,32 @@
+# Provenance for src/cmd/eqn
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+fe41d264f4f45ae277ca6f607883fcf4ac8894da  v8/usr/src/cmd/eqn/e.h
+41fdfa1e7af8f6c83194bfeb43d55ec560a1d276  v8/usr/src/cmd/eqn/eqnbox.c
+4db25d4a7b41736e7a212d09ca6fdde1d7be4fc2  v8/usr/src/cmd/eqn/shift.c
+b34ae25b66e9e57f9e0e464992b0ff5bd41c6ada  v8/usr/src/cmd/eqn/lookup.c
+bdc114cc316be8264d1b21aa8c259bc9a2570087  v8/usr/src/cmd/eqn/pile.c
+8c45c434a431736103a0dfa34d4c79d4a3761714  v8/usr/src/cmd/eqn/lex.c
+c47806a916d00f67aa4cfadc6e74e28f32370218  v8/usr/src/cmd/eqn/fromto.c
+37d7b2f770ffcc61f892768127929022b15180e7  v8/usr/src/cmd/eqn/makefile
+4cb02594556455335f690e320dc5b281cd486cec  v8/usr/src/cmd/eqn/move.c
+0a7f01faf5243b2e4f52c4474f868747d2dc5217  v8/usr/src/cmd/eqn/integral.c
+8e1891d02c1a21fb057eddc3ed304b49e929951b  v8/usr/src/cmd/eqn/paren.c
+26727c424fbeceefd089b8898a87402057e56712  v8/usr/src/cmd/eqn/font.c
+d6a381d6a12e3a8cfe2d7ea5c08f1b8e74242da0  v8/usr/src/cmd/eqn/eqn.y
+8450ac59eb9e018054ef5baf22431cc46f05b900  v8/usr/src/cmd/eqn/glob.c
+78bc3d856e9aba5010b28316ee25f682a61cde80  v8/usr/src/cmd/eqn/sqrt.c
+5d189b2e567642f1f1e4166699629ea05b6fc741  v8/usr/src/cmd/eqn/input.c
+1e16da943d5c5d88a1a133ebb62b216e5f3a9085  v8/usr/src/cmd/eqn/funny.c
+1ead605b619e8f1b3833d16728fb35e11a72eeb9  v8/usr/src/cmd/eqn/main.c
+ad02b29f0e7f29207943bce19ca931c3a57b308e  v8/usr/src/cmd/eqn/size.c
+b706e3921fb27b1b22a163ff72842e7ac1b16eea  v8/usr/src/cmd/eqn/NEW
+1bf371197bf5b4e583f0effcc541e626ba6a1527  v8/usr/src/cmd/eqn/mark.c
+29a96beb97ef5b9a20802874485aee67413897d4  v8/usr/src/cmd/eqn/text.c
+7d9489c249d3dfab7bd82834228bf35e766c099b  v8/usr/src/cmd/eqn/eqntest.a
+f07381b1d24b868840843820e49a8453a12133ed  v8/usr/src/cmd/eqn/diacrit.c
+f5766c2f2be23ea1205eb73a6936e4011115ad9a  v8/usr/src/cmd/eqn/over.c
+93cec29bdd20ca0b7712366a5838916a6cdc1005  v8/usr/src/cmd/eqn/matrix.c
