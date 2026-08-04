@@ -77,3 +77,24 @@ make's shared header is named `defs`, not `defs.h`, and is included as
 glob — the same shape as lex's `once.c`, tbl's `t..c` and refer's `refer..c`,
 all four of which have now caused or nearly caused a staleness bug. The
 dependency is spelled out in the Makefile and covered by `tests/deps`.
+
+## What the jail does NOT yet contain: the cc driver
+
+Worth stating plainly, because it qualifies the claim above. `rootfs/bin/cc` is
+**not a V8 binary**:
+
+```
+$ nm rootfs/bin/cc  | grep -c '_v8s_\|_v8start'      ->  0
+$ nm rootfs/bin/cat | grep -c '_v8s_\|_v8start'      -> 72
+```
+
+The Makefile builds it with `$(HOSTCC)`, and it has never been rebuilt by v8cc
+since stage 0. It runs on the host's libc, so the shim never sees its syscalls
+and `V8JAIL` cannot observe it. A compile started inside the jail leaves it at
+the driver and does not come back — which is why `V8JAIL=strict cc -o h h.c`
+succeeds and reports nothing, despite the driver exec'ing clang.
+
+So: a build driven by V8 make runs V8's sh and V8's filters, and that part is
+real and tested. The compiler driver is the exception, and it is an
+unfinished bootstrap rung rather than a design decision — unlike `as`/`ld`,
+which are deliberate. Tracked as B5, with the fixpoint.
