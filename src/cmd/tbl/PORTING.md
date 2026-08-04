@@ -163,7 +163,24 @@ undeclared parameter. That is the `look(1)` shape again, and while `acctype()`
 covers an `int` parameter read at full width, a parameter *written through* is
 worth checking separately.
 
-Bracket `left()` next, and print `&lwid` on both sides of the call.
+`left()` itself declares its pointer parameter (`int *lwidp;`) and writes
+through it correctly, so it is probably not that either.
+
+The crash is stable and precise, which is the useful thing to hand on:
+
+```
+EXC_BAD_ACCESS (code=1, address=0x1d7fe)
+frame #0: tbld`_doprnt + 3788
+```
+
+`0x1d7fe` is 120830 — not the low half of any pointer in this program, so
+something that is not an address at all is reaching a `%s`. Only frame #0
+unwinds, so the caller has to come from the bracketing rather than the
+debugger.
+
+Fastest next step: disassemble `_doprnt+3788` to see which conversion case it is
+in, which names the format specifier, and then find the `fprintf` in `putline`'s
+tail that uses it.
 
 ## A note on the file list
 
