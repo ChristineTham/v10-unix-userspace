@@ -100,11 +100,41 @@ cell 0000000300000c78       both real addresses in the sbrk arena,
 cell 0000000300000c7d       neither a marker, both processed
 ```
 
-So the cell loop completes and the fault is in what follows it in `putline` —
-the per-cell output, the vertical-spacing pass, or `puttext`. Bracket those the
-same way. Everything before that point is now eliminated by direct measurement:
-the read loop, the first `fprintf`, `setinp`, `fgets`, `tableput`'s first eleven
-stages, `deftail`, and the cell pointers themselves.
+Bracketing `putline`'s sections in turn puts the fault past the *second* cell
+loop — the one that computes `chfont` — not the first:
+
+```
+R3                       putline(0,0) entered
+B C D E F                every section marker up to `vspf=0; chfont=0;`
+c2 s=0000000300000c78    first cell, a real address
+cf                       chfont computed
+c2 s=0000000300000c7d    second cell
+cf                       and again -- then nothing
+```
+
+Both iterations reach `cf` and neither reaches the marker after
+`if (point(s)) continue;`, which means `point()` returned **true** both times and
+the loop simply ended: `ncol` is 2. So `point()` is fine, the loop is fine, and
+the fault is in whatever follows it.
+
+That is worth stating plainly because `point()` looked like the culprit:
+
+```c
+point(s)
+{
+return(s>= 128 || s<0);
+}
+```
+
+— an implicit-`int` parameter holding a pointer, which is exactly the shape that
+broke `look(1)`. It works here because `acctype()` in the back end reads an
+`int` parameter at the full slot width. The idiom is sound on this target; it
+just is not where this bug is.
+
+Everything before that point is now eliminated by direct measurement: the read
+loop, the first `fprintf`, `setinp`, `fgets`, `tableput`'s first eleven stages,
+`deftail`, the cell pointers, and both cell loops. What is left is the tail of
+`putline` — `puttext`, the font and size handling, and `funnies`.
 
 ## A note on the file list
 
