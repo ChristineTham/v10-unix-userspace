@@ -1,0 +1,24 @@
+# Provenance for src/cmd/ccom/vax
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+55d57944a487cca0d8298f14851140134c5deea3  v8/usr/src/cmd/ccom/vax/memcpy.c
+43bc583a7669aa1c5a2e38836000eddfeb57e982  v8/usr/src/cmd/ccom/vax/debug.h
+123463fd4de812a281a800a88ec58e64330538b7  v8/usr/src/cmd/ccom/vax/gencode.c
+b44840871777893d945572f71178de0f0f728215  v8/usr/src/cmd/ccom/vax/makefile
+82aee8b63bca62ca3c631d12eedefcb32ae5af11  v8/usr/src/cmd/ccom/vax/local.c
+bb81f647e7e4299739fec1bd99f10bf5b9859305  v8/usr/src/cmd/ccom/vax/genaux.c
+ca6f32f3d32b5e9ec36fb934ec92e332970c1cf3  v8/usr/src/cmd/ccom/vax/nexit.c
+a70dac51647cf96dce2f88b5440364b467fa9edd  v8/usr/src/cmd/ccom/vax/stin
+9b8e46f353fab3a210468a806bb4d7c8cf27f6ff  v8/usr/src/cmd/ccom/vax/macdefs.h
+948a59b8a4d89716a637269e5fa84e2a4e1900c8  v8/usr/src/cmd/ccom/vax/lcatch2.c
+51a5e559fb7c80f226687cf9f678c1005288d563  v8/usr/src/cmd/ccom/vax/debug.c
+837b5b2125210fd0e64b501ba587a9bad2610213  v8/usr/src/cmd/ccom/vax/gentable.c
+5c2ba274c43bb9a6297b6d8f7ec4a69162725abb  v8/usr/src/cmd/ccom/vax/dope.h
+2ba2a06ec9b6e9f6da2f1c2039b3031cf1c0e18f  v8/usr/src/cmd/ccom/vax/gencode.h
+a3bb99047d32ef57cf2f5992f0bc71fd76b3b304  v8/usr/src/cmd/ccom/vax/printx.c
+b946b003f18c770771cd1f43e44e60e6421f8010  v8/usr/src/cmd/ccom/vax/y.debug
+c1a59b9bfc84a8ca0e71533c486118b1a6707dc9  v8/usr/src/cmd/ccom/vax/local2.c
+b946b003f18c770771cd1f43e44e60e6421f8010  v8/usr/src/cmd/ccom/vax/y.debug.sv

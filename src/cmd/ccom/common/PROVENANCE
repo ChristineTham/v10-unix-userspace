@@ -1,0 +1,34 @@
+# Provenance for src/cmd/ccom/common
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+996a5493e8869c163bdd30737f2b98b0656d8c04  v8/usr/src/cmd/ccom/common/match.c
+55d57944a487cca0d8298f14851140134c5deea3  v8/usr/src/cmd/ccom/common/memcpy.c
+1bf4fdf5506321d84a9bc4ab9c63b29aad7205cf  v8/usr/src/cmd/ccom/common/mfile1.h
+52587455ca31b121440071b10b4441c9b542a371  v8/usr/src/cmd/ccom/common/optim.c
+77265a822220c621f61d13cb0903b790a6cba531  v8/usr/src/cmd/ccom/common/pftn.c
+07abf2c1f7346fc717dd6759f84fd2d5bbbc21f4  v8/usr/src/cmd/ccom/common/xdefs.c
+ec6990662e04ca102eb414fbf5991f34fbd6fcc4  v8/usr/src/cmd/ccom/common/lookup.c
+df3f23b68e6b7a81a0cbb497357a7289b068f293  v8/usr/src/cmd/ccom/common/manifest.h
+e5c5d6b16b59d8a3fa74a7984716994a68b6bc33  v8/usr/src/cmd/ccom/common/catch2.c
+0b9d442cc0943a36a7c1b53f80faa0925219069f  v8/usr/src/cmd/ccom/common/mfile2.h
+2ff317af4b80666d7de05fd186a3a6c00649dc7d  v8/usr/src/cmd/ccom/common/common1.c
+7b8c7cc928185a1803f88a3311ea6c71080cfb0d  v8/usr/src/cmd/ccom/common/pjw.c
+471a55fd1d2f82773dc28b8617fc66d08d292121  v8/usr/src/cmd/ccom/common/scan.c
+f9b56b2e4beb747546ede4f8594ffda7c9fd8cd3  v8/usr/src/cmd/ccom/common/script
+84c4c94f712726a7531734b56f36c4b394e189c4  v8/usr/src/cmd/ccom/common/t2print.c
+441df26c677701ccea47e3536a54fd98a13e8c15  v8/usr/src/cmd/ccom/common/sty.y
+9784c6d543c662d2013c5dbe45002abdcdbd5bf3  v8/usr/src/cmd/ccom/common/cgram.y
+02ffd1c8a51df6f9a989a454ac40f288fda43d9b  v8/usr/src/cmd/ccom/common/reader.c
+a331c81a3368c9542ea9d819f7b9090beb8a97f1  v8/usr/src/cmd/ccom/common/common
+8c3f4808054576707f4af9d1bf807e8507554049  v8/usr/src/cmd/ccom/common/allo.c
+62f97ef65f1117a7fa85248ff7fddaaba7664805  v8/usr/src/cmd/ccom/common/cgram.c
+575a083e7678e6bfd4772c7c75a9f41b010303ea  v8/usr/src/cmd/ccom/common/prepass.c
+85c4c8d3103c683ad7d1ff0412772ffb8f84858c  v8/usr/src/cmd/ccom/common/diffs
+ab2b7be6fdc2208da51a12ce3aa007139facfff5  v8/usr/src/cmd/ccom/common/trees.c
+23cb60e3d5a206e074a0d6c632eef341b3f07b03  v8/usr/src/cmd/ccom/common/cost.c
+313db3ba53c70fc73b05b94a73a060ed564b6052  v8/usr/src/cmd/ccom/common/cgen.c
+709891634a197d83eeb24c9b9250552326a08bd1  v8/usr/src/cmd/ccom/common/comm1.c
+d040e27852fff12635fae81b2af105138a30ae26  v8/usr/src/cmd/ccom/common/Odope.h

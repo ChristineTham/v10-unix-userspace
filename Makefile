@@ -32,9 +32,9 @@ YACCFIX = sed 's/={/{/g'
 # V8 libc internals that host libc lacks.  Scaffolding; gone in Phase 2b.
 STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 
-.PHONY: all stage0 cpp test test-cpp clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax test test-cpp clean distclean
 all: stage0
-stage0: cpp
+stage0: cpp ccom-pass1
 
 test: test-cpp
 test-cpp: cpp
@@ -60,6 +60,64 @@ $(BUILD)/cpp/cpp: $(CPPSRC)/cpp.c $(CPPSRC)/cpy.y $(CPPSRC)/yylex.c
 	$(HOSTCC) $(KRFLAGS) $(CPPFLAGS_V8) -I$(BUILD)/cpp -c $(BUILD)/cpp/cpy.c -o $(BUILD)/cpp/cpy.o
 	$(HOSTCC) $(KRFLAGS) -o $@ $(BUILD)/cpp/cpp.o $(BUILD)/cpp/cpy.o $(STAGE0_COMPAT)
 	@echo "built $@"
+
+# ---------------------------------------------------------------------------
+# ccom -- the compiler proper, built here still targeting the VAX.
+#
+# Useless as a compiler on this machine: it emits VAX assembly.  It is built
+# anyway because it is the reference instrument for Phase 1b -- it proves the
+# machine-independent pass 1 works on ARM64, and lets us watch what the real
+# backend does with a given parse tree while writing the ARM64 one.
+#
+# Note what is NOT here: match.o, allo.o, table.o, cost.o, cgen.o.  V8 replaced
+# pcc's table-driven pass 2 with the hand-written recursive generator in
+# gencode.c/genaux.c, and vax/local.c defines a stub codgen() "so pcc2 stuff
+# doesn't get loaded".  Those files survive in the tree only for lint.
+# ---------------------------------------------------------------------------
+CCOM     = $(SRC)/cmd/ccom
+CCOM_M   = $(CCOM)/common
+CCOM_V   = $(CCOM)/vax
+CCOM_INC = -I$(CCOM_V) -I$(CCOM_M)
+
+CCOM_MI  = xdefs scan pftn trees optim reader common1 pjw lookup catch2 t2print
+CCOM_MD  = local local2 debug memcpy gencode genaux printx lcatch2
+
+CCOM_OBJ = $(patsubst %,$(BUILD)/ccom/%.o,$(CCOM_MI) $(CCOM_MD) cgram)
+
+# The linkable set: everything except the two files that emit VAX instructions.
+# gencode.c and genaux.c do not compile under clang, for one 1985 reason: doit()
+# takes a 4-byte `ret` struct by value and every caller passes literal 0, punning
+# an all-zero struct as an int.  Legal when K&R had no prototypes and the struct
+# was exactly int-sized; clang now sees the definition and refuses.  We are
+# replacing both files in Phase 1b, so they are not worth patching -- 22 edits to
+# code scheduled for deletion.
+CCOM_P1  = $(patsubst %,$(BUILD)/ccom/%.o,$(CCOM_MI) local local2 debug memcpy printx lcatch2 cgram)
+
+ccom-pass1: $(BUILD)/ccom/ccom-pass1
+$(BUILD)/ccom/ccom-pass1: $(CCOM_P1) $(ROOT)compiler/ccom-arm64/gencode.c
+	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -c $(ROOT)compiler/ccom-arm64/gencode.c \
+		-o $(BUILD)/ccom/gencode-arm64.o
+	$(HOSTCC) $(KRFLAGS) -o $@ $(CCOM_P1) $(BUILD)/ccom/gencode-arm64.o
+	@echo "built $@ (pass 1 + ARM64 backend stub)"
+
+# The complete VAX compiler.  Expected to fail on gencode.c/genaux.c as above;
+# kept as a target so the failure stays visible rather than forgotten.
+ccom-vax: $(CCOM_OBJ)
+	$(HOSTCC) $(KRFLAGS) -o $(BUILD)/ccom/ccom-vax $(CCOM_OBJ)
+
+$(BUILD)/ccom/%.o: $(CCOM_M)/%.c
+	@mkdir -p $(BUILD)/ccom
+	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -DVAX -c $< -o $@
+
+$(BUILD)/ccom/%.o: $(CCOM_V)/%.c
+	@mkdir -p $(BUILD)/ccom
+	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -DVAX -c $< -o $@
+
+# cgram.c is the checked-in yacc output, so the 1978 grammar needs no yacc run.
+$(BUILD)/ccom/cgram.o: $(CCOM_M)/cgram.c
+	@mkdir -p $(BUILD)/ccom
+	cp $(CCOM_V)/y.debug.sv $(BUILD)/ccom/y.debug
+	$(HOSTCC) $(KRFLAGS) $(CCOM_INC) -I$(BUILD)/ccom -DVAX -DYYDEBUG -c $< -o $@
 
 clean:
 	rm -rf $(BUILD)
