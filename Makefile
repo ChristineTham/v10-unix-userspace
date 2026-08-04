@@ -404,6 +404,10 @@ rootfs: cpp v8ccom v8cc
 	@# The jerq headers, which ls(1) and mc(1) reach for by absolute path.
 	@# Unchanged upstream files; only their location moves.
 	@cp $(ROOT)third_party/Research-Unix-v8/jerq/include/jioctl.h $(ROOTFS)/usr/include/
+	@# The data files V8 programs open by absolute path.  The shim resolves
+	@# /usr/lib/... inside $V8ROOT -- see rootpath() in shim/v8sys/syscall.c.
+	@mkdir -p $(ROOTFS)/usr/lib/term
+	@cp $(SRC)/cmd/troff/term/tab.* $(ROOTFS)/usr/lib/term/ 2>/dev/null || true
 	@echo "rootfs ready: V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc"
 
 clean:

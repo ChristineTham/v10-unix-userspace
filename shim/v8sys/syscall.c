@@ -30,6 +30,28 @@ int v8s_fstat();
 int v8s_stat();
 int v8s_lstat();
 
+/*
+ * getenv, without libc.  crt0.s publishes environ; the shim may not call the
+ * host's getenv (see rawsys.h), and V8's own libc getenv is above this seam.
+ */
+extern char **environ;
+
+char *
+v8sys_getenv(const char *name)
+{
+	char **e;
+	int i;
+
+	if (environ == 0) return (0);
+	for (e = environ; *e; e++) {
+		for (i = 0; name[i] && (*e)[i] == name[i]; i++)
+			;
+		if (name[i] == '\0' && (*e)[i] == '=')
+			return (*e) + i + 1;
+	}
+	return (0);
+}
+
 /* ------------------------------------------------------ errno mapping */
 
 /*
@@ -121,10 +143,59 @@ v8sys_faile(int hosterr)
  * and standing in for the kernel is what this file does.  Same class as V7
  * reading address 0 as zero -- an assumption the tree makes silently.
  */
+/*
+ * V8 SYSTEM PATHS RESOLVE INSIDE $V8ROOT.
+ *
+ * V8 programs name their data by absolute path -- nroff opens
+ * "/usr/lib/term/tab.37", troff "/usr/lib/font/...", and eqn, tbl, refer and
+ * man all reach for "/usr/lib/tmac/..." the same way.  Those directories cannot
+ * be created on macOS: /usr is protected by SIP.
+ *
+ * The rootfs is exactly the V8-shaped tree those paths describe (PLAN.md S3),
+ * so a path under one of the V8 data directories is looked for there first and
+ * used if it exists.  Anything else, and anything the rootfs does not have, is
+ * passed through untouched -- so /usr/bin/whatever still means the host's.
+ *
+ * Doing it here rather than per program is the point: it is one rule, it leaves
+ * every source file unmodified, and it is what having a rootfs is for.
+ */
+static const char *v8dirs[] = {
+	"/usr/lib/", "/usr/share/", "/usr/dict/", "/lib/", "/usr/pub/", 0
+};
+
+static char *
+rootpath(char *p)
+{
+	static char buf[1024];
+	char *root;
+	int i, n, m;
+
+	if (p == 0 || *p != '/') return (p);
+	for (i = 0; v8dirs[i]; i++) {
+		const char *d = v8dirs[i];
+		int k;
+		for (k = 0; d[k] && p[k] == d[k]; k++)
+			;
+		if (d[k] == '\0') break;		/* matched a V8 directory */
+	}
+	if (v8dirs[i] == 0) return (p);
+	if ((root = v8sys_getenv("V8ROOT")) == 0) return (p);
+
+	for (n = 0; root[n] && n < (int)sizeof buf - 2; n++) buf[n] = root[n];
+	for (m = 0; p[m] && n < (int)sizeof buf - 1; m++) buf[n++] = p[m];
+	buf[n] = '\0';
+	{
+		struct v8_stat st;
+		if (v8s_stat(buf, &st) == 0) return (buf);
+	}
+	return (p);
+}
+
 static char *
 vpath(char *p)
 {
-	return (p && *p == '\0') ? "." : p;
+	if (p && *p == '\0') return ".";
+	return rootpath(p);
 }
 
 /* ------------------------------------------------------- PASSTHROUGH */

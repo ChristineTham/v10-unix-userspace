@@ -18,14 +18,30 @@ block, which is a property of the target model. The same idiom is why
 `libc/stdio/doprnt.c` walks with an 8-byte stride, and any other program that
 rolls its own varargs will need the same treatment.
 
+## Data files now resolve inside $V8ROOT
+
+They opened `/usr/lib/term/tab.37` (nroff) and `/usr/lib/font/...` (troff) by
+absolute path, and macOS cannot provide those directories: `/usr` is protected
+by SIP.
+
+That is fixed in the shim rather than per program, because it is one rule and
+because having a rootfs is exactly what it is for. `rootpath()` in
+`shim/v8sys/syscall.c` looks for a path under one of the V8 data directories
+inside `$V8ROOT` first and uses it if it is there, passing everything else
+through untouched — so `/usr/bin/whatever` still means the host's. `eqn`, `tbl`,
+`refer` and `man` all reach for `/usr/lib/tmac/...` the same way and get the
+same treatment for free.
+
+`make rootfs` installs the terminal tables into `rootfs/usr/lib/term`.
+
 ## What is left
 
-They open `/usr/lib/term/tab.37` (nroff) and `/usr/lib/font/...` (troff) by
-absolute path, and those directories cannot be created on macOS either. The
-tables themselves are in the tree — `src/cmd/troff/term/` and `dev*/`.
+nroff finds and reads its table now, and then dies parsing it, in the
+`skipstr`/`getint`/`getstr` walk at the top of `n10.c` — a hand-written parser
+over a buffer from troff's own `setbrk`. That buffer, the parse, and `struct t`
+are all worth looking at together: it is the same shape of problem as `fdprintf`
+was, a routine that assumes a particular word size.
 
-The fix is to root those paths at `$V8ROOT`, which is what the rootfs is for,
-and it is worth doing once rather than per program: `eqn`, `tbl`, `refer` and
-`man` all reach for `/usr/lib/tmac/...` the same way. A small helper that
-prefixes `$V8ROOT` when the variable is set, defaulting to the original path
-when it is not, keeps every one of those sources honest.
+Start by printing `stbuf.st_size`, what `setbrk` returned, and how far `p` gets
+before the fault. The table is ASCII, so the expected values are all readable in
+`src/cmd/troff/term/tab.37`.
