@@ -88,12 +88,28 @@ echo "libv8c: $pass passed, $fail failed"
 # pointer can be cast" -- so INT and ALIGN are now long, which is right and
 # necessary but not sufficient: it still loops.
 #
-# The remaining suspect is the arena walk. malloc probes with sbrk(0) and
-# assumes the break it gets back is contiguous with the static initial block
-# (`union store alloca`), coalescing across the two. Our sbrk hands back a
-# separate mmap'd arena that is nowhere near the program's data segment, so the
-# monotonic-link assumption the header calls out -- "works with noncontiguous,
-# but monotonically linked, arena" -- may be what breaks.
+# It does NOT hang -- that was the first reading and it was wrong. Instrumenting
+# malloc with write(2) traces shows it reach ialloc and then fault:
 #
-# Next step: instrument allocp/allocs and watch one malloc(100) walk the list.
+#	trace: A B C            (entry, needs space, about to ialloc)
+#	EXC_BAD_ACCESS (code=1, address=0x10fb8) at ialloc+160
+#
+# 0x10fb8 is ~69 KB, far below any address our sbrk arena can be at, so a
+# pointer is arriving in ialloc corrupted rather than the free-list walk failing
+# to terminate.
+#
+# Already done and worth keeping regardless:
+#   - INT and ALIGN widened to long (the source asks for this in so many words:
+#     "INT is integer type to which a pointer can be cast").
+#   - The sbrk arena is now mmap'd ABOVE the program's data segment. V8's malloc
+#     sorts its free list by address and asserts the ordering as it walks
+#     (ASSERT(s>p) in ialloc); its header promises only a "noncontiguous, but
+#     monotonically linked, arena", which on a real Unix held because brk only
+#     ever moved up from bss. An unhinted mmap can land below the static block
+#     malloc starts from, which would break the ordering.
+#
+# Next step: disassemble ialloc+160 and identify which pointer is bad -- the
+# `q` handed in, or `r = q + (nbytes/WORD) - 1`. `nbytes` is declared `unsigned`
+# (32-bit) while WORD is a size_t, so the promotion in that expression is worth
+# checking first.
 # ---------------------------------------------------------------------------
