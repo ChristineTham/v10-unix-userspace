@@ -1,0 +1,15 @@
+# Provenance for src/cmd/make
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+d5c5e8e97e8fea2b35dc258ee3cdbe7990a96a00  v8/usr/src/cmd/make/gram.y
+44f6af154c5338afea919ed47562f77f18065982  v8/usr/src/cmd/make/ident.c
+c9ab680d022767bdebf494e0180aa031fb1a642f  v8/usr/src/cmd/make/Makefile
+381752ee0c037f0b349af85e561976aa69867873  v8/usr/src/cmd/make/files.c
+5414de4ef97cbff3dbf3d3ff7cb2810a8f657aeb  v8/usr/src/cmd/make/main.c
+51235955a76d8929ef787a173244bd5fb3a43a4d  v8/usr/src/cmd/make/misc.c
+381401ebfd248055367930c5665f4d893dec8683  v8/usr/src/cmd/make/dosys.c
+a95231b997ccee91dbab677d235d5d64aab5880a  v8/usr/src/cmd/make/doname.c
+eff5bcf5ae6a85ae88c07acd828e3f7d2abd9470  v8/usr/src/cmd/make/defs

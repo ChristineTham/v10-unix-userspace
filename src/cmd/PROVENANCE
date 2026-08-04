@@ -46,3 +46,8 @@ f0fbd70e357744ee1ccc3f70ba8220f6f0b2b3a6  v8/usr/src/cmd/ascii.c
 d92b26763a28dca4a5dd1f411a37bc3468c762d5  v8/usr/src/cmd/ptx.c
 eb11d36bac52450a576f6aacdf584a6f2427d98b  v8/usr/src/cmd/units.c
 7cc7378a7ee2b29846e0e19c6116d7de7ce68387  v8/usr/src/cmd/ls.c
+429fc78a10335ee2101df5d1ce6a0cdb03d4c7eb  v8/usr/src/cmd/rm.c
+f4fb0440a0fc52e5e3f245668851f974ab2be5a5  v8/usr/src/cmd/touch.c
+d635c5066d782a9b7c743e6cc5e0390c757ff29e  v8/usr/src/cmd/ln.c
+6b09aaefaf90d2cecece3a4e4fa7bef38b822f17  v8/usr/src/cmd/test.c
+6782de9d6d65bb43fd8e3361ac936ac9309cf374  v8/usr/src/cmd/chmod.c

@@ -159,8 +159,22 @@ v8sys_faile(int hosterr)
  * Doing it here rather than per program is the point: it is one rule, it leaves
  * every source file unmodified, and it is what having a rootfs is for.
  */
+/*
+ * /bin/ and /usr/bin/ are on this list, which makes the rootfs a chroot rather
+ * than just a data directory: a V8 program that execs /bin/sh gets V8's sh, and
+ * the shell it starts finds V8's cp, rm and cc.  That is what lets V8's make
+ * drive a build in which every command is V8 code.
+ *
+ * chroot(2) itself is not available to this port.  Every V8 binary here is a
+ * Mach-O linked against /usr/lib/libSystem.B.dylib, so a real chroot would need
+ * dyld and the dyld shared cache inside the jail, and that cache is protected
+ * by SIP; chroot also needs root, and building as root is worse than the
+ * problem.  But this file IS the kernel as far as V8 code is concerned, and
+ * chroot is a kernel service, so it belongs here.
+ */
 static const char *v8dirs[] = {
-	"/usr/lib/", "/usr/share/", "/usr/dict/", "/lib/", "/usr/pub/", 0
+	"/usr/lib/", "/usr/share/", "/usr/dict/", "/lib/", "/usr/pub/",
+	"/bin/", "/usr/bin/", 0
 };
 
 static char *
@@ -184,10 +198,15 @@ rootpath(char *p)
 	for (n = 0; root[n] && n < (int)sizeof buf - 2; n++) buf[n] = root[n];
 	for (m = 0; p[m] && n < (int)sizeof buf - 1; m++) buf[n++] = p[m];
 	buf[n] = '\0';
-	{
-		struct v8_stat st;
-		if (v8s_stat(buf, &st) == 0) return (buf);
-	}
+	/*
+	 * access(2) raw, NOT v8s_stat: v8s_stat runs its argument back through
+	 * vpath(), which re-enters this function and would overwrite the buf we
+	 * are still building.  It happens to be harmless today only because
+	 * $V8ROOT does not itself start with a V8 directory prefix -- set
+	 * V8ROOT=/usr/lib/anything and it would clobber.  Not worth leaving to
+	 * luck for a call that only asks whether the file exists.
+	 */
+	if (rawsys2(SYS_access, (long)buf, 0) == 0) return (buf);
 	return (p);
 }
 
@@ -333,8 +352,57 @@ int v8s_setgid(int g)                    { RET(rawsys1(SYS_setgid, g)); }
 int v8s_umask(int m)                     { return ((int)rawsys1(SYS_umask, m)); }
 int v8s_sync(void)                       { rawsys0(SYS_sync); return (0); }
 int v8s_chroot(char *p)                  { RET(rawsys1(SYS_chroot, (long)p)); }
+/*
+ * execve is where the jail is either real or theatre.  It used to pass its path
+ * straight to the kernel with no translation at all, so no matter what the
+ * rootfs contained, /bin/sh meant the host's shell and /usr/bin/cc meant the
+ * host's compiler.  Routing it through vpath() is what makes the rootfs a root
+ * filesystem rather than a data directory.
+ *
+ * WHEN A PATH FALLS THROUGH.  rootpath() returns the original when the rootfs
+ * does not have the file, so an unported tool still runs the host's.  That
+ * keeps the port usable while /bin is incomplete, but it is exactly the shape
+ * of the bug that has already cost this port three debugging rounds: a gap
+ * filled silently by the host, discovered only by its consequences.  scanf,
+ * printf and execl each did that at the libc layer.
+ *
+ * So the fall-through is reported.  V8JAIL=warn names each host binary reached;
+ * V8JAIL=strict refuses to exec it at all, which is what the build should run
+ * under once /bin is complete.  Unset stays quiet, for a tree that is still
+ * being ported.
+ */
+static void
+jailnote(char *p, int strict)
+{
+	static const char m1[] = "v8sys: exec leaves the jail: ";
+	static const char m2[] = " (V8JAIL=strict would refuse)\n";
+	static const char m3[] = " (refused: V8JAIL=strict)\n";
+	int n;
+
+	rawsys3(SYS_write, 2, (long)m1, (long)sizeof m1 - 1);
+	for (n = 0; p[n]; n++)
+		;
+	rawsys3(SYS_write, 2, (long)p, (long)n);
+	if (strict)
+		rawsys3(SYS_write, 2, (long)m3, (long)sizeof m3 - 1);
+	else
+		rawsys3(SYS_write, 2, (long)m2, (long)sizeof m2 - 1);
+}
+
 int v8s_execve(char *p, char **a, char **e)
-{ RET(rawsys3(SYS_execve, (long)p, (long)a, (long)e)); }
+{
+	char *q = vpath(p);
+
+	if (q == p && p != 0 && *p == '/') {
+		char *j = v8sys_getenv("V8JAIL");
+		if (j != 0 && *j != '\0') {
+			int strict = (j[0] == 's');
+			jailnote(p, strict);
+			if (strict) { v8_errno = V8_ENOENT; return (-1); }
+		}
+	}
+	RET(rawsys3(SYS_execve, (long)q, (long)a, (long)e));
+}
 
 long v8s_readlink(char *p, char *b, long n)
 { RET(rawsys3(SYS_readlink, (long)p, (long)b, n)); }

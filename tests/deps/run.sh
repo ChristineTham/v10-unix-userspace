@@ -103,6 +103,26 @@ nodep() {
 	cp -p "$TMP/save" "$input"
 }
 
+# --- a variable used above its definition expands to NOTHING -----------------
+# This has now bitten three times, each time silently:
+#   $(ROOTFS) in a target name       -> the rule built /lib/...
+#   $(A64BUILD) in a test prereq     -> test-v8ccom depended on /v8ccom
+#   $(V8DEPS) in the /bin rules      -> 38 binaries with no library dependency,
+#                                       linked correctly and never relinked
+# make expands a prerequisite when it READS the rule, exactly as it does a
+# target name, so a variable defined further down the file is empty there.
+# Nothing in the build fails; the dependency just is not there.
+#
+# Remembering to run this check is what failed twice, so it is a test now.
+undef=$($MAKE -n --warn-undefined-variables 2>&1 | grep -c 'warning: undefined variable' || true)
+if [ "$undef" -eq 0 ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL $undef undefined-variable warnings -- a variable is used above its definition"
+	$MAKE -n --warn-undefined-variables 2>&1 | grep 'warning: undefined variable' | sort -u | head -5
+fi
+
 # --- the toolchain: a change here invalidates every object in the tree -------
 # cc.c is the one that was actually broken.  The driver was not a prerequisite
 # of anything it compiled, so this session's change to its link line rebuilt
@@ -151,6 +171,23 @@ dep 'cc -> rootfs copy'        $B/cc/v8cc                      rootfs/bin/cc
 dep 'ccom -> rootfs copy'      $B/ccom-arm64/v8ccom            rootfs/lib/ccom
 dep 'yaccpar -> rootfs copy'   src/cmd/yacc/yaccpar            rootfs/usr/lib/yaccpar
 dep 'ncform -> rootfs copy'    src/cmd/lex/ncform              rootfs/usr/lib/lex/ncform
+
+# --- /bin: the jail's contents must track the shim --------------------------
+# These are the rules that had no library dependency at all.  Editing the shim
+# left every /bin binary stale, which is worse than usual: the jail is what the
+# shim implements, so a stale /bin means the chroot silently is not one.
+dep 'shim -> /bin/cat'         $B/v8sys/libv8sys.a             $B/bin/cat
+dep 'shim -> /bin/rm'          $B/v8sys/libv8sys.a             $B/bin/rm
+dep 'shim -> make'             $B/v8sys/libv8sys.a             $B/make/make
+dep 'libc -> /bin/cat'         $B/libc/libv8c.a                $B/bin/cat
+dep 'cat.c -> /bin/cat'        src/cmd/cat.c                   $B/bin/cat
+dep '/bin/cat -> rootfs copy'  $B/bin/cat                      rootfs/bin/cat
+dep 'sh -> rootfs /bin/sh'     $B/sh/sh                        rootfs/bin/sh
+dep 'make -> rootfs /bin/make' $B/make/make                    rootfs/bin/make
+# make's `defs` is a header under a name that is not .h -- the fourth file of
+# that shape in this tree, after lex's once.c, tbl's t..c and refer's refer..c.
+dep 'make defs'                src/cmd/make/defs               $B/make/main.o
+dep 'make gram.y'              src/cmd/make/gram.y             $B/make/gram.c
 
 # --- negative controls: the suite must be able to say "no" ------------------
 nodep 'spell does not reach sh'   src/cmd/spell/huff.h   $B/sh/main.o

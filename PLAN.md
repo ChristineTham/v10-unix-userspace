@@ -110,6 +110,56 @@ self-hosts, the world builds with V8 `make` + `v8cc` (dogfooding is the point).
 
 ---
 
+## 4a. The bootstrap ladder (revised)
+
+The original plan built the toolchain and then went straight to userspace, with
+the **host's** make driving everything and V8's make listed in Phase 1a and
+never landed. That is not a bootstrap: the build description was ours rather
+than Bell Labs', and the host's userspace was executing every recipe.
+
+The correction, in order. Each rung is built by the rung above it.
+
+| Rung | Built by | Contents |
+|---|---|---|
+| 0 seed | host clang, host make, host yacc | `cpp`, `ccom-arm64`, `cc`, `libv8sys`, `crt0` — the irreducible minimum |
+| 1 tools | v8cc, under GNU make | `libv8c` → **yacc** → `lex` → **make** |
+| 2 jail | v8cc | `/bin`: sh, and the filters the makefiles invoke |
+| 3 close the seed | v8cc + V8 yacc | regenerate cpp's `cpy.c` with V8 yacc; **fixpoint** v8cc₁ ≡ v8cc₂ |
+| 4 handover | **V8 make, inside the jail** | rebuild the compiler with it |
+| 5+ world | V8 make, authentic makefiles | everything else |
+
+**make cannot be first.** It has a 440-line `gram.y`, so it needs yacc. The
+order is `cc → yacc → make`.
+
+**The jail is not `chroot(2)`.** Every V8 binary here is a Mach-O linked
+against `/usr/lib/libSystem.B.dylib`, so a real chroot would need `dyld` and
+the dyld shared cache inside it, and that cache is SIP-protected; `chroot(2)`
+also needs root. But `libv8sys` *is* the kernel as far as V8 code is concerned,
+and chroot is a kernel service, so it lives there: `rootpath()` resolves
+`/bin/` and `/usr/bin/` inside `$V8ROOT`, and `v8s_execve` routes through it —
+which it never used to, so before this, `/bin/sh` always meant the host's shell
+no matter what the rootfs held.
+
+**The jail has one deliberate hole.** `as`, `ld`, `ar`, `strip` and `nm` stay
+host tools because the object format is Mach-O (§1). `strip` appears 14 times
+in the authentic makefiles. That is a decision, not an omission.
+
+**Fall-through is reported, not silent.** `rootpath()` returns the host path
+when the rootfs lacks the file, which keeps a partly-ported tree usable — but
+that is the exact shape of the bug that cost this port three debugging rounds
+at the libc layer (`scanf`, `printf`, `execl` each resolved silently to a host
+variadic function). So `V8JAIL=warn` names each escape and `V8JAIL=strict`
+refuses it. `tests/jail` runs a build under `strict`: a clean run *is* the
+proof, and the guard is verified to fire by pointing a recipe at `/usr/bin/awk`.
+
+**Why the authentic makefiles matter, concretely.** `src/cmd/lex/Makefile:11`
+already says `lmain.o: lmain.c ldefs.c once.c` — the exact dependency whose
+absence caused the lex heap-overrun bug, which cost a full session to
+re-derive. `src/cmd/tbl/makefile` likewise declares `t0.o ...: t..c`. The
+dependency knowledge was in the tree the whole time, in files the build
+ignored. Program builds move onto their own makefiles, minimally adapted, with
+every deviation recorded in that program's `PORTING.md`.
+
 ## 5. Phase 1 — Toolchain bootstrap
 
 **Stage 0 — host clang builds the tools that build the world.**

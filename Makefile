@@ -74,6 +74,23 @@ A64BUILD    := $(BUILD)/ccom-arm64
 ROOTFS_LIBS := $(ROOTFS)/lib/crt0.o $(ROOTFS)/lib/libv8c.a \
                $(ROOTFS)/lib/libv8stubs.a $(ROOTFS)/lib/libv8sys.a
 
+# The V8 link line, hoisted for the same reason and after the same bug bit a
+# THIRD time.  V8DEPS was defined beside the pic rules, and the /bin and make
+# rules added later sit above that, so `$(V8DEPS)` in their prerequisites
+# expanded to nothing.  The recipes still linked correctly -- a recipe is
+# expanded when it RUNS, by which time the whole makefile has been read -- so
+# the binaries were right and simply never relinked when libv8sys.a changed.
+# Editing the shim then left 38 stale binaries in the rootfs and no sign of it.
+#
+# Archive order matters: libv8stubs.a is one object per syscall so a program
+# defining its own rmdir still wins, and -lSystem is last because the shim is
+# the one place the two worlds are meant to meet.
+V8DEPS    = $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+            $(BUILD)/v8sys/libv8sys.a
+V8LIBS    = $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+            $(BUILD)/v8sys/libv8sys.a -lSystem
+V8LDFLAGS = -nostdlib -e _v8start
+
 # Automatic header dependencies.
 #
 # Not a nicety here.  This port is driven by headers -- macdefs.h alone fixes
@@ -114,18 +131,18 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 test-deps cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 test-deps test-jail v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
 # driver for free because the library install rules said `| rootfs`.  Naming
 # $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
-test: test-deps test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
+test: test-deps test-jail test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 # First, because it tests the thing every other suite's result depends on: that
 # what was built is what the sources say.  Four bugs in this port were a stale
 # object rather than wrong code.  It settles the build itself, so it takes no
@@ -133,6 +150,10 @@ test: test-deps test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test
 # one's jobserver.
 test-deps:
 	@MAKE="$(MAKE)" $(ROOT)tests/deps/run.sh
+# The chroot: that a build driven by V8 make runs entirely on V8 binaries.
+# Depends on the whole jail, since that is what it tests.
+test-jail: v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make
+	@$(ROOT)tests/jail/run.sh
 test-cpp: $(BUILD)/cpp/cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp
@@ -557,6 +578,103 @@ $(BUILD)/yacc/%.o: $(YACCSRC)/%.c $(V8CC_DEPS)
 $(YACC_OBJ): $(YACCSRC)/dextern $(YACCSRC)/files
 
 # ---------------------------------------------------------------------------
+# /bin -- the V8 world's own commands, as REAL INSTALLED BINARIES.
+#
+# There were none before this.  tests/wavea/run.sh compiled twelve programs
+# into $TMP and deleted them on exit, so "Wave A: 78 pure filters" was backed
+# by a passing suite and no artifacts.  Nothing could be installed, and nothing
+# could be executed by anything other than that script.
+#
+# They are needed now because V8 make execs a shell for every command line
+# (dosys.c, SHELLCOM "/bin/sh"), and the point of the bootstrap is that what
+# that shell then runs -- cp, rm, sed, cc -- is V8 code too.  rm alone appears
+# 26 times across the authentic makefiles.
+#
+# NOT here, deliberately: as, ld, ar, strip, nm.  The object format is Mach-O
+# and porting V8's a.out assembler and link editor is out of scope (PLAN.md
+# section 1).  That is the one hole in the jail, and it is a decision rather
+# than an omission.
+# ---------------------------------------------------------------------------
+BINDIR = $(BUILD)/bin
+
+# Single-source commands.  rm, touch, ln, test and chmod were imported for the
+# bootstrap: the authentic makefiles cannot run without them and none of them
+# had been ported.
+V8BIN = cat echo cmp rm touch ln test chmod pwd wc head tail tee tr \
+        grep fgrep sort uniq comm cut paste col fold expand unexpand rev \
+        basename printenv split sum od pr look join number seq yes ls
+
+V8BIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8BIN))
+V8BIN_INSTALL = $(patsubst %,$(ROOTFS)/bin/%,$(V8BIN))
+
+v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL)
+
+# Without this make DELETES every binary in $(BINDIR) as soon as it has copied
+# it to the rootfs.  Two pattern rules chain here -- cat.c -> build/bin/cat ->
+# rootfs/bin/cat -- and a file made by a pattern rule only to satisfy another
+# pattern rule is an INTERMEDIATE, which make removes when the chain finishes.
+#
+# It is invisible from outside: the rootfs copy exists and works, so every
+# functional test passes.  What is lost is the build tree -- 38 binaries gone,
+# relinked from scratch on the next build, and nothing to compare a rootfs copy
+# against.  tests/deps caught it precisely because it asserts on the
+# intermediate rather than on the observable behaviour.
+.SECONDARY: $(V8BIN_BUILT)
+
+$(BINDIR)/%: $(SRC)/cmd/%.c $(V8CC_DEPS) $(V8DEPS)
+	@mkdir -p $(BINDIR)
+	@$(V8CCRUN) -c -o $(BINDIR)/$*.o $<
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/$*.o $(V8LIBS)
+
+# Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
+# them -- this port's chroot, implemented where its kernel lives.
+$(ROOTFS)/bin/%: $(BINDIR)/%
+	@mkdir -p $(@D) && cp $< $@
+
+# sh is built from a directory, not a single file, so it gets its own install
+# rule.  It is the one that matters most: it is what make execs.
+$(ROOTFS)/bin/sh: $(BUILD)/sh/sh
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/bin/make: $(BUILD)/make/make
+	@mkdir -p $(@D) && cp $< $@
+
+# ---------------------------------------------------------------------------
+# make -- the build driver itself, and the rung of the bootstrap that was
+# skipped.  It was listed in Phase 1a and never landed, so this port has been
+# built by the HOST's make throughout.
+#
+# It cannot be "the first program after the compiler", which is the obvious
+# thing to assume: make has a 440-line gram.y, so it needs yacc.  The order is
+# cc -> yacc -> make.  It needs no lex.
+#
+# Object list, flags and the `$(OBJECTS): defs` line are lifted from V8's own
+# Makefile unchanged.  `defs` is make's shared header under a name that is not
+# .h, so it is invisible to every dependency scanner -- the same shape as lex's
+# once.c, tbl's t..c and refer's refer..c.
+# ---------------------------------------------------------------------------
+MAKESRC = $(SRC)/cmd/make
+MAKE_NAMES = ident main doname dosys misc files
+MAKE_OBJ = $(patsubst %,$(BUILD)/make/%.o,$(MAKE_NAMES)) $(BUILD)/make/gram.o
+MAKEFLAGS_V8 = -DASCARCH -DVERSION8
+
+v8make: $(BUILD)/make/make
+$(BUILD)/make/make: $(MAKE_OBJ) $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(MAKE_OBJ) $(V8LIBS)
+	@echo "built $@"
+
+$(BUILD)/make/gram.c: $(MAKESRC)/gram.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/make
+	cd $(BUILD)/make && V8ROOT=$(ROOTFS) $(YACC) $(MAKESRC)/gram.y
+	@mv -f $(BUILD)/make/y.tab.c $(BUILD)/make/gram.c
+
+$(BUILD)/make/gram.o: $(BUILD)/make/gram.c $(V8CC_DEPS)
+	$(V8CCRUN) $(MAKEFLAGS_V8) -I$(MAKESRC) -c -o $@ $(BUILD)/make/gram.c
+$(BUILD)/make/%.o: $(MAKESRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/make
+	$(V8CCRUN) $(MAKEFLAGS_V8) -I$(MAKESRC) -c -o $@ $<
+$(MAKE_OBJ): $(MAKESRC)/defs
+
+# ---------------------------------------------------------------------------
 # lex.  The tree arrays name/left/right/parent/nullstr are DECLARED in once.c
 # and ALLOCATED in parser.y, using sizeof(*left) so the size follows the type.
 # That split is why the dependencies below are spelled out rather than left to
@@ -602,14 +720,7 @@ $(LEX_OBJ): $(LEXSRC)/ldefs.c $(LEXSRC)/once.c
 # it changes, to avoid rebuilding everything on every yacc run.  We depend on it
 # directly and let make decide.
 # ---------------------------------------------------------------------------
-# The V8 link line.  Archive order matters: libv8stubs.a is one object per
-# syscall so a program defining its own rmdir still wins, and -lSystem is last
-# because the shim is the one place the two worlds are meant to meet.
-V8DEPS = $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
-         $(BUILD)/v8sys/libv8sys.a
-V8LIBS = $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
-         $(BUILD)/v8sys/libv8sys.a -lSystem
-V8LDFLAGS = -nostdlib -e _v8start
+# V8DEPS, V8LIBS and V8LDFLAGS are defined at the top of this file.
 
 PICSRC = $(SRC)/cmd/pic
 PIC_NAMES = main print misc symtab blockgen boxgen circgen arcgen linegen \

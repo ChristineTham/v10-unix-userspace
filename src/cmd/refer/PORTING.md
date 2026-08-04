@@ -15,7 +15,28 @@ upstream's own `all` target either. They use the pre-C89 initialiser
 `int x 5;` — no `=` — which V8's own grammar already rejects. Skipping them
 loses nothing that `all` built.
 
-## Not finished: refer needs a V8 `/bin`
+## UPDATE: the `/bin` gap is closed; `hunt` is the remaining bug
+
+The section below described the state before the V8 world had its own `/bin`.
+That landed with the make bootstrap: `/bin/` and `/usr/bin/` are on the shim's
+redirect list, `v8s_execve` routes through `vpath()`, and V8's own `pwd` is
+installed. **refer no longer hangs** — it runs to completion.
+
+What is left is a different, further-along failure. Given a bibliography:
+
+```
+$ mkey refs
+refs:0,74	kernig ritchi the progra langua 1978        <- correct
+$ hunt -p refs kernighan
+                                                        <- nothing
+```
+
+`mkey` produces the right keys; `hunt` finds no record for them, so refer emits
+`.nr [W \w''` and passes the `.[` / `.]` block through unsubstituted. Nothing
+leaves the jail during the run (checked with `V8JAIL=warn`), so this is refer's
+own logic rather than a path or exec problem. `hunt` is where to look next.
+
+## Historical: why refer needed a V8 `/bin`
 
 refer runs, gets as far as its helpers, and then does not produce output,
 because of one line in `glue2.c`:
