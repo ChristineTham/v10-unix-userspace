@@ -8,7 +8,8 @@ static char sccsid[] = "@(#)readdir.c 4.2 3/12/82";
 /*
  * read an old stlye directory entry and present it as a new one
  */
-#define	ODIRSIZ	14
+/* Must match DIRSIZ in src/include/dir.h; see the note there. */
+#define	ODIRSIZ	254
 
 struct	olddirect {
 	ino_t	d_ino;

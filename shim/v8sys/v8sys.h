@@ -81,7 +81,11 @@ struct v8_stat {
  * field.  44 commands read directories with read(2) and expect exactly this,
  * and V8's own readdir() is itself a shim over the same format.
  */
-#define V8_DIRSIZ 14
+/*
+ * Must match DIRSIZ in src/include/dir.h -- see the note there for why it is
+ * 254 and not V7's 14.
+ */
+#define V8_DIRSIZ 254
 struct v8_direct {
 	v8_ino_t	d_ino;
 	char		d_name[V8_DIRSIZ];

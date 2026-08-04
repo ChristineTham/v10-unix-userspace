@@ -231,6 +231,39 @@ merge:
 		if( o==STAR || o==NAME || o==VAUTO || o==VPARAM )
 # endif
 			lt = PTRTYPE;
+# ifdef PTRCONVFULL
+	/*
+	 * PORT: a pointer converted to int keeps all its bits.
+	 *
+	 * On a machine where an int and a pointer are the same width -- the VAX,
+	 * and every machine this compiler saw -- this conversion loses nothing,
+	 * and the tree is written throughout as though the two were
+	 * interchangeable.  Where a pointer is wider, truncating it is never
+	 * what the code meant.
+	 *
+	 * What hides the damage is that it is usually SYMMETRIC.  Below, a
+	 * pointer in memory is narrowed by adjusting the address and repainting
+	 * the type, while a pointer in a register falls through to `if( o == REG
+	 * ... ) return( p )` and keeps a real conversion.  Both truncate, so an
+	 * expression with a pointer on each side still comes out right --
+	 * fflush(3)'s `(n = iop->_ptr - base) > 0` worked for exactly that
+	 * reason.  It only breaks where the two sides take different paths, as
+	 * in strspn(3)'s `return(q-string)` with q a register and string a
+	 * parameter: -2^32 instead of 0 for two equal pointers, on a host that
+	 * loads every image above 4GB.
+	 *
+	 * Making t PTRTYPE sends both paths to `paint` below, which drops the
+	 * conversion entirely -- symmetry restored by keeping both sides whole
+	 * rather than by truncating both.  Guarded, like MEMONLY and LOWINT
+	 * around it, so machines where the widths agree are unaffected.
+	 */
+	if( ISPTR(l->tn.type) && t == INT )
+	{
+		t = PTRTYPE;
+		p->tn.type = PTRTYPE;
+		p->fn.csiz = PTRTYPE;
+	}
+# endif
 	if( t == lt ) goto paint;
 	if( ISPTR(lt) || ISARY(lt) ) return(p);
 

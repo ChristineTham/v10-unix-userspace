@@ -207,6 +207,22 @@ tyfloat(t)
 	return ((t & (TFLOAT | TDOUBLE)) != 0);
 }
 
+/*
+ * Is this a pointer?
+ *
+ * Note the T* codes, not pass 1's symbolic types: by the time the generator
+ * runs, p2tree has rewritten every node's type into the bit encoding in
+ * mfile2.h, and pass 1's ISPTR macro does not understand it.  Getting this
+ * wrong is silent -- ISPTR(TPOINT) is simply false -- so the test lives here
+ * once rather than being written out at each use.
+ */
+static int
+typtr(t)
+	TWORD t;
+{
+	return ((t & (TPOINT | TPOINT2)) != 0);
+}
+
 static char *
 ldinsn(t)
 	TWORD t;
@@ -289,7 +305,7 @@ arm64_widen(t, r)
 	TWORD t;
 	int r;
 {
-	if (ISPTR(t) || ISARY(t) || tyfloat(t))
+	if (typtr(t) || tyfloat(t))
 		return;
 	switch (tybytes(t)) {
 	case 1:
@@ -486,31 +502,70 @@ framereg(off)
 	return (t);
 }
 
+/*
+ * The width to touch a frame object at.
+ *
+ * For everything except an `int` PARAMETER this is just the declared type.  An
+ * int parameter is read and written at the full 8-byte slot instead, and that
+ * one exception is load-bearing.
+ *
+ * K&R gives an undeclared parameter the type int, and the V8 tree relies on it:
+ * look(1) has
+ *
+ *	locate(key,entry)
+ *	char *key;
+ *	{ ... getword(entry) ... }
+ *
+ * -- `entry` holds a pointer and is never declared.  On the VAX that cost
+ * nothing, since int and pointer were both 32 bits.  Under LP64 reading it with
+ * ldrsw truncated the pointer, and look died writing through 0x024fa100 when
+ * the array was at 0x1024fa100.  There are 271 such parameters across 109 files
+ * in usr/src/cmd; declaring them all would put a diff on a third of the tree.
+ *
+ * Widening is safe because SZARG is already SZLONG: every argument occupies one
+ * 8-byte slot (see macdefs.h), so a caller passing a genuine int stores it
+ * sign-extended and an 8-byte read returns exactly the same value.  The only
+ * case where the two differ is a caller passing something wider than an int --
+ * a pointer or a long -- which is precisely the case being fixed.
+ *
+ * Deliberately NOT extended to char and short parameters: those are unambiguous
+ * (K&R's implicit type is int and nothing else), so widening them would change
+ * real behaviour -- `f(c) char c;` called with 200 must see -56 -- for no gain.
+ */
+static TWORD
+acctype(p)
+	NODE *p;
+{
+	if (p->in.op == VPARAM && p->in.type == TINT)
+		return (TLONG);
+	return (p->in.type);
+}
+
 static void
 loaddirect(p, r)
 	NODE *p;
 	int r;
 {
 	long off = directoff(p);
-	int sz = tybytes(p->in.type);
+	TWORD t = acctype(p);
+	int sz = tybytes(t);
 	int base;
 
 	if (!offfits(off, sz)) {
 		base = framereg(off);
-		if (tyfloat(p->in.type))
-			printx("\tldr\t%s, [%s]\n", freg(p->in.type, r), xreg(base));
+		if (tyfloat(t))
+			printx("\tldr\t%s, [%s]\n", freg(t, r), xreg(base));
 		else
-			printx("\t%s\t%s, [%s]\n", ldinsn(p->in.type),
-			    ldreg(p->in.type, r), xreg(base));
+			printx("\t%s\t%s, [%s]\n", ldinsn(t),
+			    ldreg(t, r), xreg(base));
 		regfree(base);
 		return;
 	}
-	if (tyfloat(p->in.type)) {
-		printx("\tldr\t%s, [x29, #%ld]\n", freg(p->in.type, r), off);
+	if (tyfloat(t)) {
+		printx("\tldr\t%s, [x29, #%ld]\n", freg(t, r), off);
 		return;
 	}
-	printx("\t%s\t%s, [x29, #%ld]\n", ldinsn(p->in.type),
-	    ldreg(p->in.type, r), off);
+	printx("\t%s\t%s, [x29, #%ld]\n", ldinsn(t), ldreg(t, r), off);
 }
 
 static void
@@ -519,25 +574,25 @@ storedirect(p, r)
 	int r;
 {
 	long off = directoff(p);
-	int sz = tybytes(p->in.type);
+	TWORD t = acctype(p);
+	int sz = tybytes(t);
 	int base;
 
 	if (!offfits(off, sz)) {
 		base = framereg(off);
-		if (tyfloat(p->in.type))
-			printx("\tstr\t%s, [%s]\n", freg(p->in.type, r), xreg(base));
+		if (tyfloat(t))
+			printx("\tstr\t%s, [%s]\n", freg(t, r), xreg(base));
 		else
-			printx("\t%s\t%s, [%s]\n", stinsn(p->in.type),
-			    streg(p->in.type, r), xreg(base));
+			printx("\t%s\t%s, [%s]\n", stinsn(t),
+			    streg(t, r), xreg(base));
 		regfree(base);
 		return;
 	}
-	if (tyfloat(p->in.type)) {
-		printx("\tstr\t%s, [x29, #%ld]\n", freg(p->in.type, r), off);
+	if (tyfloat(t)) {
+		printx("\tstr\t%s, [x29, #%ld]\n", freg(t, r), off);
 		return;
 	}
-	printx("\t%s\t%s, [x29, #%ld]\n", stinsn(p->in.type),
-	    streg(p->in.type, r), off);
+	printx("\t%s\t%s, [x29, #%ld]\n", stinsn(t), streg(t, r), off);
 }
 
 /* --------------------------------------------------------- opcode maps */
@@ -1015,6 +1070,8 @@ gen(p, want)
 		TWORD st = p->in.left->in.type;
 		TWORD dt = p->in.type;
 
+		V8DBG("SCONV op=%d src=%o (%d bytes) dst=%o (%d bytes)\n",
+		    p->in.left->in.op, st, tybytes(st), dt, tybytes(dt));
 		l = gen(p->in.left, want);
 		if (want == WEFFECT) return (l);
 
@@ -1048,6 +1105,7 @@ gen(p, want)
 		}
 
 		if (!(l.flag & R_REG)) return (l);
+
 		arm64_widen(p->in.type, l.reg);
 		return (l);
 	}

@@ -161,6 +161,69 @@ else
 	fail=$((fail+3))
 fi
 
+# ---------------------------------------------------------------------------
+# The rest of Wave A.
+#
+# `try` builds a command and runs one case; a build failure counts as a failure
+# for that case rather than silently skipping, so a regression in the compiler
+# shows up here as a number rather than as a shorter run.
+# ---------------------------------------------------------------------------
+try() {	# try <cmd> <label> <expected> <shell pipeline>
+	cmd=$1; label=$2; want=$3; shift 3
+	if [ ! -x "./$cmd" ] && ! build "$cmd" "$ROOT/src/cmd/$cmd.c"; then
+		fail=$((fail+1)); return
+	fi
+	check "$label" "$want" "$(eval "$@" 2>&1)"
+}
+
+printf 'banana\napple\ncherry\napple\n' > s.txt
+printf 'one two three\nfour five six\n' > w.txt
+
+try sort   'sort'            'apple apple banana cherry' "./sort s.txt | tr '\n' ' ' | sed 's/ \$//'"
+try sort   'sort -r'         'cherry banana apple apple' "./sort -r s.txt | tr '\n' ' ' | sed 's/ \$//'"
+try sort   'sort -u'         'apple banana cherry'       "./sort -u s.txt | tr '\n' ' ' | sed 's/ \$//'"
+try uniq   'uniq -c'         '2' "./sort s.txt | ./uniq -c | awk '\$2==\"apple\"{print \$1}'"
+try tail   'tail -2'         'cherry apple' "./tail -2 s.txt | tr '\n' ' ' | sed 's/ \$//'"
+try cut    'cut -f2'         'two five' "./cut -f2 -d' ' w.txt | tr '\n' ' ' | sed 's/ \$//'"
+try paste  'paste two files' 'one two three	banana' "./paste w.txt s.txt | head -1"
+try fold   'fold -5'         'one t wo th ree' "./fold -5 w.txt | head -3 | tr '\n' ' ' | sed 's/ \$//'"
+try expand 'expand tabs'     'a       b' "printf 'a\tb\n' | ./expand"
+# unexpand without -a converts only LEADING blanks, per V8's unexpand(1);
+# it also needs a file argument, since with none argv[0] is NULL and the
+# very first thing it does is read argv[0][0].
+try unexpand 'unexpand leading' 'X	y' "printf '        y\n' > ue.txt; ./unexpand ue.txt | sed 's/^/X/'"
+try od     'od -c'           '0000000   a   b   c  \n' "printf 'abc\n' | ./od -c | head -1 | sed 's/  *\$//'"
+try comm   'comm -12'        'apple' "printf 'apple\nbeta\n' > c_a; printf 'apple\ngamma\n' > c_b; ./comm -12 c_a c_b"
+try join   'join'            'k v1 v2' "printf 'k v1\n' > j_a; printf 'k v2\n' > j_b; ./join j_a j_b"
+try look   'look'            'apple' "./sort s.txt > s_sorted; ./look app s_sorted | head -1"
+try grep   'grep'            'banana' "./grep ana s.txt"
+try grep   'grep -c'         '2' "./grep -c apple s.txt"
+try grep   'grep -v'         '2' "./grep -v apple s.txt | wc -l | tr -d ' '"
+try fgrep  'fgrep'           'cherry' "./fgrep cherry s.txt"
+# number(1) reads numbers until EOF and prints "..." as its continuation
+# prompt, so only the first line is the answer.
+try number 'number'          'forty two.' "echo 42 | ./number | head -1 | sed 's/^ *//'"
+try printenv 'printenv'      'v8test' "V8TESTVAR=v8test ./printenv V8TESTVAR"
+try seq    'seq'             '1 2 3' "./seq 3 | tr '\n' ' ' | sed 's/ \$//'"
+try cal    'cal 2 1985'      'February 1985' "./cal 2 1985 | head -1 | sed 's/^ *//;s/ *\$//'"
+# V8's split names its pieces with -f, not a positional prefix, and it opens
+# the next piece before discovering EOF -- hence a third, empty file.
+try split  'split -f'        'banana apple|cherry apple|' \
+    "./split -2 -f sp_ s.txt && for f in sp_aa sp_ab; do printf '%s|' \"\$(tr '\n' ' ' < \$f | sed 's/ \$//')\"; done"
+try col    'col passes text' 'plain' "printf 'plain\n' | ./col"
+try pr     'pr has a header' '1' "./pr s.txt | head -3 | grep -c 's.txt'"
+# V8's vis renders a control character as a three-digit octal escape; the
+# \^A form is a later BSD addition.
+# Compared through sed so the backslash survives the harness's own echo.
+try vis    'vis'             'a-BS-001b' "printf 'a\001b\n' | ./vis | head -1 | sed 's/\\\\/-BS-/'"
+try ascii  'ascii'           '1' "./ascii | grep -c 'nul'"
+try deroff 'deroff'          'text' "printf '.PP\ntext\n' | ./deroff | tr -d ' \n'"
+
+# pwd is here rather than with the filters because it exercises the shim's
+# directory layer end to end: getwd(3) walks to the root matching each entry
+# against stat("."), which is what caught the APFS firmlink problem.
+try pwd    'pwd'             "$(/bin/pwd -P)" "./pwd"
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

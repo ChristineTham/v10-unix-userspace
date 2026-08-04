@@ -103,7 +103,7 @@ _doprnt(fmt, argp, iop)
 {
 	int total = 0;
 	int leftjust, zeropad, plussign, blanksign, alt;
-	int width, prec, haveprec, longflag;
+	int width, prec, haveprec, longflag, convch;
 	int len, n, i, base, upper, isneg;
 	unsigned long uval;
 	long sval;
@@ -158,8 +158,41 @@ _doprnt(fmt, argp, iop)
 			fmt++;
 		}
 
+		/*
+		 * CAPITAL CONVERSION LETTERS.
+		 *
+		 * V8's doprnt.S does this, at the label `capital`:
+		 *
+		 *	bisl2 $1<caps,flags	# note that it was capitalized
+		 *	xorb2 $'a^'A,r0		# make it small
+		 *	jbr L4			# and try again
+		 *
+		 * -- fold to lowercase, remembering that it was capital.  In
+		 * doprnt.S the flag is then read in only two places: the hex
+		 * digit table (`%X` prints A-F and the 0X prefix) and the
+		 * exponent letter (`%E`, `%G`).  `X`, `E` and `G` keep their own
+		 * cases below, so all that is left to fold here is D, O and U.
+		 *
+		 * They also set longflag, which is a decision doprnt.S never had
+		 * to make: on a 32-bit VAX an int and a long were the same four
+		 * bytes, so `%D` and `%d` could not be told apart.  Under LP64
+		 * they can, and long is the right reading -- these are the V6/V7
+		 * long conversions, and grep's `tln` really is a long.  A caller
+		 * passing an int is unharmed, since the argument slot holds it
+		 * sign-extended to eight bytes.
+		 *
+		 * Twelve uses across the command tree, grep(1) among them:
+		 * `grep -c apple` printed "D" instead of "2".
+		 */
+		convch = *fmt++;
+		switch (convch) {
+		case 'D': convch = 'd'; longflag = 1; break;
+		case 'O': convch = 'o'; longflag = 1; break;
+		case 'U': convch = 'u'; longflag = 1; break;
+		}
+
 		sign = 0;
-		switch (*fmt++) {
+		switch (convch) {
 
 		case 'd':
 		case 'i':

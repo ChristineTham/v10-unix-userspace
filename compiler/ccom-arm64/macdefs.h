@@ -116,6 +116,14 @@
 	/* use clocal() -- machine-dependent tree rewriting in pass 1 */
 # define CLOCAL
 
+	/*
+	 * A pointer converted to int keeps all its bits, rather than being
+	 * truncated to SZINT.  Needed because SZPOINT is 64 and SZINT is 32; on
+	 * the VAX they were equal and the question never arose.  See the note in
+	 * common/optim.c, in sconvert().
+	 */
+# define PTRCONVFULL
+
 	/* .comm and .lcomm are available */
 #define ALLCOMM
 

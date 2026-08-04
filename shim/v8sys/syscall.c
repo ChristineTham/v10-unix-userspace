@@ -322,6 +322,39 @@ stat_translate(struct hoststat64 *hs, struct v8_stat *vs)
 	vs->st_ctime = (v8_time_t)hs->st_ctime_sec;
 }
 
+/*
+ * The host inode number of `name` inside the directory `dirfd`, or 0 if it
+ * cannot be determined.
+ *
+ * dir.c needs this to keep a V7 invariant that macOS breaks: in a V7 filesystem
+ * a directory entry's inode number IS the file's inode number, and half the
+ * userspace depends on it -- getwd(3) walks up to the root matching entries
+ * against stat("."), find(1) prunes by inode, ncheck(8) is nothing else.
+ *
+ * On APFS the two disagree at a firmlink.  /private is a firmlink onto the Data
+ * volume, so readdir("/") reports the entry's inode on the System volume while
+ * stat("/private") reports the target's:
+ *
+ *	private   readdir_ino=142645531   stat_ino=142646994
+ *
+ * getwd has a fallback for exactly this shape -- when the parent and the child
+ * are on different devices it stats each name instead of trusting d_ino -- but
+ * macOS reports the SAME st_dev on both sides of a firmlink (they are one
+ * synthesised volume as far as stat is concerned), so the fallback never fires
+ * and pwd(1) failed with "getwd: read error in ..".
+ *
+ * Reconciling here rather than working around it in getwd is the right place:
+ * presenting a V7 filesystem is what this shim is for.
+ */
+unsigned long long
+v8sys_host_ino_at(int dirfd, const char *name)
+{
+	struct hoststat64 hs;
+	long r = rawsys4(SYS_fstatat64, dirfd, (long)name, (long)&hs, 0L);
+
+	return (r < 0 ? 0ULL : hs.st_ino);
+}
+
 int v8s_stat(char *p, struct v8_stat *vs)
 {
 	struct hoststat64 hs;

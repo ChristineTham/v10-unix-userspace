@@ -5,3 +5,4 @@
 #
 # <git blob hash of pristine upstream file>  <upstream path>
 e1cb1759208c17f850f1c8fbd1418a06521b03cc  v8/usr/include/setjmp.h
+f714208b2054bd64848d4ab146068b9711231b43  v8/usr/include/dir.h

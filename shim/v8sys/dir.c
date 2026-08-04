@@ -39,6 +39,7 @@
 /* No libc: see rawsys.h.  These are the few pieces we would have borrowed. */
 extern char *v8sys_alloc(long);
 extern void  v8sys_free(char *);
+extern unsigned long long v8sys_host_ino_at(int, const char *);
 
 static void
 bcopy_(char *d, char *s, long n)
@@ -191,7 +192,27 @@ v8sys_diropen(const char *path, int fd)
 				cap *= 2;
 			}
 
-			rec.d_ino = v8sys_fold_ino(hd->d_ino);
+			/*
+			 * Reconcile the entry's inode with what stat() would
+			 * report for the same name.  In a V7 filesystem they
+			 * are the same number by construction; across an APFS
+			 * firmlink they are not, and pwd(1) fails because
+			 * getwd(3) matches directory entries against stat(".").
+			 * See v8sys_host_ino_at() in syscall.c for the detail.
+			 *
+			 * Only for directories (DT_DIR is 4): firmlinks and
+			 * mount points are always directories, and this costs a
+			 * syscall per entry, so paying it for every regular file
+			 * would slow every ls in the system to fix nothing.
+			 * If the stat fails -- a directory we cannot search --
+			 * the raw number stands, which is what we had before.
+			 */
+			if (hd->d_type == 4) {
+				unsigned long long real =
+				    v8sys_host_ino_at(dupfd, hd->d_name);
+				rec.d_ino = v8sys_fold_ino(real ? real : hd->d_ino);
+			} else
+				rec.d_ino = v8sys_fold_ino(hd->d_ino);
 			bzero_(rec.d_name, V8_DIRSIZ);
 			nl = hd->d_namlen;
 			if (nl > V8_DIRSIZ) nl = V8_DIRSIZ;	/* the V7 limit */

@@ -294,7 +294,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 1c driver | done | `v8cc` 8/8, `make rootfs` |
 | 2a libv8sys | done | `v8sys` 44/44 |
 | 2b V8 libc | done | 89 objects, compiled by v8cc: stdio (incl. `%f`/`%e`/`%g`), the string family, malloc, ctype, qsort, getenv, the directory routines, `setjmp`/`longjmp`, perror and IEEE floats (`libv8c` 19/19) |
-| 3A Wave A | in progress | Eleven real V8 commands run (`wavea` 29/29): `cat`, `echo`, `wc`, `basename`, `tee`, `yes`, `sum`, `rev`, `tr`, `head`, `cmp` |
+| 3A Wave A | in progress | **153 of 163** single-file commands in `usr/src/cmd` compile and link. 29 of them are exercised with golden output (`wavea` 58/58): `cat`, `cmp`, `col`, `comm`, `cut`, `deroff`, `echo`, `expand`, `fgrep`, `fold`, `grep`, `head`, `join`, `look`, `number`, `od`, `paste`, `pr`, `printenv`, `pwd`, `rev`, `seq`, `sort`, `split`, `sum`, `tail`, `tee`, `tr`, `uniq`, `unexpand`, `vis`, `wc`, `yes`, `ascii`, `basename`, `cal` |
 | 3B–3C waves | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
@@ -341,9 +341,40 @@ somewhere, and where they are paid is a real decision:
   "a value in a register is as wide as a register" assumption holds inside the
   V8 world, and the shim absorbs the difference. That is exactly the shim's job.
 
-The same reasoning settled string literals: they go in **writable** data, as
-V8's own VAX back end put them, because 1985 C had no `const` and the tree
-writes to them.
+The same reasoning settled two more:
+
+* **String literals go in writable data**, as V8's own VAX back end put them,
+  because 1985 C had no `const` and the tree writes to them.
+* **A pointer converted to `int` keeps all its bits** (`PTRCONVFULL`,
+  `common/optim.c`). What made this one hard is that the damage is normally
+  *symmetric* — pass 1 truncated pointers in memory and pointers in registers
+  by different routes, so an expression with a pointer on each side still came
+  out right. It only broke where the two sides took different paths, and
+  fixing one side alone silently broke the other.
+
+The one place the seam could not absorb it is **`DIRSIZ`, now 254 rather than
+14** (`src/include/dir.h`). A V7 directory record cannot name most of a real
+macOS filesystem, and truncated components are not a degraded experience but a
+broken one: `pwd` failed in any directory with a long component above it. The
+tree names that size symbolically, so one header does it.
+
+### The LP64 hazards found so far, as a class
+
+Each is the same mistake — 1985 code assuming `sizeof(int) == sizeof(char *)` —
+surfacing somewhere different, and each was invisible until real code ran:
+
+| Where | Symptom |
+|---|---|
+| `malloc` called undeclared | pointer truncated on return; `opendir` segfaulted |
+| syscall returning `int` | `-1` tested as positive; every error check silently failed |
+| implicit-`int` parameter holding a pointer | `look` wrote through a truncated address |
+| pointer difference with one operand in a register | `strspn` returned -2^32; `strtok` walked off the end |
+| `opbigsz` narrowing a pointer AND | `malloc` walked half a pointer |
+| `PTRTYPE` defaulting to `INT` | pointer arithmetic done at 32 bits |
+
+None of them is a bug in what Bell Labs wrote. All of them are the port's to
+absorb, and the rule that has held is: **fix it where the width is decided —
+the target model, the seam, or the one conversion routine — never per program.**
 
 ### Deliberate gaps in the back end
 
