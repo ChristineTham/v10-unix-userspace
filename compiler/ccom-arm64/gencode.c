@@ -316,6 +316,18 @@ genaddr(p, r)
 	case VAUTO:
 		/* lval is already negative: oalloc stores off = -noff */
 		off = (long)p->tn.lval;
+		if (off < 0 && -off >= 4096) {
+			/* add/sub take a 12-bit immediate; bigger frames need
+			 * the offset materialised first */
+			genconst(-off, r);
+			printx("\tsub\t%s, x29, %s\n", xreg(r), xreg(r));
+			return;
+		}
+		if (off >= 4096) {
+			genconst(off, r);
+			printx("\tadd\t%s, x29, %s\n", xreg(r), xreg(r));
+			return;
+		}
 		if (off < 0)
 			printx("\tsub\t%s, x29, #%ld\n", xreg(r), -off);
 		else
@@ -350,18 +362,68 @@ directoff(p)
 	return (p->in.op == VPARAM) ? (long)p->tn.lval + 16 : (long)p->tn.lval;
 }
 
+/*
+ * Can a frame offset be encoded directly in a load/store?
+ *
+ * AArch64 offers an unsigned scaled immediate (0 .. 4095*size, a multiple of
+ * size) and a signed unscaled one, ldur/stur, limited to -256 .. 255.
+ * Automatics live at NEGATIVE offsets from x29 under BACKAUTO, so any function
+ * with more than 256 bytes of locals runs off the end of the unscaled form --
+ * which the assembler reports as
+ *
+ *	error: index must be an integer in range [-256, 255].
+ *
+ * When that happens the address is materialised into a register instead.  This
+ * is not rare: one 50-element int array is enough.
+ */
+static int
+offfits(off, size)
+	long off;
+	int size;
+{
+	if (off >= -256 && off <= 255) return 1;
+	return (off >= 0 && off <= 4095L * size && (off % size) == 0);
+}
+
+/* Put x29+off into a scratch register and return it. */
+static int
+framereg(off)
+	long off;
+{
+	int t = regalloc();
+
+	if (off < 0)
+		printx("\tsub\t%s, x29, #%ld\n", xreg(t), -off);
+	else
+		printx("\tadd\t%s, x29, #%ld\n", xreg(t), off);
+	return (t);
+}
+
 static void
 loaddirect(p, r)
 	NODE *p;
 	int r;
 {
+	long off = directoff(p);
+	int sz = tybytes(p->in.type);
+	int base;
+
+	if (!offfits(off, sz)) {
+		base = framereg(off);
+		if (tyfloat(p->in.type))
+			printx("\tldr\t%s, [%s]\n", freg(p->in.type, r), xreg(base));
+		else
+			printx("\t%s\t%s, [%s]\n", ldinsn(p->in.type),
+			    ldreg(p->in.type, r), xreg(base));
+		regfree(base);
+		return;
+	}
 	if (tyfloat(p->in.type)) {
-		printx("\tldr\t%s, [x29, #%ld]\n", freg(p->in.type, r),
-		    directoff(p));
+		printx("\tldr\t%s, [x29, #%ld]\n", freg(p->in.type, r), off);
 		return;
 	}
 	printx("\t%s\t%s, [x29, #%ld]\n", ldinsn(p->in.type),
-	    ldreg(p->in.type, r), directoff(p));
+	    ldreg(p->in.type, r), off);
 }
 
 static void
@@ -369,13 +431,26 @@ storedirect(p, r)
 	NODE *p;
 	int r;
 {
+	long off = directoff(p);
+	int sz = tybytes(p->in.type);
+	int base;
+
+	if (!offfits(off, sz)) {
+		base = framereg(off);
+		if (tyfloat(p->in.type))
+			printx("\tstr\t%s, [%s]\n", freg(p->in.type, r), xreg(base));
+		else
+			printx("\t%s\t%s, [%s]\n", stinsn(p->in.type),
+			    streg(p->in.type, r), xreg(base));
+		regfree(base);
+		return;
+	}
 	if (tyfloat(p->in.type)) {
-		printx("\tstr\t%s, [x29, #%ld]\n", freg(p->in.type, r),
-		    directoff(p));
+		printx("\tstr\t%s, [x29, #%ld]\n", freg(p->in.type, r), off);
 		return;
 	}
 	printx("\t%s\t%s, [x29, #%ld]\n", stinsn(p->in.type),
-	    streg(p->in.type, r), directoff(p));
+	    streg(p->in.type, r), off);
 }
 
 /* --------------------------------------------------------- opcode maps */
@@ -461,6 +536,30 @@ storeto(p, src)
 	case REG:
 		printx("\tmov\t%s, %s\n", xreg(p->tn.rval), xreg(src));
 		return;
+
+	case FLD: {
+		/*
+		 * Bit-field assignment.  Read the containing word, splice the
+		 * new bits in with bfi, write it back.  Geometry is packed into
+		 * tn.rval exactly as for the read case: rval/64 is the bit
+		 * offset, rval%64 the width.
+		 *
+		 * The VAX had insv for this in one instruction; bfi is its
+		 * direct equivalent.
+		 */
+		int boff = p->tn.rval / 64;
+		int bsiz = p->tn.rval % 64;
+		NODE *cont = p->in.left;
+		ret c;
+
+		if (bsiz == 0) cerror("zero-width bit field");
+		c = gen(cont, WVALUE);
+		printx("\tbfi\t%s, %s, #%d, #%d\n", xreg(c.reg), xreg(src),
+		    boff, bsiz);
+		storeto(cont, c.reg);
+		regfree(c.reg);
+		return;
+	}
 
 	/*
 	 * The pseudo-registers condit()/optim() use to funnel values:
@@ -897,6 +996,76 @@ gen(p, want)
 		gen(p->in.left, WEFFECT);
 		return (gen(p->in.right, want));
 
+	/* ------------------------------------------------------ structures */
+	case STASG: {
+		/*
+		 * Structure assignment.  stn.stsize is the size IN BITS, set by
+		 * p2tree from tsize().  The VAX did this with movc3, a single
+		 * block-move instruction; AArch64 has no such thing, so small
+		 * structures are copied with a few ldp/str pairs and larger ones
+		 * with a counted loop.
+		 *
+		 * The tree shape is STASG(dest, src) where both subtrees yield
+		 * ADDRESSES, not values.
+		 */
+		int nbytes = p->stn.stsize / SZCHAR;
+		int dst, src, tmp, off;
+
+		l = gen(p->in.left, WVALUE);	/* destination address */
+		r = gen(p->in.right, WVALUE);	/* source address */
+		dst = l.reg; src = r.reg;
+
+		if (nbytes <= 256) {
+			tmp = regalloc();
+			for (off = 0; off + 8 <= nbytes; off += 8) {
+				printx("\tldr\t%s, [%s, #%d]\n", xreg(tmp), xreg(src), off);
+				printx("\tstr\t%s, [%s, #%d]\n", xreg(tmp), xreg(dst), off);
+			}
+			for (; off + 4 <= nbytes; off += 4) {
+				printx("\tldr\t%s, [%s, #%d]\n", wreg(tmp), xreg(src), off);
+				printx("\tstr\t%s, [%s, #%d]\n", wreg(tmp), xreg(dst), off);
+			}
+			for (; off < nbytes; off++) {
+				printx("\tldrb\t%s, [%s, #%d]\n", wreg(tmp), xreg(src), off);
+				printx("\tstrb\t%s, [%s, #%d]\n", wreg(tmp), xreg(dst), off);
+			}
+			regfree(tmp);
+		} else {
+			int cnt = regalloc(), tmp2 = regalloc(), lab = getlab();
+
+			genconst((long)nbytes, cnt);
+			deflab(lab);
+			printx("\tldrb\t%s, [%s], #1\n", wreg(tmp2), xreg(src));
+			printx("\tstrb\t%s, [%s], #1\n", wreg(tmp2), xreg(dst));
+			printx("\tsubs\t%s, %s, #1\n", xreg(cnt), xreg(cnt));
+			printx("\tb.ne\tL%d\n", lab);
+			regfree(cnt); regfree(tmp2);
+		}
+		regfree(src);
+		if (want == WEFFECT) { regfree(dst); return (res); }
+		res.reg = dst; res.flag = R_REG;	/* value is the destination */
+		return (res);
+	}
+
+	/* ------------------------------------------------------- bitfields */
+	case FLD: {
+		/*
+		 * Bit-field extraction.  pass 1 packs the geometry into tn.rval:
+		 * rval/64 is the bit offset and rval%64 the width (see
+		 * common/pjw.c:186 and the VAX generator's FLD case).  ubfx/sbfx
+		 * do in one instruction what the VAX needed extzv/extv for.
+		 */
+		int boff = p->tn.rval / 64;
+		int bsiz = p->tn.rval % 64;
+
+		l = gen(p->in.left, WVALUE);
+		if (bsiz == 0) cerror("zero-width bit field");
+		printx("\t%s\t%s, %s, #%d, #%d\n",
+		    tyunsigned(p->in.type) ? "ubfx" : "sbfx",
+		    xreg(l.reg), xreg(l.reg), boff, bsiz);
+		return (l);
+	}
+
 	case INIT:
 		/*
 		 * A static initialiser, NOT an expression: this runs with the
@@ -954,29 +1123,63 @@ gen(p, want)
  * its x-register at the end, so that evaluating argument n+1 cannot clobber the
  * already-placed argument n.
  */
-#define MAXARGS 8
+#define MAXARGS 32
 
+/* How many arguments does this CM-linked list hold? */
 static int
-collectargs(p, regs, isf, ftype, n)
+countargs(p)
 	NODE *p;
-	int regs[], isf[];
-	TWORD ftype[];
-	int n;
+{
+	if (p == 0) return 0;
+	if (p->in.op == CM) return countargs(p->in.left) + countargs(p->in.right);
+	return 1;
+}
+
+/*
+ * Evaluate each argument and store it straight into its outgoing slot.
+ *
+ * The obvious implementation -- evaluate every argument into a scratch register
+ * and move them all at the end -- runs out of registers at the eighth argument,
+ * and V8 has functions with a dozen.  Storing each one as it is produced keeps
+ * exactly one live at a time, and incidentally makes nested calls in argument
+ * expressions safe: a call inside argument three cannot clobber argument two,
+ * because argument two is already in memory.
+ *
+ * Slot layout, relative to the sp the callee will see:
+ *	[sp, (i-8)*8]			arguments 8 and up -- the real
+ *					outgoing area, contiguous with the
+ *					callee's spill block
+ *	[sp, stackbytes + i*8]		arguments 0..7 -- scratch, loaded into
+ *					x0-x7 just before the call
+ */
+static int
+placeargs(p, n, stackbytes)
+	NODE *p;
+	int n, stackbytes;
 {
 	ret a;
+	int slot;
 
 	if (p == 0) return n;
 	if (p->in.op == CM) {
-		n = collectargs(p->in.left, regs, isf, ftype, n);
-		return collectargs(p->in.right, regs, isf, ftype, n);
+		n = placeargs(p->in.left, n, stackbytes);
+		return placeargs(p->in.right, n, stackbytes);
 	}
 	if (p->in.op == FUNARG) p = p->in.left;
-	if (n >= MAXARGS)
-		cerror("more than %d arguments not yet implemented", MAXARGS);
+
 	a = gen(p, WVALUE);
-	regs[n] = a.reg;
-	isf[n] = (a.flag & R_FREG) != 0;
-	ftype[n] = p->in.type;
+	slot = (n < 8) ? stackbytes + n * 8 : (n - 8) * 8;
+
+	if (a.flag & R_FREG) {
+		/* a float widens to double first, as C and V8 both promote */
+		if (!(p->in.type & TDOUBLE))
+			printx("\tfcvt\t%s, %s\n", dreg(a.reg), sreg(a.reg));
+		printx("\tstr\t%s, [sp, #%d]\n", dreg(a.reg), slot);
+		fregfree(a.reg);
+	} else {
+		printx("\tstr\t%s, [sp, #%d]\n", xreg(a.reg), slot);
+		regfree(a.reg);
+	}
 	return (n + 1);
 }
 
@@ -986,67 +1189,27 @@ gencall(p, want)
 	int want;
 {
 	ret res, f;
-	int regs[MAXARGS], isf[MAXARGS];
-	TWORD ftype[MAXARGS];
 	int saved[REGVAR];
 	int fsaved[NFREG];
-	int n, i, reg, nsave, nfsave, nint, nflt;
+	int n, i, reg, nsave, nfsave, nstack, stackbytes, total;
 	int isunary = (p->in.op == (UNARY CALL) || p->in.op == (UNARY STCALL));
 
 	res.reg = -1; res.flag = R_NONE;
 
-	n = 0;
-	if (!isunary)
-		n = collectargs(p->in.right, regs, isf, ftype, 0);
+	n = isunary ? 0 : countargs(p->in.right);
+	if (n > MAXARGS) cerror("more than %d arguments in one call", MAXARGS);
 
 	/*
-	 * ONE POSITIONAL ARGUMENT SEQUENCE, floats included.
+	 * ORDER MATTERS.  Live scratch registers are saved FIRST, then the
+	 * outgoing area is allocated, then arguments are evaluated into it.
+	 * The other way round pushes the saved registers on top of the stack
+	 * arguments, and the callee reads saved registers where argument nine
+	 * should be.
 	 *
-	 * AAPCS64 proper counts integer and floating arguments separately, into
-	 * x0-x7 and d0-d7.  We deliberately do not: a K&R compiler has no
-	 * prototypes, so at a call site it does not know which parameters the
-	 * callee will read as floating, and pass 1 has already laid the argument
-	 * block out as one positional sequence with a uniform SZARG stride.
-	 * Splitting the registers into two sequences would put argument n in a
-	 * different slot than the callee looks in, and only for functions that
-	 * mix the two kinds -- which is exactly the sort of bug that shows up
-	 * much later in something like troff.
-	 *
-	 * So a floating argument is bitcast into its positional x register and
-	 * the callee, which does know the type, reads it back out of the spill
-	 * block as a float.  This is self-consistent because everything v8cc
-	 * calls is compiled by v8cc: the libv8sys boundary passes only scalars
-	 * and pointers (PLAN.md S4), never a float.
-	 */
-	nint = nflt = 0;
-	for (i = 0; i < n; i++) {
-		if (nint >= 8)
-			cerror("more than 8 arguments not yet implemented");
-		if (isf[i]) {
-			/* a float widens to double first: V8 promotes, as C does */
-			if (!(ftype[i] & TDOUBLE))
-				printx("\tfcvt\t%s, %s\n", dreg(regs[i]),
-				    sreg(regs[i]));
-			printx("\tfmov\tx%d, %s\n", nint++, dreg(regs[i]));
-		} else {
-			printx("\tmov\tx%d, %s\n", nint++, xreg(regs[i]));
-		}
-	}
-	for (i = 0; i < n; i++) {
-		if (isf[i]) fregfree(regs[i]); else regfree(regs[i]);
-	}
-
-	/*
-	 * Save any scratch register still holding a live value.
-	 *
-	 * x9-x15 are caller-saved under AAPCS64, so the callee is free to
-	 * destroy them.  Anything computed before the call and still wanted
-	 * after it -- the classic case being the left operand of
-	 * `fib(n-1) + fib(n-2)` -- has to be preserved here.  Without this,
-	 * recursion silently returns garbage: fib(10) came out 0, because every
-	 * inner call flattened the partial sum its caller was holding.
-	 *
-	 * Pairs are pushed so sp keeps its 16-byte alignment.
+	 * x9-x15 and d16-d23 are caller-saved under AAPCS64, so anything
+	 * computed before the call and wanted after it must be preserved.
+	 * Without this, recursion silently returns garbage: fib(10) came out 0,
+	 * because every inner call flattened the partial sum its caller held.
 	 */
 	nsave = 0;
 	for (i = 0; i < REGVAR; i++)
@@ -1057,18 +1220,35 @@ gencall(p, want)
 	if (nsave & 1)
 		printx("\tstr\t%s, [sp, #-16]!\n", xreg(saved[nsave - 1]));
 
-	/* d16-d23 are caller-saved too, for exactly the same reason. */
 	nfsave = 0;
 	for (i = 0; i < NFREG; i++)
 		if (inusef[i]) fsaved[nfsave++] = i;
 	for (i = 0; i < nfsave; i++)
 		printx("\tstr\t%s, [sp, #-16]!\n", dreg(fsaved[i]));
 
-	if (p->in.left->in.op == ICON && p->in.left->in.name &&
-	    *p->in.left->in.name) {
-		printx("\tbl\t%s\n", p->in.left->in.name);
-	} else if (p->in.left->in.op == NAME && p->in.left->in.name &&
-	    *p->in.left->in.name) {
+	/*
+	 * Arguments 8 and up must land immediately above the callee's spill
+	 * block so the two form one contiguous argument block (frame diagram in
+	 * local.c): the callee's prologue does `sub sp,#64` then pushes
+	 * x29/x30, so what we leave at [sp,#0] is what it reads at [x29,#80].
+	 * Arguments 0..7 get scratch slots above that area.
+	 *
+	 * Rounded to 16: AAPCS64 wants sp 16-byte aligned at all times.
+	 */
+	nstack = (n > 8) ? n - 8 : 0;
+	stackbytes = (nstack * 8 + 15) & ~15;
+	total = stackbytes + ((n > 8 ? 8 : n) * 8 + 15 & ~15);
+	if (total)
+		printx("\tsub\tsp, sp, #%d\n", total);
+
+	if (!isunary)
+		placeargs(p->in.right, 0, stackbytes);
+
+	for (i = 0; i < n && i < 8; i++)
+		printx("\tldr\tx%d, [sp, #%d]\n", i, stackbytes + i * 8);
+
+	if ((p->in.left->in.op == ICON || p->in.left->in.op == NAME) &&
+	    p->in.left->in.name && *p->in.left->in.name) {
 		printx("\tbl\t%s\n", p->in.left->in.name);
 	} else {
 		f = gen(p->in.left, WVALUE);
@@ -1076,7 +1256,9 @@ gencall(p, want)
 		regfree(f.reg);
 	}
 
-	/* restore, in reverse */
+	if (total)
+		printx("\tadd\tsp, sp, #%d\n", total);
+
 	for (i = nfsave - 1; i >= 0; i--)
 		printx("\tldr\t%s, [sp], #16\n", dreg(fsaved[i]));
 	if (nsave & 1)

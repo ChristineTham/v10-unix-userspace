@@ -304,6 +304,59 @@ t 'double to int' '7' <<'EOF'
 f() { double d; d = 7.9; return (int)d; }
 EOF
 
+# ------------------------------------------------------ structs and bitfields
+t 'struct assignment' '77' <<'EOF'
+struct s { int a; int b; int c; };
+f() { struct s x, y; x.a=70; x.b=7; x.c=0; y = x; return y.a+y.b; }
+EOF
+
+t 'large struct assignment' '1225' <<'EOF'
+struct big { int v[50]; };
+f() { struct big x, y; int i, t; for(i=0;i<50;i++) x.v[i]=i; y = x; t=0;
+      for(i=0;i<50;i++) t += y.v[i]; return t; }
+EOF
+
+t 'nested struct copy' '9' <<'EOF'
+struct in { int p; int q; };
+struct out { struct in i; int r; };
+f() { struct out a, b; a.i.p=4; a.i.q=5; a.r=0; b = a; return b.i.p+b.i.q; }
+EOF
+
+t 'bitfield read' '5' <<'EOF'
+struct bf { unsigned lo:4; unsigned hi:4; };
+f() { struct bf b; b.lo = 5; b.hi = 3; return b.lo; }
+EOF
+
+t 'bitfield high' '3' <<'EOF'
+struct bf { unsigned lo:4; unsigned hi:4; };
+f() { struct bf b; b.lo = 5; b.hi = 3; return b.hi; }
+EOF
+
+t 'bitfield sum' '8' <<'EOF'
+struct bf { unsigned lo:4; unsigned hi:4; };
+f() { struct bf b; b.lo = 5; b.hi = 3; return b.lo + b.hi; }
+EOF
+
+# ------------------------------------------------------------- many arguments
+t 'twelve arguments' '78' <<'EOF'
+g(a,b,c,d,e,ff,gg,hh,ii,jj,kk,ll) int a,b,c,d,e,ff,gg,hh,ii,jj,kk,ll;
+{ return a+b+c+d+e+ff+gg+hh+ii+jj+kk+ll; }
+f() { return g(1,2,3,4,5,6,7,8,9,10,11,12); }
+EOF
+
+t 'nine arguments' '45' <<'EOF'
+g(a,b,c,d,e,ff,gg,hh,ii) int a,b,c,d,e,ff,gg,hh,ii;
+{ return a+b+c+d+e+ff+gg+hh+ii; }
+f() { return g(1,2,3,4,5,6,7,8,9); }
+EOF
+
+t 'many args with call inside' '66' <<'EOF'
+id(x) int x; { return x; }
+g(a,b,c,d,e,ff,gg,hh,ii,jj,kk) int a,b,c,d,e,ff,gg,hh,ii,jj,kk;
+{ return a+b+c+d+e+ff+gg+hh+ii+jj+kk; }
+f() { return g(1,2,3,id(4),5,6,7,8,9,10,11); }
+EOF
+
 echo
 echo "v8ccom: $pass passed, $fail failed"
 [ -n "$FAILED" ] && echo "failing:$FAILED"
