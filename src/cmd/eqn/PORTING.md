@@ -196,20 +196,19 @@ double RELx(m, ps) double m; int ps;
 	-> a=-0.4000 b=0.4000 c=0.0000
 ```
 
-Two differences remain between that and the real thing, and one of them is the
-bug:
+Both of the obvious differences are eliminated:
 
-1. **`EFFPS(ps)` is a macro** where the test used `ps` directly. If it expands to
-   a ternary, that changes the shape of the expression — and a ternary is
-   precisely what was wrong for doubles an hour ago. Look at its definition
-   first.
-2. **The real call crosses files** — `REL` is in `main.c`, the caller in
-   `shift.c` — so the caller takes the return type from `extern double REL()` in
-   `e.h`. If that declaration is not in scope at the call, `gencall` reads x0
-   instead of d0 and gets whatever integer is there. Check that `shift.c`
-   actually sees it.
+1. **`EFFPS` is a function, not a macro** — `main.c:298`, implicit `int` return,
+   defined before its uses. No ternary, nothing unusual about the expression.
+2. **`shift.c` does include `e.h`**, which has `extern double EM(), REL();`, so
+   the declaration *is* in scope at the call and `gencall` should read d0.
 
-Both are one grep. Note also that `return 0;` in a `double` function is on the
-other arm of that `if` — it works in isolation, but if the float `&&` polarity
-were inverted the wrong arm would run, so the branch itself is worth confirming
-with a print rather than by reading.
+So the remaining move is to stop reasoning and read the generated code: compile
+`shift.c` with `-S` and look at the two `bl _REL` sites — specifically whether
+the result is taken from `d0` or from `x0`, and whether anything between the
+call and the `printf` argument slot touches it. Compare against the standalone
+version above, which works; the diff between those two pieces of assembly is the
+bug.
+
+That is a five-minute job and it is the right next step. Everything cheaper has
+been tried.
