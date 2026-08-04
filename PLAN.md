@@ -323,6 +323,66 @@ reasoning about what a value should be and make the program print what it is.
 `V8DBG=1` type tracing settled that one in seconds, and instrumenting `cat`'s
 decision points settled the diagnostic bug the same way.
 
+### The third lesson: a stale object does not look like a build problem
+
+Four separate debugging rounds in this port were spent on code that was
+correct, compiled from sources that had already been fixed. A stale object
+presents as *the code being wrong*, which is why it costs so much: it sends you
+into the source, and the source looks fine, so you go deeper.
+
+The worst was lex. `once.c` widened `left[]` and `right[]` to `long`;
+`parser.y` allocates them with `sizeof(*left)`. A `y.tab.o` built before the
+widening allocates 1700x4 bytes for arrays written as 8-byte longs — a 2x
+overrun straight through the neighbouring block's malloc header. It presented
+as "calloc returns 0", and the search for it was unbounded until one
+measurement (log what malloc *wrote*, compare with what was *found there
+later*) proved the allocator innocent.
+
+`make` was audited end to end afterwards rather than patched again. Five
+distinct mechanisms were found, four of them real defects:
+
+1. **Order-only prerequisites misread as dependencies.** Every rule that
+   compiled with v8cc said `| rootfs`. Order-only means "exist before me", not
+   "I depend on you", so editing `cc.c` or a header in `src/include` rebuilt
+   nothing that used them. Measured: `touch src/cmd/cc.c` changed the rebuild
+   set by exactly zero objects.
+2. **Phony targets as normal prerequisites.** The yacc and lex generator rules
+   named `v8yacc`/`v8lex`, which are phony and therefore always out of date, so
+   all of eqn, all of pic and lex's `y.tab.o` — 39 objects — recompiled on
+   every `make`. That is the same bug as (1): one misuse of `rootfs` produced a
+   permanent overbuild in one place and a total underbuild in another. It also
+   *caused* the lex bug, by making builds slow enough that hand-copying
+   `y.tab.o` felt like a reasonable shortcut.
+3. **`#include`d files that are not headers.** `lex/ldefs.c`, `lex/once.c`,
+   `refer/refer..c`, `tbl/t..c`, `yacc/dextern`, `yacc/files` — invisible both
+   to a header scanner and to a `*.c` glob. Only tbl's and lex's were declared.
+4. **Directory stamps standing in for installed files.** A stamp records "the
+   install ran", which is not the question: deleting one installed terminal
+   table left the stamp alone, so `make` never restored it.
+5. **Make's one-second timestamp granularity** (GNU make 3.81, what macOS
+   ships). APFS records nanoseconds; make compares whole seconds. A file edited
+   in the same second as the build that consumed it is silently missed. Nothing
+   in the rules can fix this — it is make's comparison, not the graph — but a
+   dependency test that does not sleep past a second boundary will pass
+   vacuously.
+
+The build now expresses what it actually reads: `$(V8CC_DEPS)` — driver,
+`cpp`, `ccom` and the header tree — is a normal prerequisite of every object
+compiled by v8cc, and the generators are named as the files they are. Clean
+build 12s serial, 4s at `-j8` (parallel was previously racy: a two-target rule
+is two rules sharing a recipe under make 3.81, not a grouped target).
+
+`tests/deps` makes this a tested property rather than a remembered one. It uses
+`make -q` to ask "would this be remade?" without compiling anything, asserts
+each target is up to date *before* the touch — so a rule that is always stale
+cannot pass for the wrong reason — and restores mtimes with `cp -p`. It was
+verified by mutation: removing the `refer..c` dependency, reverting the driver
+dependency, and restoring the phony generator prerequisite each fail it.
+
+The generalisation: **the build must express dependencies rather than rely on
+invocation order.** Every one of the four incidents was closed structurally,
+not by remembering to run something first.
+
 ### The LP64 seam, which is the deepest structural decision here
 
 V8 assumes `sizeof(int) == sizeof(char *)`. It is not an incidental assumption —

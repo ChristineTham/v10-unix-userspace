@@ -15,6 +15,65 @@ ROOTFS  := $(ROOT)rootfs
 
 HOSTCC  ?= clang
 
+# ---------------------------------------------------------------------------
+# The rootfs, named as FILES.  Recipes are at the bottom; the names are here
+# because make expands a target name when it reads the rule.
+#
+# Everything v8cc needs in order to compile anything.  This is the list that
+# used to be spelled `| rootfs` -- an ORDER-ONLY prerequisite on a PHONY
+# target, which is two mistakes that cancel into looking fine:
+#
+#   order-only means "exist before me", not "I depend on you", so editing
+#   cc.c or a header in src/include rebuilt NOTHING that used them; and
+#   phony means always out of date, so every rule naming it as a normal
+#   prerequisite -- the yacc and lex generator rules -- rebuilt every time.
+#
+# Measured before changing, on the tree as it stood: a `make` with nothing
+# touched recompiled 39 objects (all of eqn, all of pic, lex's y.tab.o), and
+# `touch src/cmd/cc.c` then recompiled exactly the same 39.  The difference the
+# driver made was zero.  The two are one bug: the churn is what made a build
+# slow enough that hand-copying y.tab.o felt reasonable, and that stale
+# y.tab.o is the lex bug in src/cmd/lex/PORTING.md.
+# ---------------------------------------------------------------------------
+V8INCSRC       := $(ROOT)third_party/Research-Unix-v8/v8/usr/include
+JERQINC        := $(ROOT)third_party/Research-Unix-v8/jerq/include
+
+ROOTFS_CPP     := $(ROOTFS)/lib/cpp
+ROOTFS_CCOM    := $(ROOTFS)/lib/ccom
+ROOTFS_CC      := $(ROOTFS)/bin/cc
+ROOTFS_INC     := $(ROOTFS)/usr/include/.stamp
+ROOTFS_YACCPAR := $(ROOTFS)/usr/lib/yaccpar
+ROOTFS_NCFORM  := $(ROOTFS)/usr/lib/lex/ncform
+
+# One target per installed file, NOT a directory stamp.  A stamp records "the
+# install ran", which is not the question make needs answered -- deleting
+# rootfs/usr/lib/term/tab.37 left the stamp in place, so `make` did not put it
+# back.  Measured, not assumed.  These lists name every file that lands in the
+# rootfs, so each one is restored on its own.
+ROOTFS_TERM := $(patsubst $(SRC)/cmd/troff/term/tab.%,$(ROOTFS)/usr/lib/term/tab.%, \
+                 $(wildcard $(SRC)/cmd/troff/term/tab.*))
+# makedev emits DESC.out plus one .out per font named on DESC's `fonts` line.
+DEV202_FONTS := $(shell sed -n 's/^fonts[ 	][0-9]*[ 	]*//p' $(SRC)/cmd/troff/dev202/DESC)
+ROOTFS_FONT  := $(patsubst %,$(ROOTFS)/usr/lib/font/dev202/%.out,DESC $(DEV202_FONTS))
+
+# The prerequisite set of every object compiled by v8cc.  Normal, not
+# order-only: a change to any of these invalidates every object in the tree.
+V8CC_DEPS = $(ROOTFS_CC) $(ROOTFS_CPP) $(ROOTFS_CCOM) $(ROOTFS_INC)
+
+# The two generators, as the FILES they are.  Depending on the phony `v8yacc`
+# and `v8lex` is what rebuilt pic and eqn on every single make.
+YACC := $(BUILD)/yacc/yacc
+LEX  := $(BUILD)/lex/lex
+
+# The libraries installed for the driver to link, and the ARM64 compiler's
+# build directory.  Up here for the same reason as ROOTFS: make expands a
+# variable in a PREREQUISITE as soon as it reads the rule, exactly as it does
+# in a target name.  Defined below their first use, $(A64BUILD)/v8ccom
+# expanded to `/v8ccom` and `make test` failed with "No rule to make target".
+A64BUILD    := $(BUILD)/ccom-arm64
+ROOTFS_LIBS := $(ROOTFS)/lib/crt0.o $(ROOTFS)/lib/libv8c.a \
+               $(ROOTFS)/lib/libv8stubs.a $(ROOTFS)/lib/libv8sys.a
+
 # Automatic header dependencies.
 #
 # Not a nicety here.  This port is driven by headers -- macdefs.h alone fixes
@@ -55,33 +114,47 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 test-deps cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
 stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn
 
-test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
-test-cpp: cpp
+# A test target's prerequisites are the files its script actually opens.  Four
+# of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
+# driver for free because the library install rules said `| rootfs`.  Naming
+# $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
+test: test-deps test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
+# First, because it tests the thing every other suite's result depends on: that
+# what was built is what the sources say.  Four bugs in this port were a stale
+# object rather than wrong code.  It settles the build itself, so it takes no
+# prerequisites; $(MAKE) is passed through so the nested invocation shares this
+# one's jobserver.
+test-deps:
+	@MAKE="$(MAKE)" $(ROOT)tests/deps/run.sh
+test-cpp: $(BUILD)/cpp/cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
-test-v8ccom: v8ccom
+test-v8ccom: $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp
 	@$(ROOT)tests/v8ccom/run.sh $(A64BUILD)/v8ccom
-test-v8cc: rootfs-libs
+test-v8cc: $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/v8cc/run.sh
 test-v8sys: $(BUILD)/v8sys/test
 	@$(BUILD)/v8sys/test
-test-freestanding: rootfs libv8sys crt0 rootfs-libs
+test-freestanding: $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/freestanding/run.sh
-test-libv8c: rootfs libv8sys crt0 libv8c rootfs-libs
+test-libv8c: $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/libv8c/run.sh
-test-wavea: rootfs libv8sys crt0 libv8c rootfs-libs
+test-wavea: $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/wavea/run.sh
-test-waveb: rootfs libv8sys crt0 libv8c rootfs-libs
+test-waveb: $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/waveb/run.sh
-test-sh: sh
+test-sh: $(BUILD)/sh/sh
 	@$(ROOT)tests/sh/run.sh
-test-wavec: nroff troff tbl eqn pic spell
+# nroff opens /usr/lib/term/tab.37 and troff the dev202 font tables, both
+# resolved inside $V8ROOT.  They are inputs to the suite as much as the
+# binaries are, so the suite depends on them.
+test-wavec: nroff troff tbl eqn pic spell $(ROOTFS_TERM) $(ROOTFS_FONT)
 	@$(ROOT)tests/wavec/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
@@ -172,8 +245,7 @@ $(BUILD)/ccom/cgram.o: $(CCOM_M)/cgram.c
 # v8ccom -- the real thing: V8's pass 1 with our ARM64 back end.
 # ---------------------------------------------------------------------------
 A64      = $(ROOT)compiler/ccom-arm64
-A64BUILD = $(BUILD)/ccom-arm64
-A64INC   = -I$(A64) -I$(CCOM_M)
+A64INC   = -I$(A64) -I$(CCOM_M)		# A64BUILD is defined at the top
 
 A64_MI   = $(patsubst %,$(A64BUILD)/%.o,$(CCOM_MI) cgram)
 A64_MD   = $(patsubst %,$(A64BUILD)/%.o,local local2 emit printx gencode dbstubs)
@@ -345,16 +417,16 @@ $(BUILD)/libc/libv8c.a: $(LIBC_OBJ)
 # driver to find its passes.
 V8CCRUN = V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc -I$(LIBCSRC)/stdio
 
-$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/libc/gen
 	$(V8CCRUN) -c -o $@ $<
 
-$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.C $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.C $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/libc/gen
 	cp $< $(BUILD)/libc/gen/$*.c
 	$(V8CCRUN) -c -o $@ $(BUILD)/libc/gen/$*.c
 
-$(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/libc/stdio
 	$(V8CCRUN) -c -o $@ $<
 
@@ -394,7 +466,7 @@ $(BUILD)/sh/sh: $(SH_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
 	    $(BUILD)/v8sys/libv8sys.a -lSystem
 	@echo "built $@"
 
-$(BUILD)/sh/%.o: $(SHSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/sh/%.o: $(SHSRC)/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/sh
 	$(V8CCRUN) -I$(SHSRC) -c -o $@ $<
 
@@ -427,10 +499,10 @@ $(BUILD)/troff/troff: $(TROFF_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
 	    $(BUILD)/v8sys/libv8sys.a -lSystem
 	@echo "built $@"
 
-$(BUILD)/nroff/%.o: $(TROFFSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/nroff/%.o: $(TROFFSRC)/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/nroff
 	$(V8CCRUN) -DINCORE -DSMALLER -DNROFF -I$(TROFFSRC) -c -o $@ $<
-$(BUILD)/troff/%.o: $(TROFFSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/troff/%.o: $(TROFFSRC)/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/troff
 	$(V8CCRUN) -DINCORE -I$(TROFFSRC) -c -o $@ $<
 $(NROFF_OBJ) $(TROFF_OBJ): $(wildcard $(TROFFSRC)/*.h)
@@ -452,9 +524,11 @@ $(BUILD)/tbl/tbl: $(TBL_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
 	    $(BUILD)/v8sys/libv8sys.a -lSystem
 	@echo "built $@"
 
-$(BUILD)/tbl/%.o: $(TBLSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/tbl/%.o: $(TBLSRC)/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/tbl
 	$(V8CCRUN) -I$(TBLSRC) -c -o $@ $<
+# t..c is tbl's header under a name that is not .h, and every object #includes
+# it.  Invisible to any dependency scanner; spelled out here.
 $(TBL_OBJ): $(TBLSRC)/t..c
 
 # ---------------------------------------------------------------------------
@@ -475,9 +549,12 @@ $(BUILD)/yacc/yacc: $(YACC_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
 	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
 	    $(BUILD)/v8sys/libv8sys.a -lSystem
 	@echo "built $@"
-$(BUILD)/yacc/%.o: $(YACCSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/yacc/%.o: $(YACCSRC)/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/yacc
 	$(V8CCRUN) -I$(YACCSRC) -c -o $@ $<
+# y1..y4 all `#include "dextern"`, and dextern in turn includes "files".
+# Neither ends in .h, so neither is visible to anything that scans for headers.
+$(YACC_OBJ): $(YACCSRC)/dextern $(YACCSRC)/files
 
 # ---------------------------------------------------------------------------
 # lex.  The tree arrays name/left/right/parent/nullstr are DECLARED in once.c
@@ -503,13 +580,13 @@ $(BUILD)/lex/lex: $(LEX_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
 	    $(BUILD)/v8sys/libv8sys.a -lSystem
 	@echo "built $@"
 
-$(BUILD)/lex/y.tab.c: $(LEXSRC)/parser.y v8yacc | rootfs
+$(BUILD)/lex/y.tab.c: $(LEXSRC)/parser.y $(YACC) $(ROOTFS_YACCPAR)
 	@mkdir -p $(BUILD)/lex
-	cd $(BUILD)/lex && V8ROOT=$(ROOTFS) $(BUILD)/yacc/yacc $(LEXSRC)/parser.y
+	cd $(BUILD)/lex && V8ROOT=$(ROOTFS) $(YACC) $(LEXSRC)/parser.y
 
-$(BUILD)/lex/y.tab.o: $(BUILD)/lex/y.tab.c $(A64BUILD)/v8ccom | rootfs
+$(BUILD)/lex/y.tab.o: $(BUILD)/lex/y.tab.c $(V8CC_DEPS)
 	$(V8CCRUN) -I$(LEXSRC) -c -o $@ $(BUILD)/lex/y.tab.c
-$(BUILD)/lex/%.o: $(LEXSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+$(BUILD)/lex/%.o: $(LEXSRC)/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/lex
 	$(V8CCRUN) -I$(LEXSRC) -c -o $@ $<
 
@@ -548,20 +625,35 @@ $(BUILD)/pic/pic: $(PIC_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
 	    $(BUILD)/v8sys/libv8sys.a -lSystem
 	@echo "built $@"
 
-$(BUILD)/pic/y.tab.c $(BUILD)/pic/pic.ydef: $(PICSRC)/picy.y v8yacc | rootfs
+# ONE target per rule.  This was written as `y.tab.c pic.ydef: ...`, which make
+# 3.81 -- the make macOS ships, and the one this builds under -- reads as two
+# separate rules that happen to share a recipe, so the recipe is eligible to run
+# twice, and does race under -j.  Grouped targets (&:) need make 4.3.
+$(BUILD)/pic/y.tab.c: $(PICSRC)/picy.y $(YACC) $(ROOTFS_YACCPAR)
 	@mkdir -p $(BUILD)/pic
-	cd $(BUILD)/pic && V8ROOT=$(ROOTFS) $(BUILD)/yacc/yacc -d $(PICSRC)/picy.y
-	@cp $(BUILD)/pic/y.tab.h $(BUILD)/pic/pic.ydef
+	cd $(BUILD)/pic && V8ROOT=$(ROOTFS) $(YACC) -d $(PICSRC)/picy.y
 
-$(BUILD)/pic/lex.yy.c: $(PICSRC)/picl.l v8lex $(BUILD)/pic/pic.ydef | rootfs
+# pic.ydef is y.tab.h under another name.  The original makefile copied it only
+# when it CHANGED, to avoid rebuilding the other 14 objects after a grammar edit
+# that left the token numbers alone.  That trick is NOT reproduced here, and the
+# reason is worth recording: a conditional copy leaves pic.ydef permanently
+# older than y.tab.c, so make reports "must remake" for it on every run forever.
+# Harmless in itself -- it re-runs one cmp -- but it makes `make -n` claim the
+# dependent objects rebuild when a real `make` correctly leaves them alone.
+# A build whose dry run lies is worse than one that spends two seconds
+# recompiling, and this whole exercise is about the build being believable.
+$(BUILD)/pic/pic.ydef: $(BUILD)/pic/y.tab.c
+	@cp $(BUILD)/pic/y.tab.h $@
+
+$(BUILD)/pic/lex.yy.c: $(PICSRC)/picl.l $(LEX) $(ROOTFS_NCFORM) $(BUILD)/pic/pic.ydef
 	@mkdir -p $(BUILD)/pic
-	cd $(BUILD)/pic && V8ROOT=$(ROOTFS) $(BUILD)/lex/lex $(PICSRC)/picl.l
+	cd $(BUILD)/pic && V8ROOT=$(ROOTFS) $(LEX) $(PICSRC)/picl.l
 
-$(BUILD)/pic/picy.o: $(BUILD)/pic/y.tab.c $(A64BUILD)/v8ccom | rootfs
+$(BUILD)/pic/picy.o: $(BUILD)/pic/y.tab.c $(V8CC_DEPS)
 	$(V8CCRUN) -I$(BUILD)/pic -I$(PICSRC) -c -o $@ $(BUILD)/pic/y.tab.c
-$(BUILD)/pic/picl.o: $(BUILD)/pic/lex.yy.c $(A64BUILD)/v8ccom | rootfs
+$(BUILD)/pic/picl.o: $(BUILD)/pic/lex.yy.c $(V8CC_DEPS)
 	$(V8CCRUN) -I$(BUILD)/pic -I$(PICSRC) -c -o $@ $(BUILD)/pic/lex.yy.c
-$(BUILD)/pic/%.o: $(PICSRC)/%.c $(BUILD)/pic/pic.ydef $(A64BUILD)/v8ccom | rootfs
+$(BUILD)/pic/%.o: $(PICSRC)/%.c $(BUILD)/pic/pic.ydef $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/pic
 	$(V8CCRUN) -I$(BUILD)/pic -I$(PICSRC) -c -o $@ $<
 $(PIC_OBJ): $(PICSRC)/pic.h
@@ -597,9 +689,13 @@ $(BUILD)/spell/hashcheck: $(BUILD)/spell/hashcheck.o $(BUILD)/spell/hash.o \
 	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/spell/hashcheck.o $(BUILD)/spell/hash.o $(BUILD)/spell/huff.o  $(V8LIBS)
 	@echo "built $@"
 
-$(BUILD)/spell/%.o: $(SPELLSRC)/%.c $(SPELLSRC)/hash.h $(A64BUILD)/v8ccom | rootfs
+$(BUILD)/spell/%.o: $(SPELLSRC)/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/spell
 	$(V8CCRUN) -I$(SPELLSRC) -c -o $@ $<
+# hash.h carries HALFWORD, which picks the fetch macro; huff.h was missing from
+# the old pattern rule.  See src/cmd/spell/PORTING.md -- getting the fetch macro
+# wrong is the one bug the V8 authors left a runtime assertion for.
+$(SPELL_OBJ): $(SPELLSRC)/hash.h $(SPELLSRC)/huff.h
 
 # ---------------------------------------------------------------------------
 # refer -- the bibliographic preprocessor, and the four helpers it EXECS.
@@ -623,6 +719,9 @@ REFER_HUNT = hunt1 hunt2 hunt3 hunt5 hunt6 hunt7 glue5 refer3 hunt9 shell \
              deliv2 hunt8 glue4 tick
 REFER_DELIV = deliv1 deliv2
 REFER_PROGS = refer mkey inv hunt deliv
+# The five programs share objects, so sort/dedupe rather than list four times.
+REFER_OBJ = $(sort $(patsubst %,$(BUILD)/refer/%.o, \
+              $(REFER_MAIN) $(REFER_MKEY) $(REFER_INV) $(REFER_HUNT) $(REFER_DELIV)))
 
 refer: $(patsubst %,$(ROOTFS)/usr/lib/refer/%,mkey inv hunt deliv) \
        $(BUILD)/refer/refer
@@ -645,13 +744,17 @@ $(BUILD)/refer/deliv: $(patsubst %,$(BUILD)/refer/%.o,$(REFER_DELIV)) $(V8DEPS)
 	    $(patsubst %,$(BUILD)/refer/%.o,$(REFER_DELIV)) $(V8LIBS)
 
 # refer execs these by absolute path; the shim resolves /usr/lib inside $$V8ROOT.
-$(ROOTFS)/usr/lib/refer/%: $(BUILD)/refer/% | rootfs
+$(ROOTFS)/usr/lib/refer/%: $(BUILD)/refer/%
 	@mkdir -p $(ROOTFS)/usr/lib/refer
 	@cp $< $@
 
-$(BUILD)/refer/%.o: $(REFERSRC)/%.c $(A64BUILD)/v8ccom | rootfs
+$(BUILD)/refer/%.o: $(REFERSRC)/%.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/refer
 	$(V8CCRUN) -I$(REFERSRC) -c -o $@ $<
+# Twelve of refer's files `#include "refer..c"` -- refer's shared declarations,
+# under a name ending in .c, so it is invisible both to a header scanner and to
+# any *.c glob.  Exactly the shape that made lex's once.c go stale.
+$(REFER_OBJ): $(REFERSRC)/refer..c
 
 EQNSRC = $(SRC)/cmd/eqn
 EQN_NAMES = main diacrit eqnbox font fromto funny glob integral input lex \
@@ -667,15 +770,18 @@ $(BUILD)/eqn/eqn: $(EQN_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
 	@echo "built $@"
 
 # The grammar, run through V8's yacc.  e.def is y.tab.h, which the other files
-# include for the token numbers.
-$(BUILD)/eqn/y.tab.c $(BUILD)/eqn/e.def: $(EQNSRC)/eqn.y v8yacc
+# include for the token numbers; split into its own rule for the same reason as
+# pic's pic.ydef, and copied only when changed for the same reason too.
+$(BUILD)/eqn/y.tab.c: $(EQNSRC)/eqn.y $(YACC) $(ROOTFS_YACCPAR)
 	@mkdir -p $(BUILD)/eqn
-	cd $(BUILD)/eqn && V8ROOT=$(ROOTFS) $(BUILD)/yacc/yacc -d $(EQNSRC)/eqn.y
-	@cp $(BUILD)/eqn/y.tab.h $(BUILD)/eqn/e.def
+	cd $(BUILD)/eqn && V8ROOT=$(ROOTFS) $(YACC) -d $(EQNSRC)/eqn.y
 
-$(BUILD)/eqn/eqn.o: $(BUILD)/eqn/y.tab.c
+$(BUILD)/eqn/e.def: $(BUILD)/eqn/y.tab.c
+	@cp $(BUILD)/eqn/y.tab.h $@
+
+$(BUILD)/eqn/eqn.o: $(BUILD)/eqn/y.tab.c $(V8CC_DEPS)
 	$(V8CCRUN) -I$(BUILD)/eqn -I$(EQNSRC) -c -o $@ $(BUILD)/eqn/y.tab.c
-$(BUILD)/eqn/%.o: $(EQNSRC)/%.c $(BUILD)/eqn/e.def $(A64BUILD)/v8ccom | rootfs
+$(BUILD)/eqn/%.o: $(EQNSRC)/%.c $(BUILD)/eqn/e.def $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/eqn
 	$(V8CCRUN) -I$(BUILD)/eqn -I$(EQNSRC) -c -o $@ $<
 $(EQN_OBJ): $(EQNSRC)/e.h
@@ -684,12 +790,27 @@ $(EQN_OBJ): $(EQNSRC)/e.h
 # rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.
 # ---------------------------------------------------------------------------
 
-rootfs: cpp v8ccom v8cc
-	@mkdir -p $(ROOTFS)/lib $(ROOTFS)/bin $(ROOTFS)/usr/include
-	@cp $(BUILD)/cpp/cpp $(ROOTFS)/lib/cpp
-	@cp $(A64BUILD)/v8ccom $(ROOTFS)/lib/ccom
-	@cp $(BUILD)/cc/v8cc $(ROOTFS)/bin/cc
-	@cp -R $(ROOT)third_party/Research-Unix-v8/v8/usr/include/. $(ROOTFS)/usr/include/
+# A phony ALIAS over real files, not a recipe.  Nothing depends on this name
+# any more; the things that used to say `| rootfs` now name the files they
+# actually read, so make can tell when they change.
+rootfs: $(V8CC_DEPS) $(ROOTFS_YACCPAR) $(ROOTFS_NCFORM) $(ROOTFS_TERM) $(ROOTFS_FONT)
+
+# The three passes v8cc execs, each tracking its build-tree original.
+$(ROOTFS_CPP): $(BUILD)/cpp/cpp
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS_CCOM): $(A64BUILD)/v8ccom
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS_CC): $(BUILD)/cc/v8cc
+	@mkdir -p $(@D) && cp $< $@
+
+# The header tree, as one stamp.  Per-file rules for ~90 upstream headers would
+# buy nothing: the unit that matters is "is the include path current", and any
+# header changing invalidates every object either way.
+ROOTFS_INC_SRC = $(wildcard $(V8INCSRC)/*.h) $(wildcard $(V8INCSRC)/sys/*.h) \
+                 $(wildcard $(SRC)/include/*) $(JERQINC)/jioctl.h
+$(ROOTFS_INC): $(ROOTFS_INC_SRC)
+	@mkdir -p $(ROOTFS)/usr/include
+	@cp -R $(V8INCSRC)/. $(ROOTFS)/usr/include/
 	@# Patched headers go on LAST, over the pristine ones.  Only headers the
 	@# port genuinely had to change live in src/include -- so far setjmp.h,
 	@# whose jmp_buf is 40 VAX bytes and cannot hold AAPCS64's callee-saved
@@ -698,17 +819,20 @@ rootfs: cpp v8ccom v8cc
 	@cp -R $(SRC)/include/. $(ROOTFS)/usr/include/
 	@# The jerq headers, which ls(1) and mc(1) reach for by absolute path.
 	@# Unchanged upstream files; only their location moves.
-	@cp $(ROOT)third_party/Research-Unix-v8/jerq/include/jioctl.h $(ROOTFS)/usr/include/
-	@# The data files V8 programs open by absolute path.  The shim resolves
-	@# /usr/lib/... inside $V8ROOT -- see rootpath() in shim/v8sys/syscall.c.
-	@mkdir -p $(ROOTFS)/usr/lib/term
-	@cp $(SRC)/cmd/troff/term/tab.* $(ROOTFS)/usr/lib/term/ 2>/dev/null || true
-	@# yaccpar, which V8's yacc opens as /usr/lib/yaccpar.
-	@cp $(SRC)/cmd/yacc/yaccpar $(ROOTFS)/usr/lib/ 2>/dev/null || true
-	@# ncform, the skeleton lex copies out after its tables.
-	@mkdir -p $(ROOTFS)/usr/lib/lex
-	@cp $(SRC)/cmd/lex/ncform $(ROOTFS)/usr/lib/lex/ 2>/dev/null || true
-	@$(MAKE) --no-print-directory devtables
+	@cp $(JERQINC)/jioctl.h $(ROOTFS)/usr/include/
+	@touch $@
+
+# The data files V8 programs open by absolute path.  The shim resolves
+# /usr/lib/... inside $V8ROOT -- see rootpath() in shim/v8sys/syscall.c.
+# These are INPUTS TO PROGRAMS, so the rules that run those programs name them:
+# yaccpar is a prerequisite of every yacc run, ncform of every lex run, and the
+# term and font tables of the nroff and troff test suites.
+$(ROOTFS_YACCPAR): $(YACCSRC)/yaccpar
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS_NCFORM): $(LEXSRC)/ncform
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/lib/term/tab.%: $(TROFFSRC)/term/tab.%
+	@mkdir -p $(@D) && cp $< $@
 
 # crt0 and the libraries, installed into the rootfs so that `cc -o prog prog.c`
 # links the V8 world rather than clang's startup and the host libc.  See the
@@ -721,33 +845,41 @@ rootfs: cpp v8ccom v8cc
 # rootfs when it happens to be invoked, so `make libv8c` left the copy the
 # driver actually links STALE -- which cost a debugging round when spell's
 # sscanf kept reaching the host's __svfscanf_l after V8's had been added.
-ROOTFS_LIBS = $(ROOTFS)/lib/crt0.o $(ROOTFS)/lib/libv8c.a \
-              $(ROOTFS)/lib/libv8stubs.a $(ROOTFS)/lib/libv8sys.a
-
+# ROOTFS_LIBS itself is defined at the top of this file, beside ROOTFS.
 rootfs-libs: $(ROOTFS_LIBS)
-$(ROOTFS)/lib/crt0.o: $(BUILD)/crt0.o | rootfs
-	@cp $< $@
-$(ROOTFS)/lib/libv8c.a: $(BUILD)/libc/libv8c.a | rootfs
-	@cp $< $@
-$(ROOTFS)/lib/libv8stubs.a: $(BUILD)/v8sys/libv8stubs.a | rootfs
-	@cp $< $@
-$(ROOTFS)/lib/libv8sys.a: $(BUILD)/v8sys/libv8sys.a | rootfs
-	@cp $< $@
+$(ROOTFS)/lib/crt0.o: $(BUILD)/crt0.o
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/lib/libv8c.a: $(BUILD)/libc/libv8c.a
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/lib/libv8stubs.a: $(BUILD)/v8sys/libv8stubs.a
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/lib/libv8sys.a: $(BUILD)/v8sys/libv8sys.a
+	@mkdir -p $(@D) && cp $< $@
 
 # troff's device tables.  makedev compiles the plain-text description in
 # dev202/ into the binary DESC.out and per-font .out files troff opens at
 # startup; the original makefile does the same.  It is a BUILD tool, like yacc,
 # so it is built with the host compiler and never ends up in the rootfs.
-devtables: $(BUILD)/troff/dev202/DESC.out
-$(BUILD)/troff/dev202/DESC.out: $(TROFFSRC)/makedev.c $(wildcard $(TROFFSRC)/dev202/*)
+#
+# Three steps, three targets.  Rolling them into one rule keyed on DESC.out
+# meant that deleting the INSTALLED tables under the rootfs did not restore
+# them: DESC.out was still there, so the recipe -- and with it the install --
+# never ran.
+devtables: $(ROOTFS_FONT)
+$(BUILD)/troff/makedev: $(TROFFSRC)/makedev.c
+	@mkdir -p $(BUILD)/troff
+	@$(HOSTCC) -std=gnu89 -fcommon -w -I$(TROFFSRC) -o $@ $<
+$(BUILD)/troff/dev202/DESC.out: $(BUILD)/troff/makedev $(wildcard $(TROFFSRC)/dev202/*)
 	@mkdir -p $(BUILD)/troff/dev202
-	@$(HOSTCC) -std=gnu89 -fcommon -w -I$(TROFFSRC) -o $(BUILD)/troff/makedev \
-	    $(TROFFSRC)/makedev.c
 	@cp -R $(TROFFSRC)/dev202/. $(BUILD)/troff/dev202/
 	@cd $(BUILD)/troff/dev202 && ../makedev DESC > /dev/null
-	@mkdir -p $(ROOTFS)/usr/lib/font/dev202
-	@cp $(BUILD)/troff/dev202/*.out $(ROOTFS)/usr/lib/font/dev202/
-	@echo "rootfs ready: V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc"
+
+# Each installed table is its own target, so deleting one restores it.  makedev
+# writes the whole set in a single run, so the prerequisite is DESC.out for all
+# of them and the recipe copies the set -- one rule, no multi-target ambiguity,
+# which make 3.81 would otherwise turn into twelve makedev runs.
+$(ROOTFS)/usr/lib/font/dev202/%.out: $(BUILD)/troff/dev202/DESC.out
+	@mkdir -p $(@D) && cp $(BUILD)/troff/dev202/*.out $(@D)/
 
 clean:
 	rm -rf $(BUILD) $(ROOTFS)
@@ -762,12 +894,13 @@ distclean: clean
 # built by v8cc cannot: V8's driver has no dependency-generation flag and is not
 # getting one, since inventing options the original never had is the sort of
 # convenience that erodes the thing being preserved.  They get a coarse
-# dependency on every header they could include instead -- overbuilds sometimes,
-# never underbuilds, and libc is small enough that it does not matter.
+# dependency instead -- overbuilds sometimes, never underbuilds.
+#
+# The V8 system headers are handled for EVERY v8cc object by $(ROOTFS_INC),
+# which is in $(V8CC_DEPS).  What is left here is the one include directory
+# that is not in the rootfs: libc's own stdio headers, which reach the compiler
+# through the -I in V8CCRUN rather than through /usr/include.
 # ---------------------------------------------------------------------------
-V8HDRS := $(wildcard $(LIBCSRC)/stdio/*.h) \
-          $(wildcard $(ROOT)third_party/Research-Unix-v8/v8/usr/include/*.h) \
-          $(wildcard $(ROOT)third_party/Research-Unix-v8/v8/usr/include/sys/*.h)
-$(LIBC_OBJ): $(V8HDRS)
+$(LIBC_OBJ): $(wildcard $(LIBCSRC)/stdio/*.h)
 
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
