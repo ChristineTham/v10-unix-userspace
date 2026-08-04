@@ -8,6 +8,32 @@ putline(i, nl)
 	/* nl is line number for finding data   usually identical */
 {
 int c, lf, ct, form, lwid, vspf, ip, cmidx, exvspen, vforml;
+/*
+ * PORT: reg() returns a POINTER, and ct is an int.
+ *
+ * reg(col, place) is declared `char *` in tr.c and returns a two-character
+ * number-register name out of the nregs[] table -- "40", "4q", "5x".  Three
+ * lines below stored that pointer in `ct`, which is an int, and handed it
+ * straight to a %s:
+ *
+ *	ct = reg(c,CLEFT);
+ *	fprintf(tabout, "\h'|\n(%2su'", ct);
+ *
+ * On the VAX an int held a pointer exactly.  Under LP64 it holds half of one,
+ * and _doprnt walked off the truncated address looking for a NUL -- tbl died on
+ * its first table row reading 0x1d7fe.
+ *
+ * The compiler cannot rescue this the way it does an implicit conversion (see
+ * PTRCONVFULL in common/optim.c): `ct` is a genuine int automatic, so the value
+ * is stored into four bytes and reloaded from four bytes, and nothing about
+ * that is a conversion.  It needs a variable of the right type, which is what
+ * this is.
+ *
+ * ct itself stays an int, because it is genuinely a character everywhere else
+ * in this function -- `switch (ct=fullbot[nl])`, `ct=='a'`, `ct=ctype(...)`.
+ * The two uses never overlap; they only shared a name.
+ */
+char *ctreg;
 int vct, chfont, uphalf;
 char *s, *size, *fn;
 watchout=vspf=exvspen=0;
@@ -107,10 +133,10 @@ for(c=0; c<ncol; c++)
 	form= ctype(vforml,c);
 	if (form != 's')
 		{
-		ct = reg(c,CLEFT);
-		if (form=='a') ct = reg(c,CMID);
-		if (form=='n' && table[nl][c].rcol && lused[c]==0) ct= reg(c,CMID);
-		fprintf(tabout, "\\h'|\\n(%2su'", ct);
+		ctreg = reg(c,CLEFT);
+		if (form=='a') ctreg = reg(c,CMID);
+		if (form=='n' && table[nl][c].rcol && lused[c]==0) ctreg= reg(c,CMID);
+		fprintf(tabout, "\\h'|\\n(%2su'", ctreg);
 		}
 	s= table[nl][c].col;
 	fn = font[c][stynum[vforml]];

@@ -3,188 +3,70 @@
 All 23 files compile with V8's compiler and link freestanding, with no source
 changes. It does not yet run.
 
-## Where it is
+## It runs
 
-It dies in `_doprnt` — our libc's, so the fault is a bad argument rather than a
-bad formatter — reading address `0x1d7fe`:
-
-```
-stop reason = EXC_BAD_ACCESS (code=1, address=0x1d7fe)
-frame #0: tbl`_doprnt + 3788
-```
-
-The same with input on stdin as from a file, so it is not the input path.
-
-`0x1d7fe` is worth noting: it is *not* the low half of a stack address (those
-look like `0x16f...`), so this is unlikely to be the plain pointer-truncation
-that `fdprintf` and `sprintf` had in troff. Something is being read as a `%s`
-argument that was never a string.
-
-## Where to look
-
-The crash is **not** in the first `fprintf`, which was the obvious suspect.
-Instrumenting the read loop in `t1.c` shows it completing:
+`tbl | nroff` formats a table:
 
 ```
-G          gets1 called
-L[.TS]     line holds ".TS", correctly terminated
-P          fprintf returned
+Name    Value
+alpha   1
+beta    2
 ```
 
-and the fault follows, in `tableput()` — the branch `.TS` triggers. The earlier
-backtrace pointed at `_doprnt` because a *later* `fprintf`, inside the table
-processing, is the one handed something bad.
+## The bug: reg() returns a pointer, and ct was an int
 
-So this is not a libc problem and not the stdio path. Eliminated along the way,
-each by direct test:
-
-* the arguments to the first `fprintf` — a real `FILE *` and a real stack address
-* `fprintf` to a buffered stream through a global `FILE *`, standalone
-* `setinp`, which does nothing at all when reading stdin
-* `fgets`, which reads `hello\n` as six bytes and NUL-terminates
-
-`tableput()` is a list of seventeen calls, and bracketing each one puts the
-fault in the twelfth:
-
-```
-06 07 08 09 10 11      <- printed before each call; 11 is runout()
-```
-
-`runout` (in `t7.c`) is the output generator — `deftail()`, then `putline(i,i)`
-for every row — so it is where the table's own strings are first printed, which
-matches a `%s` fault in `_doprnt`.
-
-Those strings live in tbl's private arena: `alocv()` in `tb.c` hands out slices
-of `calloc`'d blocks, and the cells are `struct colstr` — which contains
-pointers, so it doubled under LP64. Worth checking whether every allocation for
-it is computed with `sizeof` rather than a literal, since a literal would now be
-half what is needed and the table would overlap itself. Narrowed once more, inside `runout`:
-
-```
-11        runout() entered
-R1 R2     deftail() completed
-R3        putline(0,0) entered -- and never returns
-```
-
-So it is `putline`, on the **first row**, in `t7.c`. And the arena is probably
-not the cause: `alocv`'s only call site is
+`reg(col, place)` is declared `char *` in `tr.c` and returns a two-character
+number-register name out of the `nregs[]` table — `"40"`, `"4q"`, `"5x"`.
+`putline` stored that in `ct`, an `int`, and handed it straight to a `%s`:
 
 ```c
-table[nlin] = (struct colstr *) alocv((ncol+2)*sizeof(table[0][0]));
-```
-
-which uses `sizeof`, so it sizes correctly under LP64; and a three-row,
-two-column table needs a few hundred bytes of the 2000 (`MAXCHS`) a block holds.
-
-`putline` (in `t8.c`, not `t7.c`) walks a row's cells, and it uses an idiom
-worth looking at first:
-
-```c
-s = table[nl][c].col;
+int c, lf, ct, form, ...;
 ...
-if ((int)s>0 && (int)s<128)
+ct = reg(c,CLEFT);
+fprintf(tabout, "\h'|\n(%2su'", ct);
 ```
 
-That is V7's trick of keeping **small markers in pointer slots** — a cell whose
-`col` is a number under 128 is a code, not an address. `vspen(s)` and friends
-test the same way. The compiler no longer truncates a pointer cast to `int`
-(`PTRCONVFULL`, see `common/optim.c`), which is what makes a real pointer
-correctly fail the `< 128` test — but every one of these comparisons deserves
-reading, because the idiom depends on the exact behaviour that changed.
+On the VAX an int held a pointer exactly. Under LP64 it holds half of one, and
+`_doprnt` walked off the truncated address looking for a NUL — tbl died on its
+first table row reading `0x1d7fe`.
 
-Done, and the cells are sound:
+**The compiler cannot rescue this one.** `PTRCONVFULL` makes a pointer-to-int
+*conversion* lossless, but `ct` is a genuine `int` automatic: the value is
+stored into four bytes and reloaded from four bytes, and nothing about that is a
+conversion. It needs a variable of the right type, so the register name now has
+its own `char *ctreg`. `ct` stays an int, because it is genuinely a character
+everywhere else in the function — `switch (ct=fullbot[nl])`, `ct=='a'`,
+`ct=ctype(...)`. The two uses never overlapped; they only shared a name.
 
-```
-R3                          putline(0,0) entered
-cell 0000000300000c78       both real addresses in the sbrk arena,
-cell 0000000300000c7d       neither a marker, both processed
-```
+## How it was found, which took longer than it should have
 
-Bracketing `putline`'s sections in turn puts the fault past the *second* cell
-loop — the one that computes `chfont` — not the first:
+The first backtrace said `_doprnt`, and I read that as "our printf is broken".
+It was not — the argument was. Eliminated in order, each by direct measurement:
+the read loop, the first `fprintf`, `setinp`, `fgets`, eleven of `tableput`'s
+seventeen stages, `deftail`, both cell loops, `point()` (which looked exactly
+like the culprit — an implicit-`int` parameter holding a pointer, the shape that
+broke `look(1)` — and turned out to be fine, because `acctype()` reads an int
+parameter at full width), and `left()`.
 
-```
-R3                       putline(0,0) entered
-B C D E F                every section marker up to `vspf=0; chfont=0;`
-c2 s=0000000300000c78    first cell, a real address
-cf                       chfont computed
-c2 s=0000000300000c7d    second cell
-cf                       and again -- then nothing
-```
-
-Both iterations reach `cf` and neither reaches the marker after
-`if (point(s)) continue;`, which means `point()` returned **true** both times and
-the loop simply ended: `ncol` is 2. So `point()` is fine, the loop is fine, and
-the fault is in whatever follows it.
-
-That is worth stating plainly because `point()` looked like the culprit:
-
-```c
-point(s)
-{
-return(s>= 128 || s<0);
-}
-```
-
-— an implicit-`int` parameter holding a pointer, which is exactly the shape that
-broke `look(1)`. It works here because `acctype()` in the back end reads an
-`int` parameter at the full slot width. The idiom is sound on this target; it
-just is not where this bug is.
-
-Everything before that point is now eliminated by direct measurement: the read
-loop, the first `fprintf`, `setinp`, `fgets`, `tableput`'s first eleven stages,
-`deftail`, the cell pointers, and both cell loops. Narrowed once more. Bracketing the tail statement by statement:
+What finally named it was disassembling at the fault:
 
 ```
-T1 T3 T4 T5     then nothing
+->  0x100012c4c <+3788>: ldrsb  x9, [x9]
+    0x100012c50 <+3792>: cmp    x9, #0x0
+    0x100012c54 <+3796>: b.ne   0x100012c10
 ```
 
-T5 sits immediately before
+— a NUL scan, so a `%s`. From there it was one grep for the first `%s` after the
+last line that printed.
 
-```c
-if (allh(i) && !pr1403)
-	{ ... }        /* T6, T7, T8 -- none printed, so this branch is skipped */
-else
-	fprintf(tabout, ".nr 35 1m\n");
-if (chfont)
-	fprintf(tabout, ".nr %2d \n(.f\n", S1);
-fprintf(tabout, "\\&");
-vct = 0;
-for(c=0; c<ncol; c++)
-	{
-	uphalf=0;
-	if (watchout==0 && i+1<nlin && (lf=left(i,c, &lwid))>=0)
-```
-
-so the condition was simply false and the fault is in that handful of lines. The
-`fprintf`s there take no pointer arguments, which leaves `left(i, c, &lwid)` —
-and `&lwid` is the address of a local `int` passed to what may well be an
-undeclared parameter. That is the `look(1)` shape again, and while `acctype()`
-covers an `int` parameter read at full width, a parameter *written through* is
-worth checking separately.
-
-`left()` itself declares its pointer parameter (`int *lwidp;`) and writes
-through it correctly, so it is probably not that either.
-
-The crash is stable and precise, which is the useful thing to hand on:
-
-```
-EXC_BAD_ACCESS (code=1, address=0x1d7fe)
-frame #0: tbld`_doprnt + 3788
-```
-
-`0x1d7fe` is 120830 — not the low half of any pointer in this program, so
-something that is not an address at all is reaching a `%s`. Only frame #0
-unwinds, so the caller has to come from the bracketing rather than the
-debugger.
-
-Fastest next step: disassemble `_doprnt+3788` to see which conversion case it is
-in, which names the format specifier, and then find the `fprintf` in `putline`'s
-tail that uses it.
+The lesson is the same one this port keeps teaching, and I keep having to
+relearn: **the backtrace names where the program died, not what was wrong.**
+Bisecting from the top wasted most of the time; disassembling one instruction at
+the fault answered it.
 
 ## A note on the file list
 
-`tbl`'s header is called `t..c`, which is not a typo: the `.c` files include it
+`tbl`'s header is called `t..c`, which is not a typo — the `.c` files include it
 as `#include "t..c"`. Anything that builds the directory by globbing `*.c` will
-compile the header as a translation unit. It is harmless — it defines no code —
-but it is why a naive object list has a `t..o` in it.
+compile the header as a translation unit. It is harmless, but it is why the
+Makefile lists the objects explicitly.

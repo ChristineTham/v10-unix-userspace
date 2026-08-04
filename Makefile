@@ -51,12 +51,12 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff tbl devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh nroff troff
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh nroff troff tbl
 
 test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 test-cpp: cpp
@@ -77,7 +77,7 @@ test-waveb: rootfs libv8sys crt0 libv8c
 	@$(ROOT)tests/waveb/run.sh
 test-sh: sh
 	@$(ROOT)tests/sh/run.sh
-test-wavec: nroff troff
+test-wavec: nroff troff tbl
 	@$(ROOT)tests/wavec/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
@@ -420,6 +420,28 @@ $(BUILD)/troff/%.o: $(TROFFSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
 	@mkdir -p $(BUILD)/troff
 	$(V8CCRUN) -DINCORE -I$(TROFFSRC) -c -o $@ $<
 $(NROFF_OBJ) $(TROFF_OBJ): $(wildcard $(TROFFSRC)/*.h)
+
+# ---------------------------------------------------------------------------
+# tbl -- the table preprocessor.  Its header is called t..c and the .c files
+# include it by that name, so a *.c wildcard would compile the header as a
+# translation unit; the object list is explicit instead.
+# ---------------------------------------------------------------------------
+TBLSRC = $(SRC)/cmd/tbl
+TBL_NAMES = t0 t1 t2 t3 t4 t5 t6 t7 t8 t9 tb tc te tf tg ti tm tr ts tt tu tv
+TBL_OBJ = $(patsubst %,$(BUILD)/tbl/%.o,$(TBL_NAMES))
+
+tbl: $(BUILD)/tbl/tbl
+$(BUILD)/tbl/tbl: $(TBL_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                  $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(TBL_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+
+$(BUILD)/tbl/%.o: $(TBLSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+	@mkdir -p $(BUILD)/tbl
+	$(V8CCRUN) -I$(TBLSRC) -c -o $@ $<
+$(TBL_OBJ): $(TBLSRC)/t..c
 
 # ---------------------------------------------------------------------------
 # rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.

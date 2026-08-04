@@ -48,5 +48,20 @@ else
 	fail=$((fail+4)); echo "FAIL troff not built"
 fi
 
+
+# tbl, and then the whole pipeline.  tbl emits troff macros, not text, so the
+# only honest check is to run its output through nroff and read the table.
+TBL=$ROOT/build/stage0/tbl/tbl
+if [ -x "$TBL" ]; then
+	printf '.TS\nc c\nl l.\nName\tValue\nalpha\t1\nbeta\t2\n.TE\n' > tb.in
+	"$TBL" tb.in > tb.tr 2>tb.err
+	check 'tbl emits troff macros' '.TS' "$(grep -m1 '^\.TS' tb.tr)"
+	check 'tbl is silent on stderr' '' "$(cat tb.err)"
+	check 'tbl | nroff formats the table' 'Name Value alpha 1 beta 2' \
+	    "$("$NROFF" tb.tr | grep -v '^$' | tr -s ' \n' ' ' | sed 's/^ //;s/ $//')"
+else
+	fail=$((fail+3)); echo "FAIL tbl not built"
+fi
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
