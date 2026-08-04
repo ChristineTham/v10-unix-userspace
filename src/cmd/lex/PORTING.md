@@ -40,25 +40,31 @@ buffer before the crash, not a truncation.
 
 ## Where it is now
 
-It runs to completion and fails honestly:
+`myalloc` held `calloc`'s result in an `int`, which is fixed — and worth
+recording for the coincidence:
 
+```c
+register int i;
+i = calloc(a, b);
+if (i == 0) warning("OOPS - calloc returns a 0");
 ```
-(Warning) OOPS - calloc returns a 0        [x9]
-(Error) Too little core for state generation
-1323/1700 nodes(%e), 0/5000 positions(%p), 1/700 (%n), ...
-```
 
-so `malloc` is refusing. `calloc` itself is fine (`src/libc/gen/calloc.c` is
-`num *= size; malloc(num)`, and both are exercised by the test suite).
+The shim's sbrk arena starts at **0x300000000**, whose low word is exactly zero,
+so a truncated pointer from it *is* 0 and the test fired on a perfectly good
+allocation. A rare truncation that announces itself; usually half a pointer is a
+plausible address and the program dies somewhere else entirely.
 
-Two candidates, and the counters above should distinguish them:
+That was not the whole story. With `i` a `char *` and `calloc` properly declared
+(`extern char *calloc()` in `ldefs.c`), the warning still fires nine times, so
+**malloc is genuinely returning 0** for some of lex's requests. Some succeed —
+the run reports `1323/1700 nodes` — so it is not failing outright.
 
-1. **The tables genuinely doubled.** `left` and `right` are now 8 bytes an
-   element, so lex asks for twice the core it used to for the same grammar. If
-   the arena or a fixed limit is the constraint, this is the same kind of
-   constant bump `brkincr.h` needed for the shell.
-2. **`malloc` fails at a size it should not.** The sbrk arena is 1GB and the
-   suite covers malloc, but not at these sizes; a direct test asking for the
-   same total lex does would settle it in one run.
+Next: print `a`, `b` and the returned pointer at each `myalloc` call. Nine
+failures out of many suggests a particular size or a particular point in the
+arena's growth, and the numbers will say which. Then reproduce that size
+directly against `malloc` in a standalone program — the libc suite covers malloc
+but not at these sizes or this allocation pattern.
 
-Print the requested size at the failing `myalloc` first — it says which.
+Note that `left` and `right` are now 8 bytes an element, so lex asks for roughly
+twice the core it used to; if the arena has a limit being hit, that is why it is
+being hit now and was not before.

@@ -189,11 +189,26 @@ free3core(){
 # endif
 char *myalloc(a,b)
   int a,b; {
-	register int i;
+	/*
+	 * PORT: char *, not int.
+	 *
+	 * calloc returns a pointer and this held it in an int.  Free on the VAX;
+	 * under LP64 it keeps the low 32 bits -- and the shim's sbrk arena
+	 * starts at 0x300000000, whose low word is EXACTLY ZERO.  So the first
+	 * allocation truncated to 0, the test below concluded calloc had failed,
+	 * and lex reported "OOPS - calloc returns a 0" and gave up with "Too
+	 * little core for state generation" while holding a perfectly good
+	 * pointer.
+	 *
+	 * A rare case of a truncation that announces itself: usually half a
+	 * pointer is a plausible-looking address and the program dies later,
+	 * somewhere else.
+	 */
+	register char *i;
 	i = calloc(a, b);
 	if(i==0)
 		warning("OOPS - calloc returns a 0");
-	else if(i == -1){
+	else if(i == (char *)-1){
 # ifdef DEBUG
 		warning("calloc returns a -1");
 # endif
