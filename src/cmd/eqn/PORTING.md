@@ -55,7 +55,29 @@ through a pointer into text. eqn has no `cvt` of its own, so this is libc's —
 the digit conversion behind `%f`/`%e`/`%g`. Either eqn hands it a buffer it does
 not own, or the format string is being written to.
 
-Note that string literals are in *writable* data on this target (see
-`locnames[]` in `compiler/ccom-arm64/emit.c`), so a literal is not the read-only
-thing being written. Find the caller first: `eqn` prints sizes and positions, so
-look for the `%g`/`%f` conversions in `size.c` and `text.c`.
+Instrumenting `cvt` shows what it is handed:
+
+```
+CVT arg=fff0000000000000     -- negative infinity
+ nd=00000006
+```
+
+so the digit loop never terminates and walks off its static buffer. `ndigits` is
+a normal 6, so the fault is the value.
+
+That led to a **real back-end bug, now fixed**: a ternary whose value is a
+*double* rendezvoused in `x0` rather than `d0`. `lvstore()` had always written
+the arms correctly, but both readers — the `QNODE` case and the `GENLAB` join —
+took the value out of `x0` regardless. `max(x,y)` is a ternary, so
+`printf(".nr 10 %gm\n", max(REL(...), 0))` is exactly the shape. There is a
+regression test in `tests/libv8c/run.sh`.
+
+**It did not fix eqn**, which still reaches `cvt` with -inf, so the value is
+coming from somewhere else — `REL()` itself, or the arithmetic feeding it. `REL`
+and `EM` are declared `extern double` in `e.h`; check they are *defined* as
+double too, since an implicit-int definition would return an integer in x0 while
+the caller reads d0. That mismatch produces exactly this: a bit pattern with
+every exponent bit set.
+
+Also noticed and not yet chased: `%g` prints `7.25000` where it should print
+`7.25`. V8's `%g` strips trailing zeros; ours does not.

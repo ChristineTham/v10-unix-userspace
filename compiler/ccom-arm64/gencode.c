@@ -987,6 +987,18 @@ gen(p, want)
 	case SNODE:
 	case QNODE:
 		if (want == WEFFECT) return (res);
+		/*
+		 * d0/s0 for a floating value, matching what lvstore() writes.
+		 * Reading x0 for a double gave back whatever integer happened
+		 * to be there -- see the note in the GENLAB case below.
+		 */
+		if (tyfloat(p->in.type)) {
+			reg = fregalloc();
+			printx("\tfmov\t%s, %s\n", freg(p->in.type, reg),
+			    (p->in.type & TDOUBLE) ? "d0" : "s0");
+			res.reg = reg; res.flag = R_FREG;
+			return (res);
+		}
 		reg = regalloc();
 		printx("\tmov\t%s, x0\n", xreg(reg));
 		res.reg = reg; res.flag = R_REG;
@@ -1403,11 +1415,36 @@ gen(p, want)
 		if (p->in.left) res = gen(p->in.left, want);
 		deflab(p->bn.label);
 		if (want != WEFFECT) {
-			reg = regalloc();
-			printx("\tmov\t%s, x0\n", xreg(reg));
-			if (res.flag & R_REG) regfree(res.reg);
-			res.reg = reg;
-			res.flag = R_REG;
+			/*
+			 * A FLOATING value rendezvouses in d0, not x0.
+			 *
+			 * lvstore() has always written the arms correctly --
+			 * `fmov d0, dN` for a double -- but both readers took
+			 * the value out of x0 regardless, so a double-valued
+			 * `a ? b : c` came back as whatever integer happened to
+			 * be in x0.  eqn found it: `max(x,y)` is a ternary, and
+			 *
+			 *	printf(".nr 10 %gm\n", max(REL(...), 0))
+			 *
+			 * handed printf 0xfff0000000000000 -- negative infinity
+			 * -- whose digits ecvt then tried to generate until it
+			 * ran off the end of its buffer.
+			 */
+			if (tyfloat(p->in.type)) {
+				reg = fregalloc();
+				printx("\tfmov\t%s, %s\n",
+				    freg(p->in.type, reg),
+				    (p->in.type & TDOUBLE) ? "d0" : "s0");
+				if (res.flag & R_FREG) fregfree(res.reg);
+				res.reg = reg;
+				res.flag = R_FREG;
+			} else {
+				reg = regalloc();
+				printx("\tmov\t%s, x0\n", xreg(reg));
+				if (res.flag & R_REG) regfree(res.reg);
+				res.reg = reg;
+				res.flag = R_REG;
+			}
 		}
 		return (res);
 

@@ -266,6 +266,34 @@ main()
 }
 EOF
 
+
+# --- a ternary whose value is a DOUBLE --------------------------------------
+# condit() lowers `a ? b : c` into branches that rendezvous in one register.
+# lvstore() always wrote a floating value to d0 correctly, but both readers --
+# the QNODE case and the GENLAB join -- took it out of x0 regardless, so a
+# double-valued ternary came back as whatever integer happened to be there.
+#
+# eqn found it. `max(x,y)` is a ternary, and
+#
+#	printf(".nr 10 %gm\n", max(REL(...), 0))
+#
+# handed printf 0xfff0000000000000 -- negative infinity -- whose digits ecvt
+# then tried to generate until it ran off the end of its buffer.
+run 'double-valued ternary' 'max=7.25 min=2.5 mixed=1.5' <<'EOF'
+#include <stdio.h>
+#define max(x,y) (((x) >= (y)) ? (x) : (y))
+double dv(x) double x; { return x; }
+main()
+{
+	double a, b;
+
+	a = 2.5; b = 7.25;
+	printf("max=%.3g min=%.2g mixed=%.2g\n",
+	    max(a,b), max(a,b) == b ? a : b, max(dv(1.5), 0));
+	fflush(stdout); return 0;
+}
+EOF
+
 echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
