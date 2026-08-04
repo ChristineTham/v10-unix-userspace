@@ -109,38 +109,40 @@ echo "libv8c: $pass passed, $fail failed"
 # ---------------------------------------------------------------------------
 # KNOWN BROKEN: printf("%f") -- 3.14159 prints as 3.146509.
 #
-# NOT the digit loop and NOT modf. Both are correct, and identically so under
-# clang: the raw loop
+# The bug is isolated to a ten-line loop, and the input to that loop is proven
+# identical under both compilers. Instrumenting cvt() in src/libc/gen/ecvt.c
+# just before its rounding tail:
 #
-#	for (i=0;i<7;i++){ arg=arg*10; arg=modf(arg,&fj); b[i]=(int)fj+'0'; }
+#	TAIL p=8 p1=7 r2=1 dec=1 buf=[31415899]     <- v8cc
+#	TAIL p=8 p1=7 r2=1 dec=1 buf=[31415899]     <- clang
+#	v8cc  digits=[3146509]
+#	clang digits=[3141590]
 #
-# yields 1415899 from 0.14159 under BOTH compilers -- that trailing 899 is
-# ordinary binary floating point, and cvt's rounding step is what turns it into
-# 1415900. modf(5.9) and modf(8.999999) both come out right under v8cc, as do
-# 64-bit shifts and masks, so ieeefp.c is fine.
-#
-# So the fault is in cvt()'s rounding tail in src/libc/gen/ecvt.c:
+# Same p, same p1, same r2, same decpt, same buffer -- different answers. So
+# everything upstream is correct and the fault is entirely in:
 #
 #	p = p1;
 #	*p1 += 5;
-#	while (*p1 > '9') { *p1 = '0'; if (p1>buf) ++*--p1; else { ... } }
+#	while (*p1 > '9') {
+#		*p1 = '0';
+#		if (p1>buf) ++*--p1;
+#		else { *p1 = '1'; (*decpt)++; ... }
+#	}
 #
-# The observed digits are 3146509 where 3141590 is wanted. Position 3 holds '6'
-# = '1'+5, which is the += 5 landing at buf[3] instead of buf[7]. So p1 is
-# wrong, and p1 comes from
+# Executed by hand on buf=[31415899] with p1=7 this gives 31415900, then
+# *p='\0' at p=7 yields 3141590 -- clang's answer. v8cc puts a '6' at buf[3],
+# which is '1'+5, so its `*p1 += 5` hit buf[3] rather than buf[7] even though
+# p1 printed as 7 immediately before.
 #
-#	p1 = &buf[ndigits];  if (eflag==0) p1 += r2;
+# RULED OUT already, each tested in isolation: the digit loop and modf (both
+# give the identical 1415899 under clang, so that trailing 899 is just binary
+# floating point); 64-bit shifts and masks; `*p1 += 5` and `*p++ = c` as
+# standalone patterns; and `p1 = &buf[n]; p1 += r2` pointer arithmetic.
 #
-# -- pointer arithmetic on a static array with an int index. That was the
-# obvious suspect, given the malloc bug was PTRTYPE narrowing exactly this kind
-# of expression, and it is RULED OUT: compiled in isolation those two lines
-# give offset 7 correctly.
-#
-# So p1 is computed right and the store patterns are right, yet the += 5 lands
-# at buf[3]. That points at the state cvt() carries INTO the tail -- most
-# likely `p`, which the digit loop advances, or the r2 the integer-part loop
-# produced. Next: print p-buf, p1-buf, r2 and decpt just before the rounding
-# tail in a copy of ecvt.c and compare against the same prints under clang.
-#
-# The `*p1 += 5` and `*p++ = c` patterns themselves were tested in isolation and
-# compile correctly, so it is the address computation, not the store.
+# What has NOT been tested: the combination in that loop -- `++*--p1`, a
+# pre-decrement of a register pointer and a pre-increment through it in one
+# expression, and `p = p1` between two register variables. Both p and p1 are
+# `register char *` in cvt(). Note that the one back-end bug of this shape
+# already found -- gen() handing out a register variable's own register, which
+# operators then clobbered -- was exactly this kind of thing, and only showed up
+# in real libc code. Start with `++*--p1`.
