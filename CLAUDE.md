@@ -113,7 +113,14 @@ the documented as/ld exception. The makefile is plain 1985 make — no pattern
 rules, no automatic variables past `$@`. The result compiles real source, the
 build settles, and a second build from clean generates identical code.
 
-Rung 5 is unfinished, and so is installation. The *installed* `cpp` and `ccom`
+**Rung 5 is demonstrated.** `tests/jail` builds `lex` from `src/cmd/lex/Makefile`
+— upstream V8, unmodified — with V8's make, cc and yacc, in a directory holding
+nothing but V8 sources, under `V8JAIL=strict`. That makefile is the one worth
+proving: its line 11 declares `lmain.o: lmain.c ldefs.c once.c`, the dependency
+whose absence caused this port's worst bug. Moving the remaining programs onto
+their own makefiles is mechanical from here; the pattern and the guard exist.
+
+Installation is unfinished. The *installed* `cpp` and `ccom`
 are still the clang-built ones (`nm` shows 0 V8 symbols); they sit inside the
 rootfs without obeying the jail. Swapping them for the self-hosted ones is
 Phase 6 work, not a ladder rung.

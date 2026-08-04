@@ -272,5 +272,42 @@ case "$again" in
 *) pass=$((pass+1)) ;;
 esac
 
+# --- RUNG 5: a program built by its OWN authentic makefile ------------------
+# lex's makefile is upstream V8, unmodified, and it is the one that matters:
+# line 11 declares `lmain.o: lmain.c ldefs.c once.c`, the dependency whose
+# absence caused this port's worst bug -- a 2x heap overrun that presented as
+# "calloc returns 0" and cost a full session to re-derive. The knowledge was in
+# the tree the whole time, in a file the build ignored.
+#
+# So this runs V8's make on V8's makefile with V8's cc and V8's yacc, in a
+# directory containing nothing but V8's sources, under strict.
+ck 'V8 yacc is in the jail' yes "$([ -x "$V8ROOT/bin/yacc" ] && echo yes || echo no)"
+
+mkdir -p r5 && cp "$ROOT"/src/cmd/lex/*.c "$ROOT"/src/cmd/lex/*.y \
+    "$ROOT"/src/cmd/lex/[Mm]akefile r5/ 2>/dev/null
+cp "$ROOT"/src/cmd/lex/ldefs.c "$ROOT"/src/cmd/lex/once.c r5/ 2>/dev/null
+r5out=$( cd r5 && V8JAIL=strict "$MAKE8" 2>&1 )
+ck "lex builds from V8's own makefile" yes "$([ -x r5/lex ] && echo yes || echo no)"
+case "$r5out" in
+*"leaves the jail"*) fail=$((fail+1)); echo "FAIL rung 5 escaped: $r5out" ;;
+*) pass=$((pass+1)) ;;
+esac
+
+# It has to WORK, not just link.  A scanner that matches one token and prints it
+# exercises yacc's tables, ncform, and the generated lex.yy.c together.
+if [ -x r5/lex ]; then
+	cat > r5/t.l <<'LEOF'
+%%
+[0-9]+	printf("NUM(%s)", yytext);
+.	;
+%%
+LEOF
+	( cd r5 && V8JAIL=strict ./lex t.l >/dev/null 2>&1 )
+	ck 'and the lex it built generates a scanner' yes \
+	   "$([ -s r5/lex.yy.c ] && echo yes || echo no)"
+else
+	fail=$((fail+1)); echo "FAIL rung 5: no lex to run"
+fi
+
 echo "jail: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

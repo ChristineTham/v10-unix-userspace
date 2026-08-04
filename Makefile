@@ -151,7 +151,7 @@ all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
@@ -167,7 +167,7 @@ test-deps:
 	@MAKE="$(MAKE)" $(ROOT)tests/deps/run.sh
 # The chroot: that a build driven by V8 make runs entirely on V8 binaries.
 # Depends on the whole jail, since that is what it tests.
-test-jail: v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make
+test-jail: v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
 	@$(ROOT)tests/jail/run.sh
 # The self-host boundary: every translation unit of cpp and ccom compiles under
 # v8cc and links freestanding.  Needs the driver, its passes, the headers, the
@@ -685,6 +685,21 @@ $(ROOTFS)/bin/%: $(BINDIR)/%
 # sh is built from a directory, not a single file, so it gets its own install
 # rule.  It is the one that matters most: it is what make execs.
 $(ROOTFS)/bin/sh: $(BUILD)/sh/sh
+	@mkdir -p $(@D) && cp $< $@
+
+# yacc and lex, same shape -- and they are not optional decoration.  A program
+# built from its OWN V8 makefile runs `yacc parser.y`, and until these were
+# installed the jail refused it and said so:
+#
+#	v8sys: exec leaves the jail: /bin/yacc (refused: V8JAIL=strict)
+#	Make: Cannot load yacc.  Stop.
+#
+# which is the guard working exactly as intended -- they were built, tested and
+# used by this repo's own Makefile for months without ever being reachable from
+# inside the world they belong to.
+$(ROOTFS)/bin/yacc: $(YACC)
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/bin/lex: $(LEX)
 	@mkdir -p $(@D) && cp $< $@
 $(ROOTFS)/bin/make: $(BUILD)/make/make
 	@mkdir -p $(@D) && cp $< $@

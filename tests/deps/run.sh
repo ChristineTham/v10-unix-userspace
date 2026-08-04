@@ -204,6 +204,12 @@ dep 'libc -> /bin/cat'         $B/libc/libv8c.a                $B/bin/cat
 dep 'cat.c -> /bin/cat'        src/cmd/cat.c                   $B/bin/cat
 dep '/bin/cat -> rootfs copy'  $B/bin/cat                      rootfs/bin/cat
 dep 'sh -> rootfs /bin/sh'     $B/sh/sh                        rootfs/bin/sh
+# yacc and lex belong in /bin because a program built from its own V8 makefile
+# runs `yacc parser.y`.  Until they were installed the jail refused it outright,
+# which is the guard working: they had been built and used by this Makefile for
+# months without ever being reachable inside the world they belong to.
+dep 'yacc -> rootfs /bin/yacc' $B/yacc/yacc                    rootfs/bin/yacc
+dep 'lex -> rootfs /bin/lex'   $B/lex/lex                      rootfs/bin/lex
 dep 'make -> rootfs /bin/make' $B/make/make                    rootfs/bin/make
 # make's `defs` is a header under a name that is not .h -- the fourth file of
 # that shape in this tree, after lex's once.c, tbl's t..c and refer's refer..c.
