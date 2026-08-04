@@ -131,8 +131,28 @@ branch above line 32 sets it from `b1 + EM(...)` but the one at line 41 sets it
 from `-(0.4 * (h1-b1)) - b2`, and `eht`/`ebase` are `float` arrays indexed by
 `yyval`. If those arrays hold garbage, everything downstream is -inf honestly.
 
-Next: print `eht[p1]`, `ebase[p1]`, `h1`, `b1` and `shval` at the top of
-`shift()`. That is the first thing in this chain that has not been measured.
+Measured, and they are sane:
+
+```
+eht=3ff0000000000000     eht[11] = 1.0
+eba=0000000000000000     ebase[11] = 0.0
+p1= 0000000b             11
+```
+
+So `shift()` starts from good values and produces -inf itself. Both `EM` and
+`REL` are divisions —
+
+```c
+EM:   m *= (float) EFFPS(ps) / gsize;
+REL:  m *= (float) gsize / EFFPS(ps);
+```
+
+— which is how an infinity gets made. `gsize` is `int gsize = 10;` in `glob.c`,
+properly initialised, so the suspect is `EFFPS(ps)` evaluating to zero, or `ps`
+itself being zero at this call.
+
+Next, and this is a short one: print `ps`, `EFFPS(ps)` and `gsize` inside `EM`.
+One of the three is zero and the division names it.
 
 Also noticed and not yet chased: `%g` prints `7.25000` where it should print
 `7.25`. V8's `%g` strips trailing zeros; ours does not.
