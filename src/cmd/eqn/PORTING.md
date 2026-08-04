@@ -168,18 +168,48 @@ shape.
 
 ## Where this stands
 
-The arithmetic is sound, the argument block is sound, and the value still
-arrives at `cvt` as -inf. What has *not* been done is the direct measurement:
-print the `double` at the point `printf` is called in `shift.c:51`, rather than
-inferring it from either end. If it is already -inf there, the fault is in
-`shift()`; if it is fine there and -inf inside `_doprnt`, the fault is in the
-marshalling of *this particular* call, and the difference from the tests above
-will be the thing worth reading.
+Measured at the call site in `shift.c:51`:
 
-That is one write() away and should be the first thing done next — before any
-more reasoning about which construct is at fault. Every bug in this port has
-been found by measuring, and this one has now absorbed several rounds of
-inference that measurement would have settled.
+```
+CALL sh/r1/r2 bfd99999a0000000 fff0000000000000 7ff0000000000000
+              shval = -0.4     REL(shval) = -inf  REL(-shval) = +inf
+```
 
-Also noticed and not yet chased: `%g` prints `7.25000` where it should print
-`7.25`. V8's `%g` strips trailing zeros; ours does not.
+and measured *inside* `REL`, one call earlier:
+
+```
+REL ps/eff 0000000a 0000000a m=bfd99999a0000000     ps=10, EFFPS=10, m=-0.4
+```
+
+So **`REL` receives the right argument, computes with the right divisor, and
+returns an infinity.** `m *= (float)10/10` is `m * 1.0`; nothing in the body can
+produce ±inf. The value is lost at the return, or in how the caller reads it.
+
+Written out on its own — same body, same signature, same call shape — it works:
+
+```c
+double RELx(m, ps) double m; int ps;
+{
+	m *= (float) gsize / ps;
+	if (m <= 0.001 && m >= -0.001) return 0; else return m;
+}
+	-> a=-0.4000 b=0.4000 c=0.0000
+```
+
+Two differences remain between that and the real thing, and one of them is the
+bug:
+
+1. **`EFFPS(ps)` is a macro** where the test used `ps` directly. If it expands to
+   a ternary, that changes the shape of the expression — and a ternary is
+   precisely what was wrong for doubles an hour ago. Look at its definition
+   first.
+2. **The real call crosses files** — `REL` is in `main.c`, the caller in
+   `shift.c` — so the caller takes the return type from `extern double REL()` in
+   `e.h`. If that declaration is not in scope at the call, `gencall` reads x0
+   instead of d0 and gets whatever integer is there. Check that `shift.c`
+   actually sees it.
+
+Both are one grep. Note also that `return 0;` in a `double` function is on the
+other arm of that `if` — it works in isolation, but if the float `&&` polarity
+were inverted the wrong arm would run, so the branch itself is worth confirming
+with a print rather than by reading.
