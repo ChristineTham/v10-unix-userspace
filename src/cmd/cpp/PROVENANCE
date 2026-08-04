@@ -1,0 +1,12 @@
+# Provenance for src/cmd/cpp
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+18267ed1a7ce995a5ffe60b3baefb4fa2069be26  v8/usr/src/cmd/cpp/yylex.c
+49a594975bf975b23c1feff819b305974b274df5  v8/usr/src/cmd/cpp/:yyfix
+bb840f9d1a54349df47b4f9dff0862312b013b57  v8/usr/src/cmd/cpp/Makefile
+fcff9bbc9318d8434048a5ef71d2a01e2f9570d6  v8/usr/src/cmd/cpp/README
+a93b80fa1a65e8204a15a9019cf7898a927bfad6  v8/usr/src/cmd/cpp/cpy.y
+6be798c2bbe3ea902c994b0cfdaa3ea9a69e6a4b  v8/usr/src/cmd/cpp/cpp.c
