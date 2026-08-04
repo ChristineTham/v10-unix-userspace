@@ -106,8 +106,17 @@ echo "wavea: $pass passed, $fail failed"
 #                     (--(p)->_cnt>=0 ? (int)*(p)->_ptr++ : _filbuf(p))
 #
 #                 which is a post-increment used as a VALUE rather than as an
-#                 lvalue. putc's mirror image of this was the double-evaluation
-#                 bug just fixed, so look there first: gen(STAR) over an INCR.
+#                 lvalue.
+#
+#                 UPDATE: getc's generated code has been read and is CORRECT --
+#                 decrement _cnt, store, branch on sign, then load _ptr, save
+#                 the old value, increment, store, ldrb through the old. putc's
+#                 is correct too. So both macros are right and the fault is
+#                 elsewhere in the round trip. Note 0x80 is _IOLBF; _flsbuf sets
+#                 that flag when isatty() says the stream is a terminal, and
+#                 isatty is the ONE libSystem symbol these programs still import
+#                 (we have not ported it). Check what our isatty returns for a
+#                 pipe before looking at the compiler again.
 #
 #   tr         -- `echo abc | tr a-z A-Z` gives "A000" instead of "ABC", so the
 #                 a-z range expansion is filling its table wrongly. tr builds
