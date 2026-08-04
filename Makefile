@@ -32,15 +32,17 @@ YACCFIX = sed 's/={/{/g'
 # V8 libc internals that host libc lacks.  Scaffolding; gone in Phase 2b.
 STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom test test-cpp test-v8ccom clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs test test-cpp test-v8ccom test-v8cc clean distclean
 all: stage0
-stage0: cpp v8ccom
+stage0: cpp v8ccom v8cc rootfs
 
-test: test-cpp test-v8ccom
+test: test-cpp test-v8ccom test-v8cc
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: v8ccom
 	@$(ROOT)tests/v8ccom/run.sh $(A64BUILD)/v8ccom
+test-v8cc: rootfs
+	@$(ROOT)tests/v8cc/run.sh
 
 # ---------------------------------------------------------------------------
 # cpp -- the C preprocessor (Reiser, 1978).  First pass of the compiler.
@@ -149,8 +151,36 @@ $(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
 	cp $(CCOM_V)/y.debug.sv $(A64BUILD)/y.debug
 	$(HOSTCC) $(KRFLAGS) $(A64INC) -I$(A64BUILD) -DYYDEBUG -c $< -o $@
 
+# ---------------------------------------------------------------------------
+# v8cc -- V8's cc(1) driver, retargeted.
+#
+# Paths resolve from $V8ROOT; the assembler and link editor are the host's,
+# reached through clang.  Everything else -- the flag surface, the temp-file
+# dance, the order of the passes -- is V8's own driver.
+# ---------------------------------------------------------------------------
+V8CC_INC =
+
+v8cc: $(BUILD)/cc/v8cc
+$(BUILD)/cc/v8cc: $(SRC)/cmd/cc.c
+	@mkdir -p $(BUILD)/cc
+	$(HOSTCC) $(KRFLAGS) $(V8CC_INC) -o $@ $< $(STAGE0_COMPAT)
+	@echo "built $@"
+
+# ---------------------------------------------------------------------------
+# rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.
+# ---------------------------------------------------------------------------
+ROOTFS = $(ROOT)rootfs
+
+rootfs: cpp v8ccom v8cc
+	@mkdir -p $(ROOTFS)/lib $(ROOTFS)/bin $(ROOTFS)/usr/include
+	@cp $(BUILD)/cpp/cpp $(ROOTFS)/lib/cpp
+	@cp $(A64BUILD)/v8ccom $(ROOTFS)/lib/ccom
+	@cp $(BUILD)/cc/v8cc $(ROOTFS)/bin/cc
+	@cp -R $(ROOT)third_party/Research-Unix-v8/v8/usr/include/. $(ROOTFS)/usr/include/
+	@echo "rootfs ready: V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc"
+
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD) $(ROOTFS)
 
 distclean: clean
 	rm -rf $(ROOT)build

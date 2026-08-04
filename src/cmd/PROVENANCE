@@ -5,3 +5,4 @@
 #
 # <git blob hash of pristine upstream file>  <upstream path>
 c2e6427bf59f325a8530c2d72213c8d547e960ee  v8/usr/src/cmd/cat.c
+81f09478e04f80c3a71f981cd195367574727923  v8/usr/src/cmd/cc.c
