@@ -23,20 +23,36 @@ test -d /tmp && echo isdir            isdir
 
 ## What does not, and where it is
 
-**Variable assignment hangs.** `x=42` spins in `findnam`'s tree walk — and so
-does assigning to a name that already exists, so it is the walk itself rather
-than the insert. `namep`'s tree is built by `setup_env()` before this, and the
-first `setenv()` walks it 57 nodes deep without trouble, so something corrupts
-it between then and the first assignment.
+**Variable assignment hangs.** `x=42` spins under `findnam`, and so does
+assigning to a name that already exists.
 
-Ruled out already: `namwalk` is bounded (instrumented to abort after 2000
-visits; it never fires), the arena no longer runs past the break (see below),
-and `chkid`/`cf` both terminate on their own.
+It is **not** the tree. Instrumenting `findnam` to print its argument and cap
+the walk at 200 nodes shows it never reaches the walk at all:
 
-The next thing to do is instrument `lookup()` — print `namep` and each node's
-`namlft`/`namrgt` before and after the first assignment — rather than reason
-about it. Every bug in this port so far has been found by making the program
-print what it has, not by working out what it should have.
+```
+F[]
+```
+
+— the name it was handed prints as three invisible bytes, and the marker after
+`chkid()` never appears. So `findnam` is called with a garbage `nam` pointer and
+`chkid` runs off the end of it:
+
+```c
+while(!ctrlchar(*nam) && (*nam&QUOTE)==0 && *nam!='(' && *nam!='=')
+	nam++;
+```
+
+That loop has no bound but the string's own terminator.
+
+So the fault is upstream, in whoever builds the name: `execute()` in `xec.c`
+handling the assignment word (the sample puts the call at `execute+808`), or the
+macro expansion that produced it. `namwalk` is bounded (instrumented to abort
+after 2000 visits; it never fires) and the arena no longer runs past the break,
+so both of those are cleared.
+
+Next: print the assignment word in `execute` before it reaches `findnam`, and
+walk back from there to where the pointer is made. As always in this port, make
+it print what it has rather than working out what it should have.
 
 ## The four porting changes, all LP64
 
