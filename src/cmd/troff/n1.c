@@ -459,15 +459,16 @@ static printn(n, b)
 char *sprintf(str, fmt, x1)
 	char	*str;
 	char	*fmt;
-	unsigned	x1;
+	unsigned long	x1;	/* PORT: one whole argument slot */
 {
 	register c;
 	char *sprintn();
-	register unsigned int	*adx;
+	/* PORT: unsigned long, for the same reason as fdprintf above. */
+	register unsigned long	*adx;
 	char	*s;
 	register i;
 
-	adx = &x1;
+	adx = (unsigned long *)&x1;
 loop:
 	while ((c = *fmt++) != '%') {
 		if (c == '\0') {
@@ -496,11 +497,9 @@ loop:
 		while (c = *s++)
 			*str++ = c;
 	} else if (c == 'D') {
-		str = sprintn(str, *(long *)adx, 10);
-		adx += (sizeof(long) / sizeof(int)) - 1;
+		str = sprintn(str, (long)*adx, 10);
 	} else if (c == 'O') {
-		str = sprintn(str, *(long *)adx, 8);
-		adx += (sizeof(long) / sizeof(int)) - 1;
+		str = sprintn(str, (long)*adx, 8);
 	}
 	adx++;
 	goto loop;

@@ -36,26 +36,15 @@ same treatment for free.
 
 ## What is left
 
-nroff finds and reads its table now, and then dies parsing it, in the
-`skipstr`/`getint`/`getstr` walk at the top of `n10.c` — a hand-written parser
-over a buffer from troff's own `setbrk`. That buffer, the parse, and `struct t`
-are all worth looking at together: it is the same shape of problem as `fdprintf`
-was, a routine that assumes a particular word size.
+**troff** needs its device tables compiled. It opens
+`/usr/lib/font/dev202/DESC.out`, which `makedev` builds from the plain-text
+description in `src/cmd/troff/dev202/`. That is a build step the original
+makefile runs, not a porting problem: `makedev.c` is in the tree and compiles.
+`make rootfs` should run it and install the result, the way it already installs
+the terminal tables.
 
-Instrumented so far — and note that this instrumentation works only because
-`fdprintf` is fixed, `%D` included:
-
-```
-TAB size=1538 nread=1538 codestr=4888477696
-TAB after type p-codestr=2
-```
-
-So the file is found, read whole, `setbrk` returns a usable buffer, and the
-first `skipstr` advances correctly. The fault is further into the walk.
-
-Next: print `p - codestr` after each of the nine `getint` calls and then after
-each `getstr`, and compare against the table, which is ASCII and readable in
-`src/cmd/troff/term/tab.37`. The `getstr(p, t.twinit = p)` form — assigning the
-destination inside the argument list, then copying in place — is the kind of
-construct this back end has been wrong about before, so it is worth reading the
-generated code for that line specifically if the counters do not localise it.
+**eqn, tbl, pic, refer** are the rest of Wave C. `tbl` already compiles and
+links (23 files); `eqn` and `pic` need their yacc grammars generated first, which
+is again a build step rather than a port. `refer` has six files that use the
+pre-C89 `int x 5;` initialiser, which V8's own grammar rejects — the same
+upstream defect as `tcat`.

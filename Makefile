@@ -51,14 +51,14 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh nroff troff
 
-test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh
+test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: v8ccom
@@ -77,6 +77,8 @@ test-waveb: rootfs libv8sys crt0 libv8c
 	@$(ROOT)tests/waveb/run.sh
 test-sh: sh
 	@$(ROOT)tests/sh/run.sh
+test-wavec: nroff
+	@$(ROOT)tests/wavec/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
 	@mkdir -p $(BUILD)/v8sys
@@ -383,6 +385,41 @@ $(BUILD)/sh/%.o: $(SHSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
 	$(V8CCRUN) -I$(SHSRC) -c -o $@ $<
 
 $(SH_OBJ): $(wildcard $(SHSRC)/*.h)
+
+# ---------------------------------------------------------------------------
+# nroff -- Wave C.  Built from the original makefile's NFILES, with the same
+# -DSMALLER -DNROFF it used; troff is the same sources with t6/t10 instead of
+# n6/n10.  See src/cmd/troff/PORTING.md.
+# ---------------------------------------------------------------------------
+TROFFSRC = $(SRC)/cmd/troff
+NROFF_NAMES = n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 ni nii hytab suftab
+TROFF_NAMES = n1 n2 n3 n4 n5 t6 n7 n8 n9 t10 ni nii hytab suftab
+NROFF_OBJ = $(patsubst %,$(BUILD)/nroff/%.o,$(NROFF_NAMES))
+TROFF_OBJ = $(patsubst %,$(BUILD)/troff/%.o,$(TROFF_NAMES))
+
+nroff: $(BUILD)/nroff/nroff
+$(BUILD)/nroff/nroff: $(NROFF_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                      $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(NROFF_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+
+troff: $(BUILD)/troff/troff
+$(BUILD)/troff/troff: $(TROFF_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                      $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(TROFF_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+
+$(BUILD)/nroff/%.o: $(TROFFSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+	@mkdir -p $(BUILD)/nroff
+	$(V8CCRUN) -DINCORE -DSMALLER -DNROFF -I$(TROFFSRC) -c -o $@ $<
+$(BUILD)/troff/%.o: $(TROFFSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+	@mkdir -p $(BUILD)/troff
+	$(V8CCRUN) -DINCORE -I$(TROFFSRC) -c -o $@ $<
+$(NROFF_OBJ) $(TROFF_OBJ): $(wildcard $(TROFFSRC)/*.h)
 
 # ---------------------------------------------------------------------------
 # rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.
