@@ -53,8 +53,39 @@ run 'printf width and padding' '[   42][42   ][00042]' <<'EOF'
 main() { printf("[%5d][%-5d][%05d]\n", 42, 42, 42); fflush(stdout); return 0; }
 EOF
 
-# malloc is KNOWN BROKEN and deliberately not run here -- it hangs, so running
-# it would wedge the suite rather than fail it.  See the note at the bottom.
+run 'malloc' 'malloc ok' <<'EOF'
+#include <stdio.h>
+char *malloc();
+main() {
+	char *p; int i;
+	p = malloc(100);
+	if (p == 0) { printf("malloc failed\n"); fflush(stdout); return 1; }
+	for (i = 0; i < 100; i++) p[i] = 'x';
+	if (p[99] != 'x') { printf("bad\n"); fflush(stdout); return 1; }
+	printf("malloc ok\n"); fflush(stdout); return 0;
+}
+EOF
+
+run 'malloc many' 'many ok' <<'EOF'
+#include <stdio.h>
+char *malloc();
+main() {
+	char *v[64]; int i;
+	for (i = 0; i < 64; i++) {
+		v[i] = malloc(64 + i * 7);
+		if (v[i] == 0) { printf("fail %d\n", i); fflush(stdout); return 1; }
+		v[i][0] = i;
+	}
+	for (i = 0; i < 64; i++) if (v[i][0] != i) { printf("clobber\n"); fflush(stdout); return 1; }
+	for (i = 0; i < 64; i += 2) free(v[i]);
+	printf("many ok\n"); fflush(stdout); return 0;
+}
+EOF
+
+run 'printf %f' 'f=3.141590' <<'EOF'
+#include <stdio.h>
+main() { printf("f=%f\n", 3.14159); fflush(stdout); return 0; }
+EOF
 
 run 'string routines' 'len=5 cmp=0 cat=abcdef' <<'EOF'
 #include <stdio.h>
@@ -76,45 +107,15 @@ echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
 # ---------------------------------------------------------------------------
-# KNOWN BROKEN: malloc, and the tree that causes it
+# KNOWN BROKEN: printf("%f") loses precision -- 3.14159 prints as 3.146509.
 #
-# The fault is a 32-bit truncation of a pointer, and the tree responsible is now
-# known exactly. Set V8DBG in the environment and v8ccom prints the T* type of
-# every STAR, CONV and binary node (octal, so it lines up with mfile2.h where
-# TINT is 04 and TPOINT is 04000):
+# %e and %g are correct and share ecvt with it, so it is the fcvt digit loop.
+# The same source compiled by clang produces the right digits, so it is codegen.
+# V8DBG=1 prints node types (octal, comparable with mfile2.h) and is the tool
+# that found the malloc bug; the digit loop in src/libc/gen/ecvt.c is
 #
-#   $ cat cb4.c
-#   union store { union store *ptr; long dummy[1]; int calloc; };
-#   union store *f(p) union store *p;
-#   { return (union store *)((long)(p->ptr) & ~1); }
+#	while (p<=p1 && p<&buf[NDIG]) { arg *= 10; arg = modf(arg, &fj);
+#					*p++ = (int)fj + '0'; }
 #
-#   $ V8DBG=1 v8ccom cb4.i /dev/null
-#   BINOP 14 type=4000 L=4 R=4
-#   STAR type=4 bytes=4 unsigned=0
-#
-# Read that carefully. The AND (op 14) is correctly typed TPOINT -- 04000 -- but
-# BOTH ITS OPERANDS ARE TINT. The `(long)` cast has vanished and the pointer
-# dereference underneath it has been retyped from TPOINT to TINT, so the back
-# end quite correctly emits a 4-byte `ldrsw` for it.
-#
-# So this is a PASS 1 problem, not a back-end one. `p->ptr` on its own is typed
-# TPOINT and loads 8 bytes correctly (verified). Something in the cast chain --
-# tymatch's LONG-vs-INT ranking looks right, and bigsize() maps LONG to SZLONG
-# correctly, so the suspect is makety() or the CAST folding in optim.c --
-# collapses the CONV and narrows the operand.
-#
-# Next step: instrument makety() and optim.c's CAST handling, or dump the tree
-# before and after doptim() for this expression.
-#
-# ALREADY FIXED, all the same LP64 root cause -- V8 assumes sizeof(int) ==
-# sizeof(char *), and its own machinery inherits that:
-#
-#  - opbigsz() returned SZCHAR for the bitwise operators, as the VAX did. It
-#    turns out pass 1 never calls it, so this was inert, but it was wrong.
-#  - INT and ALIGN in malloc.c were `int`, and BUSY a plain int so `~BUSY` was
-#    too. The file's own header names all three as macros a different
-#    implementation must redefine, and says outright that "INT is integer type
-#    to which a pointer can be cast".
-#  - The sbrk arena is mapped above the program data segment, because V8's
-#    malloc sorts its free list by address and promises only a "noncontiguous,
-#    but monotonically linked, arena".
+# so the things to look at are the double-to-int conversion and whether `arg`
+# stays a double across the loop.

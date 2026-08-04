@@ -45,6 +45,28 @@
 				 * prologue, not here. */
 # define ALINIT 32
 
+	/*
+	 * The arithmetic type a pointer converts to.
+	 *
+	 * mfile1.h defaults this to INT behind an #ifndef, precisely so a target
+	 * can override it, and on the VAX INT was right because a pointer was
+	 * 32 bits.  Under LP64 it must be LONG, or optim.c's pvconvert() --
+	 * which does `makety(l, PTRTYPE, ...)` whenever a non-pointer expression
+	 * is cast to a pointer -- narrows the value to 32 bits and truncates it.
+	 *
+	 * This is what broke V8's malloc:
+	 *
+	 *	#define clearbusy(p) (union store *)((INT)(p)&~BUSY)
+	 *
+	 * The cast back to `union store *` sent the whole expression through
+	 * pvconvert, which retyped it INT; the back end then emitted a 4-byte
+	 * ldrsw for the pointer load, faithfully compiling the tree it was
+	 * given.  With the same expression returning `long` instead of a
+	 * pointer, the types came out correctly -- which is what finally
+	 * identified pvconvert as the site.
+	 */
+# define PTRTYPE LONG
+
 	/* Argument slot size: every parameter is widened to this, giving the
 	 * argument block a uniform 8-byte stride.  The VAX used SZINT (the
 	 * default in manifest.h) because it pushed 32-bit words; we need 64 so
