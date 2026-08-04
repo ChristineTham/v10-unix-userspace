@@ -251,3 +251,25 @@ v8s_ioctl(int fd, int cmd, char *arg)
 	v8_errno = V8_ENOTTY;
 	return (-1);
 }
+
+
+/*
+ * isatty(3).
+ *
+ * V8 puts this in libc, but it is a one-line ioctl and libc's copy is not
+ * ported yet, so it lives here.  _flsbuf calls it to decide whether stdout
+ * should be line-buffered, and until now it was the single libSystem symbol a
+ * "freestanding" V8 program still imported -- which also meant its answer came
+ * from the host's notion of the descriptor rather than ours.
+ *
+ * Asking the terminal for its attributes is how every implementation does this:
+ * it succeeds on a terminal and fails with ENOTTY on anything else.
+ */
+int
+isatty(fd)
+	int fd;
+{
+	struct termios t;
+
+	return (hostioctl(fd, TIOCGETA, &t) >= 0);
+}

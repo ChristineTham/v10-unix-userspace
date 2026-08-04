@@ -113,10 +113,29 @@ echo "wavea: $pass passed, $fail failed"
 #                 the old value, increment, store, ldrb through the old. putc's
 #                 is correct too. So both macros are right and the fault is
 #                 elsewhere in the round trip. Note 0x80 is _IOLBF; _flsbuf sets
-#                 that flag when isatty() says the stream is a terminal, and
-#                 isatty is the ONE libSystem symbol these programs still import
-#                 (we have not ported it). Check what our isatty returns for a
-#                 pipe before looking at the compiler again.
+#                 that flag when isatty() says the stream is a terminal.
+#
+#                 isatty is now implemented in the shim (ioctl.c) and is NOT the
+#                 cause. But the bug is now pinned exactly. Printing what
+#                 getchar() returns:
+#
+#                     printf 'abc\n' | ./gv   ->  [97][82985088][82985088][...]
+#
+#                 97 is 'a', returned correctly through _filbuf on the first
+#                 call. Every later call takes getc's fast path and yields
+#                 82985088 -- a POINTER value, i.e. _ptr rather than *_ptr.
+#
+#                 getc's code in isolation is correct (verified instruction by
+#                 instruction), and putchar with literal characters is correct.
+#                 What differs is the context: getc is a CONDITIONAL expression,
+#                 and condit() lowers `a ? b : c` into GENBR/GENLAB with both
+#                 arms delivering their value through the QNODE pseudo-register,
+#                 which is x0. So the fast-path arm is not moving its loaded byte
+#                 into x0 -- the value left there is the address instead.
+#
+#                 Look at gen()'s handling of GENLAB and QNODE, and at what
+#                 happens to a STAR result that has to be funnelled into the
+#                 rendezvous register.
 #
 #   tr         -- `echo abc | tr a-z A-Z` gives "A000" instead of "ABC", so the
 #                 a-z range expansion is filling its table wrongly. tr builds
