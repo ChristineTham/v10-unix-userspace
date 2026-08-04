@@ -22,48 +22,33 @@ argument that was never a string.
 
 ## Where to look
 
-The first `fprintf` tbl reaches is in `t1.c`:
-
-```c
-while (gets1(line))
-	fprintf(tabout, "%s\n", line);
-```
-
-Both arguments were printed before the call and both are sound:
+The crash is **not** in the first `fprintf`, which was the obvious suspect.
+Instrumenting the read loop in `t1.c` shows it completing:
 
 ```
-tabout=0000000102520820
-line=  000000016d8f9970
+G          gets1 called
+L[.TS]     line holds ".TS", correctly terminated
+P          fprintf returned
 ```
 
-a real `FILE *` and a real stack address. So the fault is **inside** `fprintf`,
-not in what it was handed — which moves this out of tbl entirely and into libc.
+and the fault follows, in `tableput()` — the branch `.TS` triggers. The earlier
+backtrace pointed at `_doprnt` because a *later* `fprintf`, inside the table
+processing, is the one handed something bad.
 
-The distinguishing feature against everything that already works: `tabout` is
-`stdout`, and every `fprintf` exercised so far — cat's and cmp's diagnostics —
-went to `stderr`. stderr is unbuffered; stdout is not. So the suspect is the
-buffered path: `_doprnt` calling `putc`, `putc` calling `_flsbuf`, and `_flsbuf`
-allocating the buffer with `malloc` on first use.
+So this is not a libc problem and not the stdio path. Eliminated along the way,
+each by direct test:
 
-`tests/libv8c/run.sh` covers `printf` to stdout and `fputs` to stdout, both of
-which take that path and pass, so it is narrower still than "buffered output".
-Written as a standalone test — a global `FILE *tabout` assigned `stdout`, a
-global `char line[512]`, `fprintf(tabout, "%s\n", line)` — it **works**. So the
-crash needs more of tbl's state than its arguments, and the next move is not a
-smaller reproduction but a bisection of what runs before it.
+* the arguments to the first `fprintf` — a real `FILE *` and a real stack address
+* `fprintf` to a buffered stream through a global `FILE *`, standalone
+* `setinp`, which does nothing at all when reading stdin
+* `fgets`, which reads `hello\n` as six bytes and NUL-terminates
 
-Eliminated since:
+Next: instrument `tableput()` the same way — it is one function, and the same
+G/L/P bracketing will name the call.
 
-* **`setinp` does nothing** in the failing case. With input on stdin `argc` is 1,
-  so `sargc` is 0 after the decrement and `swapin()` is never called — yet it
-  still crashes.
-* **`fgets` is correct.** `gets1` fills `line` with `fgets(s, 512, tabin)` and
-  then walks it with `while (*s) s++`, so a missing terminator would land
-  exactly here. Tested directly: `fgets` reads `hello\n` as six bytes and
-  NUL-terminates.
+## A note on the file list
 
-What is left before the first `fprintf` is `signal(SIGPIPE, badsig)` in `main`,
-`tabin=stdin; tabout=stdout` in `tbl()`, and `gets1`'s own tail after the fgets
-— `while (*s) s++`, the newline strip, and the continuation-line handling.
-Instrument `gets1`'s return value and the first sixteen bytes of `line`, which
-is the one thing still unprinted at the point of the crash.
+`tbl`'s header is called `t..c`, which is not a typo: the `.c` files include it
+as `#include "t..c"`. Anything that builds the directory by globbing `*.c` will
+compile the header as a translation unit. It is harmless — it defines no code —
+but it is why a naive object list has a `t..o` in it.
