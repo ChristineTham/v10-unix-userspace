@@ -146,7 +146,7 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 test-deps test-jail v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -157,7 +157,7 @@ stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff t
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
 # driver for free because the library install rules said `| rootfs`.  Naming
 # $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
-test: test-deps test-jail test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
+test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 # First, because it tests the thing every other suite's result depends on: that
 # what was built is what the sources say.  Four bugs in this port were a stale
 # object rather than wrong code.  It settles the build itself, so it takes no
@@ -169,6 +169,11 @@ test-deps:
 # Depends on the whole jail, since that is what it tests.
 test-jail: v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make
 	@$(ROOT)tests/jail/run.sh
+# The self-host boundary: every translation unit of cpp and ccom compiles under
+# v8cc and links freestanding.  Needs the driver, its passes, the headers, the
+# libraries it links, and V8's yacc for cpp's grammar.
+test-selfhost: $(V8CC_DEPS) $(ROOTFS_LIBS) $(YACC)
+	@$(ROOT)tests/selfhost/run.sh
 test-cpp: $(BUILD)/cpp/cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp

@@ -16,8 +16,8 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 12 suites (~358 tests)
-make test-wavec       # one suite: deps jail cpp v8ccom v8cc v8sys freestanding
+make test             # all 13 suites (~401 tests)
+make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)
 make clean            # remove build/ and rootfs/
@@ -98,10 +98,15 @@ the real driver compiles everything else. Both drivers exec the same `cpp` and
 `ccom`, so the objects are identical either way; only the process differs.
 Rung 4 is where the seed stops being needed.
 
-Rungs 3–5 are unfinished. `cpp` and `ccom` are still clang-built host binaries
-(`nm` shows 0 V8 symbols) — they sit *inside* the rootfs but do not obey the
-jail, so "the compiler runs on V8 code" is true of the driver and not yet of its
-passes.
+Rungs 3–5 are unfinished. The *installed* `cpp` and `ccom` are still clang-built
+host binaries (`nm` shows 0 V8 symbols) — they sit inside the rootfs but do not
+obey the jail, so "the compiler runs on V8 code" is true of the driver and not
+yet of its passes.
+
+All twenty of their translation units do now **compile** under v8cc and link
+freestanding (`tests/selfhost`), and the self-hosted `cpp` runs and matches the
+stage-0 one byte for byte. The self-hosted `ccom` links but crashes; PLAN.md §4c
+records the bisection in full, and it is the one thing blocking rung 3.
 
 ### The jail
 

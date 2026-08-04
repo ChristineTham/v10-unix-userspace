@@ -160,6 +160,44 @@ dependency knowledge was in the tree the whole time, in files the build
 ignored. Program builds move onto their own makefiles, minimally adapted, with
 every deviation recorded in that program's `PORTING.md`.
 
+## 4c. The open self-host bug (rung 3)
+
+Every translation unit of `cpp` and `ccom` now compiles with `v8cc` and links
+freestanding — `tests/selfhost` asserts all twenty, and the self-hosted **cpp**
+runs and produces byte-identical output to the stage-0 one, so one of the two
+passes is at a fixpoint. The self-hosted **ccom** links but does not run.
+
+What is known, from bisecting object by object against a control built with
+clang *against V8's own headers* and linked the same freestanding way — a
+control that isolates the compiler, which an earlier one using host headers did
+not, because it introduced a `FILE` layout mismatch of its own:
+
+- The minimal failing set is **`trees.o` + `t2print.o`**, both from v8cc.
+  Either one alone, with the other from clang, is fine.
+- It dies on the **first symbol-table insertion** — `yylex` → `hash` → `malloc`,
+  faulting inside `malloc` on a wild address. An empty input file compiles
+  cleanly; `int x;`, `int y;` and `f(){}` all crash. So it is reached before any
+  code generation happens.
+- It is **layout-dependent**: the same objects in a different link order crash
+  or do not. That makes it a data-placement fault — something writes outside an
+  object — rather than a control-flow bug, and it means a passing link order
+  proves nothing.
+- `t2print.c`'s only substantial data is a `static struct { TWORD; char *; }
+  t2tab[]` with a flat K&R initialiser. v8cc lays that out correctly (`.long`,
+  `.space 4`, `.quad` — 16 bytes on LP64), and a reduced version of it runs
+  correctly, so the initialiser shape alone is not the bug.
+- Ruled out: symbol collisions between the two objects (none), the two
+  same-named function statics `down` (both emitted privately), the freestanding
+  link itself, and libv8c.
+
+The next measurement is to find which object's data is being written past, by
+comparing the emitted size of every static in `trees.c` against what the code
+indexing it assumes — the `lex`/`once.c` shape, where an array's type is
+declared in one place and its allocation happens in another.
+
+Until this closes, rung 3 is open, and with it B3 (V8 make rebuilding the
+compiler) and B6.
+
 ## 4b. Phase 6 — Installation: the V8 world as something you can live in
 
 The end state is a `v8` command that drops you into what looks like a real
