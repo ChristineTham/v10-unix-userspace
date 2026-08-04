@@ -212,6 +212,7 @@ $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
 # ---------------------------------------------------------------------------
 LIBCSRC = $(SRC)/libc
 LIBC_C  = $(LIBCSRC)/gen/malloc.c $(LIBCSRC)/gen/ecvt.c $(LIBCSRC)/gen/ieeefp.c \
+          $(LIBCSRC)/gen/errlst.c $(LIBCSRC)/gen/perror.c \
           $(LIBCSRC)/stdio/data.c $(LIBCSRC)/stdio/doprnt.c \
           $(LIBCSRC)/stdio/printf.c $(LIBCSRC)/stdio/fprintf.c \
           $(LIBCSRC)/stdio/filbuf.c $(LIBCSRC)/stdio/flsbuf.c \

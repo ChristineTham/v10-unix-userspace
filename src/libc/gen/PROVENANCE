@@ -13,3 +13,5 @@ da2acb57e7fd2e689e7cfad1ba2d46cabeaafee8  v8/usr/src/libc/gen/strcpy.C
 a46514e58d5db010f386767fcbf16b69a1e687ce  v8/usr/src/libc/gen/strncmp.C
 3c5b8ded82bae92692af27b4279f828141d01de7  v8/usr/src/libc/gen/strchr.C
 43d17fc4047e2e3d723dcffc618f73e3cc83a5f1  v8/usr/src/libc/gen/ecvt.c
+c980ce0ffee693237c28b8e06b16437e22af9f10  v8/usr/src/libc/gen/errlst.c
+be3f320d5711aa48ba48baba2aacbbc59c0b0278  v8/usr/src/libc/gen/perror.c

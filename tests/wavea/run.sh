@@ -143,6 +143,16 @@ echo "wavea: $pass passed, $fail failed"
 #
 #   cmp        -- does not compile.
 #
-#   perror is silent and a failed open exits 0. perror() indexes sys_errlist,
-#   which V8 builds in libc/gen with a `cc -S` plus an ed script (libc/Makefile)
-#   that has not been ported -- an empty table explains the silence.
+#   cat nosuchfile prints the WRONG diagnostic. perror and sys_errlist are now
+#   ported (V8 has errlst.c and perror.c in libc/gen; the ed script in
+#   libc/Makefile was only a VAX trick to move the table into read-only text),
+#   so an error IS reported and the exit status is now 1. But the message is
+#   "cat: input nosuchfile is output" -- cat's dev/ino guard -- rather than the
+#   perror one, meaning cat took the `fi = 0` branch instead of the open branch.
+#
+#   Ruled out: open() itself returns -1 with errno 2 correctly, and the
+#   && / || lowering is correct in isolation (`f || *s == '-' && s[1] == 0`
+#   with s="nosuchfile" evaluates false as it should). What is left untested is
+#   `**++argv` -- a double dereference of a pre-incremented pointer, in the
+#   same expression. Given that lvalues with side effects have already produced
+#   two bugs here, test that next.
