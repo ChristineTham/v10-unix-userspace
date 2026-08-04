@@ -160,6 +160,78 @@ dependency knowledge was in the tree the whole time, in files the build
 ignored. Program builds move onto their own makefiles, minimally adapted, with
 every deviation recorded in that program's `PORTING.md`.
 
+## 4b. Phase 6 — Installation: the V8 world as something you can live in
+
+The end state is a `v8` command that drops you into what looks like a real
+Eighth Edition system, while the Mac underneath stays reachable.
+
+```
+$PREFIX/v8/            <- $V8ROOT
+  bin/                 sh, cc, and the filters
+  lib/                 cpp, ccom, crt0.o, libv8c.a, libv8sys.a
+  etc/                 passwd, group, ttys, termcap, motd, fstab
+  dev/                 null, tty, console  -- symlinks to the host's
+  tmp/                 jailed, so temp files do not leak to host /tmp
+  usr/include usr/lib usr/man usr/src
+$PREFIX/bin/v8         the launcher
+```
+
+`$PREFIX` is `/usr/local` or `~/.local`; the latter needs no sudo and is the
+default.
+
+### Two requirements are satisfied by construction
+
+**Host binaries see the real macOS.** They are not linked against `libv8sys`,
+so they never call `rootpath()`. There is no jail for them to escape. This is
+the dividend of implementing chroot in the shim rather than the kernel: it is
+**per-binary, not per-process-tree**, so a native `python3` started from the V8
+shell needs no special case.
+
+**Programs the user compiles are jailed.** Anything the jail's `cc` produces
+links `libv8sys`, so it resolves paths through the same rootpath. You cannot
+compile a program inside the jail that escapes it.
+
+### Decided: union semantics, V8-only PATH
+
+Every absolute path resolves in the jail first; where the jail has nothing, the
+host shows through. `ls /` shows a V8 root, `cd ~/work` reaches the real home,
+`/usr/bin/python3` still finds the host's. `v8` starts with `PATH=/bin:/usr/bin`
+— the V8 world alone — so a tool that has not been ported is conspicuous rather
+than silently satisfied by a modern namesake. That is the failure mode that let
+the `scanf` and `execl` bugs survive, and it is not worth re-creating for
+convenience. Host directories are an explicit opt-in.
+
+### The four pieces of real work
+
+1. **`pwd` must lie correctly.** `src/libc/gen/getwd.c` calls no `getcwd`
+   syscall: it walks up from `.` matching entries against `stat("..")` until
+   the inode equals its own parent. Inside the jail that walks straight out and
+   returns `/usr/local/v8/usr/src`. Fix: have the shim report `$V8ROOT` as its
+   own parent — same `st_dev`/`st_ino` as its `..` — and getwd stops there,
+   yielding `/usr/src`. The shim already reconciles getwd's expectations
+   against the host at `syscall.c:619`, so this is the same kind of lie in the
+   same place, not a new mechanism.
+
+2. **`open(O_CREAT)` resolves the parent, not the target.** `rootpath()`
+   decides by stat'ing the path, but a file being created does not exist yet,
+   so under union semantics every new file would fall through to the host.
+   Creation has to resolve the parent directory instead. Invisible until
+   someone redirects output into `/tmp` and finds it on the Mac.
+
+3. **`$V8ROOT` must not depend on the environment.** It is `getenv` today, and
+   when unset `rootpath()` silently returns the host path — so a V8 binary run
+   outside the launcher quietly operates on the real filesystem. Same silent
+   fall-through class as the variadic libc gaps. Needs a compiled-in default
+   stamped at install (`-DV8ROOT_DEFAULT`), with the env var as override.
+
+4. **`/etc` is not decoration.** `getpw.c`, `getlogin.c` and `ttyslot.c` read
+   it. Upstream ships genuine V8 `group`, `fstab`, `hosts` and `ttys`, which can
+   be imported with provenance like any other file; `passwd` has to be
+   synthesized at install from the real user, or `ls -l` shows bare uids.
+
+Blocked on B5: the `cc` driver is still a clang-built host binary, so
+installing it now would put a jail-blind compiler at `$V8ROOT/bin/cc`.
+
 ## 5. Phase 1 — Toolchain bootstrap
 
 **Stage 0 — host clang builds the tools that build the world.**
