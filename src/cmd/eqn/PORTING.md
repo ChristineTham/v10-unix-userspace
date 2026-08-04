@@ -151,8 +151,35 @@ REL:  m *= (float) gsize / EFFPS(ps);
 properly initialised, so the suspect is `EFFPS(ps)` evaluating to zero, or `ps`
 itself being zero at this call.
 
-Next, and this is a short one: print `ps`, `EFFPS(ps)` and `gsize` inside `EM`.
-One of the three is zero and the division names it.
+Measured, and neither divides by zero:
+
+```
+EM ps/eff/gs 0000000a 0000000a 0000000a     10, 10, 10
+EM ps/eff/gs 00000007 00000007 0000000a      7,  7, 10
+```
+
+So `EM` computes `m * 7/10` and `REL` computes `m * 10/7`. No infinity is being
+*calculated*.
+
+Also eliminated: a `double` in the **spilled** argument position — the ninth
+vararg, which lands on the stack rather than in x7 — prints correctly. That was
+the best remaining structural guess, since eqn's crashing call has exactly that
+shape.
+
+## Where this stands
+
+The arithmetic is sound, the argument block is sound, and the value still
+arrives at `cvt` as -inf. What has *not* been done is the direct measurement:
+print the `double` at the point `printf` is called in `shift.c:51`, rather than
+inferring it from either end. If it is already -inf there, the fault is in
+`shift()`; if it is fine there and -inf inside `_doprnt`, the fault is in the
+marshalling of *this particular* call, and the difference from the tests above
+will be the thing worth reading.
+
+That is one write() away and should be the first thing done next — before any
+more reasoning about which construct is at fault. Every bug in this port has
+been found by measuring, and this one has now absorbed several rounds of
+inference that measurement would have settled.
 
 Also noticed and not yet chased: `%g` prints `7.25000` where it should print
 `7.25`. V8's `%g` strips trailing zeros; ours does not.
