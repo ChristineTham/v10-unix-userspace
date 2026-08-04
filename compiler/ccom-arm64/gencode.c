@@ -1278,6 +1278,30 @@ gen(p, want)
 			if (r.flag & R_FREG) fregfree(r.reg); else regfree(r.reg);
 			return (res);
 		}
+		/*
+		 * The VALUE of `a = b` is b converted to the TYPE OF A, and
+		 * that conversion was missing here.  lvstore() narrows what
+		 * reaches memory -- `str w11` for an int -- but r still held the
+		 * full 64-bit right-hand value, so a wider use of the assignment
+		 * as an expression saw bits that the variable does not have.
+		 *
+		 * This is what stopped the compiler self-hosting.  lookup.c
+		 * has, in savestr():
+		 *
+		 *	(curstp = malloc(nchleft = len+STRTABSIZE)) == 0
+		 *
+		 * where nchleft is `static int`.  The store was right and the
+		 * argument was wrong: malloc got x11 entire, upper half and
+		 * all, and walked off its arena on the first symbol inserted.
+		 * It presented as heap corruption and it was link-order
+		 * sensitive, because what the upper half contained depended on
+		 * whatever last used that register.
+		 *
+		 * arm64_widen already exists for the foreign-call seam and does
+		 * exactly the right thing here; it returns without emitting for
+		 * pointers and floats, so a float assignment is unaffected.
+		 */
+		arm64_widen(p->in.left->in.type, r.reg);
 		return (r);
 	}
 

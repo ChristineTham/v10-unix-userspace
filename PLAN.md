@@ -219,13 +219,42 @@ directly, v8cc emits `.comm _tentative,4` and `.lcomm _stat_tentative,4`
 exactly as it should — `EXCLASS` defaults to `EXTERN` in `pftn.c`, neither back
 end overrides it, and `commdec()` in `compiler/ccom-arm64/local.c` is reached.
 
-So the difference is still unidentified. What the eliminations leave is a fault
-that is real, reproducible, confined to code v8cc generates, triggered before
-any code generation happens in the compiled compiler, and sensitive to link
-order — with no wrong data size, no wrong struct layout, no symbol collision,
-no stack exhaustion and no addressing defect found. The next thing to try is
-the direct one rather than another hypothesis: run the crashing binary under a
-watchpoint on the malloc free-list head and catch whoever writes it.
+**The exact crash site, from lldb.** The chain is
+
+```
+v8start -> main -> mainp1 -> yyparse -> yylex -> hash -> savestr -> malloc
+```
+
+faulting at `malloc+196`, on `ldr x9, [x9]` — walking the free list through a
+wild pointer. `savestr()` in `lookup.c` is the first allocation the compiler
+ever makes, on the first identifier it reads.
+
+That call looked like the answer, because `savestr` contains
+
+```c
+	(curstp = malloc(nchleft = len+STRTABSIZE)) == 0	/* nchleft is int */
+```
+
+and the value of an assignment is the right-hand side **converted to the type
+of the left operand** — which the back end was not doing. It emitted `str w11`
+for the store, correctly, but returned the full 64-bit register as the
+expression's value, so `malloc` was handed bits `nchleft` does not have. That
+is fixed (`case ASSIGN` in `gencode.c` now calls `arm64_widen`), and the
+emitted code is demonstrably right: `sxtw x11, w11` now appears before the
+argument is set up.
+
+**It did not fix the crash**, and the disassembly of the linked `savestr` shows
+`malloc` now receiving a properly narrowed size. So the arena is *already*
+corrupted before the compiler's first allocation — which moves the search to
+everything that runs ahead of it: `v8start`, `main`, and `mainp1`'s setup.
+
+Note on the ASSIGN change: it is correct C, and all 401 tests pass with it, but
+it carries **no regression test**. Two attempts to build one failed — a folded
+constant in the first, and in the second the narrowing happened anyway through
+some other path — and by this project's own rule an unexercised guard is not a
+guard. Either find the case that distinguishes it or reconsider the change;
+`arm64_widen` mutates the register in place, which is only safe if the
+right-hand value is genuinely dead at that point.
 
 Until this closes, rung 3 is open, and with it B3 (V8 make rebuilding the
 compiler) and B6.
