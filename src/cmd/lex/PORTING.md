@@ -82,7 +82,23 @@ one block comes back far from the last, the ordering assumption breaks and the
 search walks off — which is exactly the shape of "small ones work, larger ones
 return 0".
 
-Next: print in `malloc` itself — the requested size, what `sbrk` returned, and
-`allocb`/`allocp` — for a program that asks for 700, then 2800, then 20000
-bytes. That is a libc test, not a lex one, and it belongs in
-`tests/libv8c/run.sh` once understood.
+Two reproductions tried, and **both work**:
+
+* the four sizes straight through — 700, 2800, 10592, 20000 — all succeed from
+  the arena;
+* lex's shape — allocate six blocks, free them all, allocate six larger ones —
+  also succeeds.
+
+So it needs something more specific than size or a simple free/reallocate cycle.
+
+The clue still unexplained is `0x105adda80`. That is nowhere near the sbrk arena
+at `0x300000000`, and the only other memory malloc knows about is its own
+`static union store alloca` — the **one-element** initial arena that `allocb`
+and `allocp` start pointing at. If malloc is handing that out, it is returning
+eight bytes of its own bookkeeping as if it were a buffer, and everything after
+that is corruption rather than a clean failure.
+
+Next: instrument `malloc` itself in a run of *lex* — not a reproduction — and
+print `allocb`, `allocp` and the returned pointer per call. The question to
+answer is how `allocp` comes to point at `alloca` again after the arena has
+grown, since `ialloc()` sets `allocb = allocp = ` the new low block.
