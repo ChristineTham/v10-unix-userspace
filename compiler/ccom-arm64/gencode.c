@@ -1240,8 +1240,36 @@ gen(p, want)
 		return (res);
 
 	case GENLAB:
+		/*
+		 * The join of a lowered conditional.
+		 *
+		 * condit() turns `a ? b : c` into branches whose arms each
+		 * deliver their value through the QNODE pseudo-register -- x0,
+		 * by the callreg() convention.  So after the label the value is
+		 * in x0, and ONLY in x0.
+		 *
+		 * Returning whichever register the left arm happened to use is
+		 * wrong, because the other arm never wrote it.  In getc that
+		 * produced
+		 *
+		 *	bl  __filbuf
+		 *	mov x9, x0        ; this arm's value
+		 *	mov x0, x9        ; ...into the rendezvous register
+		 *	L26:              ; join
+		 *	str w9, [x29,#-4] ; c = x9  -- but the other arm set only x0
+		 *
+		 * so a character read through the fast path came back as the
+		 * buffer pointer.
+		 */
 		if (p->in.left) res = gen(p->in.left, want);
 		deflab(p->bn.label);
+		if (want != WEFFECT) {
+			reg = regalloc();
+			printx("\tmov\t%s, x0\n", xreg(reg));
+			if (res.flag & R_REG) regfree(res.reg);
+			res.reg = reg;
+			res.flag = R_REG;
+		}
 		return (res);
 
 	case GOTO:
@@ -1399,6 +1427,11 @@ gen(p, want)
  */
 #define MAXARGS 32
 
+/* See the note above gencall(): sp never moves inside a function body, so both
+ * the outgoing-argument area and the caller-save blocks are fixed offsets. */
+#define OUTAREA	256		/* up to 32 stack arguments */
+#define SAVEBLK	128		/* 7 scratch + 8 FP registers, rounded */
+
 /* How many arguments does this CM-linked list hold? */
 static int
 countargs(p)
@@ -1426,23 +1459,37 @@ countargs(p)
  *	[sp, stackbytes + i*8]		arguments 0..7 -- scratch, loaded into
  *					x0-x7 just before the call
  */
+/*
+ * Where argument n of a call at nesting depth d lives, as a fixed offset from
+ * sp.  Arguments 8 and up must sit at sp+0 upward, because that is where the
+ * callee reads them; 0..7 get scratch slots above the outgoing area and are
+ * loaded into x0-x7 immediately before the branch.
+ */
 static int
-placeargs(p, n, stackbytes)
+argslot(n, depth)
+	int n, depth;
+{
+	if (n >= 8) return ((n - 8) * 8);
+	return (OUTAREA + (depth + 1) * SAVEBLK - 64 + n * 8);
+}
+
+static int
+placeargs(p, n, depth)
 	NODE *p;
-	int n, stackbytes;
+	int n, depth;
 {
 	ret a;
 	int slot;
 
 	if (p == 0) return n;
 	if (p->in.op == CM) {
-		n = placeargs(p->in.left, n, stackbytes);
-		return placeargs(p->in.right, n, stackbytes);
+		n = placeargs(p->in.left, n, depth);
+		return placeargs(p->in.right, n, depth);
 	}
 	if (p->in.op == FUNARG) p = p->in.left;
 
 	a = gen(p, WVALUE);
-	slot = (n < 8) ? stackbytes + n * 8 : (n - 8) * 8;
+	slot = argslot(n, depth);
 
 	if (a.flag & R_FREG) {
 		/* a float widens to double first, as C and V8 both promote */
@@ -1457,6 +1504,49 @@ placeargs(p, n, stackbytes)
 	return (n + 1);
 }
 
+/*
+ * OUTGOING-ARGUMENT AND SAVE AREAS, RESERVED ONCE IN THE PROLOGUE.
+ *
+ * The obvious implementation brackets each call with `sub sp,sp,#N` and a
+ * matching `add`.  That is correct only for straight-line control flow, and
+ * condit() lowers `a ? b : c` into branches -- so a call in one arm puts the
+ * sub and the add on different paths and the stack drifts.  Seen directly in
+ * `while ((c = getchar()) != EOF)`:
+ *
+ *	sub sp, sp, #16
+ *	b   L21           <- branches away, sp never restored
+ *
+ * getc and putc are exactly this shape, which is why stdio was garbling while
+ * every straight-line test passed.
+ *
+ * So sp does not move inside a function body at all.  Two regions are reserved
+ * in the prologue, which emit.c writes after the body is captured and can
+ * therefore size correctly:
+ *
+ *	[sp, 0 .. OUTAREA)		outgoing stack arguments.  Must be at
+ *					sp+0: the callee reads them at [x29,#80]
+ *					after its own prologue.
+ *	[sp, OUTAREA + d*SAVEBLK ...)	caller-saved registers, one block per
+ *					call-nesting depth so f(g(x)) does not
+ *					have g clobber f's saves.
+ */
+int arm64_maxdepth;		/* deepest call nesting seen; read by emit.c */
+static int calldepth;
+
+void
+arm64_resetcalls()
+{
+	arm64_maxdepth = -1;
+	calldepth = 0;
+}
+
+long
+arm64_callarea()
+{
+	if (arm64_maxdepth < 0) return (0);	/* a leaf: nothing needed */
+	return (OUTAREA + (long)(arm64_maxdepth + 1) * SAVEBLK);
+}
+
 static ret
 gencall(p, want)
 	NODE *p;
@@ -1465,61 +1555,50 @@ gencall(p, want)
 	ret res, f;
 	int saved[REGVAR];
 	int fsaved[NFREG];
-	int n, i, reg, nsave, nfsave, nstack, stackbytes, total;
+	int n, i, reg, nsave, nfsave, depth, sbase;
 	int isunary = (p->in.op == (UNARY CALL) || p->in.op == (UNARY STCALL));
 
 	res.reg = -1; res.flag = R_NONE;
 
+	depth = calldepth++;
+	if (depth > arm64_maxdepth) arm64_maxdepth = depth;
+	sbase = OUTAREA + depth * SAVEBLK;
+
 	n = isunary ? 0 : countargs(p->in.right);
 	if (n > MAXARGS) cerror("more than %d arguments in one call", MAXARGS);
+	if (n > 8 && (n - 8) * 8 > OUTAREA)
+		cerror("more than %d stack arguments in one call", OUTAREA / 8);
 
 	/*
-	 * ORDER MATTERS.  Live scratch registers are saved FIRST, then the
-	 * outgoing area is allocated, then arguments are evaluated into it.
-	 * The other way round pushes the saved registers on top of the stack
-	 * arguments, and the callee reads saved registers where argument nine
-	 * should be.
-	 *
-	 * x9-x15 and d16-d23 are caller-saved under AAPCS64, so anything
-	 * computed before the call and wanted after it must be preserved.
-	 * Without this, recursion silently returns garbage: fib(10) came out 0,
-	 * because every inner call flattened the partial sum its caller held.
+	 * Arguments are evaluated and stored one at a time, so only one is live
+	 * at a time and a nested call inside an argument cannot clobber an
+	 * argument already placed.  Argument evaluation may branch; that is
+	 * safe now precisely because no sp adjustment is outstanding.
+	 */
+	if (!isunary)
+		placeargs(p->in.right, 0, depth);
+
+	/*
+	 * Save the scratch registers still holding live values.  x9-x15 and
+	 * d16-d23 are caller-saved, so anything wanted after the call must
+	 * survive it -- without this, recursion returns garbage.
 	 */
 	nsave = 0;
 	for (i = 0; i < REGVAR; i++)
 		if (inuse[i]) saved[nsave++] = i;
-	for (i = 0; i + 1 < nsave; i += 2)
-		printx("\tstp\t%s, %s, [sp, #-16]!\n", xreg(saved[i]),
-		    xreg(saved[i + 1]));
-	if (nsave & 1)
-		printx("\tstr\t%s, [sp, #-16]!\n", xreg(saved[nsave - 1]));
+	for (i = 0; i < nsave; i++)
+		printx("\tstr\t%s, [sp, #%d]\n", xreg(saved[i]), sbase + i * 8);
 
 	nfsave = 0;
 	for (i = 0; i < NFREG; i++)
 		if (inusef[i]) fsaved[nfsave++] = i;
 	for (i = 0; i < nfsave; i++)
-		printx("\tstr\t%s, [sp, #-16]!\n", dreg(fsaved[i]));
+		printx("\tstr\t%s, [sp, #%d]\n", dreg(fsaved[i]),
+		    sbase + (REGVAR + i) * 8);
 
-	/*
-	 * Arguments 8 and up must land immediately above the callee's spill
-	 * block so the two form one contiguous argument block (frame diagram in
-	 * local.c): the callee's prologue does `sub sp,#64` then pushes
-	 * x29/x30, so what we leave at [sp,#0] is what it reads at [x29,#80].
-	 * Arguments 0..7 get scratch slots above that area.
-	 *
-	 * Rounded to 16: AAPCS64 wants sp 16-byte aligned at all times.
-	 */
-	nstack = (n > 8) ? n - 8 : 0;
-	stackbytes = (nstack * 8 + 15) & ~15;
-	total = stackbytes + ((n > 8 ? 8 : n) * 8 + 15 & ~15);
-	if (total)
-		printx("\tsub\tsp, sp, #%d\n", total);
-
-	if (!isunary)
-		placeargs(p->in.right, 0, stackbytes);
-
+	/* the first eight arguments move from their slots into x0-x7 */
 	for (i = 0; i < n && i < 8; i++)
-		printx("\tldr\tx%d, [sp, #%d]\n", i, stackbytes + i * 8);
+		printx("\tldr\tx%d, [sp, #%d]\n", i, argslot(i, depth));
 
 	if ((p->in.left->in.op == ICON || p->in.left->in.op == NAME) &&
 	    p->in.left->in.name && *p->in.left->in.name) {
@@ -1530,16 +1609,13 @@ gencall(p, want)
 		regfree(f.reg);
 	}
 
-	if (total)
-		printx("\tadd\tsp, sp, #%d\n", total);
+	for (i = 0; i < nfsave; i++)
+		printx("\tldr\t%s, [sp, #%d]\n", dreg(fsaved[i]),
+		    sbase + (REGVAR + i) * 8);
+	for (i = 0; i < nsave; i++)
+		printx("\tldr\t%s, [sp, #%d]\n", xreg(saved[i]), sbase + i * 8);
 
-	for (i = nfsave - 1; i >= 0; i--)
-		printx("\tldr\t%s, [sp], #16\n", dreg(fsaved[i]));
-	if (nsave & 1)
-		printx("\tldr\t%s, [sp], #16\n", xreg(saved[nsave - 1]));
-	for (i = (nsave & ~1) - 2; i >= 0; i -= 2)
-		printx("\tldp\t%s, %s, [sp], #16\n", xreg(saved[i]),
-		    xreg(saved[i + 1]));
+	calldepth--;
 
 	if (want == WEFFECT) return (res);
 

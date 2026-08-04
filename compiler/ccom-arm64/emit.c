@@ -308,9 +308,13 @@ genswcase(val, lab)		/* one linear switch test */
 
 #define ARGSPILL 64		/* x0..x7, eight 8-byte slots */
 
+extern void arm64_resetcalls();
+extern long arm64_callarea();
+
 void
 arm64_beginfunction()
 {
+	arm64_resetcalls();
 	emitstart();		/* capture the body; prologue comes later */
 }
 
@@ -343,8 +347,18 @@ arm64_endfunction(framebytes, minrv)
 	body = emitcaptured(&bodylen);
 	emitstop();
 
-	/* Round the frame to 16, which AAPCS64 requires of sp at all times. */
-	frame = (framebytes + 15) & ~15L;
+	/*
+	 * The frame carries the locals AND the call areas -- the outgoing
+	 * arguments and the caller-save blocks that gencall() addresses at
+	 * fixed offsets from sp.  Reserving them here is what lets sp stay put
+	 * for the whole body; see the note above gencall() for why moving it
+	 * per call was wrong.
+	 *
+	 * Capturing the body first is what makes this possible: by now every
+	 * call in the function has been generated and the deepest nesting is
+	 * known.
+	 */
+	frame = (framebytes + arm64_callarea() + 15) & ~15L;
 
 	/*
 	 * Callee-saved registers actually used.  cisreg() hands out register
