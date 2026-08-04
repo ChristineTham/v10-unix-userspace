@@ -531,6 +531,27 @@ framereg(off)
  * Deliberately NOT extended to char and short parameters: those are unambiguous
  * (K&R's implicit type is int and nothing else), so widening them would change
  * real behaviour -- `f(c) char c;` called with 200 must see -56 -- for no gain.
+ *
+ * KNOWN LIMITATION.  This also widens an int MEMBER of an aggregate parameter,
+ * which is wrong:
+ *
+ *	union u { int i; char *p; };		// 8 bytes under LP64
+ *	f(v) union u v; { return (v.i == 0); }	// compares all 8
+ *
+ * Pass 1 hands pass 2 the parameter's own node retyped to the member's type, so
+ * by the time we see it a 4-byte member at offset 0 and a 4-byte parameter are
+ * the same node.  Telling them apart needs the parameter's DECLARED type, which
+ * only pass 1 has.
+ *
+ * It only bites when the caller leaves rubbish in the slot's top half, i.e. when
+ * a union member narrower than the union is assigned and the union is then
+ * passed by value.  pic's makeattr() is the one case found so far, fixed at the
+ * source in src/cmd/pic/misc.c because that is also where the VAX/LP64 size
+ * change is (the union went from 4 bytes to 8).  If a second case turns up,
+ * fix it here instead: have pass 1 mark member references so this can tell.
+ *
+ * Not reachable for aggregates larger than 8 bytes -- those hit the
+ * unimplemented STARG path in gencall() first.
  */
 static TWORD
 acctype(p)

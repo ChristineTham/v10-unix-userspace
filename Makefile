@@ -51,7 +51,7 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -77,7 +77,7 @@ test-waveb: rootfs libv8sys crt0 libv8c
 	@$(ROOT)tests/waveb/run.sh
 test-sh: sh
 	@$(ROOT)tests/sh/run.sh
-test-wavec: nroff troff tbl eqn
+test-wavec: nroff troff tbl eqn pic
 	@$(ROOT)tests/wavec/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
@@ -503,6 +503,45 @@ $(BUILD)/lex/%.o: $(LEXSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
 # ldefs.c; lmain.o and y.tab.o additionally depend on once.c, which is where
 # the widths live.
 $(LEX_OBJ): $(LEXSRC)/ldefs.c $(LEXSRC)/once.c
+
+# ---------------------------------------------------------------------------
+# pic -- the first program that needs BOTH of V8's own generators: yacc for
+# picy.y and lex for picl.l.  The rest of the objects include pic.ydef, which is
+# y.tab.h under another name; the original makefile copies it across only when
+# it changes, to avoid rebuilding everything on every yacc run.  We depend on it
+# directly and let make decide.
+# ---------------------------------------------------------------------------
+PICSRC = $(SRC)/cmd/pic
+PIC_NAMES = main print misc symtab blockgen boxgen circgen arcgen linegen \
+            movegen textgen input for pltroff
+PIC_OBJ = $(patsubst %,$(BUILD)/pic/%.o,$(PIC_NAMES)) \
+          $(BUILD)/pic/picy.o $(BUILD)/pic/picl.o
+
+pic: $(BUILD)/pic/pic
+$(BUILD)/pic/pic: $(PIC_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                  $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(PIC_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+
+$(BUILD)/pic/y.tab.c $(BUILD)/pic/pic.ydef: $(PICSRC)/picy.y v8yacc | rootfs
+	@mkdir -p $(BUILD)/pic
+	cd $(BUILD)/pic && V8ROOT=$(ROOTFS) $(BUILD)/yacc/yacc -d $(PICSRC)/picy.y
+	@cp $(BUILD)/pic/y.tab.h $(BUILD)/pic/pic.ydef
+
+$(BUILD)/pic/lex.yy.c: $(PICSRC)/picl.l v8lex $(BUILD)/pic/pic.ydef | rootfs
+	@mkdir -p $(BUILD)/pic
+	cd $(BUILD)/pic && V8ROOT=$(ROOTFS) $(BUILD)/lex/lex $(PICSRC)/picl.l
+
+$(BUILD)/pic/picy.o: $(BUILD)/pic/y.tab.c $(A64BUILD)/v8ccom | rootfs
+	$(V8CCRUN) -I$(BUILD)/pic -I$(PICSRC) -c -o $@ $(BUILD)/pic/y.tab.c
+$(BUILD)/pic/picl.o: $(BUILD)/pic/lex.yy.c $(A64BUILD)/v8ccom | rootfs
+	$(V8CCRUN) -I$(BUILD)/pic -I$(PICSRC) -c -o $@ $(BUILD)/pic/lex.yy.c
+$(BUILD)/pic/%.o: $(PICSRC)/%.c $(BUILD)/pic/pic.ydef $(A64BUILD)/v8ccom | rootfs
+	@mkdir -p $(BUILD)/pic
+	$(V8CCRUN) -I$(BUILD)/pic -I$(PICSRC) -c -o $@ $<
+$(PIC_OBJ): $(PICSRC)/pic.h
 
 EQNSRC = $(SRC)/cmd/eqn
 EQN_NAMES = main diacrit eqnbox font fromto funny glob integral input lex \

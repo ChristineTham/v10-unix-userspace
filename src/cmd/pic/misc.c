@@ -94,6 +94,7 @@ makefattr(type, sub, f)	/* float attr */
 	float f;
 {
 	YYSTYPE val;
+	val.p = 0;		/* PORT: see makeiattr */
 	val.f = f;
 	makeattr(type, sub, val);
 }
@@ -110,6 +111,24 @@ makeiattr(type, i)	/* int attr */
 	int i;
 {
 	YYSTYPE val;
+	/*
+	 * PORT: clear the whole union first.
+	 *
+	 * YYSTYPE is a union of int, char *, obj * and float.  On the VAX every
+	 * member was 4 bytes and so was the union; under LP64 the pointers make
+	 * it 8, and `val.i = i` now leaves the top four bytes holding whatever
+	 * was on the stack.
+	 *
+	 * That matters because the union is passed to makeattr BY VALUE and the
+	 * attribute table is cleared by makeiattr(0, 0) -- makeattr tests
+	 * `type == 0 && val.i == 0`.  With rubbish in the padding the clear
+	 * silently did not happen, so attributes accumulated across statements:
+	 * every object inherited the text of every object before it, and
+	 * `box "a"; arrow; circle "b"` put "a" on all three.
+	 *
+	 * makefattr has the same shape -- .f is 4 bytes in an 8-byte union.
+	 */
+	val.p = 0;
 	val.i = i;
 	makeattr(type, 0, val);
 }

@@ -84,5 +84,32 @@ else
 	fail=$((fail+4)); echo "FAIL eqn not built"
 fi
 
+# pic -- the first program needing BOTH generators, V8's yacc and V8's lex.
+PIC=$ROOT/build/stage0/pic/pic
+if [ -x "$PIC" ]; then
+	printf '.PS\nbox "hello"; arrow; circle "world"\n.PE\n' > pc.in
+	"$PIC" pc.in > pc.tr 2>pc.err
+	check 'pic is silent on stderr' '' "$(cat pc.err)"
+	check 'pic emits the .PS block with dimensions' '.PS 0.500i 1.750i' \
+	    "$(grep -m1 '^\.PS ' pc.tr | sed 's/ *$//')"
+	# Four sides of the box, the arrow shaft, and two for its head.
+	check 'pic draws the box and arrow' '7' "$(grep -c "D'l" pc.tr)"
+	check 'pic draws the circle' '1' "$(grep -c "D'c" pc.tr)"
+	# The regression that matters.  YYSTYPE went from 4 bytes to 8 under
+	# LP64, so makeiattr's `val.i = 0` no longer filled the union it passes
+	# by value, the attribute table stopped being cleared between
+	# statements, and every object inherited the text of the ones before it
+	# -- "hello" appeared three times and "world" once.  See
+	# src/cmd/pic/PORTING.md.
+	check 'each label appears exactly once' '1 1' \
+	    "$(grep -c 'hello' pc.tr) $(grep -c 'world' pc.tr)"
+	# Each label occurs three times on its own line -- troff needs
+	# \w'hello'u twice to centre it -- so collapse runs before comparing.
+	check 'the label goes with its own object' 'hello world' \
+	    "$(grep -o "hello\|world" pc.tr | uniq | tr '\n' ' ' | sed 's/ $//')"
+else
+	fail=$((fail+6)); echo "FAIL pic not built"
+fi
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
