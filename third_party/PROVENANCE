@@ -1,0 +1,35 @@
+Vendored upstream sources. Treat everything under this directory as READ-ONLY
+reference material: never edit in place. Use tools/import.sh to copy files into
+src/ for patching, which records per-file provenance.
+
+--------------------------------------------------------------------------------
+Research-Unix-v8/
+--------------------------------------------------------------------------------
+Upstream:   https://github.com/Alhadis/Research-Unix-v8.git
+Commit:     389623b76d5b6e195361f0705b1826b00ae14d19
+Committed:  2019-05-24 21:33:35 +1000
+Subject:    Rename licensing/usage statement
+Cloned:     2026-08-04
+Vendored:   as a plain snapshot (upstream .git removed; re-clone the commit above
+            to reproduce). Upstream is a frozen historical archive, so submodule
+            tracking buys nothing.
+
+Contents:   Research Unix Eighth Edition (Bell Labs CSRC, 1985), released by
+            The Unix Heritage Society.
+              v8/    installed system + sources (usr/src/{cmd,libc,lib,dk,netfs})
+              blit/  Blit terminal (MC68000) source
+              jerq/  AT&T DMD 5620 terminal (WE32000) source
+
+License:    See Research-Unix-v8/COPYING.pdf. Alcatel-Lucent (for Nokia Bell
+            Labs) grants NON-COMMERCIAL study/reproduction/distribution rights.
+            This repository must remain non-commercial. New code written here
+            (shim, ARM64 backend, Swift app) may be MIT-licensed on top, but the
+            combined work inherits the upstream restriction.
+
+Local modification (one, deliberate and documented):
+            macOS's default filesystem is case-insensitive, so 13 groups of
+            upstream paths differing only by case collided on checkout. Every
+            shadowed file was recovered byte-for-byte from the git object store
+            and written alongside its sibling with a __case2 / __case3 suffix.
+            See Research-Unix-v8/CASE_COLLISIONS.md for the full mapping.
+            No upstream file content was altered.

@@ -1,0 +1,18 @@
+# Build outputs
+/build/
+/rootfs/
+*.o
+*.a
+*.i
+*.out
+
+# Stage-0 host-built tools
+/tools/bin/
+
+# macOS
+.DS_Store
+
+# Xcode (Phase 5)
+xcuserdata/
+*.xcuserstate
+DerivedData/
