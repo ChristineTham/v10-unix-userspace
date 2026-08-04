@@ -51,12 +51,12 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff tbl devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 sh nroff troff tbl v8yacc eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh nroff troff tbl
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c sh nroff troff tbl v8yacc eqn
 
 test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 test-cpp: cpp
@@ -77,7 +77,7 @@ test-waveb: rootfs libv8sys crt0 libv8c
 	@$(ROOT)tests/waveb/run.sh
 test-sh: sh
 	@$(ROOT)tests/sh/run.sh
-test-wavec: nroff troff tbl
+test-wavec: nroff troff tbl eqn
 	@$(ROOT)tests/wavec/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
@@ -444,6 +444,55 @@ $(BUILD)/tbl/%.o: $(TBLSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
 $(TBL_OBJ): $(TBLSRC)/t..c
 
 # ---------------------------------------------------------------------------
+# yacc and eqn.
+#
+# V8's OWN yacc, not the host's: modern bison emits #elif, which Reiser's 1978
+# cpp does not understand, so y.tab.c would not even preprocess.  V8's accepts
+# the `={ ... }` action syntax natively too, so no YACCFIX is needed.  It needs
+# yaccpar at /usr/lib, which the shim resolves inside $V8ROOT.
+# ---------------------------------------------------------------------------
+YACCSRC = $(SRC)/cmd/yacc
+YACC_OBJ = $(patsubst %,$(BUILD)/yacc/%.o,y1 y2 y3 y4)
+
+v8yacc: $(BUILD)/yacc/yacc
+$(BUILD)/yacc/yacc: $(YACC_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                    $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(YACC_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+$(BUILD)/yacc/%.o: $(YACCSRC)/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
+	@mkdir -p $(BUILD)/yacc
+	$(V8CCRUN) -I$(YACCSRC) -c -o $@ $<
+
+EQNSRC = $(SRC)/cmd/eqn
+EQN_NAMES = main diacrit eqnbox font fromto funny glob integral input lex \
+            lookup mark matrix move over paren pile shift size sqrt text
+EQN_OBJ = $(patsubst %,$(BUILD)/eqn/%.o,$(EQN_NAMES)) $(BUILD)/eqn/eqn.o
+
+eqn: $(BUILD)/eqn/eqn
+$(BUILD)/eqn/eqn: $(EQN_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                  $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(EQN_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+
+# The grammar, run through V8's yacc.  e.def is y.tab.h, which the other files
+# include for the token numbers.
+$(BUILD)/eqn/y.tab.c $(BUILD)/eqn/e.def: $(EQNSRC)/eqn.y v8yacc
+	@mkdir -p $(BUILD)/eqn
+	cd $(BUILD)/eqn && V8ROOT=$(ROOTFS) $(BUILD)/yacc/yacc -d $(EQNSRC)/eqn.y
+	@cp $(BUILD)/eqn/y.tab.h $(BUILD)/eqn/e.def
+
+$(BUILD)/eqn/eqn.o: $(BUILD)/eqn/y.tab.c
+	$(V8CCRUN) -I$(BUILD)/eqn -I$(EQNSRC) -c -o $@ $(BUILD)/eqn/y.tab.c
+$(BUILD)/eqn/%.o: $(EQNSRC)/%.c $(BUILD)/eqn/e.def $(A64BUILD)/v8ccom | rootfs
+	@mkdir -p $(BUILD)/eqn
+	$(V8CCRUN) -I$(BUILD)/eqn -I$(EQNSRC) -c -o $@ $<
+$(EQN_OBJ): $(EQNSRC)/e.h
+
+# ---------------------------------------------------------------------------
 # rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.
 # ---------------------------------------------------------------------------
 ROOTFS = $(ROOT)rootfs
@@ -467,6 +516,8 @@ rootfs: cpp v8ccom v8cc
 	@# /usr/lib/... inside $V8ROOT -- see rootpath() in shim/v8sys/syscall.c.
 	@mkdir -p $(ROOTFS)/usr/lib/term
 	@cp $(SRC)/cmd/troff/term/tab.* $(ROOTFS)/usr/lib/term/ 2>/dev/null || true
+	@# yaccpar, which V8's yacc opens as /usr/lib/yaccpar.
+	@cp $(SRC)/cmd/yacc/yaccpar $(ROOTFS)/usr/lib/ 2>/dev/null || true
 	@$(MAKE) --no-print-directory devtables
 
 # troff's device tables.  makedev compiles the plain-text description in

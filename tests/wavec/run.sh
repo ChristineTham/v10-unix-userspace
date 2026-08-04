@@ -63,5 +63,26 @@ else
 	fail=$((fail+3)); echo "FAIL tbl not built"
 fi
 
+
+# eqn, built with V8's OWN yacc -- modern bison emits #elif, which Reiser's cpp
+# does not understand.
+EQN=$ROOT/build/stage0/eqn/eqn
+if [ -x "$EQN" ]; then
+	printf '.EQ\nx sup 2 + y sup 2 = z sup 2\n.EN\n' > eq.in
+	"$EQN" eq.in > eq.tr 2>eq.err
+	check 'eqn is silent on stderr' '' "$(cat eq.err)"
+	check 'eqn emits the .EQ block' '.EQ' "$(grep -m1 '^\.EQ' eq.tr)"
+	# the superscript shift: this was an infinity until the caller-save area
+	# stopped overlapping the outgoing-argument slots.
+	check 'eqn computes the superscript shift' '3' \
+	    "$(grep -c "v'-0\.4" eq.tr)"
+	# nroff overstrikes italics with backspaces, so keep only the graphic
+	# characters rather than trying to match the control ones.
+	check 'eqn | nroff sets the equation' 'x2+y2=z2' \
+	    "$("$NROFF" eq.tr | tr -dc 'a-zA-Z0-9+=')"
+else
+	fail=$((fail+4)); echo "FAIL eqn not built"
+fi
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

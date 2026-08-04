@@ -166,49 +166,57 @@ vararg, which lands on the stack rather than in x7 — prints correctly. That wa
 the best remaining structural guess, since eqn's crashing call has exactly that
 shape.
 
-## Where this stands
+## It runs
 
-Measured at the call site in `shift.c:51`:
-
-```
-CALL sh/r1/r2 bfd99999a0000000 fff0000000000000 7ff0000000000000
-              shval = -0.4     REL(shval) = -inf  REL(-shval) = +inf
-```
-
-and measured *inside* `REL`, one call earlier:
+`eqn | nroff` sets an equation:
 
 ```
-REL ps/eff 0000000a 0000000a m=bfd99999a0000000     ps=10, EFFPS=10, m=-0.4
+.EQ
+x sup 2 + y sup 2 = z sup 2
+.EN
+        ->   x2+y2=z2      (with the superscripts overstruck)
 ```
 
-So **`REL` receives the right argument, computes with the right divisor, and
-returns an infinity.** `m *= (float)10/10` is `m * 1.0`; nothing in the body can
-produce ±inf. The value is lost at the return, or in how the caller reads it.
+## The bug: the save area overlapped the argument slots
 
-Written out on its own — same body, same signature, same call shape — it works:
+Each call-nesting depth gets one block holding both the caller-saved registers
+and the eight scratch slots arguments 0–7 pass through. The block was 128 bytes;
+the saves need `(REGVAR + NFREG) * 8` = 120, and `argslot()` places argument 0 at
+`sbase + SAVEBLK - 64`, which is 56 bytes *inside* them.
 
-```c
-double RELx(m, ps) double m; int ps;
-{
-	m *= (float) gsize / ps;
-	if (m <= 0.001 && m >= -0.001) return 0; else return m;
-}
-	-> a=-0.4000 b=0.4000 c=0.0000
+So any call made with two or more live FP registers wrote a saved register over
+its own first argument:
+
+```
+	str x9,  [sp, #320]     ; EFFPS's argument
+	str d17, [sp, #320]     ; a saved FP register, same slot
+	ldr x0,  [sp, #320]     ; loads the register, not the argument
 ```
 
-Both of the obvious differences are eliminated:
+`REL()` calls `EFFPS(ps)` with two doubles live, so `EFFPS` received a bit
+pattern where an int should have been, the division produced ±infinity, and
+`ecvt` then walked off its buffer generating digits for it.
 
-1. **`EFFPS` is a function, not a macro** — `main.c:298`, implicit `int` return,
-   defined before its uses. No ternary, nothing unusual about the expression.
-2. **`shift.c` does include `e.h`**, which has `extern double EM(), REL();`, so
-   the declaration *is* in scope at the call and `gencall` should read d0.
+`SAVEBLK` is now computed from the register counts rather than written as a
+literal, so it cannot drift again. Regression test in `tests/libv8c/run.sh`.
 
-So the remaining move is to stop reasoning and read the generated code: compile
-`shift.c` with `-S` and look at the two `bl _REL` sites — specifically whether
-the result is taken from `d0` or from `x0`, and whether anything between the
-call and the `printf` argument slot touches it. Compare against the standalone
-version above, which works; the diff between those two pieces of assembly is the
-bug.
+## How it was found
 
-That is a five-minute job and it is the right next step. Everything cheaper has
-been tried.
+Everything cheap was eliminated first, and none of it was the bug: `REL` and
+`EM` are properly declared `double`; returning an int constant from a `double`
+function works; the float/double round trip works; nine-argument `printf` works,
+with a double in the spilled position; `EFFPS` is a function not a macro; `e.h`
+*is* in scope at the call. Then measurement, in order:
+
+```
+CALL sh/r1/r2 bfd99999a0000000 fff0000000000000    shval = -0.4, REL = -inf
+REL ps/eff    0000000a 0000000a m=bfd99999a0000000  ps=10, EFFPS=10, m=-0.4
+```
+
+— `REL` receiving the right argument, computing with the right divisor, and
+returning an infinity. Nothing in its body can do that, so the fault had to be
+in the code around it, and reading the generated assembly for `_REL` showed the
+two `str`s to `[sp,#320]` immediately.
+
+Same lesson as `tbl`, one day later: **the reasoning rounds cost hours and the
+disassembly cost minutes.** Read the generated code earlier.

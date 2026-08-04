@@ -322,6 +322,33 @@ main()
 }
 EOF
 
+
+# --- a call with several live FP registers ----------------------------------
+# The caller-save area and the eight scratch slots that arguments 0-7 pass
+# through share one block per call-nesting depth, and the block was 56 bytes too
+# small: argslot() puts argument 0 at `sbase + SAVEBLK - 64`, which with the old
+# SAVEBLK of 128 landed on the ninth save onward.  So a call made with two or
+# more live FP registers wrote a saved register over its own first argument.
+#
+# eqn found it.  REL() calls EFFPS(ps) with two doubles live, got a bit pattern
+# where an int should have been, divided by it, and handed printf an infinity.
+run 'call with live FP registers' 'r=2 d=1.5 e=2.5 f=3.5' <<'EOF'
+#include <stdio.h>
+int takesint(n) int n; { return n * 2; }
+double f3(a, b, c) double a, b, c; { return a + b + c; }
+main()
+{
+	double d, e, g;
+	int r;
+
+	d = 1.5; e = 2.5; g = 3.5;
+	/* three doubles live across a call taking an int */
+	r = takesint(1);
+	printf("r=%d d=%.2g e=%.2g f=%.2g\n", r, d, e, g);
+	fflush(stdout); return 0;
+}
+EOF
+
 echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

@@ -1606,7 +1606,28 @@ gen(p, want)
 /* See the note above gencall(): sp never moves inside a function body, so both
  * the outgoing-argument area and the caller-save blocks are fixed offsets. */
 #define OUTAREA	256		/* up to 32 stack arguments */
-#define SAVEBLK	128		/* 7 scratch + 8 FP registers, rounded */
+
+/*
+ * One block per call-nesting depth, holding BOTH the caller-saved registers and
+ * the eight scratch slots that arguments 0-7 pass through.  Its size has to
+ * follow from the register counts, because a literal drifts:
+ *
+ *	saves       (REGVAR + NFREG) * 8   = 120 bytes, at the bottom
+ *	arg scratch 8 * 8                  =  64 bytes, at the top
+ *
+ * It was 128, which is 56 bytes short.  argslot() places argument 0 at
+ * `sbase + SAVEBLK - 64`, so with SAVEBLK 128 that is sbase+64 -- straight
+ * through the ninth save onward.  A call with two or more live FP registers
+ * therefore wrote a saved register over its own first argument:
+ *
+ *	str x9,  [sp, #320]     ; EFFPS's argument
+ *	str d17, [sp, #320]     ; a saved FP register, same slot
+ *	ldr x0,  [sp, #320]     ; loads the register, not the argument
+ *
+ * eqn's REL() called EFFPS(ps) with two doubles live and got a bit pattern
+ * where an int should be, which divided to an infinity and killed ecvt.
+ */
+#define SAVEBLK	(((REGVAR + NFREG) * 8 + 64 + 15) & ~15)
 
 /* How many arguments does this CM-linked list hold? */
 static int
