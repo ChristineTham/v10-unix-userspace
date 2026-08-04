@@ -131,9 +131,16 @@ echo "libv8c: $pass passed, $fail failed"
 #
 #	p1 = &buf[ndigits];  if (eflag==0) p1 += r2;
 #
-# -- pointer arithmetic on a static array with an int index. Given that the
-# whole malloc bug turned out to be PTRTYPE narrowing pointer arithmetic, check
-# that first: compile just those two lines and read the types with V8DBG=1.
+# -- pointer arithmetic on a static array with an int index. That was the
+# obvious suspect, given the malloc bug was PTRTYPE narrowing exactly this kind
+# of expression, and it is RULED OUT: compiled in isolation those two lines
+# give offset 7 correctly.
+#
+# So p1 is computed right and the store patterns are right, yet the += 5 lands
+# at buf[3]. That points at the state cvt() carries INTO the tail -- most
+# likely `p`, which the digit loop advances, or the r2 the integer-part loop
+# produced. Next: print p-buf, p1-buf, r2 and decpt just before the rounding
+# tail in a copy of ecvt.c and compare against the same prints under clang.
 #
 # The `*p1 += 5` and `*p++ = c` patterns themselves were tested in isolation and
 # compile correctly, so it is the address computation, not the store.
