@@ -1,6 +1,7 @@
 # Porting Research Unix V8 Userspace to macOS (ARM64)
 
-**Status:** scoping complete, implementation not started.
+**Status:** Phases 0, 1a, 1b, 1c and 2a complete and tested; 2b in progress.
+See "Current state" at the bottom.
 **Project arc:** V8 first (this plan), then V9, then V10 — restoring the original project goal of the last Research Edition, with V8 as the beachhead where the lessons are cheapest.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
 **Source of truth:** `third_party/Research-Unix-v8/` (TUHS release, Alhadis git mirror; case-collision recoveries documented in `third_party/Research-Unix-v8/CASE_COLLISIONS.md`).
@@ -279,3 +280,41 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 3. Drop `c2`/`-O` (default: yes).
 4. Host-tool exception list as in §5/§7 (default: as written).
 5. Blit Tier 1 scope: app absorbs mux role rather than porting host `mux` (default: yes).
+
+
+---
+
+## Current state (updated as work lands)
+
+| Phase | State | Evidence |
+|---|---|---|
+| 0 repo hygiene | done | `third_party/` vendored with provenance, `tools/import.sh` |
+| 1a stage-0 | done | `cpp` 13/13 |
+| 1b ARM64 back end | done | `v8ccom` 62/62 — arithmetic, control flow, pointers, arrays, globals, statics, recursion, structs, bitfields, floats, 12-argument calls |
+| 1c driver | done | `v8cc` 8/8, `make rootfs` |
+| 2a libv8sys | done | `v8sys` 44/44 |
+| 2b V8 libc | started | crt0 + stub layer written; one linkage problem open, see `shim/NOTES.md` |
+| 3A–3C waves | not started | |
+| 4 grovelers | not started | |
+| 5 blitterm | not started | |
+
+`make test` runs everything.
+
+### What actually works today
+
+V8's own preprocessor and compiler, with a new ARM64 back end, driven by V8's
+own `cc`, produce object code that assembles, links and runs correctly on Apple
+Silicon. Everything above the code generator is untouched 1985 Bell Labs source.
+
+### The next thing to do
+
+`shim/NOTES.md` — make the shim reach the kernel without naming the libc
+functions it implements, so a V8 program can link against it as libc. That
+unblocks the rest of Phase 2b, and 2b unblocks every wave after it.
+
+### Deliberate gaps in the back end
+
+Switches are linear compare chains (correct, but dense switches in troff and
+the shell want a jump table). Debug symbols are stubbed; when they arrive they
+should be DWARF through the host assembler, not VAX stabs. The ELF/Linux path
+is written but untested.
