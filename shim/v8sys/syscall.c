@@ -177,6 +177,36 @@ static const char *v8dirs[] = {
 	"/bin/", "/usr/bin/", 0
 };
 
+/*
+ * Where the V8 world is.
+ *
+ * $V8ROOT first, then a root compiled in at build time.  The env var alone was
+ * a silent fall-through of exactly the kind this port keeps paying for: with it
+ * unset, rootpath() quietly returned the HOST path, so a V8 binary run outside
+ * the launcher operated on the real filesystem and looked like it was working.
+ * That is the same shape as the variadic libc gaps -- a missing thing filled in
+ * by the host, discovered only by its consequences.
+ *
+ * V8ROOT_DEFAULT is stamped in by the Makefile (and by `make install`, at the
+ * install prefix).  An installed binary therefore knows its own world without
+ * anyone having to remember to export anything, and the env var stays as the
+ * override that lets a second tree be tested.
+ */
+#ifndef V8ROOT_DEFAULT
+#define V8ROOT_DEFAULT ""
+#endif
+
+static char *
+v8root(void)
+{
+	static const char dflt[] = V8ROOT_DEFAULT;
+	char *r = v8sys_getenv("V8ROOT");
+
+	if (r != 0 && *r != '\0') return (r);
+	if (dflt[0] != '\0') return ((char *)dflt);
+	return (0);
+}
+
 static char *
 rootpath(char *p)
 {
@@ -193,7 +223,7 @@ rootpath(char *p)
 		if (d[k] == '\0') break;		/* matched a V8 directory */
 	}
 	if (v8dirs[i] == 0) return (p);
-	if ((root = v8sys_getenv("V8ROOT")) == 0) return (p);
+	if ((root = v8root()) == 0) return (p);
 
 	for (n = 0; root[n] && n < (int)sizeof buf - 2; n++) buf[n] = root[n];
 	for (m = 0; p[m] && n < (int)sizeof buf - 1; m++) buf[n++] = p[m];
@@ -397,7 +427,7 @@ int v8s_chroot(char *p)                  { RET(rawsys1(SYS_chroot, (long)p)); }
 static int
 injail(char *p)
 {
-	char *root = v8sys_getenv("V8ROOT");
+	char *root = v8root();
 	int i;
 
 	if (root == 0 || *root == '\0') return (0);

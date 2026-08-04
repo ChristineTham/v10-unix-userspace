@@ -381,8 +381,15 @@ $(BUILD)/v8sys/libv8sys.a: $(SHIM_OBJ)
 # -fno-stack-protector and -fno-stack-check: both emit calls to libc helpers
 # (___stack_chk_fail, ___chkstk_darwin), and the whole point of the shim is that
 # it names no libc symbol -- see shim/v8sys/rawsys.h.
+# V8ROOT_DEFAULT stamps the world's location into every V8 binary, so one run
+# without $V8ROOT set does not silently operate on the real filesystem -- see
+# v8root() in shim/v8sys/syscall.c.  In the build tree that is $(ROOTFS); `make
+# install` overrides it with the install prefix.  The env var still wins, which
+# is what lets a second tree be tested against the same binaries.
+V8ROOT_DEFAULT ?= $(ROOTFS)
 SHIMFLAGS = -std=gnu99 -Wall -Wno-unused-function \
-            -fno-stack-protector -fno-stack-check
+            -fno-stack-protector -fno-stack-check \
+            -DV8ROOT_DEFAULT='"$(V8ROOT_DEFAULT)"'
 
 $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
 	@mkdir -p $(BUILD)/v8sys
@@ -512,7 +519,7 @@ $(CCSEED): $(SRC)/cmd/cc.c
 v8cc: $(BUILD)/cc/v8cc
 $(BUILD)/cc/cc.o: $(SRC)/cmd/cc.c $(SEED_DEPS)
 	@mkdir -p $(BUILD)/cc
-	$(V8CCSEED) -c -o $@ $<
+	$(V8CCSEED) $(V8CC_INC) -c -o $@ $<
 $(BUILD)/cc/v8cc: $(BUILD)/cc/cc.o $(V8DEPS)
 	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/cc/cc.o $(V8LIBS)
 	@echo "built $@"

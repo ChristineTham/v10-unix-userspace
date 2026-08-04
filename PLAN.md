@@ -254,11 +254,25 @@ convenience. Host directories are an explicit opt-in.
    Creation has to resolve the parent directory instead. Invisible until
    someone redirects output into `/tmp` and finds it on the Mac.
 
-3. **`$V8ROOT` must not depend on the environment.** It is `getenv` today, and
-   when unset `rootpath()` silently returns the host path — so a V8 binary run
-   outside the launcher quietly operates on the real filesystem. Same silent
-   fall-through class as the variadic libc gaps. Needs a compiled-in default
-   stamped at install (`-DV8ROOT_DEFAULT`), with the env var as override.
+3. **`$V8ROOT` no longer depends on the environment — in the shim.** `v8root()`
+   in `shim/v8sys/syscall.c` takes `$V8ROOT` first and falls back to a root
+   compiled in at build time (`-DV8ROOT_DEFAULT`, set to `$(ROOTFS)` by the
+   Makefile and to the prefix by `make install`). Before this, an unset
+   `$V8ROOT` meant `rootpath()` silently returned the HOST path and a V8 binary
+   run outside the launcher operated on the real filesystem while appearing to
+   work — the same silent fall-through class as the variadic libc gaps.
+   `cat /usr/lib/yaccpar` now works with `$V8ROOT` unset.
+
+   **The driver still needs `$V8ROOT`, and that is a separate defect.** The same
+   `-DV8ROOT_DEFAULT` was tried on `cc.c` and does not survive: clang bakes it
+   into `cc-seed` correctly, and v8cc drops it — the string is present in
+   `cc-seed` and absent from the `cc.o` v8cc produces from identical source. The
+   driver rewrites `-D` into `-X` for cpp and the quotes are lost somewhere in
+   that path. **This is a v8cc bug worth finding**, not just a driver
+   inconvenience: any program compiled with a quoted `-D` is affected. It is
+   deferred rather than guessed at, and the consequence is bounded — with
+   `$V8ROOT` unset the driver fails loudly ("Can't find include file stdio.h")
+   rather than silently using host headers.
 
 4. **`/etc` is not decoration.** `getpw.c`, `getlogin.c` and `ttyslot.c` read
    it. Upstream ships genuine V8 `group`, `fstab`, `hosts` and `ttys`, which can
