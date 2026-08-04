@@ -32,6 +32,12 @@ YACCFIX = sed 's/={/{/g'
 # V8 libc internals that host libc lacks.  Scaffolding; gone in Phase 2b.
 STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 
+# stubs.c is EXCLUDED here on purpose.  It defines open/read/write with their V8
+# names, which collide with the host functions the rest of the shim calls -- see
+# shim/NOTES.md.  It is compiled only into the copy the V8 world links against
+# with -nostartfiles, never into anything that also uses host libc.
+SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c,$(wildcard $(ROOT)shim/v8sys/*.c))
+
 .PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys test test-cpp test-v8ccom test-v8cc test-v8sys clean distclean
 all: stage0
 stage0: cpp v8ccom v8cc libv8sys rootfs
@@ -46,7 +52,7 @@ test-v8cc: rootfs
 test-v8sys: $(BUILD)/v8sys/test
 	@$(BUILD)/v8sys/test
 
-$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(wildcard $(ROOT)shim/v8sys/*.c)
+$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable -o $@ $^
 
@@ -161,7 +167,6 @@ $(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
 # libv8sys -- the shim standing in for the VAX kernel.  Modern C, clang-built:
 # it is the seam, not authentic V8 code.
 # ---------------------------------------------------------------------------
-SHIM_SRC = $(wildcard $(ROOT)shim/v8sys/*.c)
 SHIM_OBJ = $(patsubst $(ROOT)shim/v8sys/%.c,$(BUILD)/v8sys/%.o,$(SHIM_SRC))
 
 libv8sys: $(BUILD)/v8sys/libv8sys.a
