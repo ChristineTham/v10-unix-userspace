@@ -150,20 +150,33 @@ cisreg(t)			/* may an auto of type t live in a register? */
 
 opbigsz(op)
 {
-	/* the size below which we do not shrink ops */
-	switch (op) {
-	default:
-		return (SZINT);
-
-	case PLUS:
-	case MINUS:
-	case OR:
-	case AND:
-	case ER:
-	case COMPL:
-	case UNARY MINUS:
-		return (SZCHAR);
-	}
+	/*
+	 * The size below which pass 1 may NOT shrink an operation.
+	 *
+	 * The VAX answered SZCHAR for the bitwise and additive operators,
+	 * because it had byte-wide forms of all of them and, crucially, because
+	 * a pointer was 32 bits there -- exactly as wide as an int -- so
+	 * narrowing an expression to int width never lost one.
+	 *
+	 * Under LP64 it does.  V8's malloc hides a busy flag in the low bit of
+	 * a pointer:
+	 *
+	 *	#define clearbusy(p) (union store *)((INT)(p)&~BUSY)
+	 *
+	 * With SZCHAR here, pass 1 decided that AND could be done narrow and
+	 * emitted a 4-byte load for the pointer --
+	 *
+	 *	ldrsw x9, [x9]      instead of      ldr x9, [x9]
+	 *
+	 * -- silently truncating it.  malloc then walked its free list through
+	 * a half pointer and faulted in ialloc.
+	 *
+	 * Returning SZLONG disables the narrowing entirely.  It costs a little
+	 * code size on byte and short arithmetic, where AArch64 would have been
+	 * happy with a w-form; correctness first, and the host assembler still
+	 * picks the narrow encoding where the operands allow it.
+	 */
+	return (SZLONG);
 }
 
 branch(n)			/* branch to label n, or return */

@@ -76,40 +76,45 @@ echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
 # ---------------------------------------------------------------------------
-# KNOWN BROKEN: malloc hangs.
+# KNOWN BROKEN: malloc faults on a static pointer initialiser.
 #
-# V8's malloc is Ritchie's circular first-fit allocator, and it stores a busy
-# flag in the low bit of a pointer:
+# The fault is at ialloc+160, reading 0x10fb8:
 #
-#	#define testbusy(p) ((INT)(p)&BUSY)
+#	<+144>: add   x9, x9, #0x8     ; allocb
+#	<+148>: ldr   x9, [x9]         ; p = allocb          <- 8 bytes, correct
+#	<+160>: ldrsw x9, [x9]         ; p->ptr
 #
-# with `#define INT int`. Under LP64 that truncated every pointer to 32 bits.
-# The source anticipates this exactly -- "INT is integer type to which a
-# pointer can be cast" -- so INT and ALIGN are now long, which is right and
-# necessary but not sufficient: it still loops.
+# 0x10fb8 is `alloca`'s LINK-TIME address. malloc has
 #
-# It does NOT hang -- that was the first reading and it was wrong. Instrumenting
-# malloc with write(2) traces shows it reach ialloc and then fault:
+#	static union store alloca;
+#	static union store *allocb = &alloca;
 #
-#	trace: A B C            (entry, needs space, about to ialloc)
-#	EXC_BAD_ACCESS (code=1, address=0x10fb8) at ialloc+160
+# and the generated data is right --
 #
-# 0x10fb8 is ~69 KB, far below any address our sbrk arena can be at, so a
-# pointer is arriving in ialloc corrupted rather than the free-list walk failing
-# to terminate.
+#	_allocb: .quad _alloca
 #
-# Already done and worth keeping regardless:
-#   - INT and ALIGN widened to long (the source asks for this in so many words:
-#     "INT is integer type to which a pointer can be cast").
-#   - The sbrk arena is now mmap'd ABOVE the program's data segment. V8's malloc
-#     sorts its free list by address and asserts the ordering as it walks
-#     (ASSERT(s>p) in ialloc); its header promises only a "noncontiguous, but
-#     monotonically linked, arena", which on a real Unix held because brk only
-#     ever moved up from bss. An unhinted mmap can land below the static block
-#     malloc starts from, which would break the ordering.
+# -- but in a position-independent image that .quad needs a rebase applied at
+# load time, and the value being read back is the unslid one. So the suspect is
+# no longer malloc or the arena: it is that our static pointer initialisers are
+# not being relocated, which would affect every V8 program with an initialised
+# pointer in static storage.
 #
-# Next step: disassemble ialloc+160 and identify which pointer is bad -- the
-# `q` handed in, or `r = q + (nbytes/WORD) - 1`. `nbytes` is declared `unsigned`
-# (32-bit) while WORD is a size_t, so the promotion in that expression is worth
-# checking first.
-# ---------------------------------------------------------------------------
+# Next step: check whether the .o carries a relocation for that .quad
+# (`otool -r`), and whether linking without -nostdlib -e changes the behaviour.
+# If the relocation is missing, the fix is in how gencode.c emits INIT for an
+# address constant; if it is present but unapplied, it is a link-flags problem.
+#
+# THREE REAL BUGS WERE FIXED GETTING HERE, all LP64 truncation of pointers:
+#
+#  - opbigsz() returned SZCHAR for the bitwise operators, as the VAX did,
+#    letting pass 1 narrow an AND to int width. On a VAX a pointer was 32 bits
+#    so that was safe; here it emitted `ldrsw` for a pointer load. Now SZLONG.
+#  - INT and ALIGN in malloc.c were `int`. The source names both, and BUSY, as
+#    macros a different implementation must redefine, and says outright that
+#    "INT is integer type to which a pointer can be cast".
+#  - BUSY was a plain int, so `~BUSY` was an int and pulled the AND narrow
+#    again by the other route. Now 1L.
+#
+# The sbrk arena is also now mapped above the program data segment, because
+# V8's malloc sorts its free list by address and its header promises only a
+# "noncontiguous, but monotonically linked, arena".

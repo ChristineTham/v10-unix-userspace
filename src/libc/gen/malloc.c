@@ -45,7 +45,20 @@ char *s;
 #define NALIGN 1
 #define WORD sizeof(union store)
 #define BLOCK 1024
-#define BUSY 1
+/*
+ * BUSY must be a LONG constant, not an int.
+ *
+ * clearbusy() is `((INT)(p) & ~BUSY)`.  With BUSY as a plain int, `~BUSY` is an
+ * int and pass 1 decides the AND can be done at int width -- emitting a 4-byte
+ * `ldrsw` for the pointer load instead of an 8-byte `ldr`, and silently
+ * truncating every pointer in the free list.  malloc then walked half a pointer
+ * and faulted in ialloc.
+ *
+ * BUSY is one of the five macros the header at the top of this file names as
+ * needing redefinition on a different implementation, alongside INT and ALIGN,
+ * so this is the intended knob rather than a workaround.
+ */
+#define BUSY 1L
 #define NULL 0
 #define testbusy(p) ((INT)(p)&BUSY)
 #define setbusy(p) (union store *)((INT)(p)|BUSY)
