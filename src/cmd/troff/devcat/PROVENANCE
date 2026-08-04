@@ -1,0 +1,16 @@
+# Provenance for src/cmd/troff/devcat
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+5546dba49a8ee17df1ef6fdc19491afe852ada6e  v8/usr/src/cmd/troff/devcat/install
+636721a9f67bd8604d8e33f216238d7b8e2dac05  v8/usr/src/cmd/troff/devcat/DESC
+bc7c958740041186230fc11fc6e2158e6165396b  v8/usr/src/cmd/troff/devcat/R
+d8fa980fcd93d9ceeec73b8a9e40ee422ef3e05b  v8/usr/src/cmd/troff/devcat/I
+e895b112b27d2284d1a6aba40e11602baa111890  v8/usr/src/cmd/troff/devcat/G
+69b92f5bfad69842bf4b34c654200f86ddb28ffd  v8/usr/src/cmd/troff/devcat/S
+06de426135b91999d1e0fae253d2ce8f9dcfb76a  v8/usr/src/cmd/troff/devcat/README
+e895b112b27d2284d1a6aba40e11602baa111890  v8/usr/src/cmd/troff/devcat/H
+622ea09c73b7574067181bf66521af216b217a85  v8/usr/src/cmd/troff/devcat/CW
+446a1ae50b60610bd9239014bacc08d60ab5f72d  v8/usr/src/cmd/troff/devcat/B

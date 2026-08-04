@@ -1,0 +1,11 @@
+# Provenance for src/cmd/troff/term
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+61bcf45d8c4fb80bbb0fee938b30a8d54074a465  v8/usr/src/cmd/troff/term/tab.think
+e0edf50b4d0041cf7f7c0944743643f3c748cebd  v8/usr/src/cmd/troff/term/tab.37
+1fce840b4a22df33e1feb88e421d90e018d3e1ad  v8/usr/src/cmd/troff/term/tab.lp
+313fb2993b2eec4124650069b08a6945f5e64f37  v8/usr/src/cmd/troff/term/tab.450-12
+c9977f61bb27edcc5dd9458485694ac2d82b8af9  v8/usr/src/cmd/troff/term/tab.450

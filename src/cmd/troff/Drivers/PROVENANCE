@@ -1,0 +1,13 @@
+# Provenance for src/cmd/troff/Drivers
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+1029ea8c6bde99d0ac72cbd36b021aeb2aa1a128  v8/usr/src/cmd/troff/Drivers/dcat.c
+67fed34552c93249473b4596ab81ea298266d941  v8/usr/src/cmd/troff/Drivers/makefile
+e2bb98e0c95b012d6da5a6c94437b2485afebe4e  v8/usr/src/cmd/troff/Drivers/README
+cf51724695685a92e4027e0dcd42b0013ccdb6ed  v8/usr/src/cmd/troff/Drivers/dsort.c
+4d4d207e3937c0faae797d32fbd437ec2faf66e9  v8/usr/src/cmd/troff/Drivers/daps.c
+c94cd8dd9e356ee10f32fdbcf5e06613861104cc  v8/usr/src/cmd/troff/Drivers/DESC.8400
+004e4970309b87e1da61dc138546ff9ee461eb35  v8/usr/src/cmd/troff/Drivers/d8400.c

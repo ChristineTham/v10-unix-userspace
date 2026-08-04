@@ -1,0 +1,24 @@
+# Provenance for src/cmd/troff/devi10
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+fc212b4ee5728d7ffdd28526f3dc74f2872b77d0  v8/usr/src/cmd/troff/devi10/PB
+6e4a36d27121bc41cd9101d865253285981bd4ff  v8/usr/src/cmd/troff/devi10/HK
+4b01f2a98982135c20579e8e5af925abab5031ff  v8/usr/src/cmd/troff/devi10/jim.recover
+5047b5b5f5b1377965b32735c2f662f55fd3dfb6  v8/usr/src/cmd/troff/devi10/DESC
+a5637bc171a3322b44b5a0f939d333863341c399  v8/usr/src/cmd/troff/devi10/LINKFILE
+d53f24909f5b21bc335d8ce9f430a4b628e1d9d4  v8/usr/src/cmd/troff/devi10/R
+301ffdbb08528625e0d25217041f12702fa83cf8  v8/usr/src/cmd/troff/devi10/I
+2d90566a4b15bb92fb06c254f1f02a8415a50696  v8/usr/src/cmd/troff/devi10/S
+8d1f4388fb1bc2c83dd2f38fff0d537317352cbb  v8/usr/src/cmd/troff/devi10/README
+43de6dc9e5f5f34c081ca389a865a388a6034609  v8/usr/src/cmd/troff/devi10/H
+e300ae6a64bddf805935731fe2402bd078ffcf32  v8/usr/src/cmd/troff/devi10/makefonts.c
+a0016a3d348f5881241fa969a7f1e5c1517d9e0f  v8/usr/src/cmd/troff/devi10/PI
+d2609d33b55dd741c64c151611d53e0c9a7f55e5  v8/usr/src/cmd/troff/devi10/FONTCHANGES
+6a6d8c44d3edd8ff0c728ae7eb5146f2bb6a4148  v8/usr/src/cmd/troff/devi10/PO
+0f4301dcb0747db4c50e001576af823174a3e313  v8/usr/src/cmd/troff/devi10/PA
+beae095ff89472a9fe0aa59cbb67c0b6cd18b4a1  v8/usr/src/cmd/troff/devi10/HI
+b1a4f7853ae7cfbf204d0517d0efad208c01ae3a  v8/usr/src/cmd/troff/devi10/CW
+a7277e110fc136d873cec3cca61abb7da661f73d  v8/usr/src/cmd/troff/devi10/B

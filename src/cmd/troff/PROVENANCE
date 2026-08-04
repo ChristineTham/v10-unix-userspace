@@ -1,0 +1,34 @@
+# Provenance for src/cmd/troff
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+4af612cee38a6050eda7d07c4404c68b54c36f6e  v8/usr/src/cmd/troff/ta.c
+658407b74136a9711e3d32dadc72998c13be3d62  v8/usr/src/cmd/troff/tdef.h
+ce1704f63f6e04d72ae189ecced6a7a761658303  v8/usr/src/cmd/troff/t10.c
+6d287f3a03a48224afdd24e9466a5b90348de0a4  v8/usr/src/cmd/troff/makedev.c
+088244242fde4bd75bf22a6d79450c03060f4832  v8/usr/src/cmd/troff/n4.c
+717db8afd8e627ffaa76f02563e99e03cd9445e5  v8/usr/src/cmd/troff/makefile
+10dc35ed9fbcc1092fd14424f1cc7152c123f49d  v8/usr/src/cmd/troff/ni.c
+2f55bc82a470972eaa7083f0c8af02e5de5f351d  v8/usr/src/cmd/troff/t6.c
+1ff59ebe33a657d7f6c9f5556243015f59e3625f  v8/usr/src/cmd/troff/n9.c
+730242a3c1484933b8650f37c76e526a6df7b96a  v8/usr/src/cmd/troff/n3.c
+1c4c2d3848608c64d0a7bdc9b06eee2817779f56  v8/usr/src/cmd/troff/draw.c
+98838622c904ac167e8f69cd77dd22b3b9c8ab3a  v8/usr/src/cmd/troff/suftab.c
+4621a2d6a9c0078ffe52b45dac05379f1866a608  v8/usr/src/cmd/troff/dev.h
+41be23d10c0dab78aa4c21ffa495dc96c8b5010a  v8/usr/src/cmd/troff/n7.c
+cb6798941ec235ba0109fe3cae0e4cac04fb39bf  v8/usr/src/cmd/troff/README
+d2cf9057023eb35c48c006141ff8e628a5918041  v8/usr/src/cmd/troff/tc.c
+a8be7efc3d21278e5af7daa52b3faf89fb1a98c3  v8/usr/src/cmd/troff/hytab.c
+6789ff5d587336f7898ed9439fc518cda2122bbd  v8/usr/src/cmd/troff/hc.c
+bca23a46fbbdf25e3fb0dcef20138019d20d20d9  v8/usr/src/cmd/troff/tw.h
+0563e4cf4ba57f68f34733675ff80a65387b47b8  v8/usr/src/cmd/troff/n2.c
+b052447ad3c364605b718bb03ef524fb1ead27c8  v8/usr/src/cmd/troff/n8.c
+3ebd7d185a7914db9e54ce4d835e613189029f04  v8/usr/src/cmd/troff/n6.c
+36d7d7644fdf20e030d2691e072ad5f8c6544caa  v8/usr/src/cmd/troff/nii.c
+43d894bb34c65cb3ed49085b49e9438160a01945  v8/usr/src/cmd/troff/ext.h
+137a9ad32069a41a2593517130b270c37cc65071  v8/usr/src/cmd/troff/n10.c
+5240223bf4685974ebabc09ff9fa05d523fa02f9  v8/usr/src/cmd/troff/n1.c
+8d80a695555c621b7c069a55c5d64c8f0a63df39  v8/usr/src/cmd/troff/d202.c
+ddacad16de69a767055faf4d2dad60e8489895b5  v8/usr/src/cmd/troff/n5.c

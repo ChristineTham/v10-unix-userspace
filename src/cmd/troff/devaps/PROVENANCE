@@ -1,0 +1,57 @@
+# Provenance for src/cmd/troff/devaps
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+a3e8ce200a91fe84993fbb9deb5fc7d1e300f121  v8/usr/src/cmd/troff/devaps/PX
+2819ae3b6e1cb4164a7f1b983051df6084b4ddb9  v8/usr/src/cmd/troff/devaps/ASCII
+a7737c58f32bbf9dd56d472efda9cf7663e4c3d9  v8/usr/src/cmd/troff/devaps/SC
+326d8417ebefd72a3ed4707ebac651244e4de385  v8/usr/src/cmd/troff/devaps/PB
+101181e039a08da0fde394ee0ba609612a37e9ee  v8/usr/src/cmd/troff/devaps/SM
+e431f9d4a9d67083265620bedfcb3f66efa8ac9c  v8/usr/src/cmd/troff/devaps/HB
+1763e23976df9467380b3ac338265abd9416b8dc  v8/usr/src/cmd/troff/devaps/install
+3b7822514141ec8202c11c5b756b7871de63fe73  v8/usr/src/cmd/troff/devaps/HK
+0e6a5d9ddfad81ced203af9d77099f8b85dc1b63  v8/usr/src/cmd/troff/devaps/aps.h
+cc95e322ed7e52a0ebe7e5ab2617cee3b9885e9a  v8/usr/src/cmd/troff/devaps/HL
+58316d453f0aec4364914d1f64d35e26643bdc3a  v8/usr/src/cmd/troff/devaps/GS
+8ba1a6247d43b3d8a40c1c698f9de9208234ad87  v8/usr/src/cmd/troff/devaps/GI
+2525dc61f439e7e21140e0360eaa89c199c68429  v8/usr/src/cmd/troff/devaps/CW__case2
+ef7f802f1c9148416e89e342ab7580590b7f5a15  v8/usr/src/cmd/troff/devaps/MR
+2ac20712bc4a7b0ba0f96d1384b67260ea5e74c8  v8/usr/src/cmd/troff/devaps/GR
+e9b0ca88868fe88fd9a331a9b30ab0d1c544f356  v8/usr/src/cmd/troff/devaps/DESC
+c5a859b27d7d18e3784c0dd3ed8e9a49f2ec5926  v8/usr/src/cmd/troff/devaps/HX
+46e391aad6eb18e638325752e3ad6ee1ed97083a  v8/usr/src/cmd/troff/devaps/MI
+b0efdcc3305b9806cd9955f7555c7610c0de7262  v8/usr/src/cmd/troff/devaps/CI
+63ba1641ed943f925c92e620ba76ffa7fa0e8311  v8/usr/src/cmd/troff/devaps/dumpaps.c
+90c0e9a358cbf79c4582a7a38a3a0d22ff92bd46  v8/usr/src/cmd/troff/devaps/LINKFILE
+34a4baea30a51a0a00df0be2e91226fa78151981  v8/usr/src/cmd/troff/devaps/CT
+0fc82accc76f2e963fdbbeda4259784459291224  v8/usr/src/cmd/troff/devaps/TB
+b67a12d64a3578f929954fadaacf23a9052d913a  v8/usr/src/cmd/troff/devaps/KERNING
+78d913591fccba32294a3ad3f681886c3eee2619  v8/usr/src/cmd/troff/devaps/R
+15794349edbb3ba2d24432931b37f26de8b5e3ff  v8/usr/src/cmd/troff/devaps/I
+9212f16f58ed77ec8b2d76c746d28436d4d21157  v8/usr/src/cmd/troff/devaps/G
+face797dc9ab0682f25f97f8396113ebc0c62c9c  v8/usr/src/cmd/troff/devaps/S
+527751ee258d6cf3a532a55f3d1d2cb3de8932cd  v8/usr/src/cmd/troff/devaps/README
+3837a62a4a4f235c6e97dbe48d5144d90e0fced3  v8/usr/src/cmd/troff/devaps/H
+63b86ed692a450df05735fc2884c1286508d0c4c  v8/usr/src/cmd/troff/devaps/makeaps.c
+a1653ab8ceab8906a913090a19c2a94d26237f59  v8/usr/src/cmd/troff/devaps/TX
+082b36da3e8847c743e3381349412bb16aa8469a  v8/usr/src/cmd/troff/devaps/mbox
+c179a85d94f982297ba6cfda9e1ed6d4efe31955  v8/usr/src/cmd/troff/devaps/SPECIAL
+11754d705e5f5d2452fe94bf79cb4131505bcf07  v8/usr/src/cmd/troff/devaps/S1
+9ae9be99ac2802771ae0bac97ca093f5cb3c98c4  v8/usr/src/cmd/troff/devaps/PI
+6b472227f3a3480501e9ce546253c18f0a3ace1f  v8/usr/src/cmd/troff/devaps/PO
+74b8e4363ab608455b757a13a73fc3211aac3908  v8/usr/src/cmd/troff/devaps/PA
+a1b8d3b38cef43082e36951b65e9c9186332a0f9  v8/usr/src/cmd/troff/devaps/version
+729449034bed110956d140f6cbe3e7de07e36f8a  v8/usr/src/cmd/troff/devaps/MB
+aea485cf3d7f1c54b5e5c82e6601ff0701137de6  v8/usr/src/cmd/troff/devaps/GB
+6d6a8bd51c9f49e4a4887a85ae9a01e653fcc3b0  v8/usr/src/cmd/troff/devaps/BI
+237975cac36eb5f9b236318815d3944fc4d83abb  v8/usr/src/cmd/troff/devaps/HI
+aef8e10ec8e880b1098bfc5f37ce6bded9286ad5  v8/usr/src/cmd/troff/devaps/MX
+71b7ca9bb633e70444bd398bbd2590c0836196ef  v8/usr/src/cmd/troff/devaps/CX
+66bb9a66154b3a0a390592d45d4d9a6be5806db3  v8/usr/src/cmd/troff/devaps/Cw
+66da4e46a66729e9e7691f9d387e41ece882d917  v8/usr/src/cmd/troff/devaps/CE
+7567c905a7c6650bd5d4a1aa86a0142f060e7967  v8/usr/src/cmd/troff/devaps/C
+ae24500ed0afb7617418db6188dfa786567c019d  v8/usr/src/cmd/troff/devaps/awk.script
+ffb36ed5bf66b279fefaf8b7c550493c3229e5e1  v8/usr/src/cmd/troff/devaps/B
+5e82dd15117ca51172dc32ede429f594a2b2f1ae  v8/usr/src/cmd/troff/devaps/fixkern
