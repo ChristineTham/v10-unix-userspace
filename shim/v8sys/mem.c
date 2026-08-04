@@ -19,10 +19,16 @@
  * costs nothing until touched.
  */
 
-#include <sys/mman.h>
-#include <errno.h>
-#include <unistd.h>
 #include "v8sys.h"
+#include "rawsys.h"
+
+#define PROT_NONE_	0
+#define PROT_READ_	1
+#define PROT_WRITE_	2
+#define MAP_PRIVATE_	0x0002
+#define MAP_ANON_	0x1000
+#define PAGESZ		16384L	/* Apple silicon; a multiple of 4096 is safe
+				 * everywhere, and only alignment matters here */
 
 #define ARENA_SIZE	(1024L * 1024L * 1024L)
 
@@ -34,12 +40,13 @@ static char *arena_committed;	/* everything below this is readable/writable */
 static int
 arena_init(void)
 {
-	void *p;
+	long r;
 
 	if (arena_base) return (0);
-	p = mmap(0, ARENA_SIZE, PROT_NONE, MAP_PRIVATE|MAP_ANON, -1, 0);
-	if (p == MAP_FAILED) { errno = ENOMEM; return (-1); }
-	arena_base = arena_brk = arena_committed = (char *)p;
+	r = rawsys6(SYS_mmap, 0, ARENA_SIZE, PROT_NONE_,
+	    MAP_PRIVATE_|MAP_ANON_, -1, 0);
+	if (r < 0 || r == -1) { v8_errno = V8_ENOMEM; return (-1); }
+	arena_base = arena_brk = arena_committed = (char *)r;
 	arena_end = arena_base + ARENA_SIZE;
 	return (0);
 }
@@ -48,15 +55,16 @@ arena_init(void)
 static int
 commit(char *upto)
 {
-	long pagesz = sysconf(_SC_PAGESIZE);
 	char *want;
 
 	if (upto <= arena_committed) return (0);
-	want = (char *)(((unsigned long)upto + pagesz - 1) & ~(unsigned long)(pagesz - 1));
-	if (want > arena_end) { errno = ENOMEM; return (-1); }
-	if (mprotect(arena_committed, want - arena_committed,
-	    PROT_READ|PROT_WRITE) < 0)
+	want = (char *)(((unsigned long)upto + PAGESZ - 1) & ~(unsigned long)(PAGESZ - 1));
+	if (want > arena_end) { v8_errno = V8_ENOMEM; return (-1); }
+	if (rawsys3(SYS_mprotect, (long)arena_committed,
+	    want - arena_committed, PROT_READ_|PROT_WRITE_) < 0) {
+		v8_errno = V8_ENOMEM;
 		return (-1);
+	}
 	arena_committed = want;
 	return (0);
 }
@@ -66,7 +74,7 @@ v8s_sbrk(long inc)
 {
 	char *old;
 
-	if (arena_init() < 0) { v8sys_fail(); return ((char *)-1); }
+	if (arena_init() < 0) { v8_errno = V8_ENOMEM; return ((char *)-1); }
 	old = arena_brk;
 	if (inc == 0) return (old);
 	if (inc > 0) {
@@ -74,7 +82,7 @@ v8s_sbrk(long inc)
 			v8_errno = V8_ENOMEM;
 			return ((char *)-1);
 		}
-		if (commit(arena_brk + inc) < 0) { v8sys_fail(); return ((char *)-1); }
+		if (commit(arena_brk + inc) < 0) { v8_errno = V8_ENOMEM; return ((char *)-1); }
 	} else if (arena_brk + inc < arena_base) {
 		v8_errno = V8_EINVAL;
 		return ((char *)-1);
@@ -86,12 +94,12 @@ v8s_sbrk(long inc)
 int
 v8s_brk(char *addr)
 {
-	if (arena_init() < 0) return (v8sys_fail());
+	if (arena_init() < 0) { v8_errno = V8_ENOMEM; return (-1); }
 	if (addr < arena_base || addr > arena_end) {
 		v8_errno = V8_ENOMEM;
 		return (-1);
 	}
-	if (commit(addr) < 0) return (v8sys_fail());
+	if (commit(addr) < 0) { v8_errno = V8_ENOMEM; return (-1); }
 	arena_brk = addr;
 	return (0);
 }
@@ -106,4 +114,46 @@ v8sys_end(void)
 {
 	arena_init();
 	return (arena_base);
+}
+
+
+/*
+ * A minimal internal allocator for the shim itself.
+ *
+ * The shim cannot call the host's malloc -- it must name no libc function (see
+ * rawsys.h) -- and it must not call V8's malloc either, since that lives above
+ * the seam and grows the very arena managed here.  Only dir.c uses it, to hold
+ * one directory snapshot at a time, so a bump allocator with a free list of
+ * exact-size blocks is enough and cannot fragment badly in practice.
+ */
+static char *pool, *poolend;
+
+char *
+v8sys_alloc(long n)
+{
+	char *p;
+	long need = (n + 15) & ~15L;
+
+	if (pool == 0 || pool + need > poolend) {
+		long chunk = need > (1L << 20) ? need : (1L << 20);
+		long r = rawsys6(SYS_mmap, 0, chunk, PROT_READ_|PROT_WRITE_,
+		    MAP_PRIVATE_|MAP_ANON_, -1, 0);
+		if (r < 0 || r == -1) return (0);
+		pool = (char *)r;
+		poolend = pool + chunk;
+	}
+	p = pool;
+	pool += need;
+	return (p);
+}
+
+/*
+ * Freeing is a no-op.  dir.c allocates a snapshot per open directory and frees
+ * it on close; a V8 program holds a handful at once, and the pool is reclaimed
+ * wholesale when the process exits.  Tracking blocks here would be more code
+ * than the waste it saves.
+ */
+void
+v8sys_free(char *p)
+{
 }

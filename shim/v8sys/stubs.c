@@ -130,6 +130,13 @@ WRAP(setpgrp, v8s_setpgrp, int)
 void _exit(code) int code; { v8s_exit(code); }
 
 /*
+ * exit().  V8's real one lives in libc and calls _cleanup() to flush stdio
+ * first (libc/sys/exit.s); this is the placeholder until that is ported, and
+ * crt0 calls it after main returns.
+ */
+void exit(code) int code; { v8s_exit(code); }
+
+/*
  * signal() takes a function pointer, so it does not fit the WRAP macro, whose
  * arguments are all long.
  */

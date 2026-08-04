@@ -1,60 +1,60 @@
-# libv8sys: state and the one open problem
+# libv8sys
 
-`make libv8sys` builds it; `make test-v8sys` runs 44 behaviour tests, all
-passing. The syscall surface, V7 directory emulation, V7 signal semantics, the
-sbrk arena and the sgtty/termios mapping are done and tested.
+The layer standing in for the VAX kernel. `make libv8sys`; `make test-v8sys`
+(44 tests) and `make test-freestanding` (7) cover it.
 
-`compiler/crt0.s` assembles and `shim/v8sys/stubs.c` compiles.
+## How it reaches the kernel, and why that mattered
 
-## Open: how the V8 world reaches the shim without the shim reaching itself
+The V8 world calls `write()`, and the shim implements `write()` **by doing what
+`write()` does**. Something has to give one program both.
 
-The V8 world calls `open`, `read`, `write`. The shim implements them as
-`v8s_open`, `v8s_read`, `v8s_write` — and implements them **by calling the host
-functions of the original names**. So some mechanism has to give a program two
-different `write`s: the world's, and the host's.
+Two approaches were tried and both failed, in the same way:
 
-Two approaches tried:
+* **Defining `write` in C.** The shim's own `write(fd, b, n)` then binds to our
+  definition and recurses.
+* **Linker aliasing** (`-Wl,-alias,_v8s_write,_write`). Links cleanly, looks
+  right, dies with `EXC_BAD_ACCESS` in `v8s_write+4` — a stack-overflow fault in
+  a function prologue. The alias is global, so it captures the shim's own call
+  too. There is only one `_write` at link time and no way to say "this one, but
+  not from in here".
 
-**Defining `write` in stubs.c.** Then the shim's own `write(fd, b, n)` in
-syscall.c binds to our definition and recurses.
+So the shim **names no libc function at all**. `shim/v8sys/rawsys.h` goes
+straight to the kernel: number in `x16`, `svc #0x80`, carry flag signals failure
+on macOS; number in `x8`, `svc #0`, negative return on Linux. Every wrapper
+returns a negated errno on failure so callers check `< 0` on both.
 
-**Linker aliasing** — `-Wl,-alias,_v8s_write,_write`, leaving the C names
-distinct. This links cleanly and looks right, and then dies:
+That is not a workaround — it is what a libc replacement should do, and it has a
+better property than either failed approach: a V8 program links `-nostdlib` and
+imports **nothing**. `tests/freestanding/run.sh` asserts that with `nm -u`, so
+if anything in the shim starts calling libc again, the suite says so before the
+recursion comes back.
 
-```
-stop reason = EXC_BAD_ACCESS (code=2, address=0x16f603ff0)
-frame #0: v8s_write + 4
-```
+Consequences worth knowing:
 
-That is a stack-overflow fault in a function prologue. The alias is global, so
-the shim's own call to host `write` also resolves to `v8s_write` — unbounded
-recursion. The alias cannot distinguish "calls from the V8 world" from "calls
-from inside the shim", because at link time there is only one `_write`.
+* `errno` is never read from the host. Nothing sets it; the error arrives in the
+  return value. Files that used to say `errno = ENOMEM` now set `v8_errno`.
+* `dir.c` walks `getdirentries64` directly rather than `fdopendir`/`readdir`.
+* `mem.c` has a small bump allocator (`v8sys_alloc`) because it can call neither
+  the host's `malloc` nor V8's — the latter lives above the seam and grows the
+  arena `mem.c` manages.
+* The shim is built with `-fno-stack-protector -fno-stack-check`; both emit
+  calls to libc helpers (`___stack_chk_fail`, `___chkstk_darwin`).
+* `libSystem.dylib` is still on the link line, because macOS refuses to build a
+  dynamic executable without it. No symbol is taken from it.
 
-### The fix, for next session
+## What the two test suites each prove
 
-Have the shim reach the kernel **without naming the libc functions at all**, so
-there is no symbol left to collide over. Options, in order of preference:
+`tests/v8sys/test.c` links the shim against host libc and calls the `v8s_` names
+directly. It checks the *semantics* of the seam — V7 records, errno mapping,
+signal numbering, the sbrk arena.
 
-1. **`syscall(SYS_write, ...)`** via `<sys/syscall.h>`. One edit per stub,
-   no assembly, works identically on Linux with its own numbers. macOS
-   deprecates `syscall(2)` but it still functions; if that becomes a problem,
-   option 2.
-2. **Inline `svc #0`** with the number in `x16`, which is what libSystem itself
-   does. Fully under our control and cannot be intercepted, at the cost of a
-   small amount of per-target assembly.
-3. **Two libraries** — build the shim against host libc as a dylib with its own
-   two-level namespace, and let the static V8-facing names live only in the
-   executable. Works, but the linking gets subtle in a way the first two do not.
+`tests/freestanding/run.sh` compiles with v8cc and links `-nostdlib`. It checks
+the *linkage* — that a V8 program can actually be built this way. The
+distinction matters: 44/44 passing on the first suite said nothing about the
+second, and the aliasing bug lived entirely in the gap between them.
 
-Option 1 first; it is a mechanical change to `syscall.c` and the tests already
-cover the behaviour it must preserve.
+## Still to do here
 
-### Why this did not surface earlier
-
-`tests/v8sys/test.c` links the shim against host libc and calls the `v8s_`
-names directly, which is the right way to test the seam's *behaviour* — and it
-never creates the collision, because nothing is aliased. The collision only
-appears when a V8 program is linked with `-nostartfiles` and expects the shim to
-BE libc. Worth remembering: the test suite passing 44/44 says the semantics are
-right, not that the linkage is.
+`stubs.c` provides a placeholder `exit()` that skips straight to the syscall.
+V8's real one calls `_cleanup()` to flush stdio first (`libc/sys/exit.s`), and
+should replace it as soon as stdio is ported.

@@ -293,7 +293,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 1b ARM64 back end | done | `v8ccom` 62/62 — arithmetic, control flow, pointers, arrays, globals, statics, recursion, structs, bitfields, floats, 12-argument calls |
 | 1c driver | done | `v8cc` 8/8, `make rootfs` |
 | 2a libv8sys | done | `v8sys` 44/44 |
-| 2b V8 libc | started | crt0 + stub layer written; one linkage problem open, see `shim/NOTES.md` |
+| 2b V8 libc | in progress | freestanding programs run: `crt0` + shim, `-nostdlib`, zero libc imports (`freestanding` 7/7). Next: port libc proper — stdio, doprnt in C, IEEE float conversions, setjmp |
 | 3A–3C waves | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
@@ -308,9 +308,11 @@ Silicon. Everything above the code generator is untouched 1985 Bell Labs source.
 
 ### The next thing to do
 
-`shim/NOTES.md` — make the shim reach the kernel without naming the libc
-functions it implements, so a V8 program can link against it as libc. That
-unblocks the rest of Phase 2b, and 2b unblocks every wave after it.
+Port V8's libc proper on top of the shim: stdio (with `doprnt` rewritten in C),
+the string routines from their in-tree portable `.C` references, IEEE versions
+of `atof`/`ecvt`/`frexp`/`ldexp`/`modf`, an ARM64 `setjmp`, and an LP64 pass
+over `usr/include`. Wave A then becomes possible, and Wave A is where the world
+starts to look like Unix.
 
 ### Deliberate gaps in the back end
 

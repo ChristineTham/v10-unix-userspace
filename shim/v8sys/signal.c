@@ -22,10 +22,8 @@
  */
 
 #include <signal.h>
-#include <errno.h>
-#include <unistd.h>
-#include <sys/types.h>
 #include "v8sys.h"
+#include "rawsys.h"
 
 /* v8/usr/include/signal.h */
 #define V8_SIGHUP	1
@@ -102,13 +100,14 @@ v8s_signal(int v8sig, v8handler h)
 	if (hs < 0) { v8_errno = V8_EINVAL; return ((v8handler)-1); }
 
 	sa.sa_handler = (void (*)(int))h;
-	sigemptyset(&sa.sa_mask);
+	{ char *m = (char *)&sa.sa_mask; int i;
+	  for (i = 0; i < (int)sizeof sa.sa_mask; i++) m[i] = 0; }
 	sa.sa_flags = SA_RESETHAND;
 	if (h == (v8handler)SIG_IGN || h == (v8handler)SIG_DFL)
 		sa.sa_flags = 0;
 
-	if (sigaction(hs, &sa, &old) < 0) {
-		v8sys_fail();
+	if (rawsys3(SYS_sigaction, hs, (long)&sa, (long)&old) < 0) {
+		v8_errno = V8_EINVAL;
 		return ((v8handler)-1);
 	}
 	return ((v8handler)old.sa_handler);
@@ -119,8 +118,12 @@ int v8s_killpg(int pgrp, int sig)
 {
 	int h = v8sys_signo_to_host(sig);
 	if (h < 0) { v8_errno = V8_EINVAL; return (-1); }
-	return (killpg(pgrp, h) < 0 ? v8sys_fail() : 0);
+	if (rawsys3(SYS_kill, -pgrp, h, 0) < 0) { v8_errno = V8_EPERM; return (-1); }
+	return (0);
 }
 
 int v8s_setpgrp(int pid, int pgrp)
-{ return (setpgid(pid, pgrp) < 0 ? v8sys_fail() : 0); }
+{
+	if (rawsys2(SYS_setpgid, pid, pgrp) < 0) { v8_errno = V8_EPERM; return (-1); }
+	return (0);
+}

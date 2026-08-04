@@ -129,7 +129,7 @@ struct v8_direct {
 extern int v8_errno;		/* the world's errno lives here */
 
 int v8sys_errno(int hosterr);	/* host errno -> V8 errno */
-int v8sys_fail(void);		/* set v8_errno from host errno, return -1 */
+int v8sys_faile(int hosterr);	/* map a captured host errno, return -1 */
 
 /* ------------------------------------------------- directory emulation */
 

@@ -38,11 +38,11 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 # with -nostartfiles, never into anything that also uses host libc.
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c,$(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys test test-cpp test-v8ccom test-v8cc test-v8sys clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding clean distclean
 all: stage0
-stage0: cpp v8ccom v8cc libv8sys rootfs
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs
 
-test: test-cpp test-v8ccom test-v8cc test-v8sys
+test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: v8ccom
@@ -51,10 +51,13 @@ test-v8cc: rootfs
 	@$(ROOT)tests/v8cc/run.sh
 test-v8sys: $(BUILD)/v8sys/test
 	@$(BUILD)/v8sys/test
+test-freestanding: rootfs libv8sys crt0
+	@$(ROOT)tests/freestanding/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
 	@mkdir -p $(BUILD)/v8sys
-	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable -o $@ $^
+	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable \
+	    -fno-stack-protector -fno-stack-check -o $@ $^
 
 # ---------------------------------------------------------------------------
 # cpp -- the C preprocessor (Reiser, 1978).  First pass of the compiler.
@@ -169,14 +172,31 @@ $(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
 # ---------------------------------------------------------------------------
 SHIM_OBJ = $(patsubst $(ROOT)shim/v8sys/%.c,$(BUILD)/v8sys/%.o,$(SHIM_SRC))
 
+# crt0 and the V8-named stub layer: the two pieces a freestanding V8 program
+# needs on top of the shim.  stubs.c is built here, and ONLY here, because its
+# open/read/write collide with the host's -- see shim/NOTES.md.
+crt0: $(BUILD)/crt0.o $(BUILD)/v8sys/stubs-freestanding.o
+$(BUILD)/crt0.o: $(ROOT)compiler/crt0.s
+	@mkdir -p $(BUILD)
+	$(HOSTCC) -c $< -o $@
+$(BUILD)/v8sys/stubs-freestanding.o: $(ROOT)shim/v8sys/stubs.c
+	@mkdir -p $(BUILD)/v8sys
+	$(HOSTCC) -std=gnu89 -fcommon -w -fno-stack-protector -c $< -o $@
+
 libv8sys: $(BUILD)/v8sys/libv8sys.a
 $(BUILD)/v8sys/libv8sys.a: $(SHIM_OBJ)
 	ar rcs $@ $(SHIM_OBJ)
 	@echo "built $@"
 
+# -fno-stack-protector and -fno-stack-check: both emit calls to libc helpers
+# (___stack_chk_fail, ___chkstk_darwin), and the whole point of the shim is that
+# it names no libc symbol -- see shim/v8sys/rawsys.h.
+SHIMFLAGS = -std=gnu99 -Wall -Wno-unused-function \
+            -fno-stack-protector -fno-stack-check
+
 $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
 	@mkdir -p $(BUILD)/v8sys
-	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-function -c $< -o $@
+	$(HOSTCC) $(SHIMFLAGS) -c $< -o $@
 
 # ---------------------------------------------------------------------------
 # v8cc -- V8's cc(1) driver, retargeted.

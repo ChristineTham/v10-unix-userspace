@@ -22,11 +22,31 @@
 
 #include <sys/ioctl.h>
 #include <termios.h>
-#include <errno.h>
-#include <string.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include "v8sys.h"
+#include "rawsys.h"
+
+/* termios via the raw ioctl syscall: TIOCGETA/TIOCSETA are what tcgetattr and
+ * tcsetattr do underneath, so this is the same operation without the symbol. */
+static int hostioctl(int fd, unsigned long req, void *arg)
+{ return ((int)rawsys3(SYS_ioctl, fd, (long)req, (long)arg)); }
+
+#define tcgetattr(fd, t)	hostioctl(fd, TIOCGETA, (t))
+#define tcsetattr(fd, act, t)	hostioctl(fd, \
+	    (act) == TCSANOW ? TIOCSETA : TIOCSETAF, (t))
+#define tcflush(fd, sel)	({ int _s = (sel); hostioctl(fd, TIOCFLUSH, &_s); })
+#define tcgetpgrp(fd)		({ int _p; hostioctl(fd, TIOCGPGRP, &_p) < 0 ? -1 : _p; })
+#define tcsetpgrp(fd, pg)	({ int _p = (pg); hostioctl(fd, TIOCSPGRP, &_p); })
+#define fcntl(fd, cmd, arg)	((int)rawsys3(SYS_fcntl, (fd), (cmd), (arg)))
+#define ioctl(fd, req, arg)	hostioctl((fd), (req), (arg))
+
+/* raw ioctl returns a negated errno; there is no host errno to consult */
+static int ioctlfail(void)
+{ v8_errno = V8_ENOTTY; return (-1); }
+
+static void memset_(void *d, int c, long n)
+{ char *p = (char *)d; while (n-- > 0) *p++ = (char)c; }
+#define memset memset_
 
 /* v8/usr/include/sys/ioctl.h */
 #define V8_TIOCGETP	(('t'<<8)|8)
@@ -147,22 +167,22 @@ v8s_ioctl(int fd, int cmd, char *arg)
 
 	switch (cmd) {
 	case V8_TIOCGETP:
-		if (tcgetattr(fd, &t) < 0) return (v8sys_fail());
+		if (tcgetattr(fd, &t) < 0) return (ioctlfail());
 		termios_to_sgtty(&t, (struct v8_sgttyb *)arg);
 		return (0);
 
 	case V8_TIOCSETP:
 	case V8_TIOCSETN:
-		if (tcgetattr(fd, &t) < 0) return (v8sys_fail());
+		if (tcgetattr(fd, &t) < 0) return (ioctlfail());
 		sgtty_to_termios((struct v8_sgttyb *)arg, &t);
 		/* SETP drains and flushes, SETN sets immediately */
 		if (tcsetattr(fd, cmd == V8_TIOCSETP ? TCSAFLUSH : TCSANOW, &t) < 0)
-			return (v8sys_fail());
+			return (ioctlfail());
 		return (0);
 
 	case V8_TIOCGETC: {
 		struct v8_tchars *tc = (struct v8_tchars *)arg;
-		if (tcgetattr(fd, &t) < 0) return (v8sys_fail());
+		if (tcgetattr(fd, &t) < 0) return (ioctlfail());
 		tc->t_intrc  = t.c_cc[VINTR];
 		tc->t_quitc  = t.c_cc[VQUIT];
 		tc->t_startc = t.c_cc[VSTART];
@@ -174,40 +194,40 @@ v8s_ioctl(int fd, int cmd, char *arg)
 
 	case V8_TIOCSETC: {
 		struct v8_tchars *tc = (struct v8_tchars *)arg;
-		if (tcgetattr(fd, &t) < 0) return (v8sys_fail());
+		if (tcgetattr(fd, &t) < 0) return (ioctlfail());
 		t.c_cc[VINTR]  = tc->t_intrc;
 		t.c_cc[VQUIT]  = tc->t_quitc;
 		t.c_cc[VSTART] = tc->t_startc;
 		t.c_cc[VSTOP]  = tc->t_stopc;
 		t.c_cc[VEOF]   = tc->t_eofc;
-		if (tcsetattr(fd, TCSANOW, &t) < 0) return (v8sys_fail());
+		if (tcsetattr(fd, TCSANOW, &t) < 0) return (ioctlfail());
 		return (0);
 	}
 
 	case V8_TIOCFLUSH:
-		if (tcflush(fd, TCIOFLUSH) < 0) return (v8sys_fail());
+		if (tcflush(fd, TCIOFLUSH) < 0) return (ioctlfail());
 		return (0);
 
 	case V8_FIONREAD:
-		if (ioctl(fd, FIONREAD, &n) < 0) return (v8sys_fail());
+		if (ioctl(fd, FIONREAD, &n) < 0) return (ioctlfail());
 		*(int *)arg = n;
 		return (0);
 
 	case V8_TIOCGPGRP:
-		if ((n = tcgetpgrp(fd)) < 0) return (v8sys_fail());
+		if ((n = tcgetpgrp(fd)) < 0) return (ioctlfail());
 		*(int *)arg = n;
 		return (0);
 
 	case V8_TIOCSPGRP:
-		if (tcsetpgrp(fd, *(int *)arg) < 0) return (v8sys_fail());
+		if (tcsetpgrp(fd, *(int *)arg) < 0) return (ioctlfail());
 		return (0);
 
 	case V8_FIOCLEX:
-		if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) return (v8sys_fail());
+		if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) return (ioctlfail());
 		return (0);
 
 	case V8_FIONCLEX:
-		if (fcntl(fd, F_SETFD, 0) < 0) return (v8sys_fail());
+		if (fcntl(fd, F_SETFD, 0) < 0) return (ioctlfail());
 		return (0);
 
 	case V8_TIOCEXCL:
