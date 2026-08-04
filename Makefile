@@ -51,12 +51,12 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex eqn
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell eqn
 
 test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
 test-cpp: cpp
@@ -67,17 +67,17 @@ test-v8cc: rootfs-libs
 	@$(ROOT)tests/v8cc/run.sh
 test-v8sys: $(BUILD)/v8sys/test
 	@$(BUILD)/v8sys/test
-test-freestanding: rootfs libv8sys crt0
+test-freestanding: rootfs libv8sys crt0 rootfs-libs
 	@$(ROOT)tests/freestanding/run.sh
-test-libv8c: rootfs libv8sys crt0 libv8c
+test-libv8c: rootfs libv8sys crt0 libv8c rootfs-libs
 	@$(ROOT)tests/libv8c/run.sh
-test-wavea: rootfs libv8sys crt0 libv8c
+test-wavea: rootfs libv8sys crt0 libv8c rootfs-libs
 	@$(ROOT)tests/wavea/run.sh
-test-waveb: rootfs libv8sys crt0 libv8c
+test-waveb: rootfs libv8sys crt0 libv8c rootfs-libs
 	@$(ROOT)tests/waveb/run.sh
 test-sh: sh
 	@$(ROOT)tests/sh/run.sh
-test-wavec: nroff troff tbl eqn pic
+test-wavec: nroff troff tbl eqn pic spell
 	@$(ROOT)tests/wavec/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
@@ -305,7 +305,17 @@ LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/freopen.c $(LIBCSRC)/stdio/fdopen.c \
           $(LIBCSRC)/stdio/fseek.c $(LIBCSRC)/stdio/ftell.c \
           $(LIBCSRC)/stdio/strout.c $(LIBCSRC)/stdio/getw.c \
-          $(LIBCSRC)/stdio/getpw.c $(LIBCSRC)/stdio/putw.c $(LIBCSRC)/stdio/tmpnam.c
+          $(LIBCSRC)/stdio/getpw.c $(LIBCSRC)/stdio/putw.c $(LIBCSRC)/stdio/tmpnam.c \
+          $(LIBCSRC)/stdio/doscan.c $(LIBCSRC)/stdio/scanf.c \
+          $(LIBCSRC)/stdio/popen.c $(LIBCSRC)/stdio/system.c
+# scanf/doscan, popen and system were missing until spell needed scanf.  A
+# missing libc function does not fail the link: it is resolved from -lSystem,
+# silently, and for a VARIADIC function that is an ABI mismatch rather than a
+# compatible substitute -- v8cc passes arguments in x0-x7, Apple's ABI passes
+# variadic arguments on the stack.  `sscanf("017651423", "%lo", &h)` took the
+# host's sscanf, read the format pointer as the destination and faulted.  A
+# non-variadic one would have quietly worked and hidden the gap.
+#
 # The string routines ship as .C -- portable references beside the VAX assembly
 # that V8 actually built.  They are what a machine without those instructions
 # was meant to use.
@@ -511,6 +521,15 @@ $(LEX_OBJ): $(LEXSRC)/ldefs.c $(LEXSRC)/once.c
 # it changes, to avoid rebuilding everything on every yacc run.  We depend on it
 # directly and let make decide.
 # ---------------------------------------------------------------------------
+# The V8 link line.  Archive order matters: libv8stubs.a is one object per
+# syscall so a program defining its own rmdir still wins, and -lSystem is last
+# because the shim is the one place the two worlds are meant to meet.
+V8DEPS = $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+         $(BUILD)/v8sys/libv8sys.a
+V8LIBS = $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+         $(BUILD)/v8sys/libv8sys.a -lSystem
+V8LDFLAGS = -nostdlib -e _v8start
+
 PICSRC = $(SRC)/cmd/pic
 PIC_NAMES = main print misc symtab blockgen boxgen circgen arcgen linegen \
             movegen textgen input for pltroff
@@ -542,6 +561,41 @@ $(BUILD)/pic/%.o: $(PICSRC)/%.c $(BUILD)/pic/pic.ydef $(A64BUILD)/v8ccom | rootf
 	@mkdir -p $(BUILD)/pic
 	$(V8CCRUN) -I$(BUILD)/pic -I$(PICSRC) -c -o $@ $<
 $(PIC_OBJ): $(PICSRC)/pic.h
+
+# ---------------------------------------------------------------------------
+# spell -- four programs sharing hash.c/huff.c, plus the shell driver.
+#
+#   hashmake   words           -> octal hash codes
+#   spellin    hash codes      -> the compressed hlist spellprog reads
+#   spellprog  hlist + text    -> the words not in it
+#   hashcheck  hlist           -> back to hash codes, for verification
+# ---------------------------------------------------------------------------
+SPELLSRC = $(SRC)/cmd/spell
+SPELL_SHARED = hash huff hashlook
+SPELL_PROGS = spellprog spellin hashmake hashcheck
+SPELL_OBJ = $(patsubst %,$(BUILD)/spell/%.o,$(SPELL_SHARED) $(SPELL_PROGS))
+
+spell: $(patsubst %,$(BUILD)/spell/%,$(SPELL_PROGS))
+
+$(BUILD)/spell/spellprog: $(BUILD)/spell/spellprog.o $(BUILD)/spell/hash.o \
+                          $(BUILD)/spell/hashlook.o $(BUILD)/spell/huff.o $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/spell/spellprog.o $(BUILD)/spell/hash.o $(BUILD)/spell/hashlook.o $(BUILD)/spell/huff.o $(V8LIBS)
+	@echo "built $@"
+$(BUILD)/spell/spellin: $(BUILD)/spell/spellin.o $(BUILD)/spell/huff.o \
+                        $(BUILD)/spell/hash.o $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/spell/spellin.o $(BUILD)/spell/huff.o $(BUILD)/spell/hash.o  $(V8LIBS)
+	@echo "built $@"
+$(BUILD)/spell/hashmake: $(BUILD)/spell/hashmake.o $(BUILD)/spell/hash.o $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/spell/hashmake.o $(BUILD)/spell/hash.o  $(V8LIBS)
+	@echo "built $@"
+$(BUILD)/spell/hashcheck: $(BUILD)/spell/hashcheck.o $(BUILD)/spell/hash.o \
+                          $(BUILD)/spell/huff.o $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/spell/hashcheck.o $(BUILD)/spell/hash.o $(BUILD)/spell/huff.o  $(V8LIBS)
+	@echo "built $@"
+
+$(BUILD)/spell/%.o: $(SPELLSRC)/%.c $(SPELLSRC)/hash.h $(A64BUILD)/v8ccom | rootfs
+	@mkdir -p $(BUILD)/spell
+	$(V8CCRUN) -I$(SPELLSRC) -c -o $@ $<
 
 EQNSRC = $(SRC)/cmd/eqn
 EQN_NAMES = main diacrit eqnbox font fromto funny glob integral input lex \
@@ -608,12 +662,22 @@ rootfs: cpp v8ccom v8cc
 # SEPARATE from rootfs on purpose: the libraries are compiled BY v8cc, which
 # needs the rootfs to exist first (headers, cpp, ccom).  Folding this into
 # rootfs makes the dependency circular.
-rootfs-libs: rootfs crt0 libv8sys libv8c
-	@mkdir -p $(ROOTFS)/lib
-	@cp $(BUILD)/crt0.o $(ROOTFS)/lib/
-	@cp $(BUILD)/libc/libv8c.a $(ROOTFS)/lib/
-	@cp $(BUILD)/v8sys/libv8stubs.a $(ROOTFS)/lib/
-	@cp $(BUILD)/v8sys/libv8sys.a $(ROOTFS)/lib/
+# Real file targets, not a phony copy step.  A phony one only refreshes the
+# rootfs when it happens to be invoked, so `make libv8c` left the copy the
+# driver actually links STALE -- which cost a debugging round when spell's
+# sscanf kept reaching the host's __svfscanf_l after V8's had been added.
+ROOTFS_LIBS = $(ROOTFS)/lib/crt0.o $(ROOTFS)/lib/libv8c.a \
+              $(ROOTFS)/lib/libv8stubs.a $(ROOTFS)/lib/libv8sys.a
+
+rootfs-libs: $(ROOTFS_LIBS)
+$(ROOTFS)/lib/crt0.o: $(BUILD)/crt0.o | rootfs
+	@cp $< $@
+$(ROOTFS)/lib/libv8c.a: $(BUILD)/libc/libv8c.a | rootfs
+	@cp $< $@
+$(ROOTFS)/lib/libv8stubs.a: $(BUILD)/v8sys/libv8stubs.a | rootfs
+	@cp $< $@
+$(ROOTFS)/lib/libv8sys.a: $(BUILD)/v8sys/libv8sys.a | rootfs
+	@cp $< $@
 
 # troff's device tables.  makedev compiles the plain-text description in
 # dev202/ into the binary DESC.out and per-font .out files troff opens at

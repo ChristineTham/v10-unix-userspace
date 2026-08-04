@@ -1,0 +1,24 @@
+# Provenance for src/cmd/spell
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+03674e21e68a52f3aea7dac85866ffb10226cd3d  v8/usr/src/cmd/spell/hashlook.c
+2a7553871d2f3a21f70644bedf93b88e372b19d9  v8/usr/src/cmd/spell/spellprog.c
+1be698b450ad5760025ce0f1ff73d1101ce7408f  v8/usr/src/cmd/spell/Makefile
+557202ce95e2c40493333018c0d7a7ca712c624a  v8/usr/src/cmd/spell/binspell
+21bfd035ac300b4007c86e7a7da8e4471d193234  v8/usr/src/cmd/spell/spelltest
+429c68aca29b2bc119d737a959f4a8932029bffc  v8/usr/src/cmd/spell/huff.h
+53a8829090cb49004ea1a9cfc207af1780b064d8  v8/usr/src/cmd/spell/stop
+f7747cd4066393d291f4e8d9681ef793b015da94  v8/usr/src/cmd/spell/hash.c
+cf5065a923e18d76ffa03821ff11cb0b984d3b8f  v8/usr/src/cmd/spell/local
+8939dd0d1fb80e8ef71ed1e4797cbcdea684c085  v8/usr/src/cmd/spell/spell.sh
+508913581df8bab100e2ae16a1a67a2ecf6b3bb4  v8/usr/src/cmd/spell/spellin.c
+c627f35736028c4ad206085d28a3c8bfa36849d2  v8/usr/src/cmd/spell/list
+48f7581091946289befd12fb1895b2991fdd3bd6  v8/usr/src/cmd/spell/hashcheck.c
+a608910badb61269b3a63656ac569996ab64f28f  v8/usr/src/cmd/spell/british
+fdff97a7f0010e3f2105bb42cb77ad85db2235b0  v8/usr/src/cmd/spell/huff.c
+fc1ce3ba71877468d2aa211b78e081cb9ffc9904  v8/usr/src/cmd/spell/hash.h
+c2c568757a89644a92049c7faee3581946480227  v8/usr/src/cmd/spell/american
+ae728e8af3b38cb3bb031a9dec1e648ed1b2e917  v8/usr/src/cmd/spell/hashmake.c

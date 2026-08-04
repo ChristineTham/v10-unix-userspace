@@ -111,5 +111,34 @@ else
 	fail=$((fail+6)); echo "FAIL pic not built"
 fi
 
+# spell -- hashmake -> spellin -> spellprog, the whole pipeline.
+SPELLD=$ROOT/build/stage0/spell
+if [ -x "$SPELLD/spellprog" ] && [ -x "$SPELLD/spellin" ] && [ -x "$SPELLD/hashmake" ]; then
+	printf 'apple\nbanana\ncherry\ndog\nelephant\n' > sp.words
+	"$SPELLD/hashmake" < sp.words 2>sp.err | sort -u > sp.hash
+	check 'hashmake emits one octal code per word' '5' "$(wc -l < sp.hash | tr -d ' ')"
+	"$SPELLD/spellin" "$(wc -l < sp.hash)" < sp.hash > sp.hlist 2>>sp.err
+	check 'spellin builds a non-empty hash list' 'yes' \
+	    "$([ -s sp.hlist ] && echo yes || echo no)"
+	# The point of the whole thing: known words pass, unknown ones are named.
+	printf 'apple\nbanana\nzzzqqq\ncherry\nwibble\n' > sp.in
+	check 'spellprog reports exactly the unknown words' 'zzzqqq wibble' \
+	    "$("$SPELLD/spellprog" sp.hlist /dev/null < sp.in | tr '\n' ' ' | sed 's/ $//')"
+	# hashcheck reverses spellin, so the codes must survive the round trip.
+	# This is what the half-word fetch macro gets wrong when it is the VAX one:
+	# LP64 has sizeof(unsigned) == sizeof(long)/2, the PDP-11's case, and
+	# hashlook.c aborts at startup if the wrong macro was compiled in.
+	# See src/cmd/spell/PORTING.md.
+	if [ -x "$SPELLD/hashcheck" ]; then
+		check 'hashcheck recovers every code spellin stored' 'same' \
+		    "$("$SPELLD/hashcheck" < sp.hlist 2>/dev/null | sort -u > sp.back
+		       cmp -s sp.hash sp.back && echo same || echo differ)"
+	else
+		fail=$((fail+1)); echo "FAIL hashcheck not built"
+	fi
+else
+	fail=$((fail+4)); echo "FAIL spell not built"
+fi
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
