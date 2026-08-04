@@ -147,7 +147,12 @@ else bad "sbrk arena" "$(head -3 err.log)"; fi
 # The point of the raw-syscall layer: the image must not import any libc
 # symbol. If this ever fails, something in the shim started calling libc again
 # and the recursion in shim/NOTES.md is waiting to come back.
-undef=$(nm -u hello 2>/dev/null | grep -v '^ *$' | grep -v 'dyld_stub_binder' | wc -l | tr -d ' ')
+# nm -m distinguishes a real import from a weak reference. __cleanup is weak on
+# purpose: stubs.c's exit() calls it to flush stdio when V8 libc is linked, and
+# these freestanding programs link none, so it stays unresolved and unused.
+# A weak unresolved symbol pulls nothing in and is not a libc dependency.
+undef=$(nm -m hello 2>/dev/null | grep 'undefined' | grep -v 'weak' |
+        grep -v 'dyld_stub_binder' | wc -l | tr -d ' ')
 if [ "$undef" = "0" ]; then ok
 else bad "image imports $undef libSystem symbol(s)" "$(nm -u hello | head -5)"; fi
 
