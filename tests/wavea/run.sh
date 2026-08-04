@@ -150,9 +150,16 @@ echo "wavea: $pass passed, $fail failed"
 #   "cat: input nosuchfile is output" -- cat's dev/ino guard -- rather than the
 #   perror one, meaning cat took the `fi = 0` branch instead of the open branch.
 #
-#   Ruled out: open() itself returns -1 with errno 2 correctly, and the
-#   && / || lowering is correct in isolation (`f || *s == '-' && s[1] == 0`
-#   with s="nosuchfile" evaluates false as it should). What is left untested is
-#   `**++argv` -- a double dereference of a pre-incremented pointer, in the
-#   same expression. Given that lvalues with side effects have already produced
-#   two bugs here, test that next.
+#   Ruled out by direct test, all three:
+#     - open() returns -1 with errno 2 correctly.
+#     - the && / || lowering is right: `f || *s == '-' && s[1] == 0` with
+#       s="nosuchfile" evaluates false, as does `f || 0 && 1`, while
+#       `1 || 0 && 0` is true.
+#     - `**++argv` is right: it yields 'n' for argv[1]="nosuchfile".
+#
+#   So each piece of the condition works in isolation and the whole still takes
+#   the wrong branch. Next: print argc and fflg from inside cat itself. cat does
+#   `if (argc < 2) { argc = 2; fflg++; }` near the top, and if fflg were set the
+#   observed behaviour follows exactly -- fi = 0, then the dev/ino guard fires
+#   against stdout. That would make this an argc problem, not a condition
+#   problem, despite appearances.
