@@ -32,17 +32,23 @@ YACCFIX = sed 's/={/{/g'
 # V8 libc internals that host libc lacks.  Scaffolding; gone in Phase 2b.
 STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs test test-cpp test-v8ccom test-v8cc clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys test test-cpp test-v8ccom test-v8cc test-v8sys clean distclean
 all: stage0
-stage0: cpp v8ccom v8cc rootfs
+stage0: cpp v8ccom v8cc libv8sys rootfs
 
-test: test-cpp test-v8ccom test-v8cc
+test: test-cpp test-v8ccom test-v8cc test-v8sys
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: v8ccom
 	@$(ROOT)tests/v8ccom/run.sh $(A64BUILD)/v8ccom
 test-v8cc: rootfs
 	@$(ROOT)tests/v8cc/run.sh
+test-v8sys: $(BUILD)/v8sys/test
+	@$(BUILD)/v8sys/test
+
+$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(wildcard $(ROOT)shim/v8sys/*.c)
+	@mkdir -p $(BUILD)/v8sys
+	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable -o $@ $^
 
 # ---------------------------------------------------------------------------
 # cpp -- the C preprocessor (Reiser, 1978).  First pass of the compiler.
@@ -150,6 +156,22 @@ $(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
 	@mkdir -p $(A64BUILD)
 	cp $(CCOM_V)/y.debug.sv $(A64BUILD)/y.debug
 	$(HOSTCC) $(KRFLAGS) $(A64INC) -I$(A64BUILD) -DYYDEBUG -c $< -o $@
+
+# ---------------------------------------------------------------------------
+# libv8sys -- the shim standing in for the VAX kernel.  Modern C, clang-built:
+# it is the seam, not authentic V8 code.
+# ---------------------------------------------------------------------------
+SHIM_SRC = $(wildcard $(ROOT)shim/v8sys/*.c)
+SHIM_OBJ = $(patsubst $(ROOT)shim/v8sys/%.c,$(BUILD)/v8sys/%.o,$(SHIM_SRC))
+
+libv8sys: $(BUILD)/v8sys/libv8sys.a
+$(BUILD)/v8sys/libv8sys.a: $(SHIM_OBJ)
+	ar rcs $@ $(SHIM_OBJ)
+	@echo "built $@"
+
+$(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
+	@mkdir -p $(BUILD)/v8sys
+	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-function -c $< -o $@
 
 # ---------------------------------------------------------------------------
 # v8cc -- V8's cc(1) driver, retargeted.
