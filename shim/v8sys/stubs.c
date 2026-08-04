@@ -130,11 +130,27 @@ WRAP(setpgrp, v8s_setpgrp, int)
 void _exit(code) int code; { v8s_exit(code); }
 
 /*
- * exit().  V8's real one lives in libc and calls _cleanup() to flush stdio
- * first (libc/sys/exit.s); this is the placeholder until that is ported, and
- * crt0 calls it after main returns.
+ * exit() -- what V8's libc/sys/exit.s does: flush stdio through _cleanup(),
+ * then leave through the kernel.
+ *
+ * Skipping the flush is invisible in a program that writes with write(2) and
+ * fatal in one that uses stdio, which is most of them.  `tee` and `yes` worked
+ * while `echo`, `wc`, `head`, `rev`, `tr`, `basename` and `sum` all printed
+ * nothing -- the buffered output was simply discarded at exit.
+ *
+ * _cleanup lives in libc's flsbuf.c and walks _iob flushing every open stream.
+ * It is weakly referenced so this file still links into a program built
+ * without V8 libc (the freestanding tests do exactly that).
  */
-void exit(code) int code; { v8s_exit(code); }
+extern void _cleanup() __attribute__((weak));
+
+void
+exit(code)
+	int code;
+{
+	if (_cleanup) _cleanup();
+	v8s_exit(code);
+}
 
 /*
  * signal() takes a function pointer, so it does not fit the WRAP macro, whose

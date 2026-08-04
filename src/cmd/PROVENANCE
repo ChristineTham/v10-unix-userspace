@@ -6,3 +6,13 @@
 # <git blob hash of pristine upstream file>  <upstream path>
 c2e6427bf59f325a8530c2d72213c8d547e960ee  v8/usr/src/cmd/cat.c
 81f09478e04f80c3a71f981cd195367574727923  v8/usr/src/cmd/cc.c
+60bf36257bb4949f286e9567aeaef204a27fe598  v8/usr/src/cmd/echo.c
+d88846e8cec99828631e8a808e3d6a0dcf875af9  v8/usr/src/cmd/wc.c
+2f436dc1ca950c4cb1d0273ec9735a1fc0187483  v8/usr/src/cmd/tee.c
+31171ea1cf4da0307596a4f7466c7fc95954bb7a  v8/usr/src/cmd/head.c
+9ced2bfb0319a40d8d7239006d1dbfeb86f422b1  v8/usr/src/cmd/rev.c
+7b221615368d7e731f3837e1410b6c52b89b3ddf  v8/usr/src/cmd/sum.c
+01395ba2da954980dd95b8276335bda1619bebe3  v8/usr/src/cmd/tr.c
+20b7994df37969d34cfc2b8332e931535eb98706  v8/usr/src/cmd/basename.c
+6c638af5345f8d1a260aa32499369d2d6f4046cd  v8/usr/src/cmd/yes.c
+38985ebbd9d0b9eb27357bd25016f635fff23e09  v8/usr/src/cmd/cmp.c

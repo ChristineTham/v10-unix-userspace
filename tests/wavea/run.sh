@@ -42,38 +42,75 @@ printf 'alpha\nbeta\ngamma\n' > in.txt
 if build cat "$ROOT/src/cmd/cat.c"; then
 	check 'cat one file'  'alpha beta gamma' "$(./cat in.txt | tr '\n' ' ' | sed 's/ $//')"
 	check 'cat two files' '6' "$(./cat in.txt in.txt | wc -l | tr -d ' ')"
-	# a missing file must at least not produce output or hang
-	check 'cat missing is quiet on stdout' '' "$(./cat nosuchfile 2>/dev/null)"
+	check 'cat stdin pipe' 'piped' "$(printf 'piped\n' | ./cat)"
+	check 'cat stdin redirect' 'alpha beta gamma' \
+	    "$(./cat < in.txt | tr '\n' ' ' | sed 's/ $//')"
 else
-	fail=$((fail+3))
+	fail=$((fail+4))
+fi
+
+# ---- echo ---------------------------------------------------------------
+if build echo "$ROOT/src/cmd/echo.c"; then
+	check 'echo words' 'hello world' "$(./echo hello world)"
+	check 'echo -n'    'nonl'        "$(./echo -n nonl)"
+else
+	fail=$((fail+2))
+fi
+
+# ---- wc -----------------------------------------------------------------
+if build wc "$ROOT/src/cmd/wc.c"; then
+	check 'wc counts' '3 3 17' "$(./wc < in.txt | tr -s ' ' | sed 's/^ //')"
+else
+	fail=$((fail+1))
+fi
+
+# ---- basename -----------------------------------------------------------
+if build basename "$ROOT/src/cmd/basename.c"; then
+	check 'basename strips dir'    'cat.c' "$(./basename /usr/src/cmd/cat.c)"
+	check 'basename strips suffix' 'cat'   "$(./basename /usr/src/cmd/cat.c .c)"
+else
+	fail=$((fail+2))
+fi
+
+# ---- tee ----------------------------------------------------------------
+if build tee "$ROOT/src/cmd/tee.c"; then
+	check 'tee to file and stdout' 'hi hi' \
+	    "$(printf 'hi\n' | ./tee t.out | cat - t.out | tr '\n' ' ' | sed 's/ $//')"
+else
+	fail=$((fail+1))
+fi
+
+# ---- yes ----------------------------------------------------------------
+if build yes "$ROOT/src/cmd/yes.c"; then
+	check 'yes repeats' 'y y y' "$(./yes 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+else
+	fail=$((fail+1))
 fi
 
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
 # ---------------------------------------------------------------------------
-# KNOWN BROKEN 1: a failed open is silent and exits 0.
+# STILL BROKEN, each recorded rather than left to be rediscovered:
 #
-# `cat nosuchfile` prints nothing on stderr and returns 0. cat.c does
+#   head, rev  -- build and link, produce no output. Both read stdin with
+#                 getchar()/getc rather than read(2), so the next thing to check
+#                 is _filbuf: cat's read(2) path works and stdio output now
+#                 works, but stdio INPUT has not been separately exercised.
 #
-#	fprintf(stderr, "cat: "); perror(*argv); retcode = 1;
+#   tr         -- `echo abc | tr a-z A-Z` gives "A000" instead of "ABC", so the
+#                 a-z range expansion is filling its table wrongly. tr builds
+#                 its translation table with nested loops over char values;
+#                 given that signed char is deliberate here (CHSIGN), check
+#                 whether the table index is going negative.
 #
-# so both the diagnostic and the status are being lost. perror() lives in
-# stdio/error.c, which IS linked, but it indexes sys_errlist -- and V8 builds
-# that table in libc/gen with a `cc -S` plus an ed script (see libc/Makefile),
-# which has not been ported. An empty table would explain the silence. The
-# exit status is separate: check whether exit(n) carries its argument, since
-# stubs.c currently supplies a placeholder exit() straight to the syscall.
+#   cmp        -- does not compile.
 #
-# KNOWN BROKEN 2: cat with no file arguments, or with `-`, reads nothing.
+#   sum        -- builds and runs but prints nothing; same stdio-input question
+#                 as head and rev.
 #
-# `cat file` works; `cat < file` and `printf x | cat` both produce no output,
-# so it is the fi=0 path rather than anything about pipes -- the dev/ino
-# collision that 16-bit inode folding could cause was the first guess and is
-# ruled out, since redirecting from a plain file fails identically.
-#
-# cat.c forces argc=2 and sets fflg when given no arguments, then takes
-# `fi = 0` and fstat()s it. Next: check what fstat(0) returns through the shim,
-# and whether cat's "input file is output file" guard is rejecting on the
-# folded dev/ino. That guard reads stdout's dev/ino at the top of main.
-# ---------------------------------------------------------------------------
+#   A failed open is silent and exits 0 (see cat nosuchfile). cat does
+#   `fprintf(stderr, "cat: "); perror(*argv); retcode = 1;` and loses both.
+#   perror() indexes sys_errlist, which V8 builds in libc/gen with a `cc -S`
+#   plus an ed script (libc/Makefile) that has not been ported -- an empty
+#   table would explain the silence.

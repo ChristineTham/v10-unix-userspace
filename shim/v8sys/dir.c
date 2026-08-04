@@ -63,11 +63,25 @@ struct dirshim {
 
 static struct dirshim shims[MAXDIRFD];
 
+void v8sys_dirinit(void);
+
 static struct dirshim *
 find(int fd)
 {
 	int i;
 
+	/*
+	 * Initialise here as well as from open().
+	 *
+	 * The free-slot sentinel is -1 because fd 0 is a perfectly good
+	 * descriptor, and the table only got that sentinel written into it by
+	 * v8sys_dirinit(), which open() calls.  A program that never opens
+	 * anything -- `cat` with no arguments, reading stdin -- therefore saw a
+	 * table still zeroed from bss, where slot 0 reads as fd 0.  isdirfd(0)
+	 * came back true, every read from stdin was served from an empty
+	 * directory snapshot, and cat printed nothing.
+	 */
+	v8sys_dirinit();
 	for (i = 0; i < MAXDIRFD; i++)
 		if (shims[i].fd == fd) return (&shims[i]);
 	return (0);
