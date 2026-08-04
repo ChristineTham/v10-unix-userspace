@@ -1,6 +1,6 @@
 # Porting Research Unix V8 Userspace to macOS (ARM64)
 
-**Status:** Phases 0 through 2b complete and tested; **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 278 tests. **Wave B done**; **Wave C in progress** — nroff, troff, tbl and eqn all work, and V8's own yacc builds V8's grammars. Phases 4 and 5 not started.
+**Status:** Phases 0 through 2b complete and tested; **rung 3 of the bootstrap ladder is closed — the compiler reproduces itself (PLAN S4c);** **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 278 tests. **Wave B done**; **Wave C in progress** — nroff, troff, tbl and eqn all work, and V8's own yacc builds V8's grammars. Phases 4 and 5 not started.
 See "Current state" at the bottom.
 **Project arc:** V8 first (this plan), then V9, then V10 — restoring the original project goal of the last Research Edition, with V8 as the beachhead where the lessons are cheapest.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
@@ -160,133 +160,41 @@ dependency knowledge was in the tree the whole time, in files the build
 ignored. Program builds move onto their own makefiles, minimally adapted, with
 every deviation recorded in that program's `PORTING.md`.
 
-## 4c. The open self-host bug (rung 3)
+## 4c. The self-host fixpoint (rung 3) — CLOSED
 
-Every translation unit of `cpp` and `ccom` now compiles with `v8cc` and links
-freestanding — `tests/selfhost` asserts all twenty, and the self-hosted **cpp**
-runs and produces byte-identical output to the stage-0 one, so one of the two
-passes is at a fixpoint. The self-hosted **ccom** links but does not run.
+Every translation unit of `cpp` and `ccom` compiles with `v8cc` and links
+freestanding, the self-hosted `cpp` matches the stage-0 one byte for byte, and
+**the compiler reproduces itself**: ccom2 (built by ccom1) and ccom3 (built by
+ccom2) generate byte-identical assembly. `tests/selfhost` asserts all of it.
 
-What is known, from bisecting object by object against a control built with
-clang *against V8's own headers* and linked the same freestanding way — a
-control that isolates the compiler, which an earlier one using host headers did
-not, because it introduced a `FILE` layout mismatch of its own:
+Note that ccom1 == ccom2 is *false*, by two instructions, and that is correct
+rather than a defect. ccom1 was built by the stage-0 compiler, which clang built
+against the host headers, so it inherits one generation of that compiler's
+beliefs — here, one unsignedness question resolved differently, showing up as a
+`mov w10, w10` (not a no-op on AArch64: a `w` write zeroes the upper half).
+Stage 2 washes it out. That is what a three-stage bootstrap is *for*, and
+testing ccom1 == ccom2 would have been testing the wrong property.
 
-- The minimal failing set is **`trees.o` + `t2print.o`**, both from v8cc.
-  Either one alone, with the other from clang, is fine.
-- It dies on the **first symbol-table insertion** — `yylex` → `hash` → `malloc`,
-  faulting inside `malloc` on a wild address. An empty input file compiles
-  cleanly; `int x;`, `int y;` and `f(){}` all crash. So it is reached before any
-  code generation happens.
-- It is **layout-dependent**: the same objects in a different link order crash
-  or do not. That makes it a data-placement fault — something writes outside an
-  object — rather than a control-flow bug, and it means a passing link order
-  proves nothing.
-- `t2print.c`'s only substantial data is a `static struct { TWORD; char *; }
-  t2tab[]` with a flat K&R initialiser. v8cc lays that out correctly (`.long`,
-  `.space 4`, `.quad` — 16 bytes on LP64), and a reduced version of it runs
-  correctly, so the initialiser shape alone is not the bug.
-- Ruled out: symbol collisions between the two objects (none), the two
-  same-named function statics `down` (both emitted privately), the freestanding
-  link itself, and libv8c.
-- Ruled out, and this one was the best candidate: `manifest.h`'s `char
-  pad[NCHNAM-sizeof(char *)]`, which is `char pad[0]` on LP64 and which v8cc
-  warns about on every compile. Both compilers agree exactly on `sizeof(NODE)`
-  = 88 and on every field offset in all four arms of `union ndu`. The central
-  data structure is not the disagreement.
-- `trees.o` emits **no uninitialised data at all** — no `.space`, no file-scope
-  arrays. Its 28960 bytes of `__DATA` against clang's 16406 are almost entirely
-  string literals, which v8cc puts in its own `__DATA,__v8str1`/`__v8str2`
-  sections rather than a read-only one.
+**The bug that blocked this for most of a session**, recorded because the shape
+recurs: `commdec()` emitted `.comm _stab,80040` with **no alignment argument**,
+where clang emits `.comm _stab,80040,3`. Omitting it does not mean "natural
+alignment" — the assembler infers one from the *size*, and for an 80KB object
+inferred 0x8000, which the linker then reported reducing. Every common symbol in
+the compiler was being placed by an alignment derived from how big it happened
+to be, so objects moved whenever anything around them changed. It presented as
+heap corruption inside `malloc` on the first identifier the compiler ever read,
+and it was link-order sensitive, which is what made it look like everything
+except what it was. The warning naming it appeared on every single link.
 
-That last point moves the hypothesis: with no writable table to overrun, a plain
-out-of-bounds write is unlikely. The obvious successor — that the fault is in
-how v8cc reaches its own string sections — was inspected and does **not** look
-wrong: it emits each literal inline mid-function (`.section __DATA,__v8str1`,
-bytes, `.text`) and then addresses it with a textbook `adrp Lnnn@PAGE` /
-`add x9, x9, Lnnn@PAGEOFF` pair. So that is not obviously it either.
+Two caveats, both real:
 
-Stack exhaustion is also ruled out: raising the limit eightfold changes nothing,
-and the fault address (0x1246040) is nowhere near `sp` (0x16d3546f0).
-
-Also ruled out — recorded because it looked compelling and cost a detour.
-`trees.s` contains no `.comm` directive at all, which read like v8cc emitting
-tentative definitions as strong ones and so scattering every uninitialised
-global to a different address. It is not that. `trees.c` simply has no tentative
-definitions: every file-scope object in it is explicitly initialised
-(`int bdebug = 0;`), so `_bdebug: .long 0` is the correct output. Asked
-directly, v8cc emits `.comm _tentative,4` and `.lcomm _stat_tentative,4`
-exactly as it should — `EXCLASS` defaults to `EXTERN` in `pftn.c`, neither back
-end overrides it, and `commdec()` in `compiler/ccom-arm64/local.c` is reached.
-
-**The exact crash site, from lldb.** The chain is
-
-```
-v8start -> main -> mainp1 -> yyparse -> yylex -> hash -> savestr -> malloc
-```
-
-faulting at `malloc+196`, on `ldr x9, [x9]` — walking the free list through a
-wild pointer. `savestr()` in `lookup.c` is the first allocation the compiler
-ever makes, on the first identifier it reads.
-
-That call looked like the answer, because `savestr` contains
-
-```c
-	(curstp = malloc(nchleft = len+STRTABSIZE)) == 0	/* nchleft is int */
-```
-
-and the value of an assignment is the right-hand side **converted to the type
-of the left operand** — which the back end was not doing. It emitted `str w11`
-for the store, correctly, but returned the full 64-bit register as the
-expression's value, so `malloc` was handed bits `nchleft` does not have. That
-is fixed (`case ASSIGN` in `gencode.c` now calls `arm64_widen`), and the
-emitted code is demonstrably right: `sxtw x11, w11` now appears before the
-argument is set up.
-
-**It did not fix the crash.** The real cause was next door, in `commdec()`:
-v8cc emitted `.comm _stab,80040` with **no alignment argument** where clang
-emits `.comm _stab,80040,3`. Omitting it is not the same as asking for natural
-alignment — the assembler infers one from the *size*, and for an 80KB object
-it inferred 0x8000, which is what the linker had been reporting all along
-("reducing alignment of section `__DATA,__common` from 0x8000 to 0x4000").
-Every common symbol in the compiler was being placed by an alignment derived
-from how big it happened to be, which is precisely the link-order sensitivity
-this section describes. With the alignment emitted, **the self-hosted ccom
-runs**, and a ccom₂ built by it runs too.
-
-Note on the ASSIGN change: it is correct C, and all 401 tests pass with it, but
-it carries **no regression test**. Two attempts to build one failed — a folded
-constant in the first, and in the second the narrowing happened anyway through
-some other path — and by this project's own rule an unexercised guard is not a
-guard. Either find the case that distinguishes it or reconsider the change;
-`arm64_widen` mutates the register in place, which is only safe if the
-right-hand value is genuinely dead at that point.
-
-### What is left of the fixpoint
-
-ccom₁ (built by the stage-0 compiler) and ccom₂ (built by ccom₁) both run, and
-their output on the same input differs by **exactly two instructions**:
-
-```
-172d171
-< 	mov	w10, w10
-179d177
-< 	mov	w10, w10
-```
-
-That is `arm64_widen`'s unsigned 4-byte case, and it is not the no-op it looks
-like — writing a `w` register zeroes the upper half, which is the whole point.
-So the two compilers disagree about whether some node is unsigned, and the
-disagreement is in code the compiler generates *for itself*. Everything else,
-in a 4.7KB translation unit, is identical.
-
-Finding it: compile the file where the difference appears with both, and trace
-the node types (`V8DBG=1`) at the two sites. One of the two is wrong about
-`tyunsigned`, and since ccom₂'s only difference from ccom₁ is which compiler
-built it, the fault is in how one of them compiles ccom's own type handling.
-
-Until this closes, rung 3 is open, and with it B3 (V8 make rebuilding the
-compiler) and B6.
+- The `case ASSIGN` narrowing fix in `gencode.c` (the value of `a = b` is `b`
+  converted to the type of `a`) is correct C and did not fix this. It carries
+  **no regression test** — two attempts to build one failed — so it is a
+  candidate for reconsideration, not settled.
+- `tests/selfhost`'s fixpoint cases are **not mutation-verified**. Reverting the
+  alignment fix does not fail them, because that fault needed a particular
+  object arrangement. A pass means "converges", not "correct".
 
 ## 4b. Phase 6 — Installation: the V8 world as something you can live in
 

@@ -98,15 +98,17 @@ the real driver compiles everything else. Both drivers exec the same `cpp` and
 `ccom`, so the objects are identical either way; only the process differs.
 Rung 4 is where the seed stops being needed.
 
-Rungs 3–5 are unfinished. The *installed* `cpp` and `ccom` are still clang-built
-host binaries (`nm` shows 0 V8 symbols) — they sit inside the rootfs but do not
-obey the jail, so "the compiler runs on V8 code" is true of the driver and not
-yet of its passes.
+**Rung 3 is closed.** All twenty translation units of `cpp` and `ccom` compile
+under v8cc and link freestanding, the self-hosted `cpp` matches the stage-0 one
+byte for byte, and the compiler reproduces itself: ccom2 (built by ccom1) and
+ccom3 (built by ccom2) generate byte-identical assembly. `tests/selfhost`
+asserts it. Note ccom1 == ccom2 is *false* by two instructions and that is
+correct — ccom1 inherits one generation of the clang-built stage-0's beliefs,
+and stage 2 washes it out. That is what a three-stage bootstrap is for.
 
-All twenty of their translation units do now **compile** under v8cc and link
-freestanding (`tests/selfhost`), and the self-hosted `cpp` runs and matches the
-stage-0 one byte for byte. The self-hosted `ccom` links but crashes; PLAN.md §4c
-records the bisection in full, and it is the one thing blocking rung 3.
+Rungs 4–5 are unfinished. The *installed* `cpp` and `ccom` are still the
+clang-built ones (`nm` shows 0 V8 symbols); they sit inside the rootfs without
+obeying the jail. Rung 4 is where V8 make rebuilds the compiler in place.
 
 ### The jail
 

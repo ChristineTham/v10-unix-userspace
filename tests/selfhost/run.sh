@@ -119,5 +119,64 @@ ck 'self-hosted cpp produced real output' yes \
 ck 'self-hosted cpp output is byte-identical' yes \
    "$(cmp -s a.i b.i && echo yes || echo no)"
 
+# --- THE FIXPOINT ------------------------------------------------------------
+# ccom1 above was built by the stage-0 compiler, which clang built from the host
+# headers.  So ccom1 inherits one generation of difference and ccom1 == ccom2 is
+# NOT the property to test -- it is false, by two instructions, and was false
+# for a good reason: stage-0 disagreed with the ported compiler about one
+# unsignedness question.
+#
+# The property that means "this compiler reproduces itself" is ccom2 == ccom3:
+# build ccom2 with ccom1, ccom3 with ccom2, and compare what those two GENERATE.
+# Generated assembly, not the binaries -- Mach-O embeds a UUID and timestamps,
+# so two identical compilers produce non-identical files.
+#
+# This is the classic three-stage bootstrap, and the convergence at stage 2 is
+# the point: whatever stage 0 believed has been washed out.
+#
+# HONEST LIMIT.  These cases were NOT mutation-verified against the bug that
+# made them possible.  Removing the alignment argument from commdec() again --
+# the defect that kept the self-hosted ccom from running at all -- does not fail
+# this suite, because that fault was layout-dependent: it needed a particular
+# arrangement of objects, and the arrangement here happens not to trigger it.
+# So read a pass as "the compiler converges", not "the compiler is correct".
+# A regression that changes generated code in a self-consistent way would
+# converge too, and these cases would not notice.
+stage() {				# stage COMPILER OUTDIR -> builds OUTDIR/ccom
+	_cc=$1; _out=$2
+	mkdir -p "$_out" "$_out/root/lib" "$_out/root/usr"
+	cp "$ROOT/src/cmd/ccom/vax/y.debug.sv" "$_out/y.debug"
+	cp "$V8ROOT/lib/cpp" "$_out/root/lib/cpp"
+	cp "$_cc" "$_out/root/lib/ccom"
+	cp "$V8ROOT"/lib/crt0.o "$V8ROOT"/lib/libv8*.a "$_out/root/lib/"
+	cp -R "$V8ROOT/usr/include" "$_out/root/usr/"
+	( cd "$_out" || exit 1
+	  for f in $CCOM_MI; do
+		V8ROOT=$_out/root $CC $INC -DYYDEBUG -c -o "$f.o" "$MIDIR/$f.c" 2>/dev/null
+	  done
+	  for f in $CCOM_MD; do
+		V8ROOT=$_out/root $CC $INC -c -o "$f.o" "$A64/$f.c" 2>/dev/null
+	  done
+	  clang -nostdlib -e _v8start -o ccom "$B/crt0.o" ./*.o \
+		"$B/libc/libv8c.a" "$B/v8sys/libv8stubs.a" "$B/v8sys/libv8sys.a" \
+		-lSystem 2>/dev/null )
+}
+
+stage "$TMP/v8ccom" "$TMP/s2"
+ck 'ccom2 builds, using ccom1' yes "$([ -x $TMP/s2/ccom ] && echo yes || echo no)"
+stage "$TMP/s2/ccom" "$TMP/s3"
+ck 'ccom3 builds, using ccom2' yes "$([ -x $TMP/s3/ccom ] && echo yes || echo no)"
+
+# Compare on a real translation unit, preprocessed the way the driver does it.
+"$V8ROOT/lib/cpp" "$ROOT/src/cmd/cat.c" "-I$V8ROOT/usr/include" > fx.i 2>/dev/null
+"$TMP/s2/ccom" fx.i fx2.s >/dev/null 2>&1
+"$TMP/s3/ccom" fx.i fx3.s >/dev/null 2>&1
+ck 'ccom2 compiles a real file' yes \
+   "$([ "$(wc -c < fx2.s 2>/dev/null || echo 0)" -gt 1000 ] && echo yes || echo no)"
+ck 'ccom3 compiles a real file' yes \
+   "$([ "$(wc -c < fx3.s 2>/dev/null || echo 0)" -gt 1000 ] && echo yes || echo no)"
+ck 'FIXPOINT: ccom2 and ccom3 generate identical code' yes \
+   "$(cmp -s fx2.s fx3.s && echo yes || echo no)"
+
 echo "selfhost: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
