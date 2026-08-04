@@ -583,6 +583,33 @@ storeto(p, src)
 
 /* ------------------------------------------------------- the generator */
 
+
+/*
+ * Make sure a value is in an FP register.
+ *
+ * A floating operator can be handed an integer operand -- `arg *= 10` in
+ * ecvt's digit loop is the canonical case -- and pass 1 does not always insert
+ * a CONV for it.  Spelling an integer register number as `d<n>` then names a
+ * completely unrelated FP register, which is silent and produces plausible
+ * wrong digits rather than a crash: fcvt(3.14159, 6) came out 3.146509.
+ */
+static ret
+tofp(r, t)
+	ret r;
+	TWORD t;
+{
+	int fr;
+
+	if (r.flag & R_FREG) return (r);
+	if (!(r.flag & R_REG)) cerror("floating operand is nowhere");
+	fr = fregalloc();
+	printx("\tscvtf\t%s, %s\n", freg(t, fr), xreg(r.reg));
+	regfree(r.reg);
+	r.reg = fr;
+	r.flag = R_FREG;
+	return (r);
+}
+
 static ret
 gen(p, want)
 	NODE *p;
@@ -611,7 +638,30 @@ gen(p, want)
 		return (res);
 
 	case REG:
-		res.reg = p->tn.rval; res.flag = R_REG;
+		/*
+		 * A REGISTER VARIABLE, not a scratch register.  It must be
+		 * copied before it is handed out, because almost every operator
+		 * here reuses its operand's register as the destination -- fine
+		 * for a scratch register, fatal for a variable.
+		 *
+		 * The symptom, in fputs():
+		 *	ldrsw x27, [x27]   ; load iop->_cnt into x27 -- which IS iop
+		 *	str   w27, [x27]   ; then store through the count as an address
+		 *
+		 * The 62 back-end tests never caught this because they use
+		 * `register` nowhere; V8's libc uses it on almost every
+		 * parameter, so the very first real function died on it.
+		 */
+		if (want == WEFFECT) return (res);
+		reg = tyfloat(p->in.type) ? fregalloc() : regalloc();
+		if (tyfloat(p->in.type)) {
+			printx("\tfmov\t%s, %s\n", freg(p->in.type, reg),
+			    freg(p->in.type, p->tn.rval));
+			res.reg = reg; res.flag = R_FREG;
+		} else {
+			printx("\tmov\t%s, %s\n", xreg(reg), xreg(p->tn.rval));
+			res.reg = reg; res.flag = R_REG;
+		}
 		return (res);
 
 	case RNODE:
@@ -761,8 +811,8 @@ gen(p, want)
 				    p->in.op);
 				op = "fadd";
 			}
-			l = gen(p->in.left, WVALUE);
-			r = gen(p->in.right, WVALUE);
+			l = tofp(gen(p->in.left, WVALUE), p->in.type);
+			r = tofp(gen(p->in.right, WVALUE), p->in.type);
 			printx("\t%s\t%s, %s, %s\n", op, freg(p->in.type, l.reg),
 			    freg(p->in.type, l.reg), freg(p->in.type, r.reg));
 			fregfree(r.reg);
@@ -802,6 +852,7 @@ gen(p, want)
 	/* ---------------------------------------------------- assignment */
 	case ASSIGN:
 		r = gen(p->in.right, WVALUE);
+		if (tyfloat(p->in.left->in.type)) r = tofp(r, p->in.left->in.type);
 		storeto(p->in.left, r.reg);
 		if (want == WEFFECT) {
 			if (r.flag & R_FREG) fregfree(r.reg); else regfree(r.reg);
@@ -833,7 +884,8 @@ gen(p, want)
 				    base);
 				fop = "fadd";
 			}
-			r = gen(p->in.right, WVALUE);
+			l = tofp(l, p->in.type);
+			r = tofp(gen(p->in.right, WVALUE), p->in.type);
 			printx("\t%s\t%s, %s, %s\n", fop, freg(p->in.type, l.reg),
 			    freg(p->in.type, l.reg), freg(p->in.type, r.reg));
 			fregfree(r.reg);
@@ -900,8 +952,8 @@ gen(p, want)
 	 */
 	case CMP:
 		if (tyfloat(p->in.left->in.type)) {
-			l = gen(p->in.left, WVALUE);
-			r = gen(p->in.right, WVALUE);
+			l = tofp(gen(p->in.left, WVALUE), p->in.left->in.type);
+			r = tofp(gen(p->in.right, WVALUE), p->in.left->in.type);
 			printx("\tfcmp\t%s, %s\n",
 			    freg(p->in.left->in.type, l.reg),
 			    freg(p->in.left->in.type, r.reg));

@@ -276,14 +276,21 @@ genswcase(val, lab)		/* one linear switch test */
 	int lab;
 {
 	/*
-	 * cmp accepts a 12-bit unsigned immediate (optionally shifted by 12).
-	 * Anything else has to be materialised into a scratch register first.
+	 * The switch subject is in x0, not a scratch register: cgram.y assigns
+	 * it to the SNODE pseudo-register, and SNODE -- like RNODE and QNODE --
+	 * lives in x0 by the callreg() convention (mfile2.h).  Comparing a
+	 * scratch register here instead made every case fall to the default,
+	 * which showed up as printf printing "int=d" for "int=%d": _doprnt's
+	 * conversion switch never matched and its default echoed the letter.
+	 *
+	 * cmp takes a 12-bit unsigned immediate; anything wider has to be
+	 * materialised first.
 	 */
 	if (val >= 0 && val < 4096)
-		printx("\tcmp\tx9, #%ld\n", val);
+		printx("\tcmp\tx0, #%ld\n", val);
 	else {
-		printx("\tmov\tx10, #%ld\n", val);
-		printx("\tcmp\tx9, x10\n");
+		printx("\tmov\tx9, #%ld\n", val);
+		printx("\tcmp\tx0, x9\n");
 	}
 	printx("\tb.eq\tL%d\n", lab);
 }
@@ -356,20 +363,33 @@ arm64_endfunction(framebytes, minrv)
 	printx("\tstp\tx29, x30, [sp, #-16]!\n");
 	printx("\tmov\tx29, sp\n");
 
+	/*
+	 * ORDER: allocate the locals FIRST, then save the callee-saved
+	 * registers below them.
+	 *
+	 * Pushing the saves immediately after `mov x29, sp` puts them at
+	 * [x29,#-16] downward -- which is exactly where pass 1 placed the
+	 * automatics, since oalloc() under BACKAUTO hands out negative offsets
+	 * from the frame pointer.  Every save then landed on top of a local.
+	 * It only bit functions that both used `register` variables and had
+	 * automatics, which is why 62 synthetic tests missed it and the first
+	 * real libc function (fputs) died immediately.
+	 */
+	spadjust("sub", frame);
+
 	for (r = 0; r < nsaved; r++)
 		printx("\tstr\t%s, [sp, #-16]!\n", rnames[minrv + 1 + r]);
-
-	spadjust("sub", frame);
 
 	/* ---- body ---- */
 	if (body && bodylen > 0)
 		printbuf(body, (int)bodylen);
 
 	/* ---- epilogue (control arrives here via the retlab in genret) ---- */
-	spadjust("add", frame);
-
+	/* mirror the prologue: restore the saves, THEN drop the locals */
 	for (r = nsaved - 1; r >= 0; r--)
 		printx("\tldr\t%s, [sp], #16\n", rnames[minrv + 1 + r]);
+
+	spadjust("add", frame);
 
 	printx("\tldp\tx29, x30, [sp], #16\n");
 	printx("\tadd\tsp, sp, #%d\n", ARGSPILL);

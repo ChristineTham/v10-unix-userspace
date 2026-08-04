@@ -38,11 +38,11 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 # with -nostartfiles, never into anything that also uses host libc.
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c,$(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding clean distclean
+.PHONY: all stage0 cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs libv8sys libv8c crt0 test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c clean distclean
 all: stage0
 stage0: cpp v8ccom v8cc libv8sys crt0 rootfs
 
-test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding
+test: test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c
 test-cpp: cpp
 	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: v8ccom
@@ -53,6 +53,8 @@ test-v8sys: $(BUILD)/v8sys/test
 	@$(BUILD)/v8sys/test
 test-freestanding: rootfs libv8sys crt0
 	@$(ROOT)tests/freestanding/run.sh
+test-libv8c: rootfs libv8sys crt0 libv8c
+	@$(ROOT)tests/libv8c/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
 	@mkdir -p $(BUILD)/v8sys
@@ -236,16 +238,16 @@ $(BUILD)/libc/libv8c.a: $(LIBC_OBJ)
 # driver to find its passes.
 V8CCRUN = V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc -I$(LIBCSRC)/stdio
 
-$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.c | rootfs
+$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
 	@mkdir -p $(BUILD)/libc/gen
 	$(V8CCRUN) -c -o $@ $<
 
-$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.C | rootfs
+$(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.C $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
 	@mkdir -p $(BUILD)/libc/gen
 	cp $< $(BUILD)/libc/gen/$*.c
 	$(V8CCRUN) -c -o $@ $(BUILD)/libc/gen/$*.c
 
-$(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c | rootfs
+$(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp | rootfs
 	@mkdir -p $(BUILD)/libc/stdio
 	$(V8CCRUN) -c -o $@ $<
 

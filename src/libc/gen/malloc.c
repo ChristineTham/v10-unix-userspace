@@ -28,8 +28,20 @@ char *s;
  *	ALIGN, NALIGN, BLOCK, BUSY, INT
  *	where INT is integer type to which a pointer can be cast
 */
-#define INT int
-#define ALIGN int
+/*
+ * LP64: `int` is 32 bits and a pointer is 64, so every testbusy/setbusy/
+ * clearbusy cast truncated the pointer and malloc returned garbage.  The
+ * comment eight lines above states the requirement exactly -- "INT is integer
+ * type to which a pointer can be cast" -- and on the VAX int satisfied it.
+ * Here long does.
+ */
+#define INT long
+/*
+ * ALIGN is listed alongside INT as something a different implementation may
+ * need to redefine.  It forces the alignment of the block header, and under
+ * LP64 that has to be 8 so a returned pointer is fit for a double.
+ */
+#define ALIGN long
 #define NALIGN 1
 #define WORD sizeof(union store)
 #define BLOCK 1024

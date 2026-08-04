@@ -293,7 +293,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 1b ARM64 back end | done | `v8ccom` 62/62 — arithmetic, control flow, pointers, arrays, globals, statics, recursion, structs, bitfields, floats, 12-argument calls |
 | 1c driver | done | `v8cc` 8/8, `make rootfs` |
 | 2a libv8sys | done | `v8sys` 44/44 |
-| 2b V8 libc | in progress | freestanding programs run: `crt0` + shim, `-nostdlib`, zero libc imports (`freestanding` 7/7). Next: port libc proper — stdio, doprnt in C, IEEE float conversions, setjmp |
+| 2b V8 libc | in progress | V8's printf, fputs, strings and stdio run, compiled by v8cc (`libv8c` 7/7). malloc hangs — see the note in `tests/libv8c/run.sh`; %f loses precision |
 | 3A–3C waves | not started | |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
@@ -308,11 +308,19 @@ Silicon. Everything above the code generator is untouched 1985 Bell Labs source.
 
 ### The next thing to do
 
-Port V8's libc proper on top of the shim: stdio (with `doprnt` rewritten in C),
-the string routines from their in-tree portable `.C` references, IEEE versions
-of `atof`/`ecvt`/`frexp`/`ldexp`/`modf`, an ARM64 `setjmp`, and an LP64 pass
-over `usr/include`. Wave A then becomes possible, and Wave A is where the world
-starts to look like Unix.
+Two things, both bounded and both written up where they live:
+
+1. **malloc hangs** — `tests/libv8c/run.sh` has the analysis. INT and ALIGN are
+   fixed for LP64; the remaining suspect is that our `sbrk` arena is nowhere
+   near the data segment, so the coalescing walk never terminates.
+2. **`%f` loses precision** — `printf("%f", 3.14159)` gives `3.146509`. `%e` and
+   `%g` are correct and share `ecvt`, so it is the `fcvt` digit loop. The same
+   source under clang produces the right digits, so it is codegen, not source.
+
+Then Wave A, which is where the world starts to look like Unix. Wave A should
+lead with a real program rather than more synthetic tests: every compiler bug
+found so far has lived in the *combination* of features that real code uses and
+unit tests do not.
 
 ### Deliberate gaps in the back end
 
