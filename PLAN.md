@@ -206,20 +206,35 @@ wrong: it emits each literal inline mid-function (`.section __DATA,__v8str1`,
 bytes, `.text`) and then addresses it with a textbook `adrp Lnnn@PAGE` /
 `add x9, x9, Lnnn@PAGEOFF` pair. So that is not obviously it either.
 
-Two candidates remain, neither yet tested:
+Stack exhaustion is also ruled out: raising the limit eightfold changes nothing,
+and the fault address (0x1246040) is nowhere near `sp` (0x16d3546f0).
 
-1. **Stack, not heap.** The crash is inside `malloc`, but v8cc's frames are
-   large — `trees.c` has functions opening with `sub sp, sp, #464`, and every
-   local is spilled rather than kept in a register. `yyparse` recursion through
-   frames of that size could exhaust the stack, and the symptom would be a wild
-   fault in whatever ran next. Check the fault address against the stack guard
-   page rather than assuming heap corruption.
-2. **The epilogue.** v8cc pops each callee-saved register with its own
-   post-increment (`ldr x28, [sp], #16` three times) and then does a second
-   `add sp, sp, #64` after `ldp x29, x30`. That is unusual enough to be worth
-   verifying against AAPCS64 by hand for a function with several register
-   variables, which the big `trees.c` functions have and the tests/v8ccom cases
-   largely do not.
+**The strongest lead, and where to start next time: v8cc never emits `.comm`.**
+A file-scope `int bdebug;` is a *tentative* definition, and clang emits it as
+`.comm _bdebug,4,2` — a common symbol, which the linker merges across
+translation units and places in `__DATA,__common`, a zerofill section at the end
+of the segment. v8cc emits it as a strong definition instead:
+
+```
+_bdebug:
+	.long	0
+```
+
+placed inline among the initialised data. Across the whole compiler that moves
+every uninitialised global to a completely different address relative to
+everything else, which is exactly the kind of difference that turns a latent
+out-of-bounds access from harmless into fatal — and exactly the kind that is
+sensitive to link order. It is also the same family as the Mach-O
+common-symbol hazard already recorded in CLAUDE.md, approached from the other
+side: there the linker resolved a common symbol from an archive, here the
+compiler never makes one.
+
+Two things to establish: whether two translation units that both carry the same
+tentative definition still end up sharing one object (Mach-O does not error on
+this, so it may be silently picking by link order), and whether any tentative
+definition in ccom is declared at *different sizes* in different files — with
+`.comm` the linker takes the largest, with strong definitions it takes whichever
+comes first, and that difference alone would produce this symptom.
 
 Until this closes, rung 3 is open, and with it B3 (V8 make rebuilding the
 compiler) and B6.
