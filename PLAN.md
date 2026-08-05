@@ -566,9 +566,27 @@ either way:
   `libv8sys` is — the same *kind* of decision as the as/ld exception, and so the
   same kind that belongs on the sanctioned list rather than being assumed.
 
-The second is the right engineering answer; it is recorded as a question because
-it changes the shim's contract, not because it is hard. Nothing else in Phase 4
-can be honest until it is settled: `who`, `w`, `df`, `load` all need it.
+**DECIDED: the second.** `libkmemu` — and only `libkmemu` — may link host libc
+and call the documented interfaces: `getutxent(3)`, `getfsstat(2)`,
+`proc_listpids`/`proc_pidinfo`, `sysctl(3)`. This is now a sanctioned exception
+on the same list as as/ld/ar/strip/nm, and it is recorded in CLAUDE.md with the
+others.
+
+The boundary, so it does not spread:
+
+- The exception is **per-file**, not per-shim. Everything already in
+  `shim/v8sys/` stays raw-syscall-only; `dir.c`'s note at the top still holds
+  for it. A new `shim/libkmemu/` is where libc is allowed.
+- It is allowed for **reading facts about the running system** and nothing else.
+  Not for file I/O, not for string handling, not for anything `rawsys.h` already
+  covers — those would be convenience, and convenience is how an exception list
+  stops meaning anything.
+- The reason it is justified where parsing `/var/run/utmpx` is not: the syscall
+  interface is stable and documented, the on-disk layout is neither. Reaching
+  for libc here **narrows** what this port depends on rather than widening it.
+
+Nothing else in Phase 4 can be honest until this is built: `who`, `w`, `df` and
+`load` all need it, and `ps` needs `libproc` on top.
 
 `who.c` was imported while establishing this and then **un-imported** (its
 `PROVENANCE` line removed with it), so the tree does not carry a command that

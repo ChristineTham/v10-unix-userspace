@@ -77,6 +77,21 @@ driver execs `clang` for assembly and linking. This is a decision, not a gap —
 do not "fix" it. Everything else is ported rather than passed through; host
 passthrough is meant to be the exception, not the rule.
 
+**`shim/libkmemu/` may link host libc** — the one component that may. It answers
+"what is running / what is mounted / who is logged in" through documented,
+stable interfaces (`getutxent`, `getfsstat`, `proc_listpids`, `sysctl`) so
+Phase 4's grovelers can be honest. The alternative was parsing
+`/var/run/utmpx` by hand to keep `libv8sys` raw-syscall-only, and that file's
+layout is private and undocumented — a wrong guess there yields a `who` that
+looks right and lies. Reaching for libc here narrows what the port depends on.
+
+The boundary matters more than the exception: **per-file, not per-shim**.
+Everything in `shim/v8sys/` stays raw-syscall-only (`dir.c` says so at its top,
+and that still holds). libc is for reading system facts, never for file I/O,
+strings, or anything `rawsys.h` already covers — that would be convenience, and
+convenience is how an exception list stops meaning anything. PLAN.md §7 has the
+reasoning.
+
 ### The bootstrap ladder
 
 Order matters and is not obvious. Each rung is built by the one above:
