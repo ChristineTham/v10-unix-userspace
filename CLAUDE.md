@@ -214,6 +214,13 @@ wavec suite now runs `grap | pic | troff` and asserts drawing commands come out
 the far end. Pipe a new Wave C program into what consumes it before believing
 it works.
 
+**V8 assumes address 0 is readable.** The VAX put the text segment at 0, so
+`*(char *)0` returned a byte of the program rather than trapping. macOS keeps
+page 0 unmapped. `refer` depends on it: `prefix(".[", lookat())` in `refer5.c`
+gets a NULL from `lookat()` at end of input, and on the VAX that quietly failed
+the comparison. Symptom is a segfault on the *last* item of a file, so a test
+with one citation will not find it.
+
 **A missing libc function does not fail the link — it resolves from `-lSystem`.**
 For a non-variadic function that silently works and hides the gap. For a
 *variadic* one it is an ABI mismatch: v8cc passes every argument positionally in

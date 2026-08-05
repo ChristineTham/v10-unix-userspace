@@ -253,5 +253,104 @@ check 'pic survives a named .lf inside .PS' '0' "$?"
 # ...and passes it through rather than swallowing it.
 check 'pic passes the troff line through' '1' "$(grep -c '^\.lf 7 some\.file' pl2.out)"
 
+# --- refer, end to end -------------------------------------------------------
+# The whole chain: mkey reduces records to keys, inv builds the inverted index,
+# hunt looks a citation up in it, and refer turns .[ ]. into troff strings.
+# Three separate LP64 faults had to be fixed before this worked; each case below
+# is placed against the one it guards, and each was mutation-verified.
+REFD=$V8ROOT/usr/lib/refer
+cat > bib <<'BIBEOF'
+%A B. W. Kernighan
+%A D. M. Ritchie
+%T The C Programming Language
+%I Prentice-Hall
+%D 1978
+
+%A B. W. Kernighan
+%T A Typesetter-independent TROFF
+%J Computing Science Technical Report
+%N 97
+%D 1981
+BIBEOF
+if [ -x "$REFD/mkey" ] && [ -x "$REFD/inv" ] && [ -x "$REFD/hunt" ]; then
+	check 'mkey reduces a record to keys' \
+	    'bib:0,92	kernig ritchi the progra langua prenti hall 1978' \
+	    "$("$REFD/mkey" bib | head -1)"
+
+	"$REFD/mkey" bib | "$REFD/inv" -h751 -n bib
+	# zalloc() returned int, so every allocation in refer lost its top 32
+	# bits and hunt faulted at 0x49c7748 -- i.e. 0x1049c7748.  An empty or
+	# missing .ic is what a broken index looks like from outside.
+	check 'inv writes a record-pointer file' '2' "$(grep -c . bib.ic)"
+	if [ -s bib.ia ] && [ -s bib.ib ]; then pass=$((pass+1))
+	else fail=$((fail+1)); echo "FAIL inv wrote an empty hash table or posting list"; fi
+
+	# THE `fd' GUARD.  inv1.c had `if (keepkey) fd = keepkey ? fopen(..) : 0;'
+	# -- the redundant `if' made the else unreachable, so without -d, fd kept
+	# stack garbage (measured: 0x1ee41dc28).  newkeys() then took its
+	# `if (fd)' path and appended ";<off>,<len>" to every .ic line, and
+	# result() in hunt5.c truncates at that ';' -- taking the newline with
+	# it.  refer counts newlines to decide it got an answer, so every lookup
+	# came back "No such paper".  A semicolon here is that bug.
+	check 'inv does not write keepkey fields without -d' '0' \
+	    "$(grep -c ';' bib.ic)"
+	check 'inv leaves the tag newline intact' '2' \
+	    "$(tr -cd '\n' < bib.ic | wc -c | tr -d ' ')"
+	[ -f bib.id ] && { fail=$((fail+1)); echo "FAIL inv wrote .id without -d"; } \
+	              || pass=$((pass+1))
+
+	# hunt against that index.  -T asks for tags; without it hunt finds the
+	# record but prints nothing, which is upstream's design, not a fault.
+	echo 'kernighan programming' | "$REFD/mkey" -s > rq
+	check 'hunt finds the right record' '/bib:0,92' \
+	    "$("$REFD/hunt" -T bib < rq)"
+
+	# THE TERMINATOR GUARD, and it needs -C to bite.  doquery() reads posting
+	# lists with `k = getw(fb)' into a long, and getw is declared unsigned:
+	# on the VAX a 32-bit long made the -1 terminator come back as -1, but
+	# under LP64 it widens to 4294967295 and `if (k == -1) break' never fires.
+	# With colevel 0 the loop still escapes through `if (j>=nf) break', which
+	# is why every case above passes either way -- the fix is only observable
+	# with -C set, where that escape is disabled and hunt spins forever.
+	#
+	# The alarm is what keeps a hang from hanging the SUITE: without the fix
+	# this is killed by SIGALRM and prints nothing.
+	check 'hunt terminates on a coordination-level search' '/bib:0,92' \
+	    "$(perl -e 'alarm 10; exec @ARGV' "$REFD/hunt" -C1 -T bib < rq 2>/dev/null)"
+else
+	fail=$((fail+6)); echo "FAIL refer helpers not installed"
+fi
+
+cat > cite.ms <<'MSEOF'
+The C language is described in
+.[
+kernighan ritchie
+.]
+and the typesetter work in
+.[
+kernighan typesetter
+.]
+MSEOF
+if [ -x "$V8ROOT/usr/bin/refer" ]; then
+	# -n suppresses the default /usr/dict/papers index, -p names ours.
+	"$V8ROOT/usr/bin/refer" -n -p bib cite.ms > ref.out 2> ref.err
+	check 'refer exits cleanly' '0' "$?"
+	# prefix(".[", lookat()) sees NULL at end of input.  The VAX read address
+	# 0 -- text segment, mapped -- and simply failed the compare; macOS traps.
+	# The LAST citation in a file is the one that reaches it, so this case
+	# needs two citations with nothing after the second.
+	check 'refer says nothing on stderr' '0' "$(wc -c < ref.err | tr -d ' ')"
+	check 'refer resolved both citations' '2' "$(grep -c '^\.ds \[F' ref.out)"
+	# The authors of record 1 must accumulate, and the two records must be
+	# classified differently -- book (has %I) vs journal-article (has %J).
+	check 'refer accumulates a second author' '1' \
+	    "$(grep -c '^\.as \[A " and D\. M\. Ritchie' ref.out)"
+	check 'refer classifies a book' '1' "$(grep -c '\]\[ 2 book' ref.out)"
+	check 'refer classifies a journal article' '1' \
+	    "$(grep -c '\]\[ 1 journal-article' ref.out)"
+else
+	fail=$((fail+6)); echo "FAIL refer not installed"
+fi
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

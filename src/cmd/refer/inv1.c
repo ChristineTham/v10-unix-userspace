@@ -108,7 +108,12 @@ if (appflg )
 		appflg=0;
 	}
 fc = fopen(nmc,  appflg ? "a" : "w");
-if (keepkey)
+/* The `if (keepkey)' that stood here made the else branch of the ternary
+   unreachable, so with no -d flag `fd' kept whatever was on the stack --
+   measured as 0x1ee41dc28, not 0.  newkeys() then took its `if (fd)' path and
+   appended ";%ld,%d" to every .ic line, which result() in hunt5.c truncates at
+   the ';' -- taking the newline with it, so refer saw a tag with no newline and
+   said "No such paper".  The ternary already handles both cases.  See PORTING.md */
 fd = keepkey ? fopen(nmd, "w") : 0;
 docs = newkeys(fta, stdin, fc, nhash, fd, &iflong);
 fclose(stdin);

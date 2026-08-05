@@ -116,7 +116,12 @@ for(nterm=1; nterm<nitem; nterm++)
 		if (iflong)
 			k = getl(fb);
 		else
-			k = getw(fb);
+			/* LP64: getw is declared unsigned above, and k is long.
+			   On the VAX long was 32 bits, so the -1 terminator came
+			   back as -1; here it widens to 4294967295 and this loop
+			   never ends.  Measured directly: "next term finds
+			   4294967295".  See PORTING.md */
+			k = (int)getw(fb);
 		if (k== -1) break;
 # if D2
 		fprintf(stderr,"next term finds %ld\n",k);

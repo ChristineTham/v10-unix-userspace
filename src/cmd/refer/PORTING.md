@@ -5,7 +5,9 @@ four it execs — `mkey`, `inv`, `hunt`, `deliv`. They are installed into
 `rootfs/usr/lib/refer/`, which is where refer looks for them, and the shim
 resolves `/usr/lib/...` inside `$V8ROOT`.
 
-40 of the 46 `.c` files compile untouched. **No source changes were needed.**
+37 of the 46 `.c` files compile untouched. **Three needed an LP64 fix**:
+`deliv2.c`, `inv1.c` and `hunt2.c` — see below. Six more are not built at all
+(next section).
 
 ## Not built: whatabout
 
@@ -15,112 +17,139 @@ upstream's own `all` target either. They use the pre-C89 initialiser
 `int x 5;` — no `=` — which V8's own grammar already rejects. Skipping them
 loses nothing that `all` built.
 
-## UPDATE: the `/bin` gap is closed; `hunt` is the remaining bug
-
-The section below described the state before the V8 world had its own `/bin`.
-That landed with the make bootstrap: `/bin/` and `/usr/bin/` are on the shim's
-redirect list, `v8s_execve` routes through `vpath()`, and V8's own `pwd` is
-installed. **refer no longer hangs** — it runs to completion.
-
-What is left is a different, further-along failure. Given a bibliography:
+## SOLVED: refer works end to end
 
 ```
-$ mkey refs
-refs:0,74	kernig ritchi the progra langua 1978        <- correct
-$ hunt -p refs kernighan
-                                                        <- nothing
+$ mkey bib | inv -h751 -n bib
+$ refer -n -p bib cite.ms
+The C language is described in\\*([.1\\*(.]
+.ds [A B. W. Kernighan
+.as [A " and D. M. Ritchie
+.ds [T The C Programming Language
+.ds [I Prentice-Hall
+.ds [D 1978
+.][ 2 book
+...
+.][ 1 journal-article
 ```
 
-`mkey` produces the right keys; `hunt` finds no record for them, so refer emits
-`.nr [W \w''` and passes the `.[` / `.]` block through unsubstituted. Nothing
-leaves the jail during the run (checked with `V8JAIL=warn`), so this is refer's
-own logic rather than a path or exec problem. ~~`hunt` is where to look next.~~ **It is not — see below.**
+Citations resolve, the authors of a record accumulate, and the two records are
+classified correctly from their fields — `%I` makes a book, `%J` a journal
+article. `tests/wavec` asserts all of it.
 
-### CORRECTION: the fault is in `inv`, not `hunt`
+Three LP64 faults had to be fixed, all in authentic source, all measured rather
+than reasoned about. Every other file still compiles untouched.
 
-Driving the pipeline by hand with the helpers at their installed path
-(`$V8ROOT/usr/lib/refer/`, not `/usr/bin` — refer execs them from there):
+### 1. `zalloc` returned an `int`
 
-```
-$ mkey refs
-refs:0,57	kernig the progra langua 1978        <- correct
-$ inv refs
-$ ls -l refs.i?
-refs.ia  3080     <- the hash table, written
-refs.ib     4     <- essentially empty
-refs.ic     0     <- the posting lists: NOTHING
-```
-
-`hunt` finds no records because **there are no records to find.** `inv` writes
-the hash table and then writes an empty `.ic`. Every hour spent reading
-`hunt1.c`'s header handling was spent on the wrong program — the header it
-reads is consistent with the file `inv` produced, which is why
-`_assert(kk == nhash)` passes and the read looks clean.
-
-The `hpt`-is-`long*` and `iflong` observations below remain true and remain
-worth checking, but they are not the cause. Narrowed once more, from the file sizes:
-
-`inv6.c` writes the posting list to `fb` (the `.ib` file) one entry at a time
-with `putw`/`putl`, then writes a single `-1` terminator after the loop. The
-produced `.ib` is **4 bytes** — exactly one `putw` — so **the loop body ran
-zero times**. (4 rather than 8 also confirms `iflong` is 0 and the `int` path
-was taken, which is self-consistent.)
-
-So `inv6.c` is not wrong either; it was handed nothing. The fault is upstream of
-it, in whatever produces the sorted key list `inv6.c` walks — `inv5.c` and the
-sort/merge feeding it. Start by printing how many entries that stage believes
-it has.
-
-**Not a threshold effect.** Re-run with a five-record bibliography and the
-output is byte-identical in shape: `.ia` 3080, `.ib` 4, `.ic` 0. The hash table
-is the same size for one record and for five, which is what an all-zero table
-looks like. `mkey` meanwhile prints correct keys for all five.
-
-So `inv` processes **zero keys for any input**, and the question is narrower
-than "why is the posting list empty": it is *what does `inv` read, and does it
-get anything at all*. `inv` and `mkey` are separate programs and refer runs
-them as a pipeline — check whether `inv` is reading `mkey`'s output, reading
-the bibliography directly, or reading nothing.
-
-This is the second time in this port that a "reader" bug has turned out to be a
-writer bug (spell was the first — PLAN.md §4e), and both times the reader
-looked wrong because it was the program producing the visible symptom.
-
-### Narrowed: the index header, and `iflong`
-
-`hunt1.c` reads the inverted index like this:
+`deliv2.c`:
 
 ```c
-fread (&nhash,  sizeof(nhash),  1, fa);
-fread (&iflong, sizeof(iflong), 1, fa);
-if (master == 0)
-	master = (unsigned *) calloc (lmaster, iflong ? 4 : 2);
-hpt = (long *) calloc(nhash, sizeof(*hpt));
-kk = fread( hpt, sizeof(*hpt), nhash, fa);
-_assert (kk == nhash);
+zalloc(m,n)          /* no return type, so int */
+{
+	int t;
+	t = calloc(m,n);   /* the pointer, truncated to 32 bits */
+	return(t);
+}
 ```
 
-Two things stand out, and they are the same shape as the bug that stopped
-`spell` (PLAN.md §4e — a struct whose size *was* an on-disk format):
+Its three callers all declare it as returning a pointer — `int *zalloc()` in
+`hunt2.c`, `long *zalloc()` in `glue1.c`, `struct words *zalloc()` in
+`glue5.c` — so every allocation in refer came back with its top half gone.
+`hunt` faulted at `0x49c7748`, which is `0x1049c7748` with the leading digit
+lost. Textbook: this is CLAUDE.md's "calls malloc without declaring it and casts
+the int result to a pointer", found once more.
 
-1. **`hpt` is `long *`** — 4 bytes on the VAX under `NOLONG`, 8 here. The index
-   `inv` writes and the index `hunt` reads therefore both moved to 8, so they
-   still agree *with each other*; that is why `_assert(kk == nhash)` does not
-   fire and the header appears to read correctly. It would NOT agree with an
-   index written by a VAX, and spell showed that a reader and writer agreeing
-   with each other proves nothing about the format.
+Fixed by giving `zalloc` a `char *` return and a `char *` temporary. The
+neighbouring `hunt7.c` calloc site was checked and is fine — it declares
+`char *calloc()` at the top of the file.
 
-2. **`iflong` is an explicit width flag in the file** — `calloc(lmaster,
-   iflong ? 4 : 2)` — so the format already distinguishes narrow from wide
-   entries, and `inv` decides which to write. Whether our `inv` sets it
-   consistently with what our `hunt` then assumes is the first thing to check.
+### 2. `inv` wrote keepkey fields it was never asked for
 
-So the header is read without error and the lookup still finds nothing, which
-puts the fault after the read: either the hash of a key does not match what
-`inv` stored, or the master-table indexing is using the wrong entry width. The
-next measurement is to build the D1 debug prints already in this file
-(`# if D1`), which print `read %d hashes, iflong %d, nhash %d` — the values
-themselves, which is what settled every hard bug in this port.
+`inv1.c`:
+
+```c
+if (keepkey)
+fd = keepkey ? fopen(nmd, "w") : 0;
+```
+
+The `if` makes the ternary's else branch unreachable, so without `-d` the local
+`FILE *fd` is **never assigned** and keeps whatever is on the stack. Measured:
+`keepkey=0 fd=1ee41dc28`, and no `.id` file created — pure garbage, non-null.
+
+`newkeys()` tests `if (fd)` and, believing keepkey is on, appends `";<off>,<len>"`
+to every `.ic` line. `result()` in `hunt5.c` then truncates `res` at the first
+`;` — **taking the trailing newline with it**. `refer` decides whether it got an
+answer by counting newlines (`newline()` in `refer2.c`), so a perfectly correct
+tag arrived with no newline and every lookup reported "No such paper".
+
+Fixed by deleting the redundant `if`; the ternary already handles both cases.
+
+### 3. `prefix` dereferenced NULL where the VAX read its own text
+
+`refer5.c:93` is `another = prefix (".[", sd=lookat());` and `lookat()`
+(`refer8.c`) returns `fgets`'s NULL at end of input. So the **last** citation in
+a file always reaches `prefix` with a null second argument.
+
+On the VAX that read address 0, which was inside the text segment and mapped, so
+the comparison simply failed and `prefix` returned 0. macOS keeps page 0
+unmapped. A one-line null check in `deliv2.c` reproduces the VAX's observable
+answer.
+
+This is a third shape of the same theme as the shim's other accommodations: not
+a bug in 1985, a trap on a machine with a guard page.
+
+### 4. Fixed but only observable with `-C`: the posting-list terminator
+
+`doquery()` in `hunt2.c` reads posting lists with
+
+```c
+long k; ... unsigned getw(); ...
+k = getw(fb);
+if (k== -1) break;
+```
+
+On the VAX `long` was 32 bits, so the `-1` terminator round-tripped. Under LP64
+it widens to **4294967295** and the test never fires. Measured directly in the
+`# if D2` trace: `next term finds 4294967295`.
+
+With `colevel == 0` the loop still escapes through `if (j>=nf) break`, which is
+why nothing noticed — and why the first version of the guard for this passed with
+the fix reverted. It only bites with `-C`, where that escape is disabled and
+`hunt` spins forever. `tests/wavec` now runs `hunt -C1` under an alarm.
+
+Fixed by sign-extending the 32-bit read: `k = (int)getw(fb);`.
+
+### Two corrections to what this file used to say
+
+Recorded because the errors are more instructive than the fixes.
+
+**"`hunt` is where to look next"** was right, and I then wrongly overturned it.
+
+**"The fault is in `inv`, not `hunt`. `inv` processes zero keys for ANY input"**
+was wrong, and wrong because of an invalid measurement: I ran `inv refs` **with
+no stdin**. `inv` reads mkey's stream on standard input — `pubindex` is one line,
+`mkey $* | inv -h751 -n $1` — so of course it processed zero keys. The
+artefacts I recorded as evidence (`.ia` 3080, `.ib` 4, `.ic` 0, "identical for 1
+and 5 records, so not a threshold") were all measurements of a program reading an
+empty terminal. Driven properly, `inv` had been building a correct index the
+whole time.
+
+The lesson is narrower than "check your setup": **an artefact that looks the same
+for every input is evidence the program never ran, before it is evidence about
+the program.** I read a constant output as a deep invariant instead.
+
+### Still open, and deliberately not touched
+
+- `hunt` exits **255** when run standalone. `main` in `hunt1.c` falls off the end
+  without returning a value, so the status is whatever is in `x0`. That is
+  authentic — V8's `main` returned nothing either — and `refer`, which is what
+  actually consumes `hunt`, exits 0. Not worth diverging from upstream for.
+- `getl`/`putl` in `hunt2.c` build a `long` out of two `int`s via a cast
+  (`int x[2]; ... lp = x; return(*lp);`). Under LP64 that is coincidentally
+  *more* correct than on the VAX, where it read only the first word. Unreached
+  here because our indexes have `iflong == 0`; left alone, and noted so the next
+  reader does not mistake it for something this port changed.
 
 ## Historical: why refer needed a V8 `/bin`
 
