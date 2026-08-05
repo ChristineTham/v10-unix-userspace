@@ -184,31 +184,39 @@ copied out before the second call. Any code holding two results from
 
 Mutation-verified: disabling the interception fails both jail cases.
 
-## 4e. spell: installed, and spellprog cannot read its table — open
+## 4e. spell: the header is diagnosed, the decode is not — open
 
-`spell` is now laid out as `src/cmd/spell/Makefile` says: `spellprog` to
-`/usr/lib/spell`, `spell.sh` to `/usr/bin/spell`, and upstream's prebuilt
-`hlista`, `hlistb`, `hstop` and `words` to `/usr/dict`. `deroff`, which
-`spell.sh` pipes through and nothing else had needed, is ported.
-
-The script now runs end to end and spellprog fails:
+`spell` is installed per `src/cmd/spell/Makefile`'s own layout, `deroff` is
+ported, and the script runs end to end. `spellprog` then says
 
     spell: cannot initialize hash table
 
-**Not a path problem.** It fails identically when handed the host path to
-`hlista` directly, so the file is being found and opened; it is the table
-itself spellprog will not accept. The lists are upstream's own binary data,
-which makes this the first case in the port of a ported program disagreeing
-with V8's on-disk format rather than with its own source — and the obvious
-suspect is LP64, since a hashed word list is exactly the kind of file whose
-header carries word-sized counts.
+**The cause is established, and it is arithmetic rather than inference.**
+`rhuff()` does `read(fd, &huffcode, sizeof(huffcode))` — it reads a struct
+straight off disk, so `sizeof(struct huff)` *is* the header size of every hashed
+word list V8 ever wrote. The struct is six `long` and one `int`. On the VAX,
+under `NOLONG`, that was 7 x 4 = **28 bytes**. On LP64 the identical declaration
+is **56**. The read asks for twice what the file holds, comes up short, and
+`rhuff` returns 0.
 
-Two things to establish, in this order: what spellprog checks before it gives
-up (it is one function), and whether the sizes it expects match what upstream's
-`hlista` actually contains. The lists CAN be regenerated here — `hashmake` and
-`spellin` are built and the recipe is in that makefile — but regenerating them
-would substitute our hash of a dictionary for theirs and hide the disagreement
-rather than settle it.
+This is the port's first collision with V8's **on-disk** format rather than
+with its source, and there will be others: any struct that is `read()` or
+`write()`n whole has the same exposure.
+
+**The obvious fix is not sufficient, and was reverted.** Declaring the fields
+`int` — 32 bits on both machines, so exactly the widths V8 had — makes the
+header read succeed and the table load. spell then runs and gets the *wrong
+answers*: `the`, `of`, `and`, `to`, `in` all reported as misspelled. Worse, the
+`wavec` suite stopped terminating, so the narrowing also puts the huffman
+decoder into a loop.
+
+That says the fields are not merely storage: `huff.c` does shift and mask
+arithmetic on them, and somewhere that arithmetic depends on the width. The
+next step is to read `huff.c`'s use of `xcs`/`xqcs` (both commented "left
+justified", which is a shift on a word whose width matters) and separate the
+on-disk layout from the in-memory type — most likely by reading a 28-byte
+on-disk struct explicitly and widening into the existing one, rather than by
+redeclaring it.
 
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
