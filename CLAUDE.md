@@ -43,8 +43,9 @@ brought in, because GNU make would run it perfectly well and nothing would say
 the rung had not happened.
 
 There is a **third** build tool coming, and it is not a spelling of these two.
-`mk` is Andrew Hume's successor to make (1987), and it arrives with V9/V10 —
-which is this project's stated destination. V8 has no trace of one: no `mk`, no
+`mk` is Andrew Hume's successor to make (1987), and it arrives with **V9** —
+measured, not recalled: V9's README says "all the source and makefiles(mkfiles)",
+and V10's kernel is full of them. So it is needed at the *first* upgrade step. V8 has no trace of one: no `mk`, no
 `mk.1`, not one `mkfile`, and the only `mk.c` upstream belongs to `efl`. So `mk`
 is a non-question today and a port rather than a rename when it lands. PLAN.md
 §4a says what it will cost; `tests/hooks` fails the day the first `mkfile`

@@ -255,13 +255,43 @@ done
 
 check "load prints V8's header" "    1m    5m   15m" "$(head -1 "$TMP/load.out")"
 
-# The numbers are the host's, to the one decimal V8 prints. Compared against
-# sysctl directly rather than uptime(1), so the test does not depend on how
-# another program formats them.
-hostla=$(sysctl -n vm.loadavg | tr -d '{}' |
-         awk '{printf "%6.1f%6.1f%6.1f", $1, $2, $3}')
-v8la=$(sed -n '2p' "$TMP/load.out")
-check "load's three averages match the host" "$hostla" "$v8la"
+# The numbers are the host's -- but the load average is a MOVING TARGET, so an
+# equality check against a sysctl taken at a different instant is flaky, and a
+# flaky test is worse than no test. Seen failing exactly that way: 3.9 against
+# 4.0, one sample apart.
+#
+# So bracket it. Sample sysctl immediately before and after a fresh run, and
+# require each of V8's three numbers to lie inside that interval, widened by the
+# 0.05 that rounding to one decimal can hide. That asserts what is actually
+# true -- V8 read the same quantity the host did, over the same moment -- rather
+# than asserting the machine was idle enough for two samples to agree.
+before=$(sysctl -n vm.loadavg | tr -d '{}')
+"$LOAD" > "$TMP/load2.out" 2>/dev/null
+after=$(sysctl -n vm.loadavg | tr -d '{}')
+v8la=$(sed -n '2p' "$TMP/load2.out")
+verdict=$(awk -v b="$before" -v a="$after" -v v="$v8la" 'BEGIN {
+	split(b, B); split(a, A); n = split(v, V);
+	if (n != 3) { print "load printed " n " numbers, not 3"; exit }
+	# 0.1 -- one full unit of the precision V8 prints with %6.1f, not the
+	# 0.05 that rounding alone would suggest. 0.05 was tried and was ITSELF
+	# flaky: 2.45 - 0.05 is 2.4000000000000004 in binary, so a printed 2.4
+	# fell outside a bracket it was exactly on the edge of. The margin has to
+	# be bigger than the arithmetic noise in computing the margin.
+	#
+	# Still a real check. What it must catch -- a wrong symbol address, a
+	# wrong fscale, the wrong endianness -- is off by orders of magnitude,
+	# not by a tenth.
+	for (i = 1; i <= 3; i++) {
+		lo = (B[i] < A[i] ? B[i] : A[i]) - 0.1;
+		hi = (B[i] > A[i] ? B[i] : A[i]) + 0.1;
+		if (V[i] < lo || V[i] > hi) {
+			printf "field %d: %s outside [%.2f,%.2f]\n", i, V[i], lo, hi;
+			exit
+		}
+	}
+	print "ok"
+}')
+check "load's three averages track the host's" "ok" "$verdict"
 
 # nlist(3) is authentic V8 libc reading a file this port writes, so the two ends
 # must agree about a.out. Under LP64 these are NOT their 1985 sizes -- every

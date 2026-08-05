@@ -169,8 +169,16 @@ char *file;
 	 * reporting it.
 	 *
 	 * Everything below this point is untouched: the arithmetic, the widths,
-	 * the printf and the -i columns are V8's.  dev is 0 because bit 64 clear
-	 * is what selects BSIZE 1024 and INOPB 16, the units libkmemu answers in.
+	 * the printf and the -i columns are V8's.
+	 *
+	 * dev is 0, and that is a FORMAT TAG rather than a convenience.  V8 has
+	 * two on-disk filesystems and `BITFS(dev) = (dev) & 64' is what chooses
+	 * between them: bit clear means the V7-derived free-list format, 1024
+	 * byte blocks, 16 inodes per block -- the units libkmemu answers in.
+	 * Bit set means V8's own bitmap format, 4096 and 64.  Nothing here reads
+	 * a real device, so 0 is the honest answer; when the filesystem server
+	 * of PLAN.md section 8a lands it will assign device numbers whose bit 6
+	 * actually means something, and this line becomes a real lookup.
 	 */
 	if (kmemu_fsstat(mp0, &kfs) < 0) {
 		fprintf(stderr,"cannot stat %s\n", mp0);

@@ -2,7 +2,7 @@
 
 **Status:** Phases 0 through 2b complete and tested; **rung 3 of the bootstrap ladder is closed — the compiler reproduces itself (PLAN S4c);** **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 278 tests. **Wave B done**; **Wave C done** — nroff, troff, tbl, eqn, pic, spell, man, grap and refer all work; `grap | pic | troff` draws a graph end to end and refer resolves citations against an index its own tools built. V8's own yacc and lex build V8's grammars. **Struct-by-value is implemented (PLAN S4f); the compiler has no known unimplemented feature left.** 495 tests. Phases 4 and 5 not started.
 See "Current state" at the bottom.
-**Project arc:** V8 first (this plan), then V9, then V10 — restoring the original project goal of the last Research Edition, with V8 as the beachhead where the lessons are cheapest.
+**Project arc:** V8 first (this plan), then **V9 as the achievable terminus for a complete system**, with **V10 mined selectively** — its source is a pared 1995 snapshot that TUHS itself says is "unlikely" to be made into a working system, and its kernel is reorganised wholesale. V8 is the beachhead where the lessons are cheapest; §8a has what was measured and what it changes.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
 **Source of truth:** `third_party/Research-Unix-v8/` (TUHS release, Alhadis git mirror; case-collision recoveries documented in `third_party/Research-Unix-v8/CASE_COLLISIONS.md`).
 
@@ -139,8 +139,11 @@ exists, `man1/make.1` exists, there is **no `mk`, no `mk.1`, and not one
 description in V8 is a `Makefile` in make syntax.
 
 That is chronologically right. `mk` is Andrew Hume's successor to make, from
-1987; it arrives with **V9/V10** and Plan 9, which is where this project is
-headed. So `mk` is a real question at the V10 milestone and a non-question now.
+1987, and it arrives with Plan 9 -- and, **measured rather than recalled, with
+V9**: V9's README describes "all the source and makefiles(mkfiles)", V10's
+kernel carries `sys/fs/mkfile` and `sys/io/mkfile`, and `v10/cmd` ships both
+`mk` and `make`. So `mk` is needed at the **first** upgrade step, not the
+second, and it is a non-question only for as long as this stays a V8 port.
 
 What it will cost when it lands, so it is a known edit rather than a
 rediscovery:
@@ -793,6 +796,190 @@ Native macOS app playing the 5620/jerq role. Tiers:
 - **Tier 3 (out of scope):** WE32000 CPU emulation booting real ROMs.
 - Wire-protocol fidelity option (RS-232 framing, CRC, real `32ld` bootstrap) kept as a
   toggle for Tier 2, letting unmodified host-side `jx`/downloads work someday.
+
+## 8a. The V9 arc: a filesystem switch, spoken over 9P
+
+Decided after measuring the V9 and V10 trees rather than from the roadmap. This
+section supersedes the loose "then V9, then V10" of the project arc and gives
+Phase 7 a shape.
+
+### What was measured
+
+**V8 has no FFS.** Searched the whole kernel -- 108 headers, 18k lines. No
+`struct fs`, no `struct cg`, no `fs.h`; the only hits for cylinder-group and
+fragment vocabulary are IP fragmentation and resource maps. The kernel's
+`h/filsys.h` is byte-identical to the userland one, so there is no richer view
+hiding below. `struct dinode` is `di_addr[40]` -- thirteen 3-byte addresses --
+not FFS's 32-bit `di_db[]`/`di_ib[]`.
+
+**But V8 has TWO on-disk formats**, chosen by `BITFS(dev) = (dev) & 64`. The
+device number is the format tag:
+
+| | free-list | BITFS |
+|---|---|---|
+| block | 1024 (V7 was 512) | 4096 |
+| inodes/block | 16 | 64 |
+| allocation | V7 free list in the superblock | bitmap, `s_bfree[961]` |
+| placement | none | cylinder-aware |
+
+The bitmap variant independently reinvents FFS's three ideas -- bigger blocks,
+bitmap allocation, locality -- with none of FFS's structures. `alloc.c` says so
+in its own voice: *"try for an acceptable free block in next three cylinders,
+then start over at the beginning"*, `"same cylinder?"`, and, candidly,
+`"unfortunately device dependent"` and `"this code is UGLY, fix it"`.
+Convergent evolution, not adoption.
+
+Three consequences. The bitmap lives **in the superblock**, not per-cylinder-group
+across the disk, so 961 longs x 32 bits x 4096 is a hard **120 MB ceiling**.
+Cylinder geometry is **hardcoded** as `4*10` in the allocator rather than read
+from the superblock. And there are no fragments.
+
+**`mkfs` can only create the free-list format** -- it is written in terms of
+`BSIZE(0)` throughout, and `BITFS(0)` is false. Yet `fsck`, `icheck`, `dcheck`
+and `ncheck` are all BITFS-aware. The kernel and the checkers handle both; the
+creator handles one. BITFS looks like work that shipped in the kernel ahead of
+its tooling.
+
+**`/proc` is V8's, not something to invent.** `sys/sys/proca.c` is in V8's
+kernel already -- Killian's paper is V8 -- and it is still there in V10 as
+`sys/fs/proca.c`, by then one filesystem type among several.
+
+**`mk` arrives at V9, not V10.** V9's README describes "all the source and
+makefiles(mkfiles)"; V10's kernel carries `sys/fs/mkfile`, `sys/io/mkfile` and
+`lccmkfile` variants, and `v10/cmd` ships **both** `mk` and `make`. So the first
+upgrade step needs mk, not the second. `tests/hooks` already fails the day the
+first `mkfile` lands, which is the right trigger; only the prose was wrong.
+
+**V10 is a quarry, not a destination.** TUHS: the v10 source was "pared from a
+1995 snapshot", is "in no sense a formal distribution", and "it is unlikely that
+it can be made into a working system without a fair amount of hand-waving". Its
+kernel is reorganised wholesale -- `fs/ io/ os/ ml/ md/ vm/` where V8 has
+`sys/ h/ dev/ conf/`. V9, by contrast, is a coherent VAX snapshot from early
+1987 laid out much like V8.
+
+**So: V9 is the achievable terminus for a complete system. V10 is mined
+selectively** -- `mk`, the filesystem switch, the stream evolution
+(`streamio.c` becomes `io/stream.c`), `/proc`'s maturation. That is a change to
+the stated arc and it is deliberate: "V10 is the goal" read as "port all of
+V10", and the source cannot keep that promise.
+
+### The seam rule, which is what keeps this faithful
+
+9P is adopted as the **wire protocol between the shim and its file servers**,
+and nothing more.
+
+- **Below the seam**: V8 programs call `open(2)`; the shim translates; a server
+  answers. The V8 world cannot tell, so this is the same category of decision as
+  Mach-O instead of a.out, or clang as the assembler. It costs no fidelity.
+- **Above the seam**: Plan 9 *semantics* -- per-process namespaces, `bind`,
+  union directories -- are **not** adopted. A V8 program must not find itself in
+  a world V8 never had, and nothing in V8's userspace asks for one.
+
+Why 9P rather than an ad-hoc protocol: it is specified and stable since 2000,
+about thirteen message types, and it is *designed* for the exact problem that
+forces a server here -- many clients, one authority, per-client fids. There are
+reference implementations to test against (`u9fs`, `go9p`, plan9port), and
+`9pfuse`/Mac9P/FSKit mean the **host** can mount the V8 world, which closes the
+ingest-and-extract gap that a raw image otherwise leaves open.
+
+Plain **9P2000**. Not `.u`, whose Unix extensions carry things V8's userspace
+does not have; not `.L`, which is Linux-shaped.
+
+### The architecture
+
+One switch, several servers, one protocol. The switch is the VFS V10 grew and
+V8 was already growing (`proca.c`, `neta.c` sit in V8's `sys/sys/`).
+
+```
+V8 program -> libv8sys -> 9P -> +-- passthrough server   (today's transparent mode)
+                                +-- proc server          (Killian's /proc)
+                                +-- v8fs server          (V8's own alloc/iget/nami
+                                                          over a raw image)
+```
+
+**Raw images, not VHD and not .dmg.** Fixed VHD is only raw plus a 512-byte
+footer, so size is not the objection -- the objection is that nothing which
+understands VHD understands a V7 filesystem inside it, so it buys wrapper
+tooling and no content tooling. Raw buys something real: **SIMH runs V8 and V9
+on an emulated VAX and attaches raw `.dsk` images.** A `.dmg` is worse than
+either, because macOS would attach it and mount it with a *host* filesystem,
+which defeats the purpose. If VHD is ever wanted, `qemu-img convert` is one
+lossless command away.
+
+**The acceptance test this makes possible**, and it is the strongest validation
+available to this project: build a filesystem with **our** `mkfs` on ARM64,
+attach the image to SIMH running **Bell Labs' own V8**, and run **their** `fsck`
+on it. The judge is the original system. (Caveat to verify first: SIMH has an
+open issue about silently adding a signature to `.dsk` files.)
+
+**Two modes, and the honest name is not "secure".** Transparent mode is today's
+behaviour. Image mode serves the jail from a raw V8 image. It is not a security
+boundary -- the jail is per-binary rather than per-process-tree, and a V8 binary
+can still issue raw macOS syscalls -- so calling it secure would invite someone
+to lean on a guarantee it does not provide. What it gives is isolation and
+self-containedness: one artefact, and no accidental writes to the Mac.
+
+Two costs, accepted: the test matrix doubles -- which is also the best feature,
+since the same program on the same input must agree across two independent
+filesystem implementations -- and the 14-character limit becomes *enforced*
+rather than emulated, so the build tree cannot live inside an image. Image mode
+is a deployment target, not a development environment.
+
+### What this retires
+
+Three documented lies, all currently recorded as losses:
+
+- `dir.c` truncates names to 14 characters and **can alias two entries onto one
+  name**.
+- `stat.c` folds inode numbers to 16 bits and **they can collide**, so `find`
+  hunting hard links may report false matches.
+- `df` carries this port's one sanctioned source deviation (S7), because there
+  is no superblock to read.
+
+And ten programs currently written off as "raw VAX disks": `fsck mkfs icheck
+dcheck ncheck clri quot dump restor dumpdir`.
+
+### Sequence
+
+Ordered so that value lands before risk, and so each step is testable alone.
+
+1. **Streams.** `streamio.c` is 1093 lines of portable multiplexing -- no MMU,
+   no disk, no scheduler. Independent of everything below, highest ceiling,
+   and forward-compatible (V10 renames it `io/stream.c`). Unlocks the Datakit
+   and `netfs` work PLAN S7 currently excludes, and feeds blitterm Tier 2.
+2. **The 9P switch itself**, with exactly one server behind it: **passthrough**,
+   reproducing today's behaviour byte for byte. Nothing user-visible changes;
+   the whole point is that the suites stay green while the floor is replaced.
+   This is the step that must not be skipped, because it is the only one where
+   a regression is unambiguous.
+3. **`/proc` as the second server.** Authentic V8, small, and it is what makes
+   `ps` and `w` honest -- a server that records `fork`/`exec` *knows* the V8
+   subtree instead of guessing it from `libproc`. Note `p_wchan` stays
+   unanswerable either way; the sentinel rule still applies.
+4. **`mkfs` and the raw image.** V8's `mkfs`, free-list/1024 format only, run
+   under transparent mode to create the image that image mode will use. A new
+   bootstrap rung, and self-validating in a way the rootfs is not.
+5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
+   `rdwri.c` over that image. Then `fsck` and the other nine.
+6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
+7. **FSKit host client**, with Phase 5. Public API since macOS 15.4, no kernel
+   extension; lets the host mount a V8 image in Finder and disposes of the
+   ingest-and-extract problem. Swift-side, so it belongs beside blitterm.
+8. **V9**, which needs `mk` first -- see S4a. The kernel layout is close enough
+   to V8 that steps 1-6 should carry.
+
+BITFS is **not** on that list: `mkfs` cannot create one, its 120 MB ceiling and
+hardcoded geometry make it the less useful format, and the checkers that do
+understand it can be pointed at an image made elsewhere if it ever matters.
+
+### Verify before relying on it
+
+- **NetBSD's `sys/fs/v7fs/`** has a userland I/O backend (`v7fs_io_user.c`) and
+  looked like ready-made host tooling. It targets **512-byte-block V7**, and
+  V8's free-list format is **1024** while BITFS exists nowhere outside V8. Check
+  whether block size is parameterised; if it is not, this is not reusable and
+  host tooling comes from V8's own code instead. Do not plan on it.
+- SIMH's `.dsk` signature behaviour, before treating a round trip as clean.
 
 ## 9. Verification strategy
 
