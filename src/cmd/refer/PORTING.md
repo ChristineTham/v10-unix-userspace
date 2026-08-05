@@ -58,8 +58,18 @@ reads is consistent with the file `inv` produced, which is why
 `_assert(kk == nhash)` passes and the read looks clean.
 
 The `hpt`-is-`long*` and `iflong` observations below remain true and remain
-worth checking, but they are not the cause. Look at `inv`'s output path first:
-`inv5.c` and `inv6.c` are where the tables are written.
+worth checking, but they are not the cause. Narrowed once more, from the file sizes:
+
+`inv6.c` writes the posting list to `fb` (the `.ib` file) one entry at a time
+with `putw`/`putl`, then writes a single `-1` terminator after the loop. The
+produced `.ib` is **4 bytes** — exactly one `putw` — so **the loop body ran
+zero times**. (4 rather than 8 also confirms `iflong` is 0 and the `int` path
+was taken, which is self-consistent.)
+
+So `inv6.c` is not wrong either; it was handed nothing. The fault is upstream of
+it, in whatever produces the sorted key list `inv6.c` walks — `inv5.c` and the
+sort/merge feeding it. Start by printing how many entries that stage believes
+it has.
 
 This is the second time in this port that a "reader" bug has turned out to be a
 writer bug (spell was the first — PLAN.md §4e), and both times the reader
