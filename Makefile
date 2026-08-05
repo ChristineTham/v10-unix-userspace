@@ -688,7 +688,7 @@ V8BIN = cat echo cmp rm touch ln test chmod pwd wc head tail tee tr \
         grep fgrep sort uniq comm cut paste col fold expand unexpand rev \
         basename printenv split sum od pr look join number seq yes ls v8 newer \
         deroff \
-        ascii bcd cal morse ptx units vis
+        ascii bcd cal morse ptx units vis date
 
 # Every single-file command imported into src/cmd is now installed, not just
 # the ones the bootstrap needs.  `cc' is the only .c in there that is NOT in

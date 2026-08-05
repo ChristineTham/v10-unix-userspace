@@ -299,6 +299,21 @@ check 'installed units converts' '1' \
 check 'installed ptx permutes' '3' \
     "$(printf 'alpha beta gamma\n' | "$V8ROOT/bin/ptx" | grep -c '^\.xx')"
 
+# date(1) -- the first piece of Phase 4, and the only groveler that needs no
+# kernel state at all.  Compared against the host by FIELD rather than by whole
+# string, because V8 predates the tz database and names the zone itself:
+# "GMT+10:00" where macOS says "AEST".  That difference is authentic, so the
+# test asserts the fields V8 and the host must agree on -- weekday, month, day
+# and the time to the minute -- and deliberately not the zone name.
+check 'date agrees with the host on the day' \
+    "$(/bin/date '+%a %b %e' | tr -s ' ')" \
+    "$("$V8ROOT/bin/date" | awk '{print $1, $2, $3}' | tr -s ' ')"
+check 'date agrees with the host to the minute' \
+    "$(/bin/date '+%H:%M')" \
+    "$("$V8ROOT/bin/date" | awk '{print substr($4,1,5)}')"
+check 'date prints a four-digit year' "$(/bin/date '+%Y')" \
+    "$("$V8ROOT/bin/date" | awk '{print $NF}')"
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

@@ -53,3 +53,4 @@ d635c5066d782a9b7c743e6cc5e0390c757ff29e  v8/usr/src/cmd/ln.c
 6782de9d6d65bb43fd8e3361ac936ac9309cf374  v8/usr/src/cmd/chmod.c
 585464296aed24b95dc5636a325f3679296eb43c  v8/usr/src/cmd/v8.c
 5957c5cb78ea4e99f6ebe612c3562ec73abc3fb1  v8/usr/src/cmd/newer.c
+6950366ace78645f7eb433e4de398c656667b1e0  v8/usr/src/cmd/date.c

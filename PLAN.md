@@ -529,6 +529,52 @@ V8 troff; the whole `usr/man` + `usr/doc` tree becomes our test corpus.
 **Wave D — dev tools:** `make yacc lex m4` (already stage-0), `lint` (early, see §5),
 `cb ctags cflow cref mkstr xstr struct ratfor trace cbt` + `bc dc hoc` (hoc!). 
 
+### Phase 4 started: `date` is in, and `libkmemu` needs one decision first
+
+**Decided (and recorded here so it is not re-litigated):** `ps` shows the V8
+world's own process subtree by default, with everything reachable behind a flag;
+and any column with no honest macOS source prints a sentinel rather than a
+plausible number. Authentic format, honest content — a fabricated `WCHAN` is the
+one thing that would make the output a lie.
+
+**Done:** `date` is imported, built and installed. It needs no kernel state at
+all. Its only visible difference from the host is the zone name — `GMT+10:00`
+where macOS says `AEST` — because V8 predates the tz database and names the zone
+itself. `tests/wavea` compares the fields V8 and the host must agree on and
+deliberately not that one.
+
+**The blocker, found by measuring rather than by planning.** `who` reads
+`/etc/utmp` as a stream of `struct utmp`, and nothing in this world writes one.
+The plan says `libkmemu` should answer from `sysctl`/`libproc`/`utmpx`, which is
+right — but **`libv8sys` deliberately uses no host libc**. Every existing shim
+file goes through raw syscalls (`shim/v8sys/rawsys.h`, and `dir.c` says so at the
+top). `getutxent(3)` is a libc call.
+
+So `libkmemu` can be built two ways, and the choice widens the host surface
+either way:
+
+- **Parse `/var/run/utmpx` directly**, keeping the no-libc rule. Measured: the
+  file is 1884 bytes = **three 628-byte records**, the first holding a
+  `utmpx-1.00` signature. But 628 does not match Darwin's documented
+  `struct utmpx`, so the on-disk layout is private and undocumented — and it is
+  not a stable interface. Reverse-engineering it by arithmetic is exactly the
+  shape that cost four wrong attempts on spell's huff format, and a wrong guess
+  produces a `who` that looks right and lies.
+- **Let `libkmemu` alone link host libc** and call `getutxent`, `getfsstat`,
+  `proc_listpids`. Documented, stable, and correct. The cost is that one shim
+  component stops being raw-syscall-only, which is a real change to what
+  `libv8sys` is — the same *kind* of decision as the as/ld exception, and so the
+  same kind that belongs on the sanctioned list rather than being assumed.
+
+The second is the right engineering answer; it is recorded as a question because
+it changes the shim's contract, not because it is hard. Nothing else in Phase 4
+can be honest until it is settled: `who`, `w`, `df`, `load` all need it.
+
+`who.c` was imported while establishing this and then **un-imported** (its
+`PROVENANCE` line removed with it), so the tree does not carry a command that
+cannot yet be installed — `tests/wavea` now requires every `src/cmd/*.c` except
+`cc` to be a real installed binary.
+
 **Case-by-case for grovelers (the user-sanctioned exception list):**
 
 | Program | Policy |
