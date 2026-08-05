@@ -32,13 +32,33 @@ saying where things are, and a `/dev/kmem` in which they are there.
 about them — so `shim/libkmemu/kmem.c` has one table that assigns them and
 generates *both* files from it. Two lists agreeing by hand would be a standing
 invitation: get them out of step and the program reads the wrong bytes and
-prints them without complaint. `tests/kmemu` mutates the namelist into lying
-about the address and checks that the output goes empty.
+prints them without complaint.
+
+**Correction.** This file used to say `tests/kmemu` "mutates the namelist into
+lying about the address and checks that the output goes empty". It never did,
+and it cannot: the synth hook rewrites `/unix` on `open(2)`, so the mutation is
+undone by the very call that would have exercised it. Measured — corrupt
+`_avenrun`'s `n_value` to `0x9000`, run `load`, and the right answer comes back
+with the file restored. The table lives in `kmem.c`, so the only way to make
+`/unix` lie is to rebuild the library, which is a build-time mutation and
+outside what a suite can do.
+
+What the suite asserts instead is the property that *is* true and is worth more:
+**a corrupted `/unix` self-heals**, because the file a groveler reads is not the
+file on disk a moment earlier. Two rows also cannot be made to overlap by a
+typo — `kmemu_kmem` refuses to write `/dev/kmem` at all, so every groveler fails
+loudly rather than one quietly reading the tail of another's value. Verified by
+mutation: putting `_bootime` at `0x1004`, inside `_avenrun`'s 24 bytes, makes
+`load` say `no kmem2` and takes eleven checks down with it.
 
 A symbol with no honest source deliberately gets **no row**. It is then absent
 from `/unix`, `nlist` leaves `n_type` zero, and the program says so in its own
 words — PLAN.md §7's sentinel rule, one level down. Better a groveler that
 reports it cannot find a symbol than one handed a fabricated value.
+
+`w` is what put that rule to work: it names nine symbols and gets two.
+`src/cmd/w/PORTING.md` has the account, including what the seven missing ones
+would have had to describe.
 
 ## `nlist(3)` wanted a real a.out, so it got one
 

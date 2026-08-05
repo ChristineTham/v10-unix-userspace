@@ -27,6 +27,7 @@
 #include "kmemu.h"
 #include <sys/types.h>
 #include <sys/sysctl.h>
+#include <sys/time.h>
 
 /*
  * V8's <a.out.h> structures, spelled again for the same reason utmp.c spells
@@ -68,14 +69,22 @@ struct v8nlist {
  * cannot look like a valid answer while debugging.  Nothing depends on the
  * value; load(1) seeks to whatever the namelist says.
  *
- * When w(1) and ps(1) arrive they add rows here -- _bootime, _nproc, _proc --
- * and get their namelist entries for free.  A symbol with no honest source does
- * NOT get a row: it is then absent from /unix, nlist leaves n_type zero, and
- * the program says so in its own words.  That is PLAN.md section 7's rule about
- * sentinels, applied one level down: better a groveler that reports it cannot
- * find a symbol than one handed a fabricated value.
+ * A symbol with no honest source does NOT get a row: it is then absent from
+ * /unix, nlist leaves n_type zero, and the program says so in its own words.
+ * That is PLAN.md section 7's rule about sentinels, applied one level down:
+ * better a groveler that reports it cannot find a symbol than one handed a
+ * fabricated value.
+ *
+ * w(1) NAMES NINE SYMBOLS AND ONLY TWO ARE HERE, which is the rule working
+ * rather than the rule failing.  _avenrun and _bootime have exact answers from
+ * sysctl.  _proc, _nproc, _swapdev, _nswap, _ecmx, _Usrptmap and _usrpt describe
+ * a VAX proc table reached through VAX page tables and a swap device, and there
+ * is no such thing here to describe.  w's uptime path reads only the two, so it
+ * works; its full path opens /dev/mem first and says "No mem".  See
+ * src/cmd/w/PORTING.md.
  */
 static int fill_avenrun(char *dst, long len);
+static int fill_bootime(char *dst, long len);
 
 static struct ksym {
 	const char	*name;
@@ -84,6 +93,7 @@ static struct ksym {
 	int		(*fill)(char *, long);
 } ksyms[] = {
 	{ "_avenrun", 0x1000, 3 * (long)sizeof(double), fill_avenrun },
+	{ "_bootime", 0x1020, (long)sizeof(long),       fill_bootime },
 	{ 0, 0, 0, 0 }
 };
 
@@ -104,6 +114,34 @@ fill_avenrun(char *dst, long len)
 	if (la.fscale == 0) return (-1);
 	for (i = 0; i < 3; i++)
 		out[i] = (double)la.ldavg[i] / (double)la.fscale;
+	return (0);
+}
+
+/*
+ * The time the system came up.  kern.boottime is a struct timeval, and the only
+ * field wanted is tv_sec.
+ *
+ * w(1) reads this into a time_t and prints now - bootime.  Under this port's
+ * LP64 V8 a time_t is eight bytes, where the VAX had four, so the row length is
+ * sizeof(long) and not a literal 4 -- the same agreement struct exec and struct
+ * nlist need, and the same way it goes wrong: a disagreement gives a plausible
+ * uptime rather than an error.  tests/kmemu asserts sizeof(time_t) from the V8
+ * side, which is the end that has to be right.
+ */
+static int
+fill_bootime(char *dst, long len)
+{
+	struct timeval tv;
+	size_t n = sizeof tv;
+	long secs;
+	int i;
+
+	if (len < (long)sizeof(long)) return (-1);
+	if (sysctlbyname("kern.boottime", &tv, &n, (void *)0, 0) < 0) return (-1);
+	if (tv.tv_sec <= 0) return (-1);
+	secs = (long)tv.tv_sec;
+	for (i = 0; i < (int)sizeof secs; i++)	/* host and V8 are both LP64 LE */
+		dst[i] = (char)((unsigned long)secs >> (8 * i));
 	return (0);
 }
 
@@ -166,7 +204,22 @@ int
 kmemu_kmem(const char *hostpath)
 {
 	static char buf[65536];
-	long end = 0, i;
+	long end = 0, i, j;
+
+	/*
+	 * Addresses are assigned by hand in the table, so two rows can be made to
+	 * overlap by a typo -- and the symptom would be one groveler quietly
+	 * reading the tail of another's value.  Refusing to write the file at all
+	 * is the loud direction: every groveler then fails to open /dev/kmem and
+	 * says so.  Cheap, and it is the same reasoning as generating /unix and
+	 * /dev/kmem from one table instead of two.
+	 */
+	for (i = 0; ksyms[i].name; i++)
+		for (j = i + 1; ksyms[j].name; j++) {
+			long ai = (long)ksyms[i].addr, aj = (long)ksyms[j].addr;
+			if (ai < aj + ksyms[j].len && aj < ai + ksyms[i].len)
+				return (-1);
+		}
 
 	for (i = 0; ksyms[i].name; i++) {
 		long top = (long)ksyms[i].addr + ksyms[i].len;

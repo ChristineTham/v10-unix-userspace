@@ -1,0 +1,8 @@
+# Provenance for src/cmd/w
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+716eaeb0a1ec1f1a75617c8f5259b36bbc028056  v8/usr/src/cmd/w/makefile
+b9748ff442585bbdf2463cddd251108824752229  v8/usr/src/cmd/w/w.c

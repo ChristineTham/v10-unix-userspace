@@ -762,9 +762,51 @@ and `ps` will extend: a symbol with an honest source gets a row, and one without
 gets no row, so `nlist` leaves `n_type` zero and the program says it cannot find
 the symbol rather than being handed a number.
 
-**Still to do in Phase 4:** `w` (more namelist symbols, plus the proc table) and
-`ps` on top of `libproc` — showing the V8 world's own subtree by default, with a
-sentinel for any column with no honest source.
+**`w` and `uptime` are in, and they closed Phase 4 in an unexpected place.**
+`src/cmd/w/PORTING.md` has it; the short version is that `w` names nine kernel
+symbols and gets two — `_avenrun`, already there for `load`, and `_bootime`, one
+new row from `kern.boottime`. That is enough for the whole of `uptime`, which
+prints the host's exact uptime and load averages in V8's 1981 format, from the
+same binary under a hard link.
+
+The other seven describe a VAX proc table reached through **VAX page tables**
+and a swap device, so under the sentinel rule they get no row, and `w`'s full
+form opens `/dev/mem`, finds nothing and says `No mem`. That message is now an
+*assertion*: if it ever changes, something has manufactured a `/dev/mem` for
+page tables to be walked in, and that is a decision to argue rather than
+discover. One recorded source deviation, because the namelist check tested
+`nl[0]` — `_proc` — as a proxy for "is there a namelist", and the proxy stopped
+meaning that on a kernel that answers for some symbols and not others.
+
+### REVISED, by measurement: `ps` is a `/proc` client, so it moves to §8a step 3
+
+This section previously said `ps` would be ported "on top of `libproc`". That
+was written before anyone read `ps`. V8's own does this:
+
+```c
+prlist = getdir("/proc", 0);                     /* ps.c        */
+fd = open(strcat(strcpy(sstr, "/proc/"), s), 0); /* doselect.c  */
+Ioctl(fd, PIOCGETPR, pp);                        /* struct proc */
+Sread(fd, UBASE, up);                            /* u-area, by virtual address */
+```
+
+That is **Killian's process filesystem, V8's own invention** — `sys/pioctl.h`
+carries the whole ioctl set, `PIOCGETPR` through `PIOCNICE`, including the
+debugger operations, and `sys/sys/proca.c` is the filesystem. V8's `ps` has no
+`sccsid` and no Berkeley attribution; `w.c` opens
+`@(#)w.c 4.4 (Berkeley) 6/5/81`. **The two process tools in this one tree are
+from different eras**, and only Bell Labs' own made the jump to `/proc`.
+
+So `ps` is not a kmem groveler and should not be made into one. Bolting
+`libproc` onto its front end would mean rewriting `doselect.c` and `getargs.c`
+against an interface V8 had already abandoned, to avoid building the interface
+V8 actually used. Both `ps` and the full form of `w` are answered by one `/proc`
+server — §8a step 3 — which already existed in the sequence and is now the thing
+two programs are waiting on rather than a nice-to-have. `p_wchan` stays
+unanswerable either way, and the sentinel rule still covers it.
+
+**Phase 4 is therefore complete as far as it can go without `/proc`:** `date`,
+`who`, `df`, `load`, `w`/`uptime`. `ps` and full `w` are §8a step 3.
 
 **Case-by-case for grovelers (the user-sanctioned exception list):**
 
@@ -956,6 +998,17 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `ps` and `w` honest -- a server that records `fork`/`exec` *knows* the V8
    subtree instead of guessing it from `libproc`. Note `p_wchan` stays
    unanswerable either way; the sentinel rule still applies.
+
+   **Upgraded from "makes them honest" to "is the only way to have them at
+   all", by measurement** -- see S7. V8's `ps` does not grovel `/dev/kmem`; it
+   `getdir`s `/proc`, opens `/proc/<pid>`, and asks `PIOCGETPR` for the
+   `struct proc` and the u-area at virtual address `UBASE`. It is Bell Labs'
+   own code written against Bell Labs' own filesystem. So the surface this step
+   must present is fixed by upstream rather than chosen: a directory of pids,
+   a file per pid whose contents are that process's address space, and the
+   `pioctl.h` ioctl set. `PIOCGETPR` alone answers `ps`; the debugger half
+   (`PIOCSTOP`/`PIOCWSTOP`/`PIOCRUN`/`PIOCSMASK`) is what `pi`/`adb` would want
+   later and is not needed to close this step.
 4. **`mkfs` and the raw image.** V8's `mkfs`, free-list/1024 format only, run
    under transparent mode to create the image that image mode will use. A new
    bootstrap rung, and self-validating in a way the rootfs is not.
@@ -1048,15 +1101,16 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 |---|---|---|
 | 0 repo hygiene | done | `third_party/` vendored with provenance, `tools/import.sh` |
 | 1a stage-0 | done | `cpp` 13/13 |
-| 1b ARM64 back end | done | `v8ccom` 62/62 — arithmetic, control flow, pointers, arrays, globals, statics, recursion, structs, bitfields, floats, 12-argument calls |
-| 1c driver | done | `v8cc` 8/8, `make rootfs` |
-| 2a libv8sys | done | `v8sys` 44/44 |
-| 2b V8 libc | done | 89 objects, compiled by v8cc: stdio (incl. `%f`/`%e`/`%g`), the string family, malloc, ctype, qsort, getenv, the directory routines, `setjmp`/`longjmp`, perror and IEEE floats (`libv8c` 19/19) |
-| 3A Wave A | done | **156 of 163** single-file commands in `usr/src/cmd` build, including `ls`. **All 48 imported into `src/cmd` are now real installed binaries in `rootfs/bin`** (every `.c` there but `cc`, which has its own rule), and `wavea` 70/70 runs the *installed* ones rather than temp-directory copies — the rule the rest of the tree already followed. That change is what surfaced seven commands (`ascii`, `bcd`, `cal`, `morse`, `ptx`, `units`, `vis`) that compiled but had never been shipped, and two data files (`/usr/lib/units`, `/usr/lib/eign`) that `units` and `ptx` read by absolute path — without which they answer "no table" and "Cannot open  file /usr/lib/eign" |
+| 1b ARM64 back end | done | `v8ccom` 77/77 — arithmetic, control flow, pointers, arrays, globals, statics, recursion, structs, bitfields, floats, 12-argument calls |
+| 1c driver | done | `v8cc` 11/11, `make rootfs` |
+| 2a libv8sys | done | `v8sys` 54/54 — including signal *delivery*, not just numbering |
+| 2b V8 libc | done | 89 objects, compiled by v8cc: stdio (incl. `%f`/`%e`/`%g`), the string family, malloc, ctype, qsort, getenv, the directory routines, `setjmp`/`longjmp`, perror and IEEE floats (`libv8c` 30/30) |
+| 3A Wave A | done | **156 of 163** single-file commands in `usr/src/cmd` build, including `ls`. **All 48 imported into `src/cmd` are now real installed binaries in `rootfs/bin`** (every `.c` there but `cc`, which has its own rule), and `wavea` 73/73 runs the *installed* ones rather than temp-directory copies — the rule the rest of the tree already followed. That change is what surfaced seven commands (`ascii`, `bcd`, `cal`, `morse`, `ptx`, `units`, `vis`) that compiled but had never been shipped, and two data files (`/usr/lib/units`, `/usr/lib/eign`) that `units` and `ptx` read by absolute path — without which they answer "no table" and "Cannot open  file /usr/lib/eign" |
 | 3B Wave B | done | The **Bourne shell** runs (`sh` 21/21) — see `src/cmd/sh/PORTING.md`. The file and process tools run too (`waveb` 21/21): `cp`, `mv`, `mkdir`, `rmdir`, `sed`, `ed`, `dc`, `factor`, `primes`, `tsort`. **38 multi-file command directories** compile and link, including `ps`, `w`, `df`, `tbl`, `qed`, `adb`, `yacc`, `man`, `diff3`, `dump`, `su`, `cron`, `compress` |
 | 3C Wave C | **done** | **nroff, troff, tbl, eqn, pic, spell, man, grap and refer all run** (`wavec` 56/56). `tbl \| nroff` formats a table, `eqn \| nroff` sets an equation, `grap \| pic \| troff` draws a graph end to end, and `refer` resolves citations against an index its own `mkey`/`inv` built. eqn, pic and grap are built with **V8's own yacc and lex**, themselves compiled by v8cc. nroff fills and honours `.br`, `.ll`, `.ce`, `.sp`, `.na`; troff emits the device-independent stream for the 202 typesetter, with its tables compiled by `makedev` at build time. See the `PORTING.md` under `troff`, `tbl`, `pic`, `grap` and `refer` |
-| 4 grovelers | not started | |
+| 4 grovelers | **done, to the limit of what has no `/proc`** | `date`, `who`, `df`, `load`, `w`/`uptime` all run (`kmemu` 77/77). `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` and the full form of `w` are blocked on `/proc` and move to S8a step 3 — V8's `ps` is a `/proc` client, not a kmem groveler, which is a plan revision forced by reading it. See S7 |
 | 5 blitterm | not started | |
+| 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 62/62 |
 
 `make test` runs everything.
 

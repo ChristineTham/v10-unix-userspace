@@ -99,7 +99,11 @@ passthrough is meant to be the exception, not the rule.
 **`shim/libkmemu/` may link host libc** — the one component that may, and it is
 built: `who` runs, with **no changes to `who.c` at all**, because the shim
 manufactures `/etc/utmp` when a reader opens it rather than giving the program a
-function to call. `shim/libkmemu/NOTES.md` has the whole story. It answers
+function to call. `df`, `load`, `w` and `uptime` followed; `load` also needed no
+source change, because the shim manufactures a *kernel* — a namelist at `/unix`
+and a `/dev/kmem` with the data where the namelist says it is, both generated
+from one table in `shim/libkmemu/kmem.c` so they cannot drift apart.
+`shim/libkmemu/NOTES.md` has the whole story. It answers
 "what is running / what is mounted / who is logged in" through documented,
 stable interfaces (`getutxent`, `getfsstat`, `proc_listpids`, `sysctl`) so
 Phase 4's grovelers can be honest. The alternative was parsing
@@ -269,6 +273,23 @@ clears the top bit after the first iteration, and every later digit was right.
 One wrong digit reads as an off-by-one in a buffer, and is not. When a value is
 wrong in exactly one place, stop reasoning about the source and read what was
 emitted: `cc -S`, then look for an `sdiv` or `asr` where the C says unsigned.
+
+**Read the program before deciding how to port it — twice now the plan was
+wrong about what a program talks to.** PLAN.md said `ps` would be ported "on
+top of `libproc`". V8's `ps` is a **`/proc` client**: `getdir("/proc")`,
+`open("/proc/<pid>")`, `ioctl(PIOCGETPR)` for the `struct proc`, and the u-area
+read at virtual address `UBASE`. That is Killian's process filesystem, V8's own
+invention — `sys/pioctl.h` and `sys/sys/proca.c`. Bolting `libproc` on would
+mean rewriting `doselect.c` against an interface V8 had already abandoned, in
+order to avoid building the one it used. So `ps` waits for `/proc` (PLAN §8a
+step 3), and so does the full form of `w`.
+
+`w` is the counterpart: it is `@(#)w.c 4.4 (Berkeley) 6/5/81` and grovels
+`/dev/kmem` and VAX page tables, while `ps` carries no `sccsid` at all. **Two
+process tools in one tree, from different eras**, and the era shows in what
+they open. Only the `uptime` half of `w` runs here; the full half says `No mem`,
+and `tests/kmemu` asserts that message so a future `/dev/mem` is a decision
+rather than a discovery. `src/cmd/w/PORTING.md`.
 
 **A preprocessor that is never fed downstream is not tested.** Both token bugs
 above were invisible while the program itself looked perfectly correct, because

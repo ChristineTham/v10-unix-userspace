@@ -821,7 +821,8 @@ $(ROOTFS)/usr/lib/eign: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/eign
 
 v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
        $(BINDIR)/df $(ROOTFS)/bin/df \
-       $(BINDIR)/load $(ROOTFS)/bin/load
+       $(BINDIR)/load $(ROOTFS)/bin/load \
+       $(BINDIR)/w $(ROOTFS)/bin/w $(ROOTFS)/bin/uptime
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
 # it to the rootfs.  Two pattern rules chain here -- cat.c -> build/bin/cat ->
@@ -873,6 +874,38 @@ $(BINDIR)/load: $(SRC)/cmd/load/load.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
 	@$(V8CCRUN) -c -o $(BINDIR)/load.o $<
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/load.o \
 	    $(KMEMU_LDADD) $(V8LIBS)
+
+# w, the fourth groveler, and the one that is TWO programs: upstream's makefile
+# links /usr/bin/uptime to it and w branches on argv[0].  Only the uptime half
+# runs here -- see src/cmd/w/PORTING.md -- and it is the same binary either way,
+# so the link is what makes that fact true rather than merely described.
+$(BINDIR)/w: $(SRC)/cmd/w/w.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
+	@mkdir -p $(BINDIR)
+	@$(V8CCRUN) -c -o $(BINDIR)/w.o $<
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/w.o \
+	    $(KMEMU_LDADD) $(V8LIBS)
+
+# `ln', not `cp', because upstream says ln and because a copy would let the two
+# drift.  An EXPLICIT rule for a target the $(ROOTFS)/bin/% pattern would
+# otherwise match, so that the recipe can delete uptime.
+#
+# THAT DELETION IS THE WHOLE POINT, and it is not tidiness.  Deleting
+# rootfs/bin/w breaks the link, so the next build must remake it -- but make
+# decides that by comparing mtimes, and macOS make compares them at WHOLE-SECOND
+# granularity.  The cp below and the ln beneath it land in the same second, so
+# uptime is never *older* than w, so it is never remade, and the two names stay
+# on different inodes with nothing to say so.  Measured: tests/deps caught it on
+# the first run, 144966450 against 144966446.
+#
+# Removing uptime here replaces the mtime question with an existence question,
+# which has no granularity.  cp(1) writes through a live hard link, so in the
+# ordinary case uptime was already correct and this just relinks it; in the
+# broken case it is the repair.
+$(ROOTFS)/bin/w: $(BINDIR)/w
+	@mkdir -p $(@D) && cp $< $@ && rm -f $(@D)/uptime
+
+$(ROOTFS)/bin/uptime: $(ROOTFS)/bin/w
+	@mkdir -p $(@D) && rm -f $@ && ln $< $@
 
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
 # them -- this port's chroot, implemented where its kernel lives.

@@ -291,6 +291,14 @@ dep 'fstab -> libc'            src/libc/stdio/fstab.c          $B/libc/libv8c.a
 dep 'load source -> load'      src/cmd/load/load.c             $B/bin/load
 dep 'kmem.c -> load'           shim/libkmemu/kmem.c            $B/bin/load
 dep 'load -> installed load'   $B/bin/load                     rootfs/bin/load
+dep 'w source -> w'            src/cmd/w/w.c                   $B/bin/w
+dep 'kmem.c -> w'              shim/libkmemu/kmem.c            $B/bin/w
+dep 'w -> installed w'         $B/bin/w                        rootfs/bin/w
+# uptime is a HARD LINK to w, and dep() cannot express it: touching w touches
+# the SHARED INODE, so uptime's mtime moves with it and make correctly sees
+# nothing to do.  That is the link working, not a missing edge -- two names on
+# one inode cannot drift.  What can go wrong is the link being BROKEN and not
+# remade, so that is what gets asserted, below, after the restore loop.
 
 # THE POINT OF THE SEPARATE ARCHIVE.  libkmemu links host libc, so if it ever
 # became a prerequisite of an ordinary command that command would start
@@ -341,13 +349,32 @@ nodep 'grap does not reach pic'   src/cmd/grap/grap.h    $B/pic/main.o
 for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
          rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
-         rootfs/bin/cal rootfs/bin/who rootfs/bin/df rootfs/bin/load; do
+         rootfs/bin/cal rootfs/bin/who rootfs/bin/df rootfs/bin/load \
+         rootfs/bin/w rootfs/bin/uptime; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then
 		pass=$((pass+1))
 	else
 		fail=$((fail+1)); echo "FAIL deleting $f did not restore it"
+	fi
+done
+
+# ...and w/uptime must come back as ONE INODE, not two files.  Deleting w breaks
+# the link, so the rule has to remake it; if it did not, both names would exist
+# -- passing the loop above -- while quietly being separate binaries that the
+# next rebuild could leave at different vintages.  Restoration is not the
+# invariant here; identity is.
+for victim in rootfs/bin/w rootfs/bin/uptime; do
+	rm -f "$ROOT/$victim"
+	$MAKE >/dev/null 2>&1
+	wi=$(stat -f %i "$ROOT/rootfs/bin/w" 2>/dev/null)
+	ui=$(stat -f %i "$ROOT/rootfs/bin/uptime" 2>/dev/null)
+	if [ -n "$wi" ] && [ "$wi" = "$ui" ]; then
+		pass=$((pass+1))
+	else
+		fail=$((fail+1))
+		echo "FAIL after deleting $victim, w and uptime are not one inode ($wi vs $ui)"
 	fi
 done
 
