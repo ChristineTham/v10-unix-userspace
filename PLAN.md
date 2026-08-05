@@ -211,12 +211,30 @@ answers*: `the`, `of`, `and`, `to`, `in` all reported as misspelled. Worse, the
 decoder into a loop.
 
 That says the fields are not merely storage: `huff.c` does shift and mask
-arithmetic on them, and somewhere that arithmetic depends on the width. The
-next step is to read `huff.c`'s use of `xcs`/`xqcs` (both commented "left
-justified", which is a shift on a word whose width matters) and separate the
-on-disk layout from the in-memory type — most likely by reading a 28-byte
-on-disk struct explicitly and widening into the existing one, rather than by
-redeclaring it.
+arithmetic on them, and somewhere that arithmetic depends on the width.
+
+**Separating the on-disk struct from the in-memory type was tried too, and is
+also not enough.** Reading an explicit seven-`int` `struct dhuff` and widening
+each field into the existing `huffcode` makes the header read correct and
+leaves the decoder's types untouched. spell then flags *every* word, `the` and
+`quick` included, and `wavec` still does not terminate.
+
+**The answer is in the field comments.** `xcs` is "c left justified" and
+`xqcs` is "(q-1,c,q) left justified" — left justified **in a 32-bit word**.
+Widening a 32-bit left-justified value into a 64-bit `long` puts every one of
+those bits 32 positions too low, so the decoder's shifts and masks address the
+wrong end of the word. Neither narrowing the type nor widening the value can be
+right on its own: the decode is written for a 32-bit machine word throughout.
+
+What is left is to establish from `huff.c`'s arithmetic whether the decoder
+should compute in a fixed 32-bit type (making `huffcode` all `int`, and finding
+why *that* loops), or whether the left-justified fields need shifting up by 32
+on load while the counts do not. **Two guesses have been tried and reverted;
+the third attempt starts from the code.**
+
+Both attempts were caught by the suite failing to terminate, not by the wrong
+output — worth noting, because the wrong output was visible immediately and was
+not by itself enough to stop a commit.
 
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
