@@ -22,7 +22,30 @@ SHIM=$ROOT/build/stage0/v8sys/libv8sys.a
 
 pass=0 fail=0
 
-build() {	# build <name> <source>
+# build <name> <source>
+#
+# THE INSTALLED BINARY IS WHAT GETS TESTED, when there is one.
+#
+# This suite used to compile every case into $TMP and delete it on exit, so
+# "Wave A works" was backed by artifacts nobody could run and by a code path
+# nobody shipped.  CLAUDE.md's rule is the other way round -- a program is not
+# testable until it is installed -- and the rest of the tree follows it.  Every
+# single-file command in src/cmd is now a real $(ROOTFS)/bin binary, so the
+# cases below run those.
+#
+# The fallback compile stays for exactly one caller: rt.c, a synthetic stdio
+# round-trip written by this script, which has no installed counterpart.  If a
+# real command ever falls through to it that is a missing install rule, and the
+# `every imported command is installed' case at the foot of this file says so.
+build() {
+	if [ -x "$V8ROOT/bin/$1" ]; then
+		cp "$V8ROOT/bin/$1" "$TMP/$1" || return 1
+		return 0
+	fi
+	if [ $# -lt 2 ]; then
+		echo "FAIL $1 (not installed, and no source to fall back to)"
+		return 1
+	fi
 	if ! "$CC" -c -o "$TMP/$1.o" "$2" > "$TMP/$1.log" 2>&1; then
 		echo "FAIL $1 (compile)"; head -3 "$TMP/$1.log"; return 1
 	fi
@@ -231,6 +254,50 @@ try ls     'ls -l marks the directory' 'd' "./ls -l lsdir | awk '\$NF==\"sub\"{p
 # directory layer end to end: getwd(3) walks to the root matching each entry
 # against stat("."), which is what caught the APFS firmlink problem.
 try pwd    'pwd'             "$(/bin/pwd -P)" "./pwd"
+
+# ---------------------------------------------------------------------------
+# EVERY IMPORTED SINGLE-FILE COMMAND MUST BE INSTALLED.
+#
+# The cases above run $(ROOTFS)/bin binaries, so a command that builds but is
+# never installed is invisible to them -- it simply is not exercised, and the
+# suite gets shorter rather than redder.  That is how seven commands (ascii,
+# bcd, cal, morse, ptx, units, vis) sat compiled-but-unshipped: the old harness
+# compiled them into a temp directory, so they looked covered.
+#
+# `cc' is the one deliberate exception: the driver has its own rule because it
+# links against libv8c, which a driver has to compile first (the cc-seed cycle).
+missing=
+for src in "$ROOT"/src/cmd/*.c; do
+	name=$(basename "$src" .c)
+	[ "$name" = cc ] && continue
+	[ -x "$V8ROOT/bin/$name" ] || missing="$missing $name"
+done
+if [ -z "$missing" ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL these src/cmd commands are built but not installed:$missing"
+fi
+
+# ...and the ones just added must actually run, not merely exist.  A binary
+# that dies on startup still satisfies the check above -- which is exactly what
+# units and ptx did until their data files were installed too.
+check 'installed cal runs'   'February 1985' \
+    "$("$V8ROOT/bin/cal" 2 1985 | head -1 | sed 's/^ *//;s/ *$//')"
+check 'installed vis runs'   'a\001' "$(printf 'a\001\n' | "$V8ROOT/bin/vis")"
+check 'installed ascii runs' '1'     "$("$V8ROOT/bin/ascii" | grep -c 'nul')"
+# bcd and morse read STDIN, not argv.
+check 'installed bcd punches a card' '1' \
+    "$(echo AB | "$V8ROOT/bin/bcd" | grep -c '^/AB')"
+check 'installed morse runs' '1' "$(echo e | "$V8ROOT/bin/morse" | grep -c 'dit')"
+# units reads /usr/lib/units, and answers "no table" without it.  1 inch is
+# 2.54 cm, so this checks the table was actually consulted rather than opened.
+check 'installed units converts' '1' \
+    "$(printf 'inch\ncm\n' | "$V8ROOT/bin/units" 2>&1 | grep -c '2\.54')"
+# ptx reads /usr/lib/eign (the "ignore" word list) and emits one .xx line per
+# rotation.  Without the file it exits with "Cannot open  file /usr/lib/eign".
+check 'installed ptx permutes' '3' \
+    "$(printf 'alpha beta gamma\n' | "$V8ROOT/bin/ptx" | grep -c '^\.xx')"
 
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

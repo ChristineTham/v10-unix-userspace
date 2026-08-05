@@ -687,12 +687,31 @@ BINDIR = $(BUILD)/bin
 V8BIN = cat echo cmp rm touch ln test chmod pwd wc head tail tee tr \
         grep fgrep sort uniq comm cut paste col fold expand unexpand rev \
         basename printenv split sum od pr look join number seq yes ls v8 newer \
-        deroff
+        deroff \
+        ascii bcd cal morse ptx units vis
+
+# Every single-file command imported into src/cmd is now installed, not just
+# the ones the bootstrap needs.  `cc' is the only .c in there that is NOT in
+# this list, because the driver has its own rule (it links against libv8c and
+# is what compiles libv8c -- see the cc-seed note).  Keep it that way:
+#	ls src/cmd/*.c | sed 's|.*/||;s|\.c$$||'
+# should differ from $(V8BIN) by `cc' alone.  tests/wavea asserts it.
 
 V8BIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8BIN))
 V8BIN_INSTALL = $(patsubst %,$(ROOTFS)/bin/%,$(V8BIN))
 
-v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL)
+# Data files two of those commands read by absolute path at RUN time, the same
+# shape as troff's tmac and grap.defines.  Without them `units' answers "no
+# table" and `ptx' says "Cannot open  file /usr/lib/eign" -- both of which look
+# like a broken port and are just a missing install.  Upstream's files, unchanged.
+V8LIBDATA = $(ROOTFS)/usr/lib/units $(ROOTFS)/usr/lib/eign
+
+$(ROOTFS)/usr/lib/units: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/units
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/lib/eign: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/eign
+	@mkdir -p $(@D) && cp $< $@
+
+v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA)
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
 # it to the rootfs.  Two pattern rules chain here -- cat.c -> build/bin/cat ->

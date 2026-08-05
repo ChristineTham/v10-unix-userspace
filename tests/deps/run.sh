@@ -242,6 +242,23 @@ else
 	fail=$((fail+1)); echo "FAIL cgram.c is missing -- it is checked-in source, not a build product"
 fi
 
+# --- Wave A: installed commands and the data two of them read ----------------
+dep 'wave A command source'   src/cmd/cal.c   $B/bin/cal
+dep 'wave A command install'  $B/bin/cal      rootfs/bin/cal
+# units and ptx open /usr/lib/units and /usr/lib/eign by absolute path at RUN
+# time, so a missing install shows up as "no table" or "Cannot open  file
+# /usr/lib/eign" rather than as a build failure.  Their rules are asserted by
+# the delete-and-restore loop further down rather than with dep(), because
+# dep() touches its INPUT and the input here lives in third_party/, which this
+# tree treats as immutable -- an interrupted run would leave a pristine file
+# with a rewritten mtime, and git would not show it.
+if cmp -s "$ROOT/rootfs/usr/lib/units" \
+          "$ROOT/third_party/Research-Unix-v8/v8/usr/lib/units"; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1)); echo "FAIL installed units table differs from upstream's"
+fi
+
 # --- grap, which joined the default build with struct-by-value ---------------
 dep 'grap grap.h'              src/cmd/grap/grap.h             $B/grap/plot.o
 dep 'grap grammar'             src/cmd/grap/grap.y             $B/grap/y.tab.c
@@ -265,7 +282,8 @@ nodep 'grap does not reach pic'   src/cmd/grap/grap.h    $B/pic/main.o
 # deleting one installed table left the stamp alone, so make did not restore it.
 for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
-         rootfs/usr/lib/grap.defines; do
+         rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
+         rootfs/bin/cal; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then
