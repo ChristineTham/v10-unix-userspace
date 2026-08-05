@@ -226,15 +226,36 @@ those bits 32 positions too low, so the decoder's shifts and masks address the
 wrong end of the word. Neither narrowing the type nor widening the value can be
 right on its own: the decode is written for a 32-bit machine word throughout.
 
-What is left is to establish from `huff.c`'s arithmetic whether the decoder
-should compute in a fixed 32-bit type (making `huffcode` all `int`, and finding
-why *that* loops), or whether the left-justified fields need shifting up by 32
-on load while the counts do not. **Two guesses have been tried and reverted;
-the third attempt starts from the code.**
+**Third attempt, from the code this time, and the key fact is now known:**
 
-Both attempts were caught by the suite failing to terminate, not by the wrong
-output — worth noting, because the wrong output was visible immediately and was
-not by itself enough to stop a commit.
+```c
+#define L (BYTE*(sizeof(long))-1)	/* length of signless long */
+```
+
+`L` is *derived from `sizeof(long)`* — 31 on the VAX, **63** here. Every shift
+in the decoder is expressed in terms of it, and `hlista` was written with L=31.
+So the decoder scales itself to the host word while the data does not. That is
+the root cause, and it is not a guess: `cs = cq<<(L-w)` and
+`qcs = ((q-1)<<w + cq) << (L-QW-w)` are the "left justified" fields, justified
+to L.
+
+`MASK` has the same shape: `~(1L<<L)` clears bit L and, on a 32-bit long, there
+was nothing above it. On LP64 it leaves 32 high bits set for `y` to accumulate
+garbage in.
+
+Pinning `L` to 31 and `MASK` to `(1L<<L)-1`, **together with** the `int` struct
+in `huff.h` (both are required — either alone loads the table and mis-decodes),
+gets the header read and the shifts right and spell still flags every word. So
+there is at least one more width dependency in `huff.c`. The next suspect is
+signedness: with the fields `int`, `cs` can have bit 31 set and therefore be
+negative, and it is compared against `y`, which is `long` and always
+non-negative — a comparison that was signed-32 against signed-32 on the VAX and
+is now signed-64 against a sign-extended value.
+
+Three attempts, all reverted, tree green throughout. The remaining work is to
+type the decoder's working values deliberately — one fixed 32-bit type, chosen
+signed or unsigned to match what the VAX actually did — rather than to keep
+adjusting declarations one at a time.
 
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
