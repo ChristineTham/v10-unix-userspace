@@ -36,6 +36,42 @@ $ hunt -p refs kernighan
 leaves the jail during the run (checked with `V8JAIL=warn`), so this is refer's
 own logic rather than a path or exec problem. `hunt` is where to look next.
 
+### Narrowed: the index header, and `iflong`
+
+`hunt1.c` reads the inverted index like this:
+
+```c
+fread (&nhash,  sizeof(nhash),  1, fa);
+fread (&iflong, sizeof(iflong), 1, fa);
+if (master == 0)
+	master = (unsigned *) calloc (lmaster, iflong ? 4 : 2);
+hpt = (long *) calloc(nhash, sizeof(*hpt));
+kk = fread( hpt, sizeof(*hpt), nhash, fa);
+_assert (kk == nhash);
+```
+
+Two things stand out, and they are the same shape as the bug that stopped
+`spell` (PLAN.md §4e — a struct whose size *was* an on-disk format):
+
+1. **`hpt` is `long *`** — 4 bytes on the VAX under `NOLONG`, 8 here. The index
+   `inv` writes and the index `hunt` reads therefore both moved to 8, so they
+   still agree *with each other*; that is why `_assert(kk == nhash)` does not
+   fire and the header appears to read correctly. It would NOT agree with an
+   index written by a VAX, and spell showed that a reader and writer agreeing
+   with each other proves nothing about the format.
+
+2. **`iflong` is an explicit width flag in the file** — `calloc(lmaster,
+   iflong ? 4 : 2)` — so the format already distinguishes narrow from wide
+   entries, and `inv` decides which to write. Whether our `inv` sets it
+   consistently with what our `hunt` then assumes is the first thing to check.
+
+So the header is read without error and the lookup still finds nothing, which
+puts the fault after the read: either the hash of a key does not match what
+`inv` stored, or the master-table indexing is using the wrong entry width. The
+next measurement is to build the D1 debug prints already in this file
+(`# if D1`), which print `read %d hashes, iflong %d, nhash %d` — the values
+themselves, which is what settled every hard bug in this port.
+
 ## Historical: why refer needed a V8 `/bin`
 
 refer runs, gets as far as its helpers, and then does not produce output,
