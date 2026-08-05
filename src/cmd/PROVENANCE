@@ -51,3 +51,4 @@ f4fb0440a0fc52e5e3f245668851f974ab2be5a5  v8/usr/src/cmd/touch.c
 d635c5066d782a9b7c743e6cc5e0390c757ff29e  v8/usr/src/cmd/ln.c
 6b09aaefaf90d2cecece3a4e4fa7bef38b822f17  v8/usr/src/cmd/test.c
 6782de9d6d65bb43fd8e3361ac936ac9309cf374  v8/usr/src/cmd/chmod.c
+585464296aed24b95dc5636a325f3679296eb43c  v8/usr/src/cmd/v8.c

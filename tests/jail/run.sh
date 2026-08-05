@@ -341,5 +341,26 @@ case "$("$V8ROOT/bin/ls" -l "$V8ROOT/etc/group" 2>&1)" in
 *) fail=$((fail+1)); echo "FAIL ls -l shows a bare uid, not a name" ;;
 esac
 
+# --- PHASE 6d: the launcher, and the world it drops you into ----------------
+# V8's own v8.c is twelve lines: chroot, chdir, drop privilege, exec the shell.
+# Ours keeps chdir and umask, and drops the other two on purpose -- the chroot
+# already happened (every binary links libv8sys), and dropping to uid 3 on a
+# Mac would break every file operation to imitate a multi-user system PLAN.md
+# S1 lists as a non-goal.
+ck 'the launcher is installed' yes "$([ -x "$V8ROOT/bin/v8" ] && echo yes || echo no)"
+ck 'it lands you at the root of the V8 world' '/' \
+   "$(echo pwd | "$V8ROOT/bin/v8" 2>&1 | head -1)"
+
+# The directories THEMSELVES, not just their contents.  v8dirs entries carry a
+# trailing slash so "/binary" is not mistaken for "/bin/", and that also meant
+# `ls /etc` listed the Mac's while `cat /etc/group` read V8's -- one path naming
+# two different worlds depending on a trailing character.
+ck 'ls /etc shows V8 s etc, not the host s' 'fstab' \
+   "$(echo 'ls /etc' | "$V8ROOT/bin/v8" 2>&1 | head -1)"
+case "$(echo 'ls /bin' | "$V8ROOT/bin/v8" 2>&1)" in
+*cc*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL ls /bin does not show the V8 /bin" ;;
+esac
+
 echo "jail: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

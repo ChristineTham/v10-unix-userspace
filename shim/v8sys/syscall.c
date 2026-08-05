@@ -244,6 +244,15 @@ rootpath(char *p)
 		for (k = 0; d[k] && p[k] == d[k]; k++)
 			;
 		if (d[k] == '\0') break;		/* matched a V8 directory */
+		/*
+		 * ...and the directory ITSELF, spelled without the trailing
+		 * slash.  The entries in v8dirs carry one so that "/binary" is
+		 * not mistaken for "/bin/", but that also meant "/etc" and
+		 * "/bin" matched nothing, so `ls /etc` listed the Mac's while
+		 * `cat /etc/group` read V8's -- the same path naming two
+		 * different worlds depending on a trailing character.
+		 */
+		if (d[k] == '/' && d[k + 1] == '\0' && p[k] == '\0') break;
 	}
 	if (v8dirs[i] == 0) return (p);
 	if ((root = v8root()) == 0) return (p);

@@ -120,7 +120,16 @@ proving: its line 11 declares `lmain.o: lmain.c ldefs.c once.c`, the dependency
 whose absence caused this port's worst bug. Moving the remaining programs onto
 their own makefiles is mechanical from here; the pattern and the guard exist.
 
-Installation is unfinished. The *installed* `cpp` and `ccom`
+**Phase 6 is done.** `make install PREFIX=... BINDIR_HOST=...` (defaults
+`/usr/local/v8` and `/usr/local/bin`) rebuilds with the prefix stamped into
+every binary and writes a launcher script. `v8` drops you at `/` in a world
+whose `/bin`, `/etc`, `pwd` and compiler are all V8's, with the Mac still
+reachable through PATH.
+
+The install rebuild starts with `make clean`, and that is load-bearing: make
+does not track a change to `V8ROOT_DEFAULT` because it is a recipe flag rather
+than a prerequisite, so an incremental build would install binaries still
+carrying the build tree's path. The *installed* `cpp` and `ccom`
 are still the clang-built ones (`nm` shows 0 V8 symbols); they sit inside the
 rootfs without obeying the jail. Swapping them for the self-hosted ones is
 Phase 6 work, not a ladder rung.
