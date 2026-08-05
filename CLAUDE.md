@@ -131,6 +131,16 @@ was in the tree the whole time.** That is the argument for doing the rest of
 them: upstream's makefiles exercise the toolchain in ways our rules never do,
 because our rules were written to work.
 
+**Where rung 5 stops, and it is a real line rather than a to-do.** A makefile
+that names the target machine cannot be used unchanged. `src/cmd/cpp/Makefile`
+opens `CFLAGS=-O -Dunix=1 -Dvax=1 ...`, and `cpp.c` tests `vax` in three
+places, so running it as written would build a VAX preprocessor. It is the only
+one in the tree that does (`grep -l 'Dvax' src/cmd/*/[Mm]akefile`). PLAN.md §4a
+already says program builds move onto their own makefiles "minimally adapted,
+with every deviation recorded" — this is what that clause is for, and the
+adaptation is one flag. Do not let a green rung-5 test tempt you into pretending
+such a makefile ran unmodified.
+
 `tests/jail` builds `lex` from `src/cmd/lex/Makefile`
 — upstream V8, unmodified — with V8's make, cc and yacc, in a directory holding
 nothing but V8 sources, under `V8JAIL=strict`. That makefile is the one worth
