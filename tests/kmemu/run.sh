@@ -145,16 +145,24 @@ libcimports() {
 	nm -mu "$1" 2>/dev/null | grep -v dyld_stub_binder |
 	    sed 's/.*external _//;s/ (from.*//' | sort | tr '\n' ' ' | sed 's/ $//'
 }
-# The set is libkmemu's WHOLE surface, not just what who happens to call: the
-# synth table in synth.c names every generator, so linking any one of them pulls
-# all of them. That is the honest statement and the one worth pinning -- five
-# symbols, all of them "what is mounted / who is logged in", and a sixth
-# appearing here means the exception grew.
-KMEMU_IMPORTS="endutxent getfsstat getutxent setutxent statfs"
+# The set is libkmemu's WHOLE surface, not just what each program happens to
+# call: the synth table in synth.c names every generator, so linking any one of
+# them pulls all of them. That is the honest statement and the one worth
+# pinning. Six symbols, every one of them on PLAN.md section 7's sanctioned
+# list -- getutxent(3) and its bookends, getfsstat(2), statfs(2), sysctl(3) --
+# and all of them answering "what is mounted / what is running / who is logged
+# in". A SEVENTH appearing here means the exception grew, and that is a decision
+# to be made deliberately rather than noticed later.
+#
+# sysctlbyname arrived with load(1), for vm.loadavg. It is sysctl(3) under its
+# by-name spelling, same man page, same family.
+KMEMU_IMPORTS="endutxent getfsstat getutxent setutxent statfs sysctlbyname"
 check "who imports libkmemu's whole surface and no more" \
 	"$KMEMU_IMPORTS" "$(libcimports "$WHO")"
 check "df imports the same set, being the same library" \
 	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/bin/df")"
+check "and so does load" \
+	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/bin/load")"
 
 # ------------------------------------------------------------------ df ---
 DF=$V8ROOT/bin/df
@@ -224,6 +232,85 @@ check "df -i saturates ifree at the 16-bit ceiling" "65535" "$ifree"
 grep -q 'bad free count' "$TMP/dfl.out" && ok ||
 	bad "df -l invented a free list instead of failing" "$(head -2 "$TMP/dfl.out")"
 
+# ---------------------------------------------------------------- load ---
+# The first program to need a NAMELIST. load(1) does not ask the system for the
+# load average: it looks up the address of the kernel's _avenrun in /unix, then
+# seeks to that address in /dev/kmem and reads three doubles. So the shim
+# manufactures a kernel, and one table in kmem.c drives both files -- get them
+# out of step and load reads the wrong bytes and prints them without complaint.
+LOAD=$V8ROOT/bin/load
+rm -rf "$V8ROOT/unix" "$V8ROOT/dev"
+"$LOAD" > "$TMP/load.out" 2>"$TMP/load.err"
+[ -f "$V8ROOT/unix" ]     && ok || bad "load creates /unix"
+[ -f "$V8ROOT/dev/kmem" ] && ok || bad "load creates /dev/kmem"
+
+# /dev did not exist, and nothing else has a reason to create it -- the jail
+# lets /dev/null and /dev/tty reach the host precisely by NOT having them. The
+# manufacturer makes its own directory; assert that rather than a build step
+# nobody will remember.
+[ -d "$V8ROOT/dev" ] && ok || bad "the /dev directory was created on demand"
+for n in null tty console; do
+	[ -e "$V8ROOT/dev/$n" ] && bad "rootfs/dev/$n exists -- /dev/$n now misses the host" || ok
+done
+
+check "load prints V8's header" "    1m    5m   15m" "$(head -1 "$TMP/load.out")"
+
+# The numbers are the host's, to the one decimal V8 prints. Compared against
+# sysctl directly rather than uptime(1), so the test does not depend on how
+# another program formats them.
+hostla=$(sysctl -n vm.loadavg | tr -d '{}' |
+         awk '{printf "%6.1f%6.1f%6.1f", $1, $2, $3}')
+v8la=$(sed -n '2p' "$TMP/load.out")
+check "load's three averages match the host" "$hostla" "$v8la"
+
+# nlist(3) is authentic V8 libc reading a file this port writes, so the two ends
+# must agree about a.out. Under LP64 these are NOT their 1985 sizes -- every
+# field of struct exec is a long, so the header is 64 bytes where the VAX had
+# 32. Asserted from the V8 side, because that is the end that must be right.
+cat > "$TMP/aout.c" <<'EOF'
+#include <stdio.h>
+#include <a.out.h>
+main()
+{
+	struct exec e;
+	struct nlist n;
+	printf("%d %d %d\n", sizeof e, sizeof n,
+	    (char *)&n.n_value - (char *)&n);
+	return 0;
+}
+EOF
+if "$CC" -c -o "$TMP/aout.o" "$TMP/aout.c" > "$TMP/aout.log" 2>&1 &&
+   clang -nostdlib -e _v8start -o "$TMP/aout" "$CRT" "$TMP/aout.o" \
+	"$LIBC" "$STUBS" "$SHIM" -lSystem >> "$TMP/aout.log" 2>&1; then
+	check "struct exec is 64 bytes and nlist 24, value at 16" \
+		"64 24 16" "$("$TMP/aout")"
+else bad "a.out layout probe build" "$(head -3 "$TMP/aout.log")"; fi
+
+# The namelist is a real a.out: OMAGIC little-endian in the first eight bytes.
+magic=$(od -An -N8 -tu8 "$V8ROOT/unix" | tr -d ' ')
+check "/unix carries OMAGIC (0407)" "263" "$magic"
+
+# /unix is an EXACT match in the jail, not a prefix. An entry without a trailing
+# slash would also claim /unixfoo, which is the kind of rule that is wrong only
+# for names nobody has created yet.
+cat > "$TMP/px.c" <<'EOF'
+#include <stdio.h>
+main()
+{
+	int f = open("/unixfoo", 0);
+	printf("%s\n", f < 0 ? "absent" : "FOUND");
+	if (f >= 0) close(f);
+	fflush(stdout); return 0;
+}
+EOF
+: > "$V8ROOT/unixfoo"
+if "$CC" -c -o "$TMP/px.o" "$TMP/px.c" > "$TMP/px.log" 2>&1 &&
+   clang -nostdlib -e _v8start -o "$TMP/px" "$CRT" "$TMP/px.o" \
+	"$LIBC" "$STUBS" "$SHIM" -lSystem >> "$TMP/px.log" 2>&1; then
+	check "/unixfoo is not caught by the /unix entry" "absent" "$("$TMP/px")"
+else bad "prefix probe build" "$(head -3 "$TMP/px.log")"; fi
+rm -f "$V8ROOT/unixfoo"
+
 # --- ...and NO other V8 binary imports anything at all -------------------
 # EVERY binary in /bin, not a sample. This check is why the suite exists: it
 # found three functions that had been resolving out of libSystem unnoticed --
@@ -284,7 +371,7 @@ check "ccom and cpp are still the clang-built ones" "" "$stillhost"
 
 leaked="" used=""
 for b in $allbins; do
-	case " who df $NOTV8 " in *" ${b##*/} "*) continue ;; esac
+	case " who df load $NOTV8 " in *" ${b##*/} "*) continue ;; esac
 	imp=$(libcimports "$b")
 	for a in $ALLOWED; do
 		case " $imp " in

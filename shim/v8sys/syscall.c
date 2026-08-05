@@ -174,7 +174,30 @@ v8sys_faile(int hosterr)
  */
 static const char *v8dirs[] = {
 	"/usr/lib/", "/usr/share/", "/usr/dict/", "/lib/", "/usr/pub/",
-	"/bin/", "/usr/bin/", "/etc/", "/usr/man/", "/usr/spool/", 0
+	"/bin/", "/usr/bin/", "/etc/", "/usr/man/", "/usr/spool/",
+	/*
+	 * /dev/ is here for the grovelers: load(1) opens /dev/kmem, which
+	 * libkmemu manufactures.  It does NOT capture /dev/null or /dev/tty,
+	 * by the same mechanism that protects every other entry -- a path whose
+	 * rootfs copy does not exist falls through to the host, and the rootfs
+	 * has no null or tty.  Worth knowing rather than assuming: create
+	 * rootfs/dev/tty and the V8 world would stop seeing the real terminal.
+	 */
+	"/dev/", 0
+};
+
+/*
+ * EXACT matches, not prefixes.  /unix is a file at the root, and there is no
+ * way to spell that in the list above: an entry of "/unix" without a trailing
+ * slash matches by prefix, so it would also claim /unixfoo.  The distinction is
+ * cheap to make and the alternative is a rule that is subtly wrong for names
+ * nobody has created yet.
+ *
+ * /unix is the kernel namelist libkmemu writes -- see kmem.c.  nlist(3) reads
+ * it to find _avenrun before load(1) seeks to that address in /dev/kmem.
+ */
+static const char *v8files[] = {
+	"/unix", 0
 };
 
 /*
@@ -254,7 +277,17 @@ rootpath(char *p)
 		 */
 		if (d[k] == '/' && d[k + 1] == '\0' && p[k] == '\0') break;
 	}
-	if (v8dirs[i] == 0) return (p);
+	if (v8dirs[i] == 0) {
+		/* No directory claimed it; try the exact-match list. */
+		for (i = 0; v8files[i]; i++) {
+			const char *f = v8files[i];
+			int k;
+			for (k = 0; f[k] && p[k] == f[k]; k++)
+				;
+			if (f[k] == '\0' && p[k] == '\0') break;
+		}
+		if (v8files[i] == 0) return (p);
+	}
 	if ((root = v8root()) == 0) return (p);
 
 	for (n = 0; root[n] && n < (int)sizeof buf - 2; n++) buf[n] = root[n];

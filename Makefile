@@ -820,7 +820,8 @@ $(ROOTFS)/usr/lib/eign: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/eign
 	@mkdir -p $(@D) && cp $< $@
 
 v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
-       $(BINDIR)/df $(ROOTFS)/bin/df
+       $(BINDIR)/df $(ROOTFS)/bin/df \
+       $(BINDIR)/load $(ROOTFS)/bin/load
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
 # it to the rootfs.  Two pattern rules chain here -- cat.c -> build/bin/cat ->
@@ -862,6 +863,15 @@ $(BINDIR)/df: $(SRC)/cmd/df/df.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
 	@mkdir -p $(BINDIR)
 	@$(V8CCRUN) -c -o $(BINDIR)/df.o $<
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/df.o \
+	    $(KMEMU_LDADD) $(V8LIBS)
+
+# load, the third groveler and the first to need a namelist: it looks _avenrun
+# up in /unix and then seeks to that address in /dev/kmem.  libkmemu writes both
+# from one table -- see shim/libkmemu/kmem.c.
+$(BINDIR)/load: $(SRC)/cmd/load/load.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
+	@mkdir -p $(BINDIR)
+	@$(V8CCRUN) -c -o $(BINDIR)/load.o $<
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/load.o \
 	    $(KMEMU_LDADD) $(V8LIBS)
 
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to

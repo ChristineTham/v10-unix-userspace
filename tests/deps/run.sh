@@ -288,6 +288,9 @@ dep 'df source -> df'          src/cmd/df/df.c                 $B/bin/df
 dep 'kmemu -> df'              shim/libkmemu/mtab.c            $B/bin/df
 dep 'df -> installed df'       $B/bin/df                       rootfs/bin/df
 dep 'fstab -> libc'            src/libc/stdio/fstab.c          $B/libc/libv8c.a
+dep 'load source -> load'      src/cmd/load/load.c             $B/bin/load
+dep 'kmem.c -> load'           shim/libkmemu/kmem.c            $B/bin/load
+dep 'load -> installed load'   $B/bin/load                     rootfs/bin/load
 
 # THE POINT OF THE SEPARATE ARCHIVE.  libkmemu links host libc, so if it ever
 # became a prerequisite of an ordinary command that command would start
@@ -338,7 +341,7 @@ nodep 'grap does not reach pic'   src/cmd/grap/grap.h    $B/pic/main.o
 for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
          rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
-         rootfs/bin/cal rootfs/bin/who rootfs/bin/df; do
+         rootfs/bin/cal rootfs/bin/who rootfs/bin/df rootfs/bin/load; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then

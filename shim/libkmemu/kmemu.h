@@ -21,6 +21,8 @@ int kmemu_synth(const char *v8path, const char *root);
 int kmemu_utmp(const char *hostpath);
 int kmemu_mtab(const char *hostpath);
 int kmemu_fstab(const char *hostpath);
+int kmemu_unix(const char *hostpath);
+int kmemu_kmem(const char *hostpath);
 
 /*
  * What df(1) would have read out of a superblock.  Counts are in 1024-byte

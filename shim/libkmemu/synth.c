@@ -103,6 +103,28 @@ kmemu_replace(const char *hostpath, const char *buf, long n)
 	tmp[i++] = 'w';
 	tmp[i] = '\0';
 
+	/*
+	 * Make the directory if it is not there.  /etc exists in the rootfs
+	 * because the build populates it; /dev does not, and nothing else has a
+	 * reason to create it -- the jail lets /dev/null and /dev/tty fall
+	 * through to the host precisely by NOT having them.  So the first
+	 * groveler to want /dev/kmem is what brings the directory into being,
+	 * which is the right owner: this library is manufacturing the file, and
+	 * a missing parent is part of that job rather than a build step someone
+	 * has to remember.  mkdir failing is not checked -- if it already
+	 * exists, or cannot be made, the open below reports it.
+	 */
+	for (i = len; i > 0; i--)
+		if (hostpath[i] == '/') break;
+	if (i > 0) {
+		char dir[1024];
+		long k;
+
+		for (k = 0; k < i; k++) dir[k] = hostpath[k];
+		dir[i] = '\0';
+		rawsys2(SYS_mkdir, (long)dir, 0755);
+	}
+
 	fd = rawsys3(SYS_open, (long)tmp,
 	    0x0001 /*O_WRONLY*/ | 0x0200 /*O_CREAT*/ | 0x0400 /*O_TRUNC*/, 0644);
 	if (fd < 0) return (-1);
@@ -129,6 +151,8 @@ static struct {
 	{ "/etc/utmp", kmemu_utmp },
 	{ "/etc/mtab", kmemu_mtab },
 	{ "/etc/fstab", kmemu_fstab },
+	{ "/unix", kmemu_unix },
+	{ "/dev/kmem", kmemu_kmem },
 	{ 0, 0 }
 };
 

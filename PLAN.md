@@ -748,10 +748,20 @@ libm** (`sin`, `cos`, `sqrt`, `atan2`, `exp`, `log`, `pow`, `floor`, `ceil`).
 V8 shipped a libm and this port has never built one. Found by the same sweep,
 not by a bad drawing. It is now the only entry.
 
-**Still to do in Phase 4:** `df` (its `/etc/mtab` lands beside `utmp.c`, then it
-reads a superblock per device, which is where it stops being a file problem);
-`load` and `w`, which want a namelist and `/dev/kmem` and are the part libkmemu
-is actually named for; and `ps` on top of `libproc`.
+**`df` and `load` are in too.** `df` needed the one sanctioned source
+deviation (§7's "statfs backend") plus a manufactured `/etc/mtab` and
+`/etc/fstab`; `src/cmd/df/PORTING.md` has it, including why displacing Bell
+Labs' own fstab was the honest call. `load` needed **no source change at all** —
+the shim manufactures a *kernel*: a namelist at `/unix` and a `/dev/kmem` with
+the data where the namelist says it is, both generated from one table in
+`shim/libkmemu/kmem.c` so they cannot drift apart. That machinery is what `w`
+and `ps` will extend: a symbol with an honest source gets a row, and one without
+gets no row, so `nlist` leaves `n_type` zero and the program says it cannot find
+the symbol rather than being handed a number.
+
+**Still to do in Phase 4:** `w` (more namelist symbols, plus the proc table) and
+`ps` on top of `libproc` — showing the V8 world's own subtree by default, with a
+sentinel for any column with no honest source.
 
 **Case-by-case for grovelers (the user-sanctioned exception list):**
 
