@@ -3,6 +3,25 @@
 The layer standing in for the VAX kernel. `make libv8sys`; `make test-v8sys`
 (44 tests) and `make test-freestanding` (7) cover it.
 
+`shim/libkmemu/` is a **separate** library with its own notes and its own rules —
+it is the one part of the shim that may link host libc, and keeping it out of
+`libv8sys.a` is what stops every V8 binary from importing libc. See
+`libkmemu/NOTES.md`.
+
+## KNOWN BROKEN: no V8 program can catch a signal
+
+`v8s_signal` hands the raw `sigaction` syscall a userland `struct sigaction`,
+where the kernel wants `struct __sigaction` — 24 bytes with a signal-trampoline
+pointer at offset 8, exactly where the userland struct keeps `sa_mask`. Every
+handler is therefore installed with a null trampoline. `sigaction` returns 0, so
+nothing looks wrong until a signal is delivered and the process hangs or dies.
+
+Found in Phase 4 by building V8's `sleep(3)`, which is `alarm` + a handler +
+`for(;;) pause()`. `tests/v8sys` covers signal *numbering* and never delivery,
+which is how it survived this long. `libkmemu/NOTES.md` has the measurements and
+what the fix needs; `v8s_alarm` returning 0 rather than the previous alarm's
+remaining time belongs with it.
+
 ## How it reaches the kernel, and why that mattered
 
 The V8 world calls `write()`, and the shim implements `write()` **by doing what

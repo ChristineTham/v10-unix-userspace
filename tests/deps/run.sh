@@ -271,6 +271,35 @@ dep 'grap install'             $B/grap/grap                    rootfs/usr/bin/gr
 dep 'grap defines install'     src/cmd/grap/grap.defines       rootfs/usr/lib/grap.defines
 nodep 'grap.defines is not a build input' src/cmd/grap/grap.defines $B/grap/plot.o
 
+# --- Phase 4: libkmemu, and the edges that keep it out of everything else ---
+dep 'kmemu source -> archive'  shim/libkmemu/utmp.c            $B/kmemu/libkmemu.a
+dep 'kmemu header -> archive'  shim/libkmemu/kmemu.h           $B/kmemu/libkmemu.a
+dep 'kmemu -> who'             shim/libkmemu/synth.c           $B/bin/who
+dep 'who source -> who'        src/cmd/who.c                   $B/bin/who
+dep 'who -> installed who'     $B/bin/who                      rootfs/bin/who
+
+# THE POINT OF THE SEPARATE ARCHIVE.  libkmemu links host libc, so if it ever
+# became a prerequisite of an ordinary command that command would start
+# importing libSystem -- silently, since the link would still succeed. These
+# negative controls are what make that a build-graph fact rather than a habit.
+# (tests/kmemu asserts the same thing from the other end, on the symbol table.)
+nodep 'kmemu does not reach cat'   shim/libkmemu/utmp.c   $B/bin/cat
+nodep 'kmemu does not reach libc'  shim/libkmemu/utmp.c   $B/libc/gen/malloc.o
+nodep 'kmemu does not reach shim'  shim/libkmemu/synth.c  $B/v8sys/syscall.o
+# ...and the shim's own do-nothing half is NOT in libkmemu: it has to travel
+# with libv8sys, or a program that does not link libkmemu fails to link at all.
+dep 'nokmemu -> shim archive'  shim/v8sys/nokmemu.c            $B/v8sys/libv8sys.a
+dep 'tz.c -> shim archive'     shim/v8sys/tz.c                 $B/v8sys/libv8sys.a
+dep 'syscalls.def -> stubs'    shim/v8sys/syscalls.def         $B/v8sys/libv8stubs.a
+
+# The four libc files added when tests/kmemu found them resolving from
+# libSystem instead.  A missing one does not break the build, so only the
+# dependency edge says they are being compiled at all.
+dep 'atof -> libc'             src/libc/gen/atof.c             $B/libc/libv8c.a
+dep 'tolower -> libc'          src/libc/gen/tolower.c          $B/libc/libv8c.a
+dep 'getgrent -> libc'         src/libc/stdio/getgrent.c       $B/libc/libv8c.a
+dep 'getpwuid -> libc'         src/libc/stdio/getpwuid.c       $B/libc/libv8c.a
+
 # --- negative controls: the suite must be able to say "no" ------------------
 nodep 'spell does not reach sh'   src/cmd/spell/huff.h   $B/sh/main.o
 nodep 'tbl does not reach eqn'    src/cmd/tbl/t..c       $B/eqn/main.o
@@ -283,7 +312,7 @@ nodep 'grap does not reach pic'   src/cmd/grap/grap.h    $B/pic/main.o
 for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
          rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
-         rootfs/bin/cal; do
+         rootfs/bin/cal rootfs/bin/who; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then

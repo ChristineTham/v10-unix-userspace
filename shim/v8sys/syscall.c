@@ -713,15 +713,47 @@ void v8s_exit(int c) { rawsys1(SYS_exit, c); for (;;) ; }
 /* ---------------------------------------------------------- TRANSLATE */
 
 /*
+ * SYNTHETIC KERNEL FILES.  /etc/utmp is a file in every version of Unix and a
+ * file here too, but nothing in this world writes one -- init and login are on
+ * the kernel's side of this seam, and this file is that side.  libkmemu
+ * manufactures it from the host's utmpx when a reader opens it, which is what
+ * lets who(1) and w(1) compile unchanged: they fopen the path they always did.
+ *
+ * SUBSTITUTABLE, and that is the whole design.  libkmemu links the host's libc
+ * -- the one sanctioned place in the shim that may -- so binding it into
+ * libv8sys would put libc imports in EVERY V8 binary and quietly end the
+ * freestanding guarantee that tests/freestanding asserts with `nm -u'.  So the
+ * call here is unconditional and the DEFINITION is what varies: nokmemu.c in
+ * this same library answers 0 to everything, and a program that links libkmemu
+ * gets the real one instead.  nokmemu.c is a separate object for exactly the
+ * reason libv8stubs.a is one object per syscall -- the linker takes a member
+ * only for a symbol still unresolved, so the real implementation, already on
+ * the line, wins and the stub is never pulled in.
+ *
+ * Not a weak reference, which is the obvious way to write this and does not
+ * work: `extern int f() __attribute__((weak))' does emit an undefined weak
+ * symbol -- nm confirms it -- and ld64 then refuses the link anyway unless
+ * something defines f.  Measured here before this was rewritten.
+ *
+ * BEFORE vpath(), not after: rootpath() only redirects a path whose rootfs copy
+ * already exists, so calling this afterwards would hand libkmemu the host's
+ * /etc/utmp -- a path outside the jail, and on macOS not even a file.  The
+ * point is to create the rootfs copy so the resolution that follows finds it.
+ */
+extern int kmemu_synth(const char *, const char *);
+
+/*
  * open() is where directories are noticed.  Everything else about directory
  * reading follows from registering the shim here -- see dir.c.
  */
 int
 v8s_open(char *path, int flags, int mode)
 {
-	path = vpath(path);
 	long fd;
 	struct v8_stat st;
+
+	kmemu_synth(path, v8root());
+	path = vpath(path);
 
 	v8sys_dirinit();
 	/*
@@ -889,6 +921,50 @@ v8s_time(long *tp)
 }
 
 int v8s_stime(long *tp) { v8_errno = V8_EPERM; return (-1); }
+
+/*
+ * ftime(2) -- syscall 35 in V8 (libc/sys/time.s), and until Phase 4 a hole in
+ * this layer.  Nothing failed, which is the point: `ftime' resolved quietly out
+ * of libSystem instead, so date(1), ls(1) and localtime(3) were all reaching
+ * the host's libc without anything saying so.  Exactly the shape CLAUDE.md
+ * warns about -- a missing function does not break the link, it gets filled in
+ * -- and it was found by tests/kmemu asserting on `nm -u', not by a wrong
+ * answer.  There was no wrong answer to find.
+ *
+ * struct timeb is <sys/timeb.h> unchanged: time_t (a long, so 8 bytes here),
+ * then three shorts.  macOS's own struct has the same shape under LP64, which
+ * is why the accidental version worked.
+ *
+ * The timezone comes from tz.c, which reads the zone database the way the VAX
+ * kernel held the variable.  Not from gettimeofday's second argument, which is
+ * a struct timezone * and looks exactly right and is not -- tz.c says what that
+ * cost to find out.
+ *
+ * dstflag STAYS 0 on purpose.  The offset tz.c returns is the one in force now,
+ * daylight saving already applied, so setting the flag would make V8's
+ * localtime() add another hour on top.  What it would add is the US 1974-75
+ * rule -- `last Sunday in April', with 1974 and 1975 special-cased in a table --
+ * which has not been the answer anywhere for decades.  Letting the zone
+ * database say what the offset is, and leaving V8's own DST arithmetic
+ * unreached, is the honest arrangement.
+ */
+struct v8_timeb { long time; unsigned short millitm; short timezone; short dstflag; };
+
+extern long v8sys_tzminuteswest(void);
+
+int
+v8s_ftime(struct v8_timeb *tb)
+{
+	struct { long sec, usec; } tv;
+
+	tv.sec = tv.usec = 0;
+	rawsys2(SYS_gettimeofday, (long)&tv, 0);
+	tb->time = tv.sec;
+	tb->millitm = (unsigned short)(tv.usec / 1000);
+	tb->timezone = (short)v8sys_tzminuteswest();
+	tb->dstflag = 0;
+	return (0);
+}
 
 /* V8's times(2) reports in 60ths of a second, the VAX clock tick. */
 struct v8_tbuffer { long proc_user, proc_system, child_user, child_system; };

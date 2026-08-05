@@ -314,6 +314,68 @@ looked perfectly correct.** The bug only existed at the seam, and the seam is
 only exercised by running the preprocessor into what consumes it. `tests/wavec`
 now runs `grap | pic | troff` and asserts drawing commands come out the far end.
 
+## 4g. A signedness repaint in pass 1 — CLOSED
+
+`printf("%lx", v)` dropped the last digit of a **negative** long:
+`0xbf1a36e2eb1c432d` printed as `bf1a36e2eb1c432` followed by a NUL. It looked
+like a fault in `src/libc/stdio/doprnt.c`, this port's C replacement for
+`doprnt.S`. It was not; `doprnt.c` never changed.
+
+### What it actually was
+
+`optim.c`'s `sconvert()` drops a conversion that changes nothing but signedness
+and paints its type onto the operand. Its own header comment says so — *"the
+unsigned-ness is ignored"* — and for almost every operator that is sound, since
+a signed and an unsigned value of the same width have identical bits, so the
+conversion is a no-op **on the result**.
+
+Division, remainder and right shift are the exceptions. For those the type is
+not a description of the result but an **instruction selector**: `gencode.c`
+reads the node's own type to choose `udiv`/`sdiv` and `lsr`/`asr`. Repainting
+the node therefore changes what it computes, silently. The file already knows
+this elsewhere — the `ASG`-op block a few lines above declines the identical
+rewrite with *"this is not true for /=, %=, or floats"*.
+
+Guarded under `SIGNCONVKEEP`, at the `paint:` label rather than at either jump,
+because there are two ways in: `t == lt` once both sides have been `DEUNSIGN`ed
+(a same-width conversion) and the fall-through at the bottom (a narrowing one).
+Measured: both were broken.
+
+### Why it survived this long
+
+It needs an unsigned operand **with its top bit set**, and nothing in the tree
+had one reach a signed context. `lookup.c`'s two hashes — the compiler's own
+symbol table, the busiest `%` in the build — both mask with `& 077777` first,
+so the top bit can never be set and the compiler self-hosted over the bug
+without trouble. `spell`'s hash shifts 4-byte `unsigned` into 8-byte `long`,
+which is a genuine widening and was always kept.
+
+Not strictly an LP64 fault: a VAX would have repainted `(long)(u % b)` too. What
+the target changes is *reachability*. In 1985 it took a value above 2^31; under
+LP64 it is any pointer, or any long holding a bit pattern — which is exactly
+what `doprnt.c` hands `convert()`, and `digits[val % base]` supplies the
+conversion with no cast in sight. The top bit is set on the **first iteration
+only**, because `val /= base` shifts it away, so exactly one digit was wrong —
+which reads as an off-by-one in a buffer, not as a signedness fault.
+
+### What it was measured against
+
+`digits[-3]`, not a wrong digit: the signed remainder indexed off the front of
+the digit string and picked up a NUL. Confirmed by dumping the buffer rather
+than by reading the source — `convert()` wrote two NULs and reported a length of
+16 for 15 digits. The instruction pair `sdiv`/`msub` next to `udiv` in the same
+loop, from `cc -S`, is what identified the compiler as the site.
+
+Costs nothing: a retained `long` ↔ `unsigned long` CONV reaches `arm64_widen()`,
+whose switch has no case for an 8-byte type, so it emits no instruction.
+
+`tests/v8ccom` carries six cases (`%`, `/`, `>>`, the bare subscript, the
+narrowing exit and the `%=` form) and `tests/libv8c` two more for `%lx`, `%lX`,
+`%lo`, `%ld` and `%lu` of negative longs. Mutation-verified: with `SIGNCONVKEEP`
+undefined all eight fail, returning `-3`, `-4`, `-5` and `0` respectively. The
+`%ld` case is there so that a "fix" which merely forced the conversion unsigned
+would be caught — `-1L` must still print as `-1`.
+
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
 Every translation unit of `cpp` and `ccom` compiles with `v8cc` and links
@@ -585,13 +647,57 @@ The boundary, so it does not spread:
   interface is stable and documented, the on-disk layout is neither. Reaching
   for libc here **narrows** what this port depends on rather than widening it.
 
-Nothing else in Phase 4 can be honest until this is built: `who`, `w`, `df` and
-`load` all need it, and `ps` needs `libproc` on top.
+### `libkmemu` is built, and `who` works — with no changes to `who.c` at all
 
-`who.c` was imported while establishing this and then **un-imported** (its
-`PROVENANCE` line removed with it), so the tree does not carry a command that
-cannot yet be installed — `tests/wavea` now requires every `src/cmd/*.c` except
-`cc` to be a real installed binary.
+`shim/libkmemu/` exists, `who` is imported, built, installed and tested, and
+`tests/kmemu` (34 cases) guards both the answer and the boundary. Full notes in
+`shim/libkmemu/NOTES.md`; the short version:
+
+- **`who.c` needed zero changes.** The shim manufactures `/etc/utmp` when a
+  reader opens it, so `who` does the `fopen` it always did. A libkmemu call
+  would have cost one recorded deviation per program instead — and `w` reads the
+  same file. It is also what the real system did: `/etc/utmp` was an ordinary
+  file kept current by `init` and `login`, both on the kernel's side of this
+  seam, and the shim is that side.
+- **The exception stayed narrow, and it is checkable rather than asserted.**
+  `nm -u rootfs/bin/who` is exactly `_setutxent _getutxent _endutxent`. Every
+  other binary in the rootfs imports nothing.
+
+**What writing the boundary test actually yielded**, which was more than the
+feature. Sweeping every Mach-O in the rootfs found five functions that had been
+resolving out of libSystem unnoticed — the "a missing libc function does not fail
+the link" class, five more times, none of them visibly broken:
+
+| Symbol | What it meant | Fix |
+|---|---|---|
+| `getgrent` etc. | **`ls -g` read the Mac's group database from inside the jail** | build V8's `getgrent.c` |
+| `ftime` | a syscall this shim never implemented | `v8s_ftime` + a TZif reader in `shim/v8sys/tz.c` |
+| `tolower`, `toupper` | V8 has both in C; never built | build them |
+| `atof` | 319 lines of VAX assembly, so never ported | `src/libc/gen/atof.c`, new code, bit-compared against the host's |
+
+`tests/freestanding` could not have caught any of them — it links its own small
+programs, so it proved the *shim* was clean and never the world built on it. A
+guard on a seam is not a guard on what crosses it.
+
+**And one thing it broke open.** V8's `sleep(3)` is `alarm` + a handler +
+`for(;;) pause()`, and building it hangs, because **no V8 program in this port
+can catch a signal**: `v8s_signal` gives the raw `sigaction` syscall a userland
+`struct sigaction` where the kernel wants `struct __sigaction`, which carries a
+signal-trampoline pointer at offset 8 — exactly where the userland struct keeps
+`sa_mask`. Every handler is installed with a null trampoline. `tests/v8sys`
+covers signal numbering and never delivery, which is how it survived. `sleep` is
+therefore still Apple's, as the single named entry on `tests/kmemu`'s
+allowed-leak list, and that list fails if the entry ever goes stale.
+
+Also on that list, named rather than tolerated: **`pic` and `grap` use Apple's
+libm** (`sin`, `cos`, `sqrt`, `atan2`, `exp`, `log`, `pow`, `floor`, `ceil`).
+V8 shipped a libm and this port has never built one. Found by the same sweep,
+not by a bad drawing.
+
+**Still to do in Phase 4:** `df` (its `/etc/mtab` lands beside `utmp.c`, then it
+reads a superblock per device, which is where it stops being a file problem);
+`load` and `w`, which want a namelist and `/dev/kmem` and are the part libkmemu
+is actually named for; and `ps` on top of `libproc`.
 
 **Case-by-case for grovelers (the user-sanctioned exception list):**
 

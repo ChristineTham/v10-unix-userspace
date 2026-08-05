@@ -16,9 +16,9 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 13 suites (~401 tests)
+make test             # all 14 suites (~616 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
-                      #            libv8c wavea waveb sh wavec
+                      #            libv8c wavea waveb sh wavec kmemu
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)
 make clean            # remove build/ and rootfs/
 ```
@@ -77,7 +77,10 @@ driver execs `clang` for assembly and linking. This is a decision, not a gap —
 do not "fix" it. Everything else is ported rather than passed through; host
 passthrough is meant to be the exception, not the rule.
 
-**`shim/libkmemu/` may link host libc** — the one component that may. It answers
+**`shim/libkmemu/` may link host libc** — the one component that may, and it is
+built: `who` runs, with **no changes to `who.c` at all**, because the shim
+manufactures `/etc/utmp` when a reader opens it rather than giving the program a
+function to call. `shim/libkmemu/NOTES.md` has the whole story. It answers
 "what is running / what is mounted / who is logged in" through documented,
 stable interfaces (`getutxent`, `getfsstat`, `proc_listpids`, `sysctl`) so
 Phase 4's grovelers can be honest. The alternative was parsing
@@ -90,7 +93,12 @@ Everything in `shim/v8sys/` stays raw-syscall-only (`dir.c` says so at its top,
 and that still holds). libc is for reading system facts, never for file I/O,
 strings, or anything `rawsys.h` already covers — that would be convenience, and
 convenience is how an exception list stops meaning anything. PLAN.md §7 has the
-reasoning.
+reasoning, and `tests/kmemu` turns it into an assertion: `who` imports exactly
+`_setutxent _getutxent _endutxent` and nothing else does.
+
+The same per-file rule holds *inside* libkmemu. Only `utmp.c` names a libc
+function; `synth.c` writes the file it produces through `rawsys.h` like the rest
+of the shim, so the line is visible in the code rather than only in this list.
 
 ### The bootstrap ladder
 
@@ -241,8 +249,26 @@ For a non-variadic function that silently works and hides the gap. For a
 *variadic* one it is an ABI mismatch: v8cc passes every argument positionally in
 x0–x7, Apple's ARM64 ABI passes variadic arguments on the stack. This bit three
 times (`scanf`, `printf` via the driver, `execl` — the last made `system()` start
-an interactive shell that looked exactly like a hang). `tests/libv8c` now guards
-the shape.
+an interactive shell that looked exactly like a hang). `tests/libv8c` guards the
+variadic shape, and `tests/kmemu` sweeps **every Mach-O in the rootfs** with
+`nm -u` — which found five more the first time it ran, including a `getgrent`
+that made `ls -g` read the Mac's group database from inside the jail. Note what
+that says about `tests/freestanding`: it links its own small programs, so it
+proved the shim was clean and never the world built on it. **A guard on a seam is
+not a guard on what crosses it.**
+
+Every remaining import is on `tests/kmemu`'s allowed list, named with its reason,
+and the suite fails if an entry goes stale. Today: `sleep` (see below) and libm
+for `pic`/`grap` (V8 shipped one; this port has never built one).
+
+**No V8 program can catch a signal.** `v8s_signal` hands the raw `sigaction`
+syscall a userland `struct sigaction`, where the kernel wants
+`struct __sigaction` — 24 bytes, with a signal-trampoline pointer at offset 8,
+exactly where the userland struct keeps `sa_mask`. Every handler is installed
+with a null trampoline; `sigaction` returns 0 and nothing looks wrong until
+delivery, when the process hangs or dies. `tests/v8sys` covers signal *numbering*
+and never delivery, which is how it survived. It is why V8's own `sleep(3)`
+cannot be built here. `shim/libkmemu/NOTES.md` has the measurements.
 
 **A stale object does not look like a build problem — it looks like wrong code.**
 Four debugging rounds went to correct source compiled from already-fixed files.

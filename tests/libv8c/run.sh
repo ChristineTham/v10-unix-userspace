@@ -56,6 +56,50 @@ run 'printf width and padding' '[   42][42   ][00042]' <<'EOF'
 main() { printf("[%5d][%-5d][%05d]\n", 42, 42, 42); fflush(stdout); return 0; }
 EOF
 
+# A NEGATIVE long through the unsigned conversions.  doprnt.c's convert() builds
+# its digits with digits[val % base], and the top bit is still set on the FIRST
+# iteration only -- so a signed remainder there indexed off the FRONT of the
+# digit string, picking up a NUL, and %lx printed 15 digits and a stray byte
+# where it should have printed 16.  Every later digit was right, because by then
+# `val /= base' had shifted the top bit away.
+#
+# The cause was in the compiler rather than here: see the three sconvert() cases
+# in tests/v8ccom.  These guard the symptom, which is what a caller sees.
+#
+# The values are the atof fixtures below, for a reason worth keeping.
+# bff4000000000000 is the one that HID this: its low nibble is 0, a signed
+# remainder of 0 is still 0, so the only visibly negative case in the tree
+# looked perfectly correct.  Any replacement must keep a negative value whose
+# low digit is significant.
+run 'printf %lx of negative longs' \
+'bf1a36e2eb1c432d bdf80d43de9cc603 bff4000000000000 419d6f34547e6b75 BF1A36E2EB1C432D' <<'EOF'
+#include <stdio.h>
+static long v[] = { 0xbf1a36e2eb1c432dL, 0xbdf80d43de9cc603L,
+		    0xbff4000000000000L, 0x419d6f34547e6b75L };
+main()
+{
+	int i;
+
+	for (i = 0; i < 4; i++) printf("%lx ", v[i]);
+	printf("%lX\n", v[0]);
+	fflush(stdout); return 0;
+}
+EOF
+
+# %lo takes the same path with base 8, where the top bit lands in a digit of its
+# own; and %ld / %lu are here so that a fix which simply forced the conversion
+# unsigned would be caught -- -1 must still print as -1 under %ld.
+run 'printf %lo of negative longs' \
+'1374321556135307041455 1377640000000000000000 1777777777777777777777 -1 18446744073709551615' <<'EOF'
+#include <stdio.h>
+main()
+{
+	printf("%lo %lo %lo %ld %lu\n",
+	    0xbf1a36e2eb1c432dL, 0xbff4000000000000L, -1L, -1L, -1L);
+	fflush(stdout); return 0;
+}
+EOF
+
 run 'malloc' 'malloc ok' <<'EOF'
 #include <stdio.h>
 char *malloc();
@@ -398,6 +442,98 @@ else
 	cat vt.err
 fi
 
+# --- atof, which is new code rather than ported ----------------------------
+#
+# libc/gen/atof.s is 319 lines of VAX D-format assembly, so src/libc/gen/atof.c
+# replaces it the way doprnt.c and ieeefp.c replace theirs.  New code needs its
+# own guard: the ones below are compared against the host's atof BY BIT PATTERN,
+# with integer equality, so that nothing about the comparison depends on the
+# formatting code.  That was arrived at the hard way -- the first attempt to
+# verify atof looked like two wrong answers, and they turned out to be %lx
+# dropping a digit.  %lx is fixed now (see the two cases above, and PLAN.md
+# S4g), but the reason to compare bit patterns rather than printed strings did
+# not depend on that bug and does not go away with it.
+#
+# Correctly rounded in the exact window (17 significant digits or fewer, decimal
+# exponent within +-22), which covers everything in this tree.  Two of these are
+# the boundary itself, so a change to that window shows up here.
+run 'atof exact cases' 'exact exact exact exact exact exact exact exact' <<'EOF'
+#include <stdio.h>
+extern double atof();
+struct { char *s; long bits; } t[] = {
+	{ "0.5",       0x3fe0000000000000L },
+	{ "-1.25",     0xbff4000000000000L },
+	{ "0.1",       0x3fb999999999999aL },
+	{ "-0.0001",   0xbf1a36e2eb1c432dL },
+	{ "1.5e-5",    0x3eef75104d551d69L },
+	{ "  +42.75",  0x4045600000000000L },	/* leading space and a sign */
+	{ "1e22",      0x4480f0cf064dd592L },	/* last exactly representable */
+	{ "3.14159265358979", 0x400921fb54442d11L },
+	{ 0, 0 }
+};
+main()
+{
+	int i; double d; long *lp;
+
+	for (i = 0; t[i].s; i++) {
+		d = atof(t[i].s);
+		lp = (long *)&d;
+		printf("%s%s", i ? " " : "", *lp == t[i].bits ? "exact" : "WRONG");
+	}
+	printf("\n"); fflush(stdout); return 0;
+}
+EOF
+
+# Overflow must reach infinity and underflow must reach zero.  An earlier
+# version clamped the exponent to bound its loop, which turned atof("1e400")
+# into 1.0000000000000007e+308 -- finite, plausible, and wrong.
+run 'atof overflows rather than saturating' 'inf 0 0' <<'EOF'
+#include <stdio.h>
+extern double atof();
+main()
+{
+	double big = atof("1e400"), small = atof("1e-400"), none = atof("abc");
+	long *b = (long *)&big, *s = (long *)&small, *n = (long *)&none;
+
+	printf("%s %s %s\n",
+	    *b == 0x7ff0000000000000L ? "inf" : "NOTINF",
+	    *s == 0 ? "0" : "NOTZERO",
+	    *n == 0 ? "0" : "NOTZERO");
+	fflush(stdout); return 0;
+}
+EOF
+
+# --- toupper and tolower, which are functions here and macros elsewhere ----
+# Both were resolving from libSystem until tests/kmemu noticed; V8 has them in
+# C, so nothing needed writing, only building.
+run 'toupper/tolower' 'ABC abc 9 - 9 -' <<'EOF'
+#include <stdio.h>
+main()
+{
+	printf("%c%c%c %c%c%c %c %c %c %c\n",
+	    toupper('a'), toupper('b'), toupper('C'),
+	    tolower('A'), tolower('B'), tolower('c'),
+	    toupper('9'), toupper('-'), tolower('9'), tolower('-'));
+	fflush(stdout); return 0;
+}
+EOF
+
+# --- NOT sleep, and the reason is worth more than the case would have been --
+#
+# V8's libc/gen/sleep.c was imported alongside the others and then taken back
+# out, because it hangs: it is alarm + a handler + `for(;;) pause()', and NO V8
+# PROGRAM IN THIS PORT CAN CATCH A SIGNAL.  v8s_signal in shim/v8sys/signal.c
+# passes the userland `struct sigaction' to the raw sigaction syscall, and the
+# kernel wants `struct __sigaction', which carries a signal-trampoline pointer
+# at offset 8 -- exactly where the userland struct has sa_mask.  So every
+# handler is installed with a null trampoline and the process dies or hangs the
+# moment one is delivered.  Measured: kill(getpid(), SIGINT) with a handler
+# installed does not return.
+#
+# Until that is fixed, sleep comes from libSystem, which is why it is on the
+# allowed-leak list in tests/kmemu rather than absent from it.  Deliberately no
+# test here: a case for a function this port does not provide would be testing
+# Apple's libc.
 
 echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

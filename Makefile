@@ -172,7 +172,7 @@ SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -183,7 +183,7 @@ stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff t
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
 # driver for free because the library install rules said `| rootfs`.  Naming
 # $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
-test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec
+test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu
 # First, because it tests the thing every other suite's result depends on: that
 # what was built is what the sources say.  Four bugs in this port were a stale
 # object rather than wrong code.  It settles the build itself, so it takes no
@@ -223,6 +223,10 @@ test-sh: $(BUILD)/sh/sh
 # binaries are, so the suite depends on them.
 test-wavec: nroff troff tbl eqn pic spell $(ROOTFS_TERM) $(ROOTFS_FONT)
 	@$(ROOT)tests/wavec/run.sh
+# Every binary in the rootfs is swept for libc imports, so the suite depends on
+# all of them being built and installed, not just on who.
+test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
+	@$(ROOT)tests/kmemu/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
 	@mkdir -p $(BUILD)/v8sys
@@ -371,8 +375,16 @@ STUB_OBJ  = $(foreach s,$(SYSCALLS),$(BUILD)/v8sys/stub/$(word 1,$(subst :, ,$(s
             $(BUILD)/v8sys/stub/errno.o $(BUILD)/v8sys/stub/exit.o \
             $(BUILD)/v8sys/stub/signal.o
 
+# `rm -f' before every `ar' in this file, and it is not tidiness.  `ar r'
+# REPLACES the members it is given and leaves the rest alone, so dropping a
+# source file from an object list does not drop its object from the archive --
+# it stays there, and stays linked, until someone happens to run `make clean'.
+# Measured while mutation-testing tests/kmemu: removing atof from LIBC_GEN left
+# atof.o in libv8c.a and seq went on using it, so the check that should have
+# caught the removal saw a correct build.  The "a stale object does not look
+# like a build problem" class, one layer below where it usually bites.
 $(BUILD)/v8sys/libv8stubs.a: $(STUB_OBJ)
-	@ar rcs $@ $(STUB_OBJ)
+	@rm -f $@ && ar rcs $@ $(STUB_OBJ)
 	@echo "built $@ ($(words $(STUB_OBJ)) objects)"
 
 # One rule per syscall, generated: each names its own -D set.
@@ -401,7 +413,7 @@ $(BUILD)/v8sys/stub/signal.o: $(ROOT)shim/v8sys/stubs.c
 
 libv8sys: $(BUILD)/v8sys/libv8sys.a
 $(BUILD)/v8sys/libv8sys.a: $(SHIM_OBJ)
-	@ar rcs $@ $(SHIM_OBJ)
+	@rm -f $@ && ar rcs $@ $(SHIM_OBJ)
 	@echo "built $@"
 
 # -fno-stack-protector and -fno-stack-check: both emit calls to libc helpers
@@ -422,6 +434,51 @@ $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
 	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # ---------------------------------------------------------------------------
+# libkmemu -- the system-facts half of the shim, and the one part of it that
+# may link the host's libc.  shim/libkmemu/synth.c states the boundary; PLAN.md
+# section 7 records the decision.
+#
+# A SEPARATE ARCHIVE, deliberately, and NOT in $(V8LIBS).  Folding it into
+# libv8sys.a would put libSystem imports in all 49 V8 binaries and end the
+# freestanding guarantee -- tests/freestanding asserts with `nm -u' that a V8
+# program takes nothing from libc.  Only the grovelers link it, and the shim
+# reaches it through a weak symbol that is null everywhere else.
+#
+# Not under $(BUILD)/v8sys either: SHIM_SRC is a wildcard over shim/v8sys/*.c,
+# so a file dropped in there would silently join libv8sys.a and every V8 binary
+# would start importing libc with nothing to say it had happened.
+# ---------------------------------------------------------------------------
+KMEMU_SRC = $(wildcard $(ROOT)shim/libkmemu/*.c)
+KMEMU_OBJ = $(patsubst $(ROOT)shim/libkmemu/%.c,$(BUILD)/kmemu/%.o,$(KMEMU_SRC))
+KMEMU_LIB = $(BUILD)/kmemu/libkmemu.a
+
+libkmemu: $(KMEMU_LIB)
+$(KMEMU_LIB): $(KMEMU_OBJ)
+	@rm -f $@ && ar rcs $@ $(KMEMU_OBJ)
+	@echo "built $@"
+
+$(BUILD)/kmemu/%.o: $(ROOT)shim/libkmemu/%.c
+	@mkdir -p $(BUILD)/kmemu
+	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# What a groveler adds to the standard link.
+#
+# TWO ARCHIVES DEFINE kmemu_synth: the real one here, and the do-nothing
+# nokmemu.o inside libv8sys.a that every other V8 binary gets.  Which one a
+# program ends up with is therefore a question about link order, and the answer
+# is invisible -- both link cleanly, and the wrong one leaves `who' printing an
+# empty file rather than failing.
+#
+# -force_load settles it by loading this archive outright.  Measured: it is NOT
+# required today, because ld64 resolves archives iteratively rather than in the
+# single left-to-right pass classic Unix ld made, so libkmemu.a sitting ahead of
+# libv8sys.a is already enough.  It is here so that stays true if the library
+# list is ever reordered, and because "the right definition wins" should be a
+# statement about this line rather than about the linker's search strategy.
+# tests/kmemu checks the symbol table of the built binary either way.
+KMEMU_LDADD = -Wl,-force_load,$(KMEMU_LIB)
+
+# ---------------------------------------------------------------------------
 # libv8c -- V8's own libc, compiled by v8cc, on top of the shim.
 #
 # This is authentic V8 source with three kinds of exception, each marked in the
@@ -439,7 +496,8 @@ LIBC_GEN = malloc ecvt ieeefp errlst perror memops \
            calloc getenv qsort swab mktemp abort rand getopt stty \
            execvp exec getwd ftw valloc tell iread l3tol ltol3 nlist \
            opendir readdir closedir seekdir telldir \
-           ctime timezone ttyname cttyname getlogin ttyslot
+           ctime timezone ttyname cttyname getlogin ttyslot \
+           tolower toupper atof
 LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/data.c $(LIBCSRC)/stdio/doprnt.c \
           $(LIBCSRC)/stdio/printf.c $(LIBCSRC)/stdio/fprintf.c \
@@ -456,6 +514,8 @@ LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/fseek.c $(LIBCSRC)/stdio/ftell.c \
           $(LIBCSRC)/stdio/strout.c $(LIBCSRC)/stdio/getw.c \
           $(LIBCSRC)/stdio/getpw.c $(LIBCSRC)/stdio/putw.c $(LIBCSRC)/stdio/tmpnam.c \
+          $(LIBCSRC)/stdio/getpwent.c $(LIBCSRC)/stdio/getpwuid.c \
+          $(LIBCSRC)/stdio/getgrent.c \
           $(LIBCSRC)/stdio/doscan.c $(LIBCSRC)/stdio/scanf.c \
           $(LIBCSRC)/stdio/popen.c $(LIBCSRC)/stdio/system.c
 # scanf/doscan, popen and system were missing until spell needed scanf.  A
@@ -483,8 +543,22 @@ $(BUILD)/libc/setjmp.o: $(ROOT)compiler/setjmp.s
 	$(HOSTCC) -c $< -o $@
 
 libv8c: $(BUILD)/libc/libv8c.a
+# WHAT `rm -f' STILL DOES NOT FIX, so nobody has to rediscover it: make cannot
+# notice a prerequisite that was REMOVED.  Drop a file from LIBC_GEN and the
+# archive is still newer than every object left, so the rule does not run at
+# all and the member survives.  Measured: taking sleep out of the list and
+# deleting its source left sleep.o in libv8c.a, and rm and tail went on linking
+# it -- which for sleep meant they went on hanging.
+#
+# Making the archives depend on $(MAKEFILE_LIST) does fix it and was tried.
+# It costs too much: every edit to this file, comments included, relinks all
+# four archives and the 221 build actions below them, and the first `make test'
+# after any such edit fails because tests/deps runs before the other suites'
+# prerequisites are rebuilt.  A stamp file holding the object list would work,
+# but that is machinery for a case tests/deps already catches -- each of the
+# `X -> libc' cases there fails if X leaves the list.  Guarded, not prevented.
 $(BUILD)/libc/libv8c.a: $(LIBC_OBJ)
-	@ar rcs $@ $(LIBC_OBJ)
+	@rm -f $@ && ar rcs $@ $(LIBC_OBJ)
 	@echo "built $@"
 
 # Compiled by v8cc itself -- this is the point.  V8ROOT has to be set for the
@@ -688,7 +762,8 @@ V8BIN = cat echo cmp rm touch ln test chmod pwd wc head tail tee tr \
         grep fgrep sort uniq comm cut paste col fold expand unexpand rev \
         basename printenv split sum od pr look join number seq yes ls v8 newer \
         deroff \
-        ascii bcd cal morse ptx units vis date
+        ascii bcd cal morse ptx units vis date \
+        who
 
 # Every single-file command imported into src/cmd is now installed, not just
 # the ones the bootstrap needs.  `cc' is the only .c in there that is NOT in
@@ -729,6 +804,21 @@ $(BINDIR)/%: $(SRC)/cmd/%.c $(V8CC_DEPS) $(V8DEPS)
 	@mkdir -p $(BINDIR)
 	@$(V8CCRUN) -c -o $(BINDIR)/$*.o $<
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/$*.o $(V8LIBS)
+
+# who -- a groveler, so it links libkmemu on top of the standard list.  An
+# EXPLICIT rule for a target the pattern rule above would otherwise match; GNU
+# make prefers the explicit one, and who stays in $(V8BIN) so that it is built,
+# installed and counted by the tests/wavea check that every src/cmd/*.c but cc
+# is a real installed binary.
+#
+# The compile is identical -- who.c is authentic V8 and needed no change at all.
+# Everything Phase 4 costs it is on the LINK line, which is the argument for
+# having the shim manufacture /etc/utmp rather than patching who to ask for it.
+$(BINDIR)/who: $(SRC)/cmd/who.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
+	@mkdir -p $(BINDIR)
+	@$(V8CCRUN) -c -o $(BINDIR)/who.o $<
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/who.o \
+	    $(KMEMU_LDADD) $(V8LIBS)
 
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
 # them -- this port's chroot, implemented where its kernel lives.

@@ -65,3 +65,5 @@ c87e2585ce0de20513fb5334e93e376441d5b91e  v8/usr/src/libc/gen/iread.c
 04eabc064a7222ad922524ebc17529b1150320d5  v8/usr/src/libc/gen/l3tol.c
 3f650a0494ac7fcbb99412441b9cc7e68e7c5667  v8/usr/src/libc/gen/ltol3.c
 9ee382c8a0034b812acf4131ac0aa87c64ca699a  v8/usr/src/libc/gen/nlist.c
+7f3214b55d6005843a9df8f03f2d64bbee027d41  v8/usr/src/libc/gen/tolower.c
+17ad4361a6bfa6fa61da889e4246522277193eab  v8/usr/src/libc/gen/toupper.c
