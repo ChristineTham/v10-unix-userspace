@@ -372,10 +372,20 @@ esac
 #
 # If V8's make lacks something one of them needs, that is a finding about the
 # make we ported, and better found here than by a program failing to build.
-for prog in sed fmt tsort; do
+#	tbl     a t?.o glob, three flags at once (-i -s -O), and a 22-target
+#	        dependency line on t..c -- an #included NON-HEADER, the class
+#	        CLAUDE.md calls invisible to every scanner.  If V8 make gets
+#	        that line right, the knowledge the build system had to be told
+#	        was in the tree all along.
+#	yacc    $(CC) rather than a literal, a y?.o glob, and the same shape of
+#	        dependency on dextern and files.
+for prog in sed fmt tsort tbl yacc; do
 	d=r5_$prog
 	mkdir -p $d
 	cp "$ROOT"/src/cmd/$prog/*.c "$ROOT"/src/cmd/$prog/*.h "$d"/ 2>/dev/null
+	# the #included non-headers, which are not *.c and not *.h
+	cp "$ROOT"/src/cmd/$prog/t..c "$ROOT"/src/cmd/$prog/dextern \
+	   "$ROOT"/src/cmd/$prog/files "$d"/ 2>/dev/null
 	cp "$ROOT"/src/cmd/$prog/[Mm]akefile "$d"/ 2>/dev/null
 	out=$( cd $d && V8JAIL=strict "$MAKE8" 2>&1 )
 	ck "$prog builds from its own V8 makefile" yes \

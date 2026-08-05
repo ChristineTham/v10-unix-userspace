@@ -113,12 +113,21 @@ the documented as/ld exception. The makefile is plain 1985 make — no pattern
 rules, no automatic variables past `$@`. The result compiles real source, the
 build settles, and a second build from clean generates identical code.
 
-**Rung 5 is demonstrated on four programs, chosen for their makefile idioms
-rather than their size**: `lex` (a real dependency line on `#include`d
-non-headers), `sed` (target, prerequisites and recipe on one line; a `*.o`
-glob), `fmt` (macro expansion), `tsort` (`.SUFFIXES` and a `.c.o` suffix rule,
-with no explicit object rules at all). V8's make handled every one unchanged.
-`sed` found a driver gap rather than a make gap — see `-n` in `src/cmd/cc.c`.
+**Rung 5 is demonstrated on six programs, chosen for their makefile idioms
+rather than their size**: `lex` (dependency line on `#include`d non-headers),
+`sed` (target, prerequisites and recipe on one line; `*.o` glob), `fmt` (macro
+expansion), `tsort` (`.SUFFIXES` and a `.c.o` suffix rule, no explicit object
+rules), `tbl` (`t?.o` glob, three flags at once, a 22-target dependency line on
+`t..c`), `yacc` (`$(CC)`, `y?.o`, dependencies on `dextern` and `files`).
+V8's make handled every one unchanged.
+
+Two things came out of that which our own rules could not have surfaced. `sed`
+found a *driver* gap — `-n`, the VAX shared-text flag, now accepted and ignored
+like `-O`. And `tbl` and `yacc` prove V8's make gets the `#include`d-non-header
+dependency lines right, which means **the knowledge our Makefile had to be told
+was in the tree the whole time.** That is the argument for doing the rest of
+them: upstream's makefiles exercise the toolchain in ways our rules never do,
+because our rules were written to work.
 
 `tests/jail` builds `lex` from `src/cmd/lex/Makefile`
 — upstream V8, unmodified — with V8's make, cc and yacc, in a directory holding
