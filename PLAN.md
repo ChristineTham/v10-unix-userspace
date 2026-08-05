@@ -184,6 +184,32 @@ copied out before the second call. Any code holding two results from
 
 Mutation-verified: disabling the interception fails both jail cases.
 
+## 4e. spell: installed, and spellprog cannot read its table — open
+
+`spell` is now laid out as `src/cmd/spell/Makefile` says: `spellprog` to
+`/usr/lib/spell`, `spell.sh` to `/usr/bin/spell`, and upstream's prebuilt
+`hlista`, `hlistb`, `hstop` and `words` to `/usr/dict`. `deroff`, which
+`spell.sh` pipes through and nothing else had needed, is ported.
+
+The script now runs end to end and spellprog fails:
+
+    spell: cannot initialize hash table
+
+**Not a path problem.** It fails identically when handed the host path to
+`hlista` directly, so the file is being found and opened; it is the table
+itself spellprog will not accept. The lists are upstream's own binary data,
+which makes this the first case in the port of a ported program disagreeing
+with V8's on-disk format rather than with its own source — and the obvious
+suspect is LP64, since a hashed word list is exactly the kind of file whose
+header carries word-sized counts.
+
+Two things to establish, in this order: what spellprog checks before it gives
+up (it is one function), and whether the sizes it expects match what upstream's
+`hlista` actually contains. The lists CAN be regenerated here — `hashmake` and
+`spellin` are built and the recipe is in that makefile — but regenerating them
+would substitute our hash of a dictionary for theirs and hide the disagreement
+rather than settle it.
+
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
 Every translation unit of `cpp` and `ccom` compiles with `v8cc` and links

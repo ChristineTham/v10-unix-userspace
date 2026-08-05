@@ -152,12 +152,12 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: install man wavec-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: install man wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
@@ -666,7 +666,8 @@ BINDIR = $(BUILD)/bin
 # had been ported.
 V8BIN = cat echo cmp rm touch ln test chmod pwd wc head tail tee tr \
         grep fgrep sort uniq comm cut paste col fold expand unexpand rev \
-        basename printenv split sum od pr look join number seq yes ls v8 newer
+        basename printenv split sum od pr look join number seq yes ls v8 newer \
+        deroff
 
 V8BIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8BIN))
 V8BIN_INSTALL = $(patsubst %,$(ROOTFS)/bin/%,$(V8BIN))
@@ -1217,10 +1218,6 @@ $(ROOTFS)/usr/man/.stamp: $(MANPAGESRC)/man1/cat.1
 # never put where the V8 world could reach them -- the same gap that hid yacc
 # and lex until a program built from its own makefile asked for one.  man is
 # what surfaced it here: man.sh runs `nroff`, and nroff was in build/ only.
-# spell is not here: it builds several programs (hashcheck, hashmake, spellin,
-# spellout) rather than one binary called `spell`, and installing it properly
-# means deciding where each goes.  That is its own piece of work, not a line in
-# this list -- see PLAN.md S4d.
 WAVEC_INSTALL = nroff troff eqn tbl pic refer
 WAVEC_TARGETS = $(patsubst %,$(ROOTFS)/usr/bin/%,$(WAVEC_INSTALL))
 
@@ -1250,4 +1247,33 @@ $(ROOTFS)/usr/bin/tbl: $(BUILD)/tbl/tbl
 $(ROOTFS)/usr/bin/pic: $(BUILD)/pic/pic
 	@mkdir -p $(@D) && cp $< $@
 $(ROOTFS)/usr/bin/refer: $(BUILD)/refer/refer
+	@mkdir -p $(@D) && cp $< $@
+
+# ---------------------------------------------------------------------------
+# spell -- four programs and three data files, laid out as upstream says.
+#
+# `spell` is a shell script; spellprog is the engine it execs from /usr/lib, and
+# the hashed word lists live in /usr/dict.  src/cmd/spell/Makefile's own install
+# rule is followed literally rather than invented:
+#
+#	mv spellprog /usr/lib/spell
+#	cp hlista hlistb hstop /usr/dict
+#	cp spell.sh /usr/bin/spell
+#
+# The lists are upstream's prebuilt ones.  They CAN be regenerated here --
+# hashmake and spellin are built and the recipe is in that makefile -- but the
+# shipped files are the data V8 actually ran with, and regenerating them would
+# substitute our own hash of a dictionary for theirs without being asked to.
+DICTSRC = $(ROOT)third_party/Research-Unix-v8/v8/usr/dict
+SPELL_INSTALL = $(ROOTFS)/usr/lib/spell $(ROOTFS)/usr/bin/spell \
+                $(ROOTFS)/usr/dict/hlista $(ROOTFS)/usr/dict/hlistb \
+                $(ROOTFS)/usr/dict/hstop $(ROOTFS)/usr/dict/words
+
+spell-install: $(SPELL_INSTALL)
+
+$(ROOTFS)/usr/lib/spell: $(BUILD)/spell/spellprog
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/spell: $(SPELLSRC)/spell.sh
+	@mkdir -p $(@D) && cp $< $@ && chmod 755 $@
+$(ROOTFS)/usr/dict/%: $(DICTSRC)/%
 	@mkdir -p $(@D) && cp $< $@
