@@ -504,9 +504,87 @@ jailsay(const char *pre, int prelen, char *p, const char *post, int postlen)
 #define	SAY(pre, p, post) \
 	jailsay(pre, (int)sizeof (pre) - 1, p, post, (int)sizeof (post) - 1)
 
+/*
+ * A #! SCRIPT IS RUN BY THE SHIM, NOT BY THE HOST KERNEL.
+ *
+ * The kernel resolves a shebang before this port gets a say, and against the
+ * REAL filesystem: /usr/bin/man opens `#!/bin/sh`, so XNU ran the Mac's shell,
+ * which looked for the Mac's /usr/man and ran the Mac's commands, never calling
+ * rootpath() once.  man printed "cat not found" for a page in the rootfs, and
+ * every shell script in the world had been leaving the jail the same way --
+ * invisibly, because a script that works looks like a script that works.
+ *
+ * So the interpreter line is read here and the exec rewritten through vpath(),
+ * which is what a kernel does; the shim is this port's kernel.  `#!/bin/sh`
+ * then means V8's sh.
+ *
+ * THE SCRIPT PATH IS COPIED, and that is not defensive tidiness -- it is the
+ * bug that broke the first version of this.  rootpath() returns a pointer into
+ * its OWN STATIC BUFFER, so calling vpath() a second time to resolve the
+ * interpreter overwrites the buffer the argv is still holding as the script
+ * name.  argv[1] and the interpreter path became the same string, and V8's sh
+ * was handed itself to interpret.
+ *
+ * Minimal, matching V7: interpreter plus at most one argument, no recursion
+ * into a second script, and any failure falls through to the kernel unchanged
+ * rather than inventing an error.
+ */
+static int
+shebang(char *p, char *buf, int n, char **interp, char **arg)
+{
+	int fd, i, k;
+
+	*interp = *arg = 0;
+	if ((fd = (int)rawsys3(SYS_open, (long)p, 0, 0)) < 0) return (0);
+	k = (int)rawsys3(SYS_read, fd, (long)buf, (long)n - 1);
+	rawsys1(SYS_close, fd);
+	if (k < 4 || buf[0] != '#' || buf[1] != '!') return (0);
+	buf[k] = '\0';
+	for (i = 2; buf[i] == ' ' || buf[i] == '\t'; i++)
+		;
+	if (buf[i] == '\0' || buf[i] == '\n') return (0);
+	*interp = buf + i;
+	for (; buf[i] && buf[i] != ' ' && buf[i] != '\t' && buf[i] != '\n'; i++)
+		;
+	if (buf[i] == ' ' || buf[i] == '\t') {
+		buf[i++] = '\0';
+		while (buf[i] == ' ' || buf[i] == '\t') i++;
+		if (buf[i] && buf[i] != '\n') {
+			*arg = buf + i;
+			for (; buf[i] && buf[i] != '\n'; i++)
+				;
+		}
+	}
+	buf[i] = '\0';
+	return (1);
+}
+
 int v8s_execve(char *p, char **a, char **e)
 {
 	char *q = vpath(p);
+	static char shbuf[512];
+	static char script[1024];
+	static char *nav[260];
+	char *interp, *sharg;
+
+	if (shebang(q, shbuf, (int)sizeof shbuf, &interp, &sharg)) {
+		int n = 0, i;
+
+		/* copy BEFORE the second vpath() -- see the note above */
+		for (i = 0; q[i] && i < (int)sizeof script - 1; i++)
+			script[i] = q[i];
+		script[i] = '\0';
+
+		nav[n++] = interp;
+		if (sharg) nav[n++] = sharg;
+		nav[n++] = script;
+		for (i = 1; a != 0 && a[i] != 0 && n < 258; i++)
+			nav[n++] = a[i];
+		nav[n] = 0;
+		p = interp;
+		a = nav;
+		q = vpath(interp);		/* #!/bin/sh must mean V8's sh */
+	}
 
 	if (q == p && p != 0 && *p == '/' && !injail(p)) {
 		char *j = v8sys_getenv("V8JAIL");

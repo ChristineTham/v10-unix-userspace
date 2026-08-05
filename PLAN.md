@@ -160,31 +160,29 @@ dependency knowledge was in the tree the whole time, in files the build
 ignored. Program builds move onto their own makefiles, minimally adapted, with
 every deviation recorded in that program's `PORTING.md`.
 
-## 4d. Shell scripts leave the jail — open
+## 4d. Shell scripts run inside the jail — CLOSED
 
-`man` is installed and its 1200 pages with it, but `man cat` prints "cat not
-found" for a page sitting in the rootfs. The reason is architectural and
-applies to **every shell script in the world**, not to man:
+A `#!` line is resolved by the host kernel, against the real filesystem, before
+the shim gets a say. `/usr/bin/man` opens `#!/bin/sh`, so XNU ran the Mac's
+shell, which looked for the Mac's `/usr/man` and ran the Mac's commands and
+never called `rootpath()` once. **Every shell script in the world was leaving
+the jail this way** — invisibly, because a script that works looks exactly like
+a script that works. It was the last hole in the chroot.
 
-**A `#!` line is resolved by the host kernel, before the shim gets a say.**
-`/usr/bin/man` opens `#!/bin/sh`, XNU resolves that against the real
-filesystem, and the Mac's shell runs the script — so it looks for the Mac's
-`/usr/man`, runs the Mac's commands, and never calls `rootpath()` once. This is
-the jail's last hole, and the most invisible kind: a script that works looks
-exactly like a script that works.
+`v8s_execve` now reads the interpreter line itself and rewrites the exec through
+`vpath()`, which is what a kernel does; the shim is this port's kernel. V7's
+rules: interpreter plus at most one argument, no recursion into a second script,
+any failure falls through unchanged rather than inventing an error.
 
-The fix belongs in `v8s_execve` — read the interpreter line, rewrite the exec
-through `vpath()`, exactly as a kernel does, since the shim is this port's
-kernel. That was attempted and **reverted**: V8's `sh` then failed with
-`syntax error at line 1: '{' unexpected`, meaning the rewritten argv was wrong
-or the interception fired on something it should not have (it sees every
-`execve`, including the compiler's exec of clang). It needs doing carefully,
-with the argv construction tested on its own before the shim is touched.
+**The bug that broke the first attempt, because the shape recurs.**
+`rootpath()` returns a pointer into its *own static buffer*, so resolving the
+interpreter with a second `vpath()` call overwrote the buffer the argv was still
+holding as the script name — argv[1] and the interpreter became the same
+string, and V8's `sh` was handed itself to interpret. The script path is now
+copied out before the second call. Any code holding two results from
+`rootpath()` at once has this problem.
 
-Until then: scripts run under the host shell. `[` is now installed (V8 shipped
-it as a link to `test`, and `man.sh` opens with `if [ -d $MAN ]`), `/usr/man/`
-and `/usr/spool/` are in `v8dirs`, and everything else `man` needs is in place —
-so this one change should make it work.
+Mutation-verified: disabling the interception fails both jail cases.
 
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 

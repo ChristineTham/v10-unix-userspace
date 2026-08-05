@@ -362,5 +362,24 @@ case "$(echo 'ls /bin' | "$V8ROOT/bin/v8" 2>&1)" in
 *) fail=$((fail+1)); echo "FAIL ls /bin does not show the V8 /bin" ;;
 esac
 
+# --- #! scripts are interpreted INSIDE the jail ------------------------------
+# The kernel resolves a shebang against the real filesystem before the shim sees
+# it, so every shell script in the world used to run under the Mac's sh --
+# looking at the Mac's directories, running the Mac's commands, never calling
+# rootpath() once.  v8s_execve now reads the interpreter line itself.
+cat > sb <<'SBEOF'
+#!/bin/sh
+pwd
+SBEOF
+chmod 755 sb
+ck 'a #! script runs under V8 sh, so pwd is a V8 path' '/' \
+   "$(cd "$V8ROOT" && "$V8ROOT/bin/sh" -c "$TMP/sb" 2>&1 | head -1)"
+
+# man through its OWN #! line -- the case that found this.
+case "$(echo 'man cat' | "$V8ROOT/bin/v8" 2>&1)" in
+*"Eighth Edition"*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL man via its shebang did not render" ;;
+esac
+
 echo "jail: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

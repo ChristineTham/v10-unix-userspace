@@ -144,6 +144,13 @@ per-process-tree**. Host binaries never call `rootpath()`, so they see the real
 macOS with no special casing; anything `cc` produces links `libv8sys`, so it is
 jailed by construction.
 
+`v8s_execve` also interprets `#!` itself. The kernel would resolve a shebang
+against the real filesystem before the shim saw it, so every shell script ran
+under the Mac's shell — the last hole in the chroot, and the most invisible.
+Watch for the aliasing trap when touching it: `rootpath()` returns a pointer
+into its own static buffer, so holding two results at once silently gives you
+the same string twice.
+
 ## The bug classes that actually bite
 
 **LP64 is the dominant one.** V8 assumes `sizeof(int) == sizeof(char *)`. The
