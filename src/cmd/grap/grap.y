@@ -5,7 +5,8 @@
 %}
 
 %token	<i>	FRAME TICKS GRID LABEL COORD
-%token	<i>	LINE ARROW CIRCLE DRAW NEW PLOT PIC NEXT
+%token	<i>	LINE ARROW CIRCLE DRAW NEW PLOT NEXT
+%token	<p>	PIC			/* was <i>: LP64, see PORTING.md */
 %token	<i>	COPY THRU UNTIL
 %token	<i>	FOR FROM TO BY AT WITH
 %token	<i>	IF

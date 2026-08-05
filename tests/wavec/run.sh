@@ -167,5 +167,91 @@ SPEOF
 check 'spell reads V8 own hlista and finds only the errors' 'jumpd teh' \
    "$("$V8ROOT/bin/sh" "$V8ROOT/usr/bin/spell" sp.txt 2>&1 | tr '\n' ' ' | sed 's/ $//')"
 
+# --- grap: the program that needed struct-by-value ----------------------------
+# grap stopped the build at `unimplemented operator 99 (STARG)` until placeargs()
+# learned to copy an aggregate into consecutive argument slots.  Its Point is
+# {struct obj *; double x, y} -- 24 bytes, three slots -- and plot.c's
+# `line(type, p1, p2, desc)` passes two of them.  These cases are the only
+# coverage of that code path in the whole tree, so they are worth their weight:
+# revert the STARG case in compiler/ccom-arm64/gencode.c and grap does not build.
+# See PLAN.md S4f and src/cmd/grap/PORTING.md.
+cat > gr1.grap <<'GREOF'
+.G1
+frame invis ht 2 wid 3 left solid bot solid
+coord x 0,10 y 0,100
+draw solid
+1 1
+2 4
+3 9
+10 100
+.G2
+GREOF
+if [ -x "$V8ROOT/usr/bin/grap" ]; then
+	grapout=$("$V8ROOT/usr/bin/grap" gr1.grap 2>&1)
+	# The coordinate-transform macro proves the frame and coord were read.
+	case "$grapout" in
+	*"define xy_gg"*) pass=$((pass+1)) ;;
+	*) fail=$((fail+1)); echo "FAIL grap emitted no coordinate transform" ;;
+	esac
+	# One `line from' per segment between the four data points.  These are the
+	# statements plot.c builds by passing two Points BY VALUE, so a broken
+	# STARG shows up here as a wrong count or wrong numbers rather than a
+	# crash -- the values travel through the argument slots.
+	check 'grap plots one line per interval' '3' \
+	    "$(printf '%s\n' "$grapout" | grep -c '^line  from')"
+	check 'grap transforms the last point' '1' \
+	    "$(printf '%s\n' "$grapout" | grep -c 'xy_gg(10.0000,100.000)')"
+	# grap.defines is a RUNTIME file at /usr/lib/grap.defines, not an include;
+	# without the install rule grap warns on every run.
+	check 'grap finds its defines file' '0' \
+	    "$(printf '%s\n' "$grapout" | grep -c 'grap warning')"
+
+	# End to end.  This is what caught the pic bug: pic segfaulted on the `.lf`
+	# lines grap emits, so grap alone passed while the pipeline produced
+	# nothing.  A preprocessor that is never fed downstream is not tested.
+	trout=$("$V8ROOT/usr/bin/grap" gr1.grap | "$V8ROOT/usr/bin/pic" \
+	        | "$ROOT/build/stage0/troff/troff" 2>/dev/null)
+	case "$trout" in
+	"x T 202"*) pass=$((pass+1)) ;;
+	*) fail=$((fail+1)); echo "FAIL grap|pic|troff produced no device stream" ;;
+	esac
+	# Drawing commands must survive all three stages.  Zero here was the
+	# symptom of the pic crash: exit status was lost through the pipe.
+	ndraw=$(printf '%s\n' "$trout" | grep -c '^D')
+	if [ "$ndraw" -gt 0 ]; then pass=$((pass+1))
+	else fail=$((fail+1)); echo "FAIL grap|pic|troff drew nothing"; fi
+
+	# grap's own PIC token had the identical LP64 fault as pic's TROFF:
+	# grapl.l stores a char * in yylval.p, grap.y declared the token <i>.
+	# Two lexer rules reach it -- an explicit `pic' statement, and ANY troff
+	# request inside .G1/.G2 that is not .G2 itself -- and both segfaulted.
+	# Found by sweeping every grammar in the tree after fixing pic, not by
+	# hitting it: the graphs above use neither construct.
+	printf '.G1\npic box "raw"\n1 1\n2 2\n.G2\n' > gr2.grap
+	"$V8ROOT/usr/bin/grap" gr2.grap > gr2.out 2>&1
+	check 'grap survives an explicit pic statement' '0' "$?"
+	check 'grap passes the pic line through' '1' "$(grep -c 'box "raw"' gr2.out)"
+	printf '.G1\n.ft B\n1 1\n2 2\n.G2\n' > gr3.grap
+	"$V8ROOT/usr/bin/grap" gr3.grap > gr3.out 2>&1
+	check 'grap survives a troff request inside .G1' '0' "$?"
+	check 'grap passes the troff request through' '1' "$(grep -c '^\.ft B' gr3.out)"
+else
+	fail=$((fail+10)); echo "FAIL grap not installed"
+fi
+
+# pic must not die on a troff directive inside .PS.  picy.y declared TROFF as
+# <i> while the lexer stores a char * in yylval.p, so on LP64 the pointer lost
+# its top 32 bits and _doprnt dereferenced 0x4a57c50 instead of 0x104a57c50.
+# Nothing in the tree fed pic a `.' line inside a picture until grap did, on
+# every graph it emits.  See src/cmd/pic/PORTING.md.
+printf '.PS\n.lf 2\nbox\n.PE\n' > pl1.pic
+"$V8ROOT/usr/bin/pic" pl1.pic >pl1.out 2>&1
+check 'pic survives a bare .lf inside .PS' '0' "$?"
+printf '.PS\n.lf 7 some.file\nbox\n.PE\n' > pl2.pic
+"$V8ROOT/usr/bin/pic" pl2.pic >pl2.out 2>&1
+check 'pic survives a named .lf inside .PS' '0' "$?"
+# ...and passes it through rather than swallowing it.
+check 'pic passes the troff line through' '1' "$(grep -c '^\.lf 7 some\.file' pl2.out)"
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

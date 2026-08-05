@@ -339,9 +339,82 @@ efcode()
 	regvar = minrvar = RVARLAST_P1;
 }
 
+/*
+ * WHICH BYTES OF THE ARGUMENT AREA BELONG TO AN AGGREGATE PARAMETER.
+ *
+ * This exists for acctype() in gencode.c, which widens an int VPARAM to a full
+ * 8-byte slot because K&R gives an undeclared parameter the type int and 271
+ * parameters across 109 files in usr/src/cmd use one to hold a pointer.  That
+ * widening is wrong for an int MEMBER of an aggregate parameter, and the note
+ * above acctype() has said so since it was written -- along with the reason it
+ * could not be fixed there: pass 1 hands pass 2 the parameter's own node
+ * retyped to the member's type, so a 4-byte member and a 4-byte parameter are
+ * the same node by then.
+ *
+ * That note also said the case was "not reachable for aggregates larger than 8
+ * bytes -- those hit the unimplemented STARG path first".  Implementing STARG
+ * made it reachable, and grap's test case found it immediately: a 12-byte
+ * struct of three ints, passed by value, summed by the callee, gave the right
+ * answer in the low 32 bits and rubbish above them, because each member was
+ * read with an 8-byte load that pulled in the next member too.
+ *
+ * The note's own prescription was "have pass 1 mark member references".  This
+ * is the same information obtained through an interface pcc already provides:
+ * bfcode() is handed the parameter symbols, with their DECLARED types, so the
+ * byte ranges of the aggregate ones can simply be recorded and asked about.
+ * Nothing in authentic source has to change.
+ *
+ * Offsets here are BYTES from ARGINIT, matching a VPARAM's tn.lval
+ * (trees.c:279 stores BITOOR(sp->offset)).
+ */
+#define MAXAGGPARAM 16
+
+static struct { long lo, hi; } aggparam[MAXAGGPARAM];
+static int naggparam;
+
+int
+arm64_aggparam(off)
+	long off;
+{
+	register int i;
+
+	for (i = 0; i < naggparam; i++)
+		if (off >= aggparam[i].lo && off < aggparam[i].hi)
+			return (1);
+	return (0);
+}
+
 bfcode(a, n)
 	int a[], n;
 {
+	register int i;
+	register struct symtab *sp;
+	long lo;
+
+	/*
+	 * Record the aggregate parameters before anything is generated.  Every
+	 * statement of this function is handed to pass 2 after this point, so
+	 * the table is always the current function's.
+	 */
+	naggparam = 0;
+	for (i = 0; i < n; i++) {
+		sp = &stab[a[i]];
+		if (sp->stype != STRTY && sp->stype != UNIONTY)
+			continue;
+		/*
+		 * Overflowing silently would put the widening bug back for the
+		 * parameters that did not fit, which is exactly the shape of
+		 * failure this table exists to prevent.  Say so instead.
+		 */
+		if (naggparam >= MAXAGGPARAM)
+			cerror("more than %d aggregate parameters", MAXAGGPARAM);
+		lo = BITOOR(sp->offset);
+		aggparam[naggparam].lo = lo;
+		aggparam[naggparam].hi = lo +
+		    tsize(sp->stype, sp->dimoff, sp->sizoff) / SZCHAR;
+		naggparam++;
+	}
+
 	/*
 	 * Nothing is emitted here.  The prologue cannot be written until the
 	 * frame size is known, so this only opens the capture buffer; efcode()

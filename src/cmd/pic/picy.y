@@ -14,7 +14,7 @@ YYSTYPE	y;
 %token	<i>	SPLINE	7
 %token	<i>	BLOCK	8
 %token	<p>	TEXT	9
-%token	<i>	TROFF	10
+%token	<p>	TROFF	10	/* was <i>: LP64, see PORTING.md */
 %token	<i>	MOVE	11
 %token	<i>	BLOCKEND 12
 %token	<i>	PLACE

@@ -218,16 +218,54 @@ dep 'make -> rootfs /bin/make' $B/make/make                    rootfs/bin/make
 dep 'make defs'                src/cmd/make/defs               $B/make/main.o
 dep 'make gram.y'              src/cmd/make/gram.y             $B/make/gram.c
 
+# --- make's built-in yacc/lex rules must stay dead ---------------------------
+# GNU make ships `%.c: %.y` whose recipe ends `mv -f y.tab.c $@`.  cgram.y sits
+# next to the CHECKED-IN cgram.c that the ccom rules use instead of running
+# yacc, so the built-in rule can overwrite authentic source: `make -B` on
+# anything reaching cgram.o rewrote it in place with a different yaccpar and
+# absolute paths in its `# line` directives.  Caught by `git diff`, nothing else.
+#
+# Asserted with -n, so nothing is written even if the guard has been removed.
+for t in $B/ccom-arm64/cgram.o $B/ccom/cgram.o; do
+	if $MAKE -n -B "$ROOT/$t" 2>/dev/null | grep -q 'mv -f y\.tab\.c'; then
+		fail=$((fail+1))
+		echo "FAIL make's built-in yacc rule can still write into src/ (via $t)"
+	else
+		pass=$((pass+1))
+	fi
+done
+# The control: the file it would have clobbered is the one we care about, and it
+# must be present and checked in rather than generated.
+if [ -f "$ROOT/src/cmd/ccom/common/cgram.c" ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1)); echo "FAIL cgram.c is missing -- it is checked-in source, not a build product"
+fi
+
+# --- grap, which joined the default build with struct-by-value ---------------
+dep 'grap grap.h'              src/cmd/grap/grap.h             $B/grap/plot.o
+dep 'grap grammar'             src/cmd/grap/grap.y             $B/grap/y.tab.c
+dep 'grap lexer'               src/cmd/grap/grapl.l            $B/grap/lex.yy.c
+dep 'grap install'             $B/grap/grap                    rootfs/usr/bin/grap
+# grap.defines is RUNTIME data, so it must install -- and must NOT be a build
+# input.  An earlier version of the Makefile made every grap object depend on
+# it, calling it an #included non-header.  It is not one; the pair below is what
+# says so, and the nodep is the half that would have caught the mistake.
+dep 'grap defines install'     src/cmd/grap/grap.defines       rootfs/usr/lib/grap.defines
+nodep 'grap.defines is not a build input' src/cmd/grap/grap.defines $B/grap/plot.o
+
 # --- negative controls: the suite must be able to say "no" ------------------
 nodep 'spell does not reach sh'   src/cmd/spell/huff.h   $B/sh/main.o
 nodep 'tbl does not reach eqn'    src/cmd/tbl/t..c       $B/eqn/main.o
 nodep 'refer does not reach libc' src/cmd/refer/refer..c $B/libc/gen/malloc.o
+nodep 'grap does not reach pic'   src/cmd/grap/grap.h    $B/pic/main.o
 
 # --- deleted rootfs data files must come back -------------------------------
 # A directory stamp recorded "the install ran", which is not the question:
 # deleting one installed table left the stamp alone, so make did not restore it.
 for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
-         rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a; do
+         rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
+         rootfs/usr/lib/grap.defines; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then

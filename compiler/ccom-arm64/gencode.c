@@ -36,6 +36,7 @@
 extern char *rnames[];
 extern int nrnames;
 extern char *exname();
+extern int arm64_aggparam();	/* local.c -- see the note above acctype() */
 
 int acnt, Pflag, bbcnt;
 ret nodest;
@@ -577,32 +578,37 @@ framereg(off)
  * (K&R's implicit type is int and nothing else), so widening them would change
  * real behaviour -- `f(c) char c;` called with 200 must see -56 -- for no gain.
  *
- * KNOWN LIMITATION.  This also widens an int MEMBER of an aggregate parameter,
- * which is wrong:
+ * IT MUST NOT WIDEN AN int MEMBER OF AN AGGREGATE PARAMETER:
  *
  *	union u { int i; char *p; };		// 8 bytes under LP64
- *	f(v) union u v; { return (v.i == 0); }	// compares all 8
+ *	f(v) union u v; { return (v.i == 0); }	// would compare all 8
  *
  * Pass 1 hands pass 2 the parameter's own node retyped to the member's type, so
  * by the time we see it a 4-byte member at offset 0 and a 4-byte parameter are
  * the same node.  Telling them apart needs the parameter's DECLARED type, which
- * only pass 1 has.
+ * only pass 1 has -- so pass 1 hands it over: arm64_aggparam() in local.c
+ * answers "is this byte offset inside an aggregate parameter", from the symbols
+ * bfcode() is given at function entry.  See the long note there.
  *
- * It only bites when the caller leaves rubbish in the slot's top half, i.e. when
- * a union member narrower than the union is assigned and the union is then
- * passed by value.  pic's makeattr() is the one case found so far, fixed at the
- * source in src/cmd/pic/misc.c because that is also where the VAX/LP64 size
- * change is (the union went from 4 bytes to 8).  If a second case turns up,
- * fix it here instead: have pass 1 mark member references so this can tell.
+ * This was a documented limitation for most of the port, on the grounds that it
+ * was "not reachable for aggregates larger than 8 bytes -- those hit the
+ * unimplemented STARG path in gencall() first".  Implementing STARG made it
+ * reachable, and it showed up at once: a 12-byte struct of three ints passed by
+ * value summed correctly in the low 32 bits and to rubbish above them, each
+ * member having been read with an 8-byte load that swallowed the next.
+ * `tests/v8ccom` has that case.
  *
- * Not reachable for aggregates larger than 8 bytes -- those hit the
- * unimplemented STARG path in gencall() first.
+ * The earlier instance, before the general fix existed, was pic's makeattr(),
+ * fixed at the source in src/cmd/pic/misc.c -- which was right independently,
+ * because that is also where the VAX/LP64 change is: the union went from 4
+ * bytes to 8.
  */
 static TWORD
 acctype(p)
 	NODE *p;
 {
-	if (p->in.op == VPARAM && p->in.type == TINT)
+	if (p->in.op == VPARAM && p->in.type == TINT &&
+	    !arm64_aggparam((long)p->tn.lval))
 		return (TLONG);
 	return (p->in.type);
 }
@@ -1731,14 +1737,40 @@ gen(p, want)
  */
 #define SAVEBLK	(((REGVAR + NFREG) * 8 + 64 + 15) & ~15)
 
-/* How many arguments does this CM-linked list hold? */
+/*
+ * How many 8-byte argument slots does one argument occupy?
+ *
+ * Everything is one slot except a struct passed by value (STARG), which takes
+ * as many consecutive slots as it needs.  That is the V8/VAX convention -- the
+ * VAX pushed the aggregate whole with `subl2 $size,sp; movc3 $size,src,(sp)'
+ * (vax/stin:276, vax/local2.c:101) -- and it is deliberately NOT AAPCS64's
+ * rule of passing composites over 16 bytes by reference.  See PLAN.md 4f: this
+ * compiler passes every argument positionally, which is what makes V8's own
+ * printf(fmt, args) work, and structs follow the same rule as everything else
+ * rather than introducing a second convention for one node type.
+ *
+ * The callee needs no cooperation: pass 1's oalloc() (common/pftn.c:1516)
+ * already lays a struct parameter out as tsize() contiguous bytes in the
+ * argument area, because BACKPARAM is not defined for this target.  The two
+ * halves agreed all along; only the caller was missing.
+ */
+static int
+argslots(p)
+	NODE *p;
+{
+	if (p->in.op == STARG)
+		return ((p->stn.stsize / SZCHAR + 7) / 8);
+	return (1);
+}
+
+/* How many argument slots does this CM-linked list hold? */
 static int
 countargs(p)
 	NODE *p;
 {
 	if (p == 0) return 0;
 	if (p->in.op == CM) return countargs(p->in.left) + countargs(p->in.right);
-	return 1;
+	return argslots(p);
 }
 
 /*
@@ -1785,6 +1817,49 @@ placeargs(p, n, depth)
 		n = placeargs(p->in.left, n, depth);
 		return placeargs(p->in.right, n, depth);
 	}
+
+	/*
+	 * A struct passed by value.  The subtree yields the struct's ADDRESS,
+	 * not its value -- pass 1 wrapped it in UNARY AND at trees.c:622.
+	 *
+	 * Copy it word by word into consecutive slots rather than with one
+	 * block move, because argslot() is discontinuous: slots 0-7 are scratch
+	 * that gets loaded into x0-x7 just before the branch, and slots 8 and up
+	 * are the real outgoing area at sp+0.  A struct straddling that boundary
+	 * therefore lands in two places, and going through argslot() per word is
+	 * what makes that fall out for free.
+	 *
+	 * stn.stsize has ALREADY BEEN ROUNDED UP to a multiple of ALSTACK by
+	 * argsize() (common/catch2.c:177 -- SETOFF mutates the node in place),
+	 * so a 12-byte struct arrives as 128 bits and a 5-byte one as 64.
+	 * Measured, not assumed.  Copying the rounded size therefore reads up to
+	 * 7 bytes past the object -- which is what the VAX did too: its 'S' case
+	 * took the same already-rounded stn.stsize and handed it to `movc3'
+	 * (vax/local2.c:78).  Only the rounding unit differs, ALSTACK 32 there
+	 * against 64 here, and that is forced by AAPCS64's 8-byte stack slots.
+	 * Narrowing the tail would need the true size, which pass 2 no longer
+	 * has; recovering it would mean patching pass 1 to round a copy, and
+	 * that is a change by taste rather than one forced by the target.
+	 */
+	if (p->in.op == STARG) {
+		int nslot = argslots(p);
+		int off, tmp;
+
+		a = gen(p->in.left, WVALUE);
+		V8DBG("starg %ld bits -> %ld slots at arg %ld\n",
+		    (long)p->stn.stsize, (long)nslot, (long)n);
+		tmp = regalloc();
+		for (off = 0; off < nslot * 8; off += 8) {
+			printx("\tldr\t%s, [%s, #%d]\n", xreg(tmp),
+			    xreg(a.reg), off);
+			printx("\tstr\t%s, [sp, #%d]\n", xreg(tmp),
+			    argslot(n + off / 8, depth));
+		}
+		regfree(tmp);
+		regfree(a.reg);
+		return (n + nslot);
+	}
+
 	if (p->in.op == FUNARG) p = p->in.left;
 
 	a = gen(p, WVALUE);

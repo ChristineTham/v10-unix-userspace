@@ -1,6 +1,6 @@
 # Porting Research Unix V8 Userspace to macOS (ARM64)
 
-**Status:** Phases 0 through 2b complete and tested; **rung 3 of the bootstrap ladder is closed — the compiler reproduces itself (PLAN S4c);** **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 278 tests. **Wave B done**; **Wave C in progress** — nroff, troff, tbl and eqn all work, and V8's own yacc builds V8's grammars. Phases 4 and 5 not started.
+**Status:** Phases 0 through 2b complete and tested; **rung 3 of the bootstrap ladder is closed — the compiler reproduces itself (PLAN S4c);** **Wave A done** — 156 of 163 single-file commands in `usr/src/cmd` build, and the seven that do not are accounted for individually (see the foot of `tests/wavea/run.sh`); none is a compiler defect. 278 tests. **Wave B done**; **Wave C in progress** — nroff, troff, tbl, eqn, pic, spell, man and grap all work, `grap | pic | troff` draws a graph end to end, and V8's own yacc and lex build V8's grammars. **Struct-by-value is implemented (PLAN S4f); the compiler has no known unimplemented feature left.** `refer`'s `inv` is the one Wave C program still wrong. Phases 4 and 5 not started.
 See "Current state" at the bottom.
 **Project arc:** V8 first (this plan), then V9, then V10 — restoring the original project goal of the last Research Edition, with V8 as the beachhead where the lessons are cheapest.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
@@ -225,31 +225,94 @@ other and be wrong about the format together.
 that matches LP64 exactly (`sizeof(unsigned)==sizeof(long)/2`) and removed
 again when the mutation test showed spell correct without it.
 
-## 4f. grap needs struct-by-value, which v8cc does not implement — open
+## 4f. struct-by-value (STARG) — CLOSED, and grap with it
 
-`grap` is imported and its build rules are written (modelled on pic: yacc, lex,
-ten objects). It is deliberately **not** in `stage0`, because plot.c stops at
+`grap` is in `stage0`, installed, and runs end to end through `pic` and `troff`.
+It used to stop at
 
     compiler error: gencode: unimplemented operator 99 (STARG)
 
-`STARG` is pass 1's node for **passing a struct by value**, and `gencall()` in
-`compiler/ccom-arm64/gencode.c` has never had a path for it — the note above
-`acctype()` has said so since the back end was written, as a thing no program
-had yet required. grap requires it: `Point` is
-`{struct obj *obj; double x, y;}`, 24 bytes, and `line(type, p1, p2, desc)`
-takes two of them by value.
+`STARG` is pass 1's node for **passing a struct by value**, and the ARM64 back
+end had never had a path for it — the note above `acctype()` had said so since
+the back end was written, as a thing no program had yet required. grap requires
+it: `Point` is `{struct obj *obj; double x, y;}`, 24 bytes, and
+`line(type, p1, p2, desc)` takes two of them by value. Nothing else in the tree
+does, which is how it survived 156 Wave A programs and all of Wave B and C.
 
-This is a calling-convention feature, not a bug. What it needs deciding first
-is which convention: v8cc passes arguments positionally in x0–x7 with a spill
-area (which is what makes V8's `printf(fmt, args)` work at all), so the natural
-implementation is to copy the aggregate into consecutive argument slots, the
-way the VAX pushed it whole — *not* AAPCS64's rule of passing composites over
-16 bytes by reference, which would be right for a foreign call and wrong for a
-V8-to-V8 one. The two conventions already differ here deliberately, and the
-exception list in CLAUDE.md is where that boundary is recorded.
+### The convention: decided, positional
 
-Reproduce with `make grap`. Nothing else in the tree needs STARG, which is why
-it has gone unnoticed through 156 Wave A programs and all of Wave B and C.
+**Copy the aggregate into consecutive 8-byte argument slots** — the V8/VAX
+convention, where the VAX pushed the struct whole (`ccom/vax/stin:276`).
+
+The alternative was AAPCS64: composites over 16 bytes by reference, 16 and under
+in one or two registers, all-float structs in up to four float registers. Right
+for a call into host code, wrong here. v8cc already passes every argument
+positionally in x0–x7 with a spill area, deliberately, because that is what
+makes V8's `printf(fmt, args)` work — Apple's ABI puts variadic arguments on the
+stack. Taking Apple's aggregate rule would have left one convention for scalars
+and another for structs, which is neither. The cost is that a V8-compiled
+function taking a struct by value cannot be called from clang-compiled code;
+nothing at the `libv8sys`/libSystem boundary does that.
+
+### What the implementation turned on
+
+- **The callee needed nothing.** Pass 1's `oalloc()` (`common/pftn.c:1516`)
+  already lays a struct parameter out as `tsize()` contiguous bytes in the
+  argument area, since `BACKPARAM` is undefined here. The two halves agreed all
+  along; only the caller was missing.
+- **`countargs()` counts slots, not arguments.** Getting that wrong is silent:
+  with a struct counted as one slot, grap builds, links, and emits nothing.
+  Mutation-verified in `tests/wavec`.
+- **`stn.stsize` arrives already rounded** to a multiple of `ALSTACK` —
+  `argsize()` (`common/catch2.c:177`) mutates the node in place with `SETOFF`.
+  Measured: a 12-byte struct presents as 128 bits, a 5-byte one as 64. The copy
+  therefore reads up to 7 bytes past the object, which is exactly what the VAX
+  did from the same field with `ALSTACK` 32. Authentic, not a defect; recovering
+  the true size would mean patching pass 1, a change by taste.
+
+Verified against clang-compiled equivalents on three shapes: a 24-byte struct in
+registers, one straddling the x7/stack boundary (slots 6,7,8), and a struct
+argument whose address expression contains a call.
+
+### And it closed the `acctype()` limitation, which it also caused
+
+`acctype()` widens an int `VPARAM` to its full 8-byte slot, because K&R makes an
+undeclared parameter `int` and 271 parameters across 109 files hold a pointer in
+one. Its note had recorded, since the back end was written, that this is wrong
+for an int **member** of an aggregate parameter — and that the case was *"not
+reachable for aggregates larger than 8 bytes, those hit the unimplemented STARG
+path first"*. Implementing STARG made it reachable, and the first 12-byte struct
+of three ints found it: each member was read with an 8-byte load that swallowed
+the next, so the sum was right in the low 32 bits and rubbish above them. Not a
+crash — visible only once something reads the result as a long.
+
+The note's prescription was *"have pass 1 mark member references"*. What it gets
+instead is the same information through an interface pcc already provides:
+`bfcode()` is handed the parameter symbols with their declared types, so
+`arm64_aggparam()` in `local.c` records the byte ranges of the aggregate ones
+and `acctype()` asks before widening. **No authentic source changed.** The
+earlier instance — pic's `makeattr()`, fixed at the source in
+`src/cmd/pic/misc.c` — stays fixed there, since that change was right
+independently: the union genuinely went from 4 bytes to 8.
+
+`tests/v8ccom` carries four cases for this, including the union verbatim from
+the note and a control asserting a genuine undeclared pointer parameter is
+**still** widened. Mutation-verified in both directions: removing the guard
+fails three of them, and removing the widening entirely fails the build.
+
+### What it found on the way out: pic's TROFF token
+
+grap emits `.lf` on every graph, and `pic` **segfaulted** on it. `picy.y`
+declared `%token <i> TROFF` while `picl.l` stores `yylval.p = tostring(yytext)`,
+so on LP64 the pointer lost its top 32 bits — measured under lldb as a fault at
+`0x4a57c50`, which is `0x104a57c50` with the leading digit gone. Fixed by the
+declaration; the sweep of all eight pointer-valued tokens found no others. See
+`src/cmd/pic/PORTING.md`.
+
+The general lesson, and it is the same one as the rung-5 makefiles: **grap alone
+looked perfectly correct.** The bug only existed at the seam, and the seam is
+only exercised by running the preprocessor into what consumes it. `tests/wavec`
+now runs `grap | pic | troff` and asserts drawing commands come out the far end.
 
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
@@ -570,7 +633,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 2b V8 libc | done | 89 objects, compiled by v8cc: stdio (incl. `%f`/`%e`/`%g`), the string family, malloc, ctype, qsort, getenv, the directory routines, `setjmp`/`longjmp`, perror and IEEE floats (`libv8c` 19/19) |
 | 3A Wave A | done | **156 of 163** single-file commands in `usr/src/cmd` build, including `ls`. 29 of them are exercised with golden output (`wavea` 62/62): `cat`, `cmp`, `col`, `comm`, `cut`, `deroff`, `echo`, `expand`, `fgrep`, `fold`, `grep`, `head`, `join`, `look`, `number`, `od`, `paste`, `pr`, `printenv`, `pwd`, `rev`, `seq`, `sort`, `split`, `sum`, `tail`, `tee`, `tr`, `uniq`, `unexpand`, `vis`, `wc`, `yes`, `ascii`, `basename`, `cal` |
 | 3B Wave B | done | The **Bourne shell** runs (`sh` 21/21) — see `src/cmd/sh/PORTING.md`. The file and process tools run too (`waveb` 21/21): `cp`, `mv`, `mkdir`, `rmdir`, `sed`, `ed`, `dc`, `factor`, `primes`, `tsort`. **38 multi-file command directories** compile and link, including `ps`, `w`, `df`, `tbl`, `qed`, `adb`, `yacc`, `man`, `diff3`, `dump`, `su`, `cron`, `compress` |
-| 3C Wave C | in progress | **nroff, troff, tbl and eqn all run** (`wavec` 16/16). `tbl \| nroff` formats a table and `eqn \| nroff` sets an equation. eqn is built with **V8's own yacc**, itself compiled by v8cc. nroff fills and honours `.br`, `.ll`, `.ce`, `.sp`, `.na`; troff emits the device-independent stream for the 202 typesetter, with its tables compiled by `makedev` at build time. See `src/cmd/troff/PORTING.md` and `src/cmd/tbl/PORTING.md`. `eqn` and `pic` need their yacc grammars generated; `refer` has six files using the pre-C89 `int x 5;` form V8's own grammar rejects |
+| 3C Wave C | in progress | **nroff, troff, tbl, eqn, pic, spell, man and grap all run** (`wavec` 38/38). `tbl \| nroff` formats a table, `eqn \| nroff` sets an equation, and `grap \| pic \| troff` draws a graph end to end. eqn, pic and grap are built with **V8's own yacc and lex**, themselves compiled by v8cc. nroff fills and honours `.br`, `.ll`, `.ce`, `.sp`, `.na`; troff emits the device-independent stream for the 202 typesetter, with its tables compiled by `makedev` at build time. See the `PORTING.md` under `troff`, `tbl`, `pic` and `grap`. **Remaining: `refer`'s `inv` builds an empty index** (see `src/cmd/refer/PORTING.md`) |
 | 4 grovelers | not started | |
 | 5 blitterm | not started | |
 

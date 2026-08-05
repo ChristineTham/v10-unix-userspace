@@ -185,9 +185,34 @@ the same string twice.
 tree calls `malloc` without declaring it and casts the `int` result to a pointer,
 and undeclared K&R parameters are `int` but routinely hold pointers — common
 enough that the compiler widens them deliberately, at `acctype()` in
-`compiler/ccom-arm64/gencode.c`, which carries a note on the one case where that
-widening is wrong. Symptoms are wild pointers and heap corruption far from the
-cause. When something is mysteriously broken, check widths first.
+`compiler/ccom-arm64/gencode.c`. That widening must not reach an int *member* of
+an aggregate parameter, and `arm64_aggparam()` in `local.c` is what stops it:
+`bfcode()` records the byte ranges of the aggregate parameters from the declared
+types it is handed, and `acctype()` asks. Symptoms are wild pointers and heap
+corruption far from the cause. When something is mysteriously broken, check
+widths first.
+
+One shape of it is worth naming because it hides in a *declaration* rather than
+in code: **a yacc token declared with a scalar type while the lexer stores a
+pointer into `yylval.p`.** On the VAX `.i` and `.p` were the same four bytes;
+on LP64 the address loses its top half. Found in `pic` (`TROFF`) and then, by
+sweeping, in `grap` (`PIC`) — neither had ever been reached by any input in the
+tree. The whole-tree table is in `src/cmd/grap/PORTING.md`; only grammars that
+declare types can have it, and the untyped ones are already covered globally by
+this port's change to `src/cmd/yacc/y2.c:302` (`#define YYSTYPE long`, not
+`int`). Re-run the sweep after importing any program with a grammar:
+
+```bash
+grep -n 'yylval\.p *=' src/cmd/*/*.l
+grep -nE '^%(union|type|token)[ \t]*<' src/cmd/*/*.y
+```
+
+**A preprocessor that is never fed downstream is not tested.** Both bugs above
+were invisible while the program itself looked perfectly correct, because they
+lived at the seam: `grap`'s output crashed `pic`, and `grap` alone was fine. The
+wavec suite now runs `grap | pic | troff` and asserts drawing commands come out
+the far end. Pipe a new Wave C program into what consumes it before believing
+it works.
 
 **A missing libc function does not fail the link — it resolves from `-lSystem`.**
 For a non-variadic function that silently works and hides the gap. For a
@@ -206,12 +231,21 @@ scanner *and* to a `*.c` glob: `lex/ldefs.c`, `lex/once.c`, `tbl/t..c`,
 `refer/refer..c`, `make/defs`, `yacc/dextern`, `yacc/files`. All are declared
 explicitly in the Makefile.
 
-**The compiler has one known unimplemented feature: `STARG`** — passing a
-struct by value. `gencall()` in `compiler/ccom-arm64/gencode.c` has no path for
-it, which went unnoticed through 156 Wave A programs and all of Wave B and C
-because none of them does it. `grap` does, so `grap` is imported and its rules
-written but kept out of `stage0`; `make grap` reproduces it. PLAN.md §4f has
-the convention question that needs settling before it can be written.
+**The compiler has no known unimplemented feature.** The last one was `STARG`,
+passing a struct by value, which went unnoticed through 156 Wave A programs and
+all of Wave B and C because none of them does it. `grap` does. `placeargs()` in
+`compiler/ccom-arm64/gencode.c` now copies the aggregate into **consecutive
+argument slots** — the V8/VAX convention, deliberately not AAPCS64's
+by-reference rule for composites over 16 bytes, because v8cc passes every
+argument positionally and a second convention for one node type would make it
+neither. PLAN.md §4f records the decision and what it was measured against.
+
+Two things there are worth carrying forward. `countargs()` counts **slots, not
+arguments**, and getting that wrong is silent — the program builds, links and
+emits nothing. And `stn.stsize` arrives at pass 2 **already rounded** to a
+multiple of `ALSTACK`, because `argsize()` mutates the node in place; so the
+copy reads a few bytes past a struct whose size is not a multiple of 8, exactly
+as the VAX did from the same field.
 
 ## Build-system discipline
 
@@ -226,6 +260,13 @@ changing it:
   two rules sharing a recipe, which races under `-j`. Mtimes compare at
   **whole-second** granularity though APFS records nanoseconds, so a file edited
   in the same second as the build that consumed it is missed.
+- **make's built-in `%.c: %.y` and `%.c: %.l` rules are cancelled, and must stay
+  cancelled.** The built-in yacc recipe ends `mv -f y.tab.c $@`, and
+  `src/cmd/ccom/common/cgram.y` sits next to the *checked-in* `cgram.c` the ccom
+  rules deliberately use. So `make -B` on anything reaching `cgram.o` rewrites
+  authentic source in place, with a different yaccpar and absolute paths in its
+  `# line` directives. Seen happening here; `git diff` was the only thing that
+  noticed. `tests/deps` asserts the built-ins stay dead.
 - **Never depend on a phony target** for a real file. Phony means always out of
   date; that once recompiled 39 objects on every single `make`.
 - **Order-only (`| foo`) means "exist before me", not "I depend on you."**

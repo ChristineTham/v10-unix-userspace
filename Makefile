@@ -152,6 +152,26 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
+# CANCEL GNU MAKE'S BUILT-IN yacc AND lex RULES.  A pattern rule with no recipe
+# deletes the built-in one.
+#
+# This is not tidiness.  GNU make ships `%.c: %.y` with the recipe
+#
+#	$(YACC) $<  &&  mv -f y.tab.c $@
+#
+# and `src/cmd/ccom/common/cgram.y` sits next to the CHECKED-IN `cgram.c` that
+# the ccom rules below deliberately use instead of running yacc.  So the built-in
+# rule can WRITE INTO AUTHENTIC SOURCE: `make -B` on anything that reaches
+# cgram.o regenerates cgram.c in place, with a different yaccpar (short vs int
+# in the parser skeleton, `>` vs `>=` on the stack-overflow check) and absolute
+# paths baked into its `# line` directives.  Observed doing exactly that in this
+# tree; `git diff` was the only thing that noticed.
+#
+# Every generated parser and scanner here has an explicit rule that writes into
+# $(BUILD), so nothing wants the built-ins.  tests/deps asserts they stay dead.
+%.c: %.y
+%.c: %.l
+
 .PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
@@ -1218,10 +1238,11 @@ $(ROOTFS)/usr/man/.stamp: $(MANPAGESRC)/man1/cat.1
 # never put where the V8 world could reach them -- the same gap that hid yacc
 # and lex until a program built from its own makefile asked for one.  man is
 # what surfaced it here: man.sh runs `nroff`, and nroff was in build/ only.
-WAVEC_INSTALL = nroff troff eqn tbl pic refer
+WAVEC_INSTALL = nroff troff eqn tbl pic refer grap
 WAVEC_TARGETS = $(patsubst %,$(ROOTFS)/usr/bin/%,$(WAVEC_INSTALL))
 
-wavec-install: $(WAVEC_TARGETS) $(ROOTFS)/usr/lib/tmac/.stamp
+wavec-install: $(WAVEC_TARGETS) $(ROOTFS)/usr/lib/tmac/.stamp \
+               $(ROOTFS)/usr/lib/grap.defines
 
 # The macro packages nroff and troff read by absolute path.  tmac.an is what
 # man formats with; without it nroff says "cannot open file /usr/lib/tmac/
@@ -1279,17 +1300,16 @@ $(ROOTFS)/usr/dict/%: $(DICTSRC)/%
 	@mkdir -p $(@D) && cp $< $@
 
 # ---------------------------------------------------------------------------
-# grap -- NOT in the default build.  `make grap` builds what it can; the rules
-# are here because they are correct and the program is imported, but plot.c
-# stops at
+# grap -- the program that made v8cc implement passing a STRUCT BY VALUE.  It
+# used to stop at
 #
 #	compiler error: gencode: unimplemented operator 99 (STARG)
 #
-# which is v8cc having no code path for passing a STRUCT BY VALUE.  grap's
-# Point is {struct obj *; double x, y} -- 24 bytes -- and `line(type, p1, p2,
-# desc)` takes two of them.  It is the first program in this port to need it;
-# see PLAN.md S4f.  Leaving the rules in place and grap out of stage0 keeps the
-# tree green while making the gap reproducible with one command.
+# because grap's Point is {struct obj *; double x, y} -- 24 bytes -- and
+# `line(type, p1, p2, desc)` takes two of them.  156 Wave A programs and all of
+# Wave B and C had never asked.  placeargs() in the back end now copies the
+# aggregate into consecutive argument slots, the V8/VAX convention; PLAN.md S4f
+# has the reasoning and what it was measured against.
 #
 # grap -- pic's sibling: a preprocessor for graphs, and pic-shaped in every way
 # that matters here.  Its own makefile builds grap.o and grapl.o from the yacc
@@ -1327,9 +1347,18 @@ $(BUILD)/grap/grapl.o: $(BUILD)/grap/lex.yy.c $(V8CC_DEPS)
 $(BUILD)/grap/%.o: $(GRAPSRC)/%.c $(BUILD)/grap/y.tab.c $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/grap
 	$(V8CCRUN) -I$(BUILD)/grap -I$(GRAPSRC) -c -o $@ $<
-# grap.defines is #included by grap.h and is not a .h -- invisible to every
-# dependency scanner and to a *.c glob, the fourth file of that shape here.
-$(GRAP_OBJ): $(GRAPSRC)/grap.h $(GRAPSRC)/grap.defines
+$(GRAP_OBJ): $(GRAPSRC)/grap.h
+
+# grap.defines is a RUNTIME file, not a build input: main.c opens
+# "/usr/lib/grap.defines" by absolute path and warns if it is missing, the same
+# shape as troff's tmac and spell's word lists.  A previous version of this
+# block called it an #included non-header and made every object depend on it --
+# wrong on both counts, and wrong about the one bug class this tree is most
+# careful about.  There is no #included non-header in grap; step 4 of the
+# porting checklist finds nothing here:
+#	grep -rnE '#[ \t]*include[ \t]*"[^"]*"' src/cmd/grap | grep -v '\.h"'
+$(ROOTFS)/usr/lib/grap.defines: $(GRAPSRC)/grap.defines
+	@mkdir -p $(@D) && cp $< $@
 
 $(ROOTFS)/usr/bin/grap: $(BUILD)/grap/grap
 	@mkdir -p $(@D) && cp $< $@

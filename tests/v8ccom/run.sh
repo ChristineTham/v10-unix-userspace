@@ -357,6 +357,107 @@ g(a,b,c,d,e,ff,gg,hh,ii,jj,kk) int a,b,c,d,e,ff,gg,hh,ii,jj,kk;
 f() { return g(1,2,3,id(4),5,6,7,8,9,10,11); }
 EOF
 
+# ------------------------------------------------------- struct passed by value
+# STARG.  The back end copies the aggregate into CONSECUTIVE 8-byte argument
+# slots -- the V8/VAX convention, not AAPCS64's by-reference rule for composites
+# over 16 bytes.  PLAN.md S4f has why.
+#
+# These are written after grap showed which combinations matter, not before: a
+# synthetic suite passed 62 cases while the first program to pass a struct by
+# value would not compile at all.  Each shape below is one the manual
+# differential against clang covered.
+#
+# Sizes matter here in a way they do not elsewhere.  Pass 1's simpstr() rewrites
+# a struct argument to a plain scalar when its size is exactly 1, 2, 4 or 8
+# bytes, so ONLY other sizes reach STARG.  A 24-byte struct is three slots; a
+# 12-byte one is two, with the second half-used.
+
+t 'struct by value, 24 bytes' '6' <<'EOF'
+struct p3 { long a, b, c; };
+take(v) struct p3 v; { return v.a + v.b + v.c; }
+f() { struct p3 v; v.a = 1; v.b = 2; v.c = 3; return take(v); }
+EOF
+
+t 'two structs by value' '21' <<'EOF'
+struct p3 { long a, b, c; };
+take(v, w) struct p3 v, w; { return v.a+v.b+v.c + w.a+w.b+w.c; }
+f() { struct p3 v, w;
+	v.a = 1; v.b = 2; v.c = 3;
+	w.a = 4; w.b = 5; w.c = 6;
+	return take(v, w); }
+EOF
+
+# The one that exercises the discontinuity in argslot(): slots 0-7 are scratch
+# loaded into x0-x7 just before the branch, slots 8+ are the outgoing area at
+# sp+0.  Six scalars then a three-slot struct puts it across the boundary.
+t 'struct straddling the register/stack boundary' '621' <<'EOF'
+struct p3 { long a, b, c; };
+take(q,r,s,t,u,w, v, z) struct p3 v; { return q+r+s+t+u+w + v.a+v.b+v.c + z; }
+f() { struct p3 v; v.a = 100; v.b = 200; v.c = 300;
+	return take(1,2,3,4,5,6, v, 0); }
+EOF
+
+# Not a multiple of the slot size: stn.stsize arrives already rounded up to 128
+# bits by argsize(), so the copy moves 16 bytes for a 12-byte object.  The
+# members must still land where the callee reads them.
+t 'struct by value, 12 bytes' '66' <<'EOF'
+struct i3 { int a, b, c; };
+take(k, v) struct i3 v; { return k + v.a + v.b + v.c; }
+f() { struct i3 v; v.a = 11; v.b = 22; v.c = 33; return take(0, v); }
+EOF
+
+# A call inside the argument: the struct's ADDRESS is what the subtree yields,
+# and evaluating it must not disturb an argument already placed.
+t 'struct by value with a call in the address' '15' <<'EOF'
+struct p3 { long a, b, c; };
+struct p3 *idp(q) struct p3 *q; { return q; }
+take(k, v) struct p3 v; { return k + v.a + v.b + v.c; }
+f() { struct p3 v; v.a = 2; v.b = 4; v.c = 8; return take(1, *idp(&v)); }
+EOF
+
+# Doubles inside the aggregate, which is grap's actual Point shape.  The members
+# travel through integer slots and must come back out as doubles.
+t 'struct of doubles by value' '450' <<'EOF'
+struct pt { char *tag; double x, y; };
+take(v) struct pt v; { return (long)((v.x + v.y) * 100.0); }
+f() { struct pt v; v.tag = "t"; v.x = 1.5; v.y = 3.0; return take(v); }
+EOF
+
+# --------------------------------------- int members of an aggregate PARAMETER
+# acctype() widens an int VPARAM to the full 8-byte slot, because K&R makes an
+# undeclared parameter int and the tree routinely puts a pointer in one.  That
+# widening must NOT reach an int MEMBER of an aggregate parameter -- pass 1
+# presents both as the same node.  arm64_aggparam() in local.c is what tells
+# them apart, from the declared types bfcode() is handed.
+#
+# This was a documented limitation until STARG made it reachable.  Its symptom
+# is not a crash: the low 32 bits are right and everything above them is the
+# next member, so the value only looks wrong once something reads it as a long.
+
+t 'int members of a struct parameter do not swallow each other' '66' <<'EOF'
+struct i3 { int a, b, c; };
+take(k, v) struct i3 v; { return k + v.a + v.b + v.c; }
+f() { struct i3 v; v.a = 11; v.b = 22; v.c = 33; return take(0, v); }
+EOF
+
+# The exact shape from the note above acctype(): a union whose int member is
+# narrower than the union, assigned and then passed by value.  This is pic's
+# makeattr(), which had to be fixed in the source before the compiler could.
+t 'narrow member of a union parameter' '1' <<'EOF'
+union u { int i; char *p; };
+take(v) union u v; { return (v.i == 0); }
+f() { union u v; v.p = "rubbish in the top half"; v.i = 0; return take(v); }
+EOF
+
+# A scalar int parameter next to an aggregate one must STILL be widened -- the
+# fix must not throw away the thing acctype() exists for.  Here `s' is an
+# undeclared parameter holding a char *, the 271-parameters case.
+t 'undeclared pointer parameter is still widened' '5' <<'EOF'
+struct i3 { int a, b, c; };
+take(s, v) struct i3 v; { return strlen(s) + v.a; }
+f() { struct i3 v; v.a = 2; v.b = 0; v.c = 0; return take("abc", v); }
+EOF
+
 echo
 echo "v8ccom: $pass passed, $fail failed"
 [ -n "$FAILED" ] && echo "failing:$FAILED"
