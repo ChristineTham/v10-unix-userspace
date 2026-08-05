@@ -124,6 +124,15 @@
 	 */
 # define PTRCONVFULL
 
+	/*
+	 * A conversion that changes only signedness is kept over `/`, `%` and
+	 * `>>`, rather than being painted onto them.  Those three read their own
+	 * node's signedness to pick udiv/sdiv and lsr/asr, so repainting one
+	 * silently changes what it computes.  See the note in common/optim.c,
+	 * in sconvert().
+	 */
+# define SIGNCONVKEEP
+
 	/* .comm and .lcomm are available */
 #define ALLCOMM
 

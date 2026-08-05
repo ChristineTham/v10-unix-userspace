@@ -1,7 +1,34 @@
 # Notes on V8 `ccom`
 
-State after the stage-0 bootstrap. One source change so far; the rest of this
-file is findings that shape Phase 1b.
+Written after the stage-0 bootstrap; the findings below shape Phase 1b. Three
+source changes now, one unguarded and two behind target macros — everything from
+"What builds" down still describes the stage-0 state.
+
+---
+
+## Source changes
+
+### `common/optim.c`, in `sconvert()`: two guarded changes
+
+Both are `# ifdef`-ed on macros that `compiler/ccom-arm64/macdefs.h` defines, so
+a target where the widths and the instruction set agree with the VAX is
+unaffected. The reasoning is in the code, at length, in both places.
+
+- **`PTRCONVFULL`** — a pointer converted to `int` keeps all its bits. `SZPOINT`
+  is 64 and `SZINT` is 32; on the VAX they were equal. Truncating broke
+  `strspn(3)`'s `return(q-string)`, and fixing only one of the two paths broke
+  `fflush(3)` in turn, so it is fixed once, for both.
+
+- **`SIGNCONVKEEP`** — a conversion that changes only signedness is not painted
+  onto `/`, `%` or `>>`. Sound for every other operator, because the bits are
+  the same either way; wrong for these three, where `gencode.c` reads that type
+  to pick `udiv`/`sdiv` and `lsr`/`asr`. Found through `printf("%lx")` of a
+  negative long. PLAN.md §4g has the full account.
+
+Worth keeping in view: these are the same seven lines of `sconvert()`, and both
+faults have the same shape — a conversion that is a no-op **on the result** is
+not necessarily a no-op on what produces it. A third change here should be
+suspected of being a fourth.
 
 ---
 

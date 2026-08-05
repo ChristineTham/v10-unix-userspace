@@ -228,6 +228,51 @@ t 'unsigned comparison' '1' <<'EOF'
 f() { unsigned u; u = 1; if (u > 0) return 1; return 0; }
 EOF
 
+# An unsigned `/`, `%` or `>>` whose result is USED IN A SIGNED CONTEXT.
+#
+# optim.c's sconvert() drops a conversion that changes nothing but signedness
+# and paints its type onto the operand, which is right for every operator whose
+# bits are the same either way -- and wrong for these three, where gencode.c
+# reads that same type to pick udiv/sdiv and lsr/asr.  The operand needs its top
+# bit set for the two to differ, so every case here uses one that has it.
+#
+# Each of these returned a NEGATIVE number before the fix.  Found through
+# printf: doprnt's convert() writes digits[val % base], where the subscript
+# supplies the conversion, so %lx of a negative long lost its last digit.
+t 'unsigned mod through a signed conversion' '13' <<'EOF'
+f() { unsigned long v; v = 0xbf1a36e2eb1c432dL; return (long)(v % 16); }
+EOF
+
+# Divides by 2^60 rather than by 16 so the quotient fits in the int this
+# harness's f() returns -- the answer is then 11 unsigned against -4 signed,
+# rather than two 64-bit numbers whose difference needs squinting at.
+t 'unsigned divide through a signed conversion' '11' <<'EOF'
+f() { unsigned long v; v = 0xbf1a36e2eb1c432dL;
+      return (long)(v / 0x1000000000000000L); }
+EOF
+
+t 'unsigned shift through a signed conversion' '11' <<'EOF'
+f() { unsigned long v; v = 0xbf1a36e2eb1c432dL; return (long)(v >> 60); }
+EOF
+
+# The shape that actually failed: no cast in sight, the subscript is the
+# conversion.  tbl[13] is 'd'.
+t 'unsigned mod as a subscript' '100' <<'EOF'
+char tbl[] = "0123456789abcdef";
+f() { unsigned long v; v = 0xbf1a36e2eb1c432dL; return tbl[v % 16]; }
+EOF
+
+# Narrowing repaints through the other exit from sconvert(), at the bottom.
+t 'unsigned mod narrowed to int' '13' <<'EOF'
+f() { unsigned long v; v = 0xbf1a36e2eb1c432dL; return (int)(v % 16); }
+EOF
+
+# ... and the assign-op form, which the ASG block above sconvert() already
+# refuses to rewrite for exactly this reason.
+t 'unsigned mod-assign through a signed conversion' '13' <<'EOF'
+f() { unsigned long v; v = 0xbf1a36e2eb1c432dL; return (long)(v %= 16); }
+EOF
+
 t 'long arithmetic' '100000000000' <<'EOF'
 f() { long a; a = 100000; return a*1000000; }
 EOF

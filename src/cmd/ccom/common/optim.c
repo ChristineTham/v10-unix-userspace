@@ -272,6 +272,56 @@ merge:
 icon:
 		l->tn.lval = ccast( l->tn.lval, p->tn.type );
 paint:
+# ifdef SIGNCONVKEEP
+		/*
+		 * PORT: do not paint a signedness change onto `/`, `%` or `>>`.
+		 *
+		 * This routine's own header says "the unsigned-ness is ignored",
+		 * and for almost every operator that is true: a signed and an
+		 * unsigned value of the same width have the same bits, so a
+		 * conversion between them is a no-op on the RESULT and the CONV
+		 * can be dropped and its type painted onto the operand.
+		 *
+		 * Division, remainder and right shift are the exceptions,
+		 * because for them the type does not merely describe the result
+		 * -- it selects the instruction.  gencode.c reads the node's own
+		 * type to choose udiv/sdiv and lsr/asr, so repainting the node
+		 * quietly changes what it computes.  The file knows this
+		 * elsewhere: the ASG-op block above declines the same rewrite
+		 * with "this is not true for /=, %=, or floats".
+		 *
+		 * Reached two ways, which is why the guard sits at the label
+		 * rather than at either jump: `t == lt` above, once both sides
+		 * have been DEUNSIGNed, for a same-width conversion; and the
+		 * fall-through at the bottom for a narrowing one.
+		 *
+		 * Not strictly an LP64 fault -- a VAX would have repainted
+		 * `(long)(u % b)` too.  What the target changes is how often it
+		 * is reachable.  It needs an unsigned operand with its top bit
+		 * set, which in 1985 meant a value above 2^31 and today means
+		 * any pointer, or any long holding a bit pattern.  It was found
+		 * in printf: doprnt.c's convert() writes digits[val % base],
+		 * where the subscript supplies the conversion, and %lx of a
+		 * negative long lost its last digit -- the one iteration where
+		 * the top bit was still set took the signed path, and
+		 * digits[-3] read off the front of the digit string.
+		 *
+		 * Keeping the CONV costs nothing here: arm64_widen() emits no
+		 * instruction for an 8-byte type, so long <-> unsigned long
+		 * generates exactly the same code as the paint would have.
+		 */
+		switch( o )
+		{
+		case DIV:
+		case MOD:
+		case RS:
+		case ASG DIV:
+		case ASG MOD:
+		case ASG RS:
+			if( ISUNSIGNED(l->tn.type) != ISUNSIGNED(p->tn.type) )
+				return( p );
+		}
+# endif
 		l->tn.type = p->tn.type;
 		l->fn.csiz = p->fn.csiz;
 		l->fn.cdim = p->fn.cdim;
