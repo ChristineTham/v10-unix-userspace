@@ -16,9 +16,9 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 14 suites (~616 tests)
+make test             # all 15 suites (~642 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
-                      #            libv8c wavea waveb sh wavec kmemu
+                      #            libv8c wavea waveb sh wavec kmemu hooks
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)
 make clean            # remove build/ and rootfs/
 ```
@@ -32,6 +32,15 @@ make $(pwd)/build/stage0/bin/cat
 
 Test suites are shell scripts that print `name: N passed, M failed`. There is no
 per-case filter; edit the script or run its commands by hand.
+
+**There are two makes here, and confusing them is easy.** The `make` above is
+GNU make, driving *our* top-level Makefile — the seed harness for rungs 0–3, and
+the everyday command. `$V8ROOT/bin/make` is V8's own, and it is what reads *Bell
+Labs'* makefiles for rungs 4 and 5. The distinction is the bootstrap claim, not a
+preference: rung 4 is only meaningful if the build description is theirs. The
+`v8-make.sh` hook refuses the host's make on any makefile `tools/import.sh`
+brought in, because GNU make would run it perfectly well and nothing would say
+the rung had not happened.
 
 ### Running V8 binaries
 
@@ -230,12 +239,33 @@ grep -n 'yylval\.p *=' src/cmd/*/*.l
 grep -nE '^%(union|type|token)[ \t]*<' src/cmd/*/*.y
 ```
 
-**A preprocessor that is never fed downstream is not tested.** Both bugs above
-were invisible while the program itself looked perfectly correct, because they
-lived at the seam: `grap`'s output crashed `pic`, and `grap` alone was fine. The
-wavec suite now runs `grap | pic | troff` and asserts drawing commands come out
-the far end. Pipe a new Wave C program into what consumes it before believing
-it works.
+**A same-size conversion is not always a no-op.** Widths are the common fault;
+signedness is the other one. A signed and an unsigned value of the same size
+have identical bits, so converting between them changes nothing about the
+*result* — and `optim.c`'s `sconvert()` therefore drops the conversion and
+paints its type onto the operand. That is sound for every operator whose bits
+come out the same either way, and wrong for `/`, `%` and `>>`, where
+`gencode.c` reads that same type to choose `udiv`/`sdiv` and `lsr`/`asr`. There
+the type is an *instruction selector*, not a description. Guarded under
+`SIGNCONVKEEP`; PLAN.md §4g has the account. Two rules follow: a back-end
+operator whose instruction depends on `tyunsigned()` must be added to that
+guard, and `sconvert()` must not be "simplified" — the same seven lines have
+now produced two faults of this shape, `PTRCONVFULL` being the other.
+
+The diagnostic is the reusable part, because the symptom is narrow enough to
+mislead. It needs an unsigned operand **with its top bit set**, so
+`printf("%lx")` of a negative long lost *exactly one digit* — `val /= base`
+clears the top bit after the first iteration, and every later digit was right.
+One wrong digit reads as an off-by-one in a buffer, and is not. When a value is
+wrong in exactly one place, stop reasoning about the source and read what was
+emitted: `cc -S`, then look for an `sdiv` or `asr` where the C says unsigned.
+
+**A preprocessor that is never fed downstream is not tested.** Both token bugs
+above were invisible while the program itself looked perfectly correct, because
+they lived at the seam: `grap`'s output crashed `pic`, and `grap` alone was
+fine. The wavec suite now runs `grap | pic | troff` and asserts drawing commands
+come out the far end. Pipe a new Wave C program into what consumes it before
+believing it works.
 
 **V8 assumes address 0 is readable.** The VAX put the text segment at 0, so
 `*(char *)0` returned a byte of the program rather than trapping. macOS keeps
@@ -327,11 +357,19 @@ that they can fail.
 
 ## Automation in this repo
 
-`.claude/` carries four things, all of them encoding a bug that has already
+`.claude/` carries five things, all of them encoding a bug that has already
 happened here:
 
 - **`hooks/block-third-party.sh`** (PreToolUse) refuses any write under
   `third_party/`, which would silently destroy the provenance hashes.
+- **`hooks/v8-make.sh`** (PreToolUse, Bash) refuses the **host's** make where an
+  authentic V8 makefile is what would be read — `cd src/cmd/lex && make`,
+  `make -C`, `make -f`. Rungs 4 and 5 exist to prove the build *description* is
+  Bell Labs' and not ours, and GNU make would run it perfectly well, which is
+  the problem: the objects come out and nothing says the rung did not happen.
+  Keyed on `PROVENANCE` rather than a list of names, so a program is covered the
+  day its makefile is imported. The everyday `make -j8` / `make test` is
+  untouched by construction — our own Makefile has no PROVENANCE line.
 - **`hooks/check-makefile.sh`** (PostToolUse) runs
   `make -n --warn-undefined-variables` after any Makefile edit, and flags
   multi-target rules that carry a recipe. ~60ms.
@@ -339,6 +377,15 @@ happened here:
   hazards. Run it on a freshly imported program before building.
 - **`skills/port-program/`** — the workflow below, with `audit.sh` bundled.
   Invoke with `/port-program NAME`.
+
+`tests/hooks` covers the two blocking hooks, because a hook fails in the
+direction that is hardest to notice: it lets something through and says nothing,
+so the tripwire simply is not there. `v8-make.sh` had two such bugs in its first
+draft — two `jq` calls on the same stdin, so `cwd` came back empty and every
+command looked like it ran at the project root; and a split on `&&` that threw
+away the `cd` in `cd src/cmd/lex && make`, the single most likely spelling of the
+mistake it exists to catch. Both passed a casual look. The negative cases matter
+as much: a hook that blocks the everyday build gets switched off within the hour.
 
 CI (`.github/workflows/ci.yml`) builds and tests on `macos-14` (ARM64 — an x86
 runner would not exercise the AAPCS64 bugs this port keeps finding), then

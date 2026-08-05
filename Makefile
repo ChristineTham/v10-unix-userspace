@@ -172,7 +172,7 @@ SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-hooks clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -183,7 +183,7 @@ stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff t
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
 # driver for free because the library install rules said `| rootfs`.  Naming
 # $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
-test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu
+test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-hooks
 # First, because it tests the thing every other suite's result depends on: that
 # what was built is what the sources say.  Four bugs in this port were a stale
 # object rather than wrong code.  It settles the build itself, so it takes no
@@ -227,6 +227,10 @@ test-wavec: nroff troff tbl eqn pic spell $(ROOTFS_TERM) $(ROOTFS_FONT)
 # all of them being built and installed, not just on who.
 test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/kmemu/run.sh
+# The .claude hooks.  No build prerequisites -- they are shell and python, and
+# the point is that they are code and rot like code.
+test-hooks:
+	@$(ROOT)tests/hooks/run.sh
 
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
 	@mkdir -p $(BUILD)/v8sys
