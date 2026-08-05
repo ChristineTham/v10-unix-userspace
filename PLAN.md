@@ -252,10 +252,39 @@ negative, and it is compared against `y`, which is `long` and always
 non-negative — a comparison that was signed-32 against signed-32 on the VAX and
 is now signed-64 against a sign-extended value.
 
-Three attempts, all reverted, tree green throughout. The remaining work is to
-type the decoder's working values deliberately — one fixed 32-bit type, chosen
-signed or unsigned to match what the VAX actually did — rather than to keep
-adjusting declarations one at a time.
+**The thing that changes the shape of this, found on the fourth attempt:
+`hashlook.c` already carries a variant for this machine.**
+
+```c
+#if defined(pdp11) || defined(HALFWORD)  /* sizeof(unsigned)==sizeof(long)/2 */
+	(((((long)wp[0]<<B)|wp[1])<<(B-bp))|(wp[2]>>bp))
+#else                                    /* sizeof(unsigned)==sizeof(long)   */
+```
+
+`sizeof(unsigned) == sizeof(long)/2` is exactly LP64. Bell Labs wrote the
+fetch macro for a machine whose `long` takes two `unsigned`s to fill — the
+PDP-11 in their case — and that is our machine. Nothing defines `HALFWORD`, so
+the wrong branch has been compiling all along. **This is upstream's own escape
+hatch for the situation, and the port should be taking it rather than editing
+declarations.**
+
+`-DHALFWORD` alone does not fix spell (the 56-vs-28 header read still fails),
+and `-DHALFWORD` with the 32-bit header struct does not either. But it changes
+what the remaining question is. With HALFWORD the working values are *meant* to
+be 64-bit, assembled from three 32-bit words, so `L`=63 is right for them —
+while `cs` and `qcs` come off disk justified to 31. The likely remaining step
+is therefore to shift those two fields **up by 32 on load**, which is the
+opposite of every adjustment tried so far.
+
+Four attempts, all reverted, tree green throughout:
+
+1. narrow the struct to `int` — table loads, mis-decodes, decoder loops
+2. explicit on-disk struct widened into `long` — same
+3. pin `L` to 31 and fix `MASK`, plus (1) — header and shifts right, still wrong
+4. `-DHALFWORD`, alone and with (1) — still wrong, but reframes the problem
+
+Next attempt starts from HALFWORD being correct and asks only where the
+justification of `cs`/`qcs` has to end up, rather than what type they should be.
 
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
