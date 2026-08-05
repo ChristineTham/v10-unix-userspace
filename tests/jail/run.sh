@@ -379,6 +379,12 @@ esac
 #	        was in the tree all along.
 #	yacc    $(CC) rather than a literal, a y?.o glob, and the same shape of
 #	        dependency on dextern and files.
+#	sh is NOT here, and got two real fixes into the tree on its way out.
+#	Its makefile needs `-g` (which ccom rejects; the driver now drops it)
+#	and runs `sh ./:fix ctype` (a helper whose name matches no glob).  With
+#	both handled it gets as far as the link and wants an msg.o this sweep
+#	does not produce -- a generated source, which is more setup than a
+#	sweep should carry.  Worth doing properly; see PLAN.md S4a.
 #	spell   FOUR programs from one makefile, and `spellprog` rather than
 #	        `all`, because all regenerates the word lists from the american
 #	        and british dictionaries -- a different claim, and a slow one.
@@ -392,6 +398,10 @@ for spec in "sed sed" "fmt fmt" "tsort tsort" "tbl tbl" "yacc yacc" \
 	# the #included non-headers, which are not *.c and not *.h
 	cp "$ROOT"/src/cmd/$prog/t..c "$ROOT"/src/cmd/$prog/dextern \
 	   "$ROOT"/src/cmd/$prog/files "$d"/ 2>/dev/null
+	# sh's makefile runs `sh ./:fix ctype`.  A build helper whose name
+	# begins with a colon matches no glob at all -- the same invisibility
+	# as the #included non-headers, one layer further out.
+	cp "$ROOT"/src/cmd/$prog/:fix "$d"/ 2>/dev/null
 	cp "$ROOT"/src/cmd/$prog/[Mm]akefile "$d"/ 2>/dev/null
 	out=$( cd $d && V8JAIL=strict "$MAKE8" $target 2>&1 )
 	ck "$prog builds $target from its own V8 makefile" yes \

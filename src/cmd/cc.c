@@ -349,8 +349,21 @@ compile:
 		na = 3;
 		if (proflag)
 			av[na++] = "-Xp";
-		if (gflag)
-			av[na++] = "-g";
+		/*
+		 * -g is NOT passed on to ccom.
+		 *
+		 * On the VAX it asked pass 1 to emit stabs into the assembly for
+		 * the a.out symbol table.  The ARM64 back end emits no debug
+		 * records at all -- debugging here is done on the generated
+		 * assembly with the host's tools, which is the same decision as
+		 * as and ld being the host's (PLAN.md S1) -- so ccom rejects the
+		 * flag outright: "bad option: g".
+		 *
+		 * Accepting it in the driver and dropping it here is what lets
+		 * V8's own makefiles run unmodified; src/cmd/sh/makefile says
+		 * `CFLAGS = -gd2` and is the one that found this.  The flag
+		 * still reaches the link, where clang does understand it.
+		 */
 		if (wflag)
 			av[na++] = "-w";
 		av[na] = 0;
