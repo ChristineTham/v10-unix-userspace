@@ -81,6 +81,32 @@ if [ "$covered" -ge 10 ] && [ -z "$missed" ]; then pass=$((pass+1))
 else fail=$((fail+1)); echo "FAIL v8-make: covers every authentic makefile"
      echo "  found $covered, not refused:$missed"; fi
 
+# --- the day mk arrives, this hook goes quiet on its own --------------------
+#
+# `mk' is Andrew Hume's successor to make, not a nickname for it. V8 has no
+# trace of one -- no mk, no mk.1, no mkfile, and the only mk.c upstream belongs
+# to efl -- because mk is from 1987 and arrives with V9/V10, which is where this
+# project is headed.
+#
+# v8-make.sh decides a build description is authentic by looking for a
+# PROVENANCE line naming a *makefile*. An imported `mkfile' matches nothing, is
+# waved through, and the hook goes on reporting success while covering none of
+# the new tree. A guard that stops guarding without saying so is the failure
+# this suite exists for, so the arrival of the first mkfile is itself the alarm.
+#
+# WHEN THIS FAILS, it is not a bug: it means V9/V10 sources have landed. Teach
+# v8-make.sh to recognise mkfile and to name `mk' rather than V8's make in its
+# message, extend the PROVENANCE-coverage case above, then replace this one.
+# PLAN.md section 4a has the reasoning and what else the step costs.
+mkfiles=$(find src third_party -name mkfile -o -name 'mkfile.*' 2>/dev/null | head -5)
+if [ -z "$mkfiles" ]; then pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL v8-make: mkfiles exist now, and the hook does not know about mk"
+	echo "$mkfiles" | sed 's/^/    /'
+	echo "    see PLAN.md 4a -- mk is a port, not a rename"
+fi
+
 # --- block-third-party.sh ---------------------------------------------------
 tp() {	# tp <label> <pass|block> <path>
 	got=$(printf '{"tool_input":{"file_path":%s}}' \

@@ -16,7 +16,7 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 15 suites (~642 tests)
+make test             # all 15 suites (~643 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu hooks
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)
@@ -41,6 +41,15 @@ preference: rung 4 is only meaningful if the build description is theirs. The
 `v8-make.sh` hook refuses the host's make on any makefile `tools/import.sh`
 brought in, because GNU make would run it perfectly well and nothing would say
 the rung had not happened.
+
+There is a **third** build tool coming, and it is not a spelling of these two.
+`mk` is Andrew Hume's successor to make (1987), and it arrives with V9/V10 —
+which is this project's stated destination. V8 has no trace of one: no `mk`, no
+`mk.1`, not one `mkfile`, and the only `mk.c` upstream belongs to `efl`. So `mk`
+is a non-question today and a port rather than a rename when it lands. PLAN.md
+§4a says what it will cost; `tests/hooks` fails the day the first `mkfile`
+appears, because `v8-make.sh` would otherwise wave the whole new tree through
+while still reporting success.
 
 ### Running V8 binaries
 

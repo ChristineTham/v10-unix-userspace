@@ -131,6 +131,34 @@ The correction, in order. Each rung is built by the rung above it.
 **make cannot be first.** It has a 440-line `gram.y`, so it needs yacc. The
 order is `cc → yacc → make`.
 
+**`make` is V8's build tool. `mk` is not, and will be.** Worth writing down
+before the V9 step, because the two are different programs and the names are one
+character apart. Measured against the vendored tree: `v8/usr/src/cmd/make/`
+exists, `man1/make.1` exists, there is **no `mk`, no `mk.1`, and not one
+`mkfile` anywhere** — the only `mk.c` upstream belongs to `efl`. Every build
+description in V8 is a `Makefile` in make syntax.
+
+That is chronologically right. `mk` is Andrew Hume's successor to make, from
+1987; it arrives with **V9/V10** and Plan 9, which is where this project is
+headed. So `mk` is a real question at the V10 milestone and a non-question now.
+
+What it will cost when it lands, so it is a known edit rather than a
+rediscovery:
+
+- **It is a port, not a rename.** `mk`'s model differs where it matters — a
+  recipe is one shell script rather than a line at a time, there are no built-in
+  suffix rules, and it is parallel by default. A tree of `mkfile`s cannot be fed
+  to make, and vice versa.
+- **The `v8-make.sh` hook goes quiet on its own.** It decides a build
+  description is authentic by looking for a PROVENANCE line naming a
+  *makefile*; an imported `mkfile` matches nothing and is waved straight
+  through, with the hook still reporting success. `tests/hooks` therefore has a
+  case that fails the day the first `mkfile` appears in the tree, which is the
+  prompt to teach both the hook and the inventory about the second tool.
+- **The ladder gains a rung, not a substitution.** V9's own `mk` has to be built
+  by V9's `cc`, so the handover repeats one level up: `cc → yacc → make → mk`.
+  V8's make does not disappear — it is what builds the tree that builds `mk`.
+
 **The jail is not `chroot(2)`.** Every V8 binary here is a Mach-O linked
 against `/usr/lib/libSystem.B.dylib`, so a real chroot would need `dyld` and
 the dyld shared cache inside it, and that cache is SIP-protected; `chroot(2)`
