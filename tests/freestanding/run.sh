@@ -30,6 +30,19 @@ SHIM=$ROOT/build/stage0/v8sys/libv8sys.a
 
 link() { clang -nostdlib -e _v8start -o "$1" "$CRT" "$2" "$STUBS" "$SHIM" -lSystem; }
 
+# Run with a deadline.  macOS ships no timeout(1), and one case below fails by
+# hanging rather than by answering wrongly -- a signal handler the kernel cannot
+# enter does not come back.  The watchdog's output goes to /dev/null so it never
+# holds a pipe open past the command it is watching.
+runlimit() {
+	_lim=$1; shift
+	"$@" & _rpid=$!
+	( sleep "$_lim"; kill -9 $_rpid ) >/dev/null 2>&1 & _wpid=$!
+	wait $_rpid; _rc=$?
+	kill $_wpid >/dev/null 2>&1
+	return $_rc
+}
+
 # --- write(2) reaches the kernel through the shim ------------------------
 cat > hello.c <<'EOF'
 main()
@@ -141,6 +154,47 @@ EOF
 if "$CC" -c brk.c 2>err.log && link brk brk.o 2>>err.log &&
    [ "$(./brk)" = "brk ok" ]; then ok
 else bad "sbrk arena" "$(head -3 err.log)"; fi
+
+# --- a signal is delivered to a program the V8 compiler built ------------
+# tests/v8sys covers this seam from the other side, but only from the other
+# side: that suite is clang-built and links the host libc, so it proves
+# v8s_signal's arithmetic and nothing about what crosses the seam.  Here the
+# handler is compiled by v8cc and entered by the kernel through the trampoline
+# in shim/v8sys/sigtramp.s, using v8cc's own positional argument convention.
+# The suite that proved the shim was clean was never the suite that proved the
+# world built on it was -- the same gap that hid five libc imports until
+# tests/kmemu swept the rootfs.
+#
+# Deliberately the demonstration program from the bug report, which printed
+# "installed; killing self" and then hung forever.
+cat > sigcatch.c <<'EOF'
+#include <signal.h>
+
+int caught;
+
+onint(sig)
+{
+	caught = sig;
+}
+
+main()
+{
+	if (signal(SIGINT, onint) == BADSIG) { write(1, "noinstall\n", 10); return 1; }
+	kill(getpid(), SIGINT);
+	/* reaching this line at all is sigreturn having worked */
+	if (caught != SIGINT) { write(1, "nohandler\n", 10); return 1; }
+	/* V7 semantics: delivery resets the handler to SIG_DFL */
+	if (signal(SIGINT, SIG_IGN) != SIG_DFL) { write(1, "noreset\n", 8); return 1; }
+	write(1, "caught\n", 7);
+	return 0;
+}
+EOF
+if "$CC" -c sigcatch.c 2>err.log && link sigcatch sigcatch.o 2>>err.log; then
+	runlimit 5 ./sigcatch >out.txt 2>&1; rc=$?
+	if [ "$(cat out.txt)" = "caught" ]; then ok
+	else bad "a v8cc-compiled program catches a signal" \
+	         "exit $rc, output [$(cat out.txt)] -- exit 137 is the deadline killing a hang"; fi
+else bad "signal catcher build" "$(head -3 err.log)"; fi
 
 # --- nothing is taken from libSystem ------------------------------------
 # The point of the raw-syscall layer: the image must not import any libc

@@ -152,6 +152,16 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
+# The signal trampoline is assembly, so the *.c wildcard above cannot see it and
+# it has to be named.  Defined HERE rather than beside SHIM_OBJ because the
+# v8sys test rule below names it as a prerequisite, and a variable defined lower
+# down expands to nothing there -- the mistake this file has made three times.
+#
+# It belongs in libv8sys.a and not beside crt0.o: the kernel enters it on every
+# signal delivery, so it is part of the shim rather than of program startup, and
+# putting it in the archive means signal.c's reference to it is what pulls it in.
+SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
+
 # CANCEL GNU MAKE'S BUILT-IN yacc AND lex RULES.  A pattern rule with no recipe
 # deletes the built-in one.
 #
@@ -232,7 +242,10 @@ test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
 test-hooks:
 	@$(ROOT)tests/hooks/run.sh
 
-$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC)
+# $(SHIM_ASM) is on this line for the signal-delivery cases: without the
+# trampoline linked in, v8s_signal installs a handler the kernel cannot enter,
+# which is the whole fault those cases exist to catch.
+$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC) $(SHIM_ASM)
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable \
 	    -fno-stack-protector -fno-stack-check -o $@ $^
@@ -347,7 +360,8 @@ $(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
 # libv8sys -- the shim standing in for the VAX kernel.  Modern C, clang-built:
 # it is the seam, not authentic V8 code.
 # ---------------------------------------------------------------------------
-SHIM_OBJ = $(patsubst $(ROOT)shim/v8sys/%.c,$(BUILD)/v8sys/%.o,$(SHIM_SRC))
+SHIM_OBJ = $(patsubst $(ROOT)shim/v8sys/%.c,$(BUILD)/v8sys/%.o,$(SHIM_SRC)) \
+           $(patsubst $(ROOT)shim/v8sys/%.s,$(BUILD)/v8sys/%.o,$(SHIM_ASM))
 
 # crt0 and the V8-named stub layer: the two pieces a freestanding V8 program
 # needs on top of the shim.  The V8-named layer is built here, and ONLY here,
@@ -437,6 +451,13 @@ $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -c $< -o $@
 
+# Assembly, so none of SHIMFLAGS applies -- the same one-line recipe crt0.s and
+# setjmp.s get.  Explicit, so make's built-in %.o: %.s rule (which would run
+# $(AS) with no flags of ours) never gets the chance.
+$(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.s
+	@mkdir -p $(BUILD)/v8sys
+	$(HOSTCC) -c $< -o $@
+
 # ---------------------------------------------------------------------------
 # libkmemu -- the system-facts half of the shim, and the one part of it that
 # may link the host's libc.  shim/libkmemu/synth.c states the boundary; PLAN.md
@@ -494,6 +515,14 @@ LIBCSRC = $(SRC)/libc
 # gen/: authentic V8, except ieeefp.c and memops.c, which replace VAX assembly
 # and say so at the top.  isatty is NOT here -- the shim owns it, since it is a
 # question about the host terminal rather than about V8.
+#
+# sleep is the one that had to WAIT rather than be written.  It is alarm + a
+# handler + `for(;;) pause()', so it needs signal DELIVERY, which this port did
+# not have until shim/v8sys/sigtramp.s: every handler was installed with a null
+# trampoline.  Imported once before that and taken straight back out, because it
+# hung and took rm and tail with it.  The source needs no patch of any kind --
+# its blob hash still matches upstream's -- which is the point: what was broken
+# was underneath it.
 LIBC_GEN = malloc ecvt ieeefp errlst perror memops \
            ctype atoi atol abs max min sgn gcd lcm \
            index rindex strrchr strdup strtok strcatn strcmpn strcpyn \
@@ -501,7 +530,7 @@ LIBC_GEN = malloc ecvt ieeefp errlst perror memops \
            execvp exec getwd ftw valloc tell iread l3tol ltol3 nlist \
            opendir readdir closedir seekdir telldir \
            ctime timezone ttyname cttyname getlogin ttyslot \
-           tolower toupper atof
+           tolower toupper atof sleep
 LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/data.c $(LIBCSRC)/stdio/doprnt.c \
           $(LIBCSRC)/stdio/printf.c $(LIBCSRC)/stdio/fprintf.c \

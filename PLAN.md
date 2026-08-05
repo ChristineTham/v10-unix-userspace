@@ -579,7 +579,7 @@ everything we port as our `NOLONG`-assumption detector.
 |---|---|
 | Pure passthrough (~30) | `read write close lseek link unlink chdir chmod chown fchmod fchown access kill umask mkdir rmdir symlink readlink dup dup2 pipe getpid getppid getuid geteuid getgid getegid setuid setgid nice sync alarm pause utime execve fork` (vfork→fork) |
 | Translate structs/values | `stat/fstat/lstat` (16-bit ino via hash-fold, never 0; dev squeeze), `time/ftime/times`, `wait/wait3`, `select` (fd_set width), `open` (see directories), errno mapping host→V8 |
-| Emulate | `sbrk/brk` (reserved anonymous mmap arena, monotonic break), `signal` (V8 reset-on-delivery semantics + `SIGDOPAUSE`/`SIGDORTI` packing over sigaction; number translation ≈ identity except 16/23), `ioctl` (sgtty `TIOC*` ↔ termios; `FIONREAD`; `TIOC[GS]PGRP`), `nap` (ms sleep), `syscall()` (dispatch into this table), `#!` handling in execve if needed |
+| Emulate | `sbrk/brk` (reserved anonymous mmap arena, monotonic break), `signal` (V8 reset-on-delivery semantics + `SIGDOPAUSE`/`SIGDORTI` packing over sigaction; number translation ≈ identity except 16/23; **and a signal trampoline of our own** — the raw syscall takes `struct __sigaction`, and the handler is entered through the `sa_tramp` userland supplies, not directly), `ioctl` (sgtty `TIOC*` ↔ termios; `FIONREAD`; `TIOC[GS]PGRP`), `nap` (ms sleep), `syscall()` (dispatch into this table), `#!` handling in execve if needed |
 | Directory reads | `open()` on a directory returns a shim-backed fd streaming **synthesized V7 16-byte records** (snapshot via host `fdopendir`; names >14 bytes truncated — documented quirk). Fixes all 44 raw readers *and* V8 `readdir()` with zero source changes. |
 | Stub ENOSYS | `mount umount gmount procmount swapon reboot acct stime settod profil vadvise vlimit vtimes chroot ptrace mpx` + streams `FIOPUSHLD/FIOPOPLD`; fd-passing `FIOSNDFD/FIORCVFD` stubbed now, possible `SCM_RIGHTS` emulation later (needed only by `pt`/advanced upas plumbing) |
 
@@ -707,20 +707,46 @@ the link" class, five more times, none of them visibly broken:
 programs, so it proved the *shim* was clean and never the world built on it. A
 guard on a seam is not a guard on what crosses it.
 
-**And one thing it broke open.** V8's `sleep(3)` is `alarm` + a handler +
-`for(;;) pause()`, and building it hangs, because **no V8 program in this port
-can catch a signal**: `v8s_signal` gives the raw `sigaction` syscall a userland
+**And one thing it broke open — CLOSED.** V8's `sleep(3)` is `alarm` + a handler
++ `for(;;) pause()`, and building it hung, because **no V8 program in this port
+could catch a signal**: `v8s_signal` gave the raw `sigaction` syscall a userland
 `struct sigaction` where the kernel wants `struct __sigaction`, which carries a
 signal-trampoline pointer at offset 8 — exactly where the userland struct keeps
-`sa_mask`. Every handler is installed with a null trampoline. `tests/v8sys`
-covers signal numbering and never delivery, which is how it survived. `sleep` is
-therefore still Apple's, as the single named entry on `tests/kmemu`'s
-allowed-leak list, and that list fails if the entry ever goes stale.
+`sa_mask`. Every handler was installed with a null trampoline, and `tests/v8sys`
+covered signal numbering and never delivery, which is how it survived.
 
-Also on that list, named rather than tolerated: **`pic` and `grap` use Apple's
+The kernel does not jump to a handler; it jumps to a trampoline the process
+named in `sa_tramp`, and that trampoline is what calls `sigreturn(2)`
+afterwards. libc's `sigaction()` exists largely to convert the one struct into
+the other and fill in its own `_sigtramp`, so a shim that goes straight to the
+syscall inherits the job. `shim/v8sys/sigtramp.s` is three instructions —
+XNU's entry registers are already AAPCS64 argument order, so the C half in
+`signal.c` declares its parameters in the kernel's order and the shuffle
+disappears.
+
+Three flags make it V7's `signal(2)`: no `SA_RESTART`, `SA_RESETHAND`, and
+`SA_NODEFER`. The last is the one that matters twice. `sigaction` blocks the
+signal for the duration of the handler and `sigreturn` unblocks it, so a handler
+that **longjmps out never unblocks it** — and `sleep(3)` longjmps out of its
+SIGALRM handler, `sh` out of its SIGINT handler, while our `setjmp.s` saves
+registers only, as the VAX original did. Without it the first `sleep()` works
+and every later one hangs: the same bug in a better disguise. V7 had no signal
+mask at all, and V8's header agrees from the other side — it spells deferral as
+an opt-in, `DEFERSIG(handler)` setting the low bit of the handler address, which
+nothing in the tree uses.
+
+`v8s_alarm` went with it: it returned 0 unconditionally, having passed
+`setitimer`'s old-value argument as 0, so every `sleep()` silently cancelled its
+caller's pending alarm. Reading that value back is where Darwin's
+`struct timeval` being `{ long tv_sec; int tv_usec; }` starts to matter.
+
+So `sleep` is V8's own now, and **the allowed-leak list is what took it off**:
+`tests/kmemu` fails when an entry goes stale, so nothing had to be remembered.
+
+Still on that list, named rather than tolerated: **`pic` and `grap` use Apple's
 libm** (`sin`, `cos`, `sqrt`, `atan2`, `exp`, `log`, `pow`, `floor`, `ceil`).
 V8 shipped a libm and this port has never built one. Found by the same sweep,
-not by a bad drawing.
+not by a bad drawing. It is now the only entry.
 
 **Still to do in Phase 4:** `df` (its `/etc/mtab` lands beside `utmp.c`, then it
 reads a superblock per device, which is where it stops being a file problem);

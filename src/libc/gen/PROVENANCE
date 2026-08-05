@@ -67,3 +67,4 @@ c87e2585ce0de20513fb5334e93e376441d5b91e  v8/usr/src/libc/gen/iread.c
 9ee382c8a0034b812acf4131ac0aa87c64ca699a  v8/usr/src/libc/gen/nlist.c
 7f3214b55d6005843a9df8f03f2d64bbee027d41  v8/usr/src/libc/gen/tolower.c
 17ad4361a6bfa6fa61da889e4246522277193eab  v8/usr/src/libc/gen/toupper.c
+82e8fc61b1eeeb9f406d491befea12d7a9b4cdd7  v8/usr/src/libc/gen/sleep.c

@@ -16,7 +16,7 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 15 suites (~618 tests)
+make test             # all 15 suites (~634 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu hooks
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)
@@ -297,17 +297,33 @@ proved the shim was clean and never the world built on it. **A guard on a seam i
 not a guard on what crosses it.**
 
 Every remaining import is on `tests/kmemu`'s allowed list, named with its reason,
-and the suite fails if an entry goes stale. Today: `sleep` (see below) and libm
-for `pic`/`grap` (V8 shipped one; this port has never built one).
+and the suite fails if an entry goes stale. Today that is libm alone, for
+`pic`/`grap` (V8 shipped one; this port has never built one). `sleep` was the
+other entry until signal delivery worked, and the staleness check is what took
+it off: V8's own `sleep.c` built, nothing imported the host's any more, and the
+suite failed until the entry was deleted.
 
-**No V8 program can catch a signal.** `v8s_signal` hands the raw `sigaction`
-syscall a userland `struct sigaction`, where the kernel wants
-`struct __sigaction` — 24 bytes, with a signal-trampoline pointer at offset 8,
-exactly where the userland struct keeps `sa_mask`. Every handler is installed
-with a null trampoline; `sigaction` returns 0 and nothing looks wrong until
-delivery, when the process hangs or dies. `tests/v8sys` covers signal *numbering*
-and never delivery, which is how it survived. It is why V8's own `sleep(3)`
-cannot be built here. `shim/libkmemu/NOTES.md` has the measurements.
+**The struct a syscall takes is not always the struct libc takes.** For four
+months no V8 program in this port could catch a signal, because `v8s_signal`
+handed the raw `sigaction` syscall a userland `struct sigaction` where the
+kernel wants `struct __sigaction` — 24 bytes, with a signal-trampoline pointer
+at offset 8, exactly where the userland struct keeps `sa_mask`. Every handler
+was installed with a null trampoline; `sigaction` returned 0 and nothing looked
+wrong until delivery, when the process hung or died. Fixed:
+`shim/v8sys/sigtramp.s` is the trampoline the kernel enters, and `shim/NOTES.md`
+has the whole account. Two things generalise. **libc's wrapper is often not a
+thin one** — `sigaction()` exists largely to convert between those two structs
+and fill in a trampoline, so "the shim goes straight to the kernel" means
+inheriting work libc was doing. And a struct at this seam that is the wrong
+shape costs *nothing* at the call and fails much later, so the ones this port
+depends on are now `_Static_assert`ed on size and offset.
+
+**A guard on numbering is not a guard on delivery.** `tests/v8sys` checked that
+signal numbers translated and never that a handler ran, so a shim in which no
+handler could ever run passed 44 of 44. Same family as the `tests/freestanding`
+gap below. Delivery cases each fork a child with a deadline, because the failure
+mode is a hang rather than a wrong answer — run inline, the first one takes the
+suite down and prints nothing.
 
 **A stale object does not look like a build problem — it looks like wrong code.**
 Four debugging rounds went to correct source compiled from already-fixed files.

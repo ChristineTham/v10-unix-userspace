@@ -238,23 +238,23 @@ grep -q 'bad free count' "$TMP/dfl.out" && ok ||
 # helpers all install elsewhere, and a sweep that stops at /bin would have
 # declared the world clean while missing a third of it.
 #
-# TWO ALLOWED LEAKS, named rather than tolerated, and the list is the record.
-#
-# sleep -- V8's own sleep(3) is alarm + a handler + `for(;;) pause()', and NO V8
-#   PROGRAM IN THIS PORT CAN CATCH A SIGNAL: v8s_signal hands the raw sigaction
-#   syscall a userland `struct sigaction', where the kernel wants
-#   `struct __sigaction' -- which has a signal-trampoline pointer at offset 8,
-#   exactly where the userland struct keeps sa_mask. Every handler is installed
-#   with a null trampoline, and delivery hangs or kills the process. Importing
-#   V8's sleep.c on top of that made make, rm and tail hang, so it was taken
-#   back out. Comes off this list the moment signal delivery works.
+# ONE ALLOWED LEAK, named rather than tolerated, and the list is the record.
 #
 # libm -- V8 shipped one and this port has never built it, so pic and grap do
 #   their geometry with Apple's. Non-variadic, so it works and nothing looked
 #   wrong; found by this sweep rather than by a bad drawing. Porting libm is its
 #   own piece of work, and until then this is what says so.
-ALLOWED="sleep
-	sin cos atan2 sqrt exp log log10 pow floor ceil"
+#
+# `sleep' used to be the other entry, and the mechanism below is what took it
+# off. V8's sleep(3) is alarm + a handler + `for(;;) pause()', and no V8 program
+# in this port could catch a signal: v8s_signal handed the raw sigaction syscall
+# a userland `struct sigaction' where the kernel wants `struct __sigaction',
+# whose signal-trampoline pointer sits at offset 8 -- exactly where the userland
+# struct keeps sa_mask. Every handler was installed with a null trampoline. With
+# shim/v8sys/sigtramp.s in place, V8's own sleep.c builds and works, so nothing
+# imports the host's any more; the staleness check below is what said so rather
+# than anyone remembering to look.
+ALLOWED="sin cos atan2 sqrt exp log log10 pow floor ceil"
 
 # ccom and cpp in the rootfs are the CLANG-BUILT stage-0 ones -- CLAUDE.md says
 # so, and `nm' showing zero V8 symbols is how it says it. They import all of
@@ -296,9 +296,9 @@ for b in $allbins; do
 done
 check "nothing but the named exception is taken from libc" "" "$leaked"
 
-# ...and the exception is not stale. When signal delivery is fixed and V8's own
-# sleep.c comes back, nothing will import it and this fails, which is the
-# prompt to delete the entry.
+# ...and the exception is not stale. This is the half that works: when signal
+# delivery was fixed and V8's own sleep.c came back, nothing imported the host's
+# sleep any more and this failed, which is what prompted the entry's deletion.
 for a in $ALLOWED; do
 	case " $used " in
 	*" $a "*) ok ;;

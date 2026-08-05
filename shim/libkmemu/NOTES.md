@@ -109,13 +109,13 @@ timestamp, so it cannot say what the offset was in another month, and `ls -l` on
 a file from the other side of a change shows it an hour out. Exactly as the VAX
 did, for the same reason.
 
-## The debt this left: no V8 program can catch a signal
+## The debt this left, and how it came off — signals
 
 V8's `libc/gen/sleep.c` was imported alongside the others and taken back out,
-because it hangs. It is `alarm` + a handler + `for(;;) pause()`, and
+because it hung. It is `alarm` + a handler + `for(;;) pause()`, and
 
-**`v8s_signal` installs every handler with a null trampoline.** It hands the raw
-`sigaction` syscall a userland `struct sigaction`, and the kernel wants
+**`v8s_signal` installed every handler with a null trampoline.** It handed the
+raw `sigaction` syscall a userland `struct sigaction`, and the kernel wants
 `struct __sigaction`:
 
 ```
@@ -123,22 +123,32 @@ userland struct sigaction:   size=16  handler@0            mask@8   flags@12
 kernel   struct __sigaction: size=24  handler@0  tramp@8   mask@16  flags@20
 ```
 
-So the kernel reads `sa_mask` as the signal-trampoline pointer, and `sa_flags`
-and `sa_mask` from the wrong offsets. `sigaction` returns 0 and nothing looks
-wrong until a signal is delivered, at which point the process hangs or dies.
-Measured: `kill(getpid(), SIGINT)` with a handler installed does not return.
-`sigsuspend` and `setitimer` are not implicated — both work with the same raw
-wrappers when the host's `signal()` installed the handler.
+So the kernel read `sa_mask` as the signal-trampoline pointer, and `sa_flags`
+and `sa_mask` from the wrong offsets. `sigaction` returned 0 and nothing looked
+wrong until a signal was delivered, at which point the process hung or died.
+Measured: `kill(getpid(), SIGINT)` with a handler installed did not return.
+`sigsuspend` and `setitimer` were never implicated — both worked with the same
+raw wrappers when the host's `signal()` installed the handler.
 
-`tests/v8sys` covers signal *numbering* and never delivery, which is how this
-survived. Fixing it needs a signal trampoline (arm64 Darwin enters it with
-x0=handler, x1=infostyle, x2=sig, x3=siginfo\*, x4=ucontext\*, and it calls
-`sigreturn`), plus `struct __sigaction`. `v8s_alarm` also always returns 0 where
-it owes the seconds remaining on the previous alarm, which `sleep.c` uses.
+That is fixed: `shim/v8sys/sigtramp.s` supplies the trampoline the kernel enters
+and `signal.c` passes the struct the syscall actually takes. `shim/NOTES.md` has
+the account, including `SA_NODEFER` — the flag without which the fix would have
+worked exactly once per program, because a handler that longjmps out never
+reaches `sigreturn` to unblock its own signal. `v8s_alarm` now reports the
+seconds remaining on the previous alarm, which is what `sleep.c` saves and
+restores.
 
-Until then `sleep` comes from libSystem and is the single named entry on
-`tests/kmemu`'s allowed-leak list — which fails if the entry ever goes stale, so
-it comes off by itself when the fix lands.
+**`sleep` came off the allowed-leak list, and the list is what said so.**
+`tests/kmemu` fails when an entry goes stale, so once V8's own `sleep.c` built
+and nothing imported the host's any more, the suite demanded the entry's
+deletion rather than waiting for someone to remember. That is the half of a
+tolerated exception that usually goes unwritten.
+
+The wider lesson is the same one this file already tells about
+`tests/freestanding`. `tests/v8sys` covered signal *numbering* and never
+delivery, so a shim in which no handler could ever run passed 44 of 44. A guard
+on a seam is not a guard on what crosses it — and it is not a guard on the half
+of the seam nobody wrote a case for either.
 
 ## Next
 

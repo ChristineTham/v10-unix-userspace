@@ -1,26 +1,82 @@
 # libv8sys
 
 The layer standing in for the VAX kernel. `make libv8sys`; `make test-v8sys`
-(44 tests) and `make test-freestanding` (7) cover it.
+(53 tests) and `make test-freestanding` (8) cover it.
 
 `shim/libkmemu/` is a **separate** library with its own notes and its own rules —
 it is the one part of the shim that may link host libc, and keeping it out of
 `libv8sys.a` is what stops every V8 binary from importing libc. See
 `libkmemu/NOTES.md`.
 
-## KNOWN BROKEN: no V8 program can catch a signal
+## Signal delivery, and the trampoline it needs
 
-`v8s_signal` hands the raw `sigaction` syscall a userland `struct sigaction`,
-where the kernel wants `struct __sigaction` — 24 bytes with a signal-trampoline
-pointer at offset 8, exactly where the userland struct keeps `sa_mask`. Every
-handler is therefore installed with a null trampoline. `sigaction` returns 0, so
-nothing looks wrong until a signal is delivered and the process hangs or dies.
+Until this landed, **no V8 program in this port could catch a signal**.
+`v8s_signal` handed the raw `sigaction` syscall a userland `struct sigaction`,
+and the kernel wants `struct __sigaction`:
 
-Found in Phase 4 by building V8's `sleep(3)`, which is `alarm` + a handler +
-`for(;;) pause()`. `tests/v8sys` covers signal *numbering* and never delivery,
-which is how it survived this long. `libkmemu/NOTES.md` has the measurements and
-what the fix needs; `v8s_alarm` returning 0 rather than the previous alarm's
-remaining time belongs with it.
+```
+userland struct sigaction:   size=16  handler@0            mask@8   flags@12
+kernel   struct __sigaction: size=24  handler@0  tramp@8   mask@16  flags@20
+```
+
+So the kernel read the zeroed `sa_mask` as `sa_tramp` and took `sa_flags` and
+`sa_mask` from past the end of the struct. Every handler was installed with a
+**null trampoline**; `sigaction` returned 0 and nothing looked wrong until
+delivery, when the process hung or died. Found in Phase 4 by building V8's
+`sleep(3)` — `alarm` + a handler + `for(;;) pause()` — which simply hung.
+
+**The kernel does not jump to a handler.** It jumps to a trampoline the process
+supplied in `sa_tramp`, passing the handler along as an argument; the trampoline
+calls the handler and then asks the kernel to restore the interrupted context
+with `sigreturn(2)`. That last step is userland's, which is why a process with
+no trampoline has nowhere to be entered. libc's `sigaction()` exists largely to
+fill this in with its own `_sigtramp`, and a shim that goes straight to the
+syscall has to supply one itself.
+
+`shim/v8sys/sigtramp.s` is three instructions, and that is the design rather
+than luck. XNU enters the trampoline with `x0` = handler, `x1` = infostyle,
+`x2` = signal, `x3` = `siginfo_t *`, `x4` = `ucontext_t *`, `x5` = the
+sigreturn token — which is already AAPCS64 argument order, so `v8sys_sigcall()`
+in `signal.c` declares its parameters in the kernel's order and the register
+shuffle disappears. Everything needing judgement is C: mapping the number back
+into V8's numbering, calling the handler, issuing `sigreturn`.
+
+Three flags and the absence of a fourth make it V7's `signal(2)`:
+
+* **no `SA_RESTART`** — V8 programs expect a slow read to fail with `EINTR`;
+* **`SA_RESETHAND`** — reset-on-delivery, which V8 code re-arms inside the
+  handler;
+* **`SA_NODEFER`**, which is the subtle one. `sigaction` blocks the signal for
+  the duration of the handler and `sigreturn` unblocks it — so a handler that
+  **longjmps out never unblocks it**. V8's `sleep(3)` longjmps out of its
+  SIGALRM handler and `sh` out of its SIGINT handler, and our `setjmp.s` saves
+  registers only, since the VAX original had no mask to save. Without
+  `SA_NODEFER` the first `sleep()` works and every later one hangs in `pause()`,
+  which is the same bug wearing a better disguise. V7 had no signal mask at all,
+  and V8's own header agrees from the other side: it spells deferral as an
+  *opt-in*, `DEFERSIG(handler)` setting the low bit of the handler address.
+  Nothing in this tree uses it and it is not implemented.
+
+The old action comes back in the **smaller** struct. That asymmetry looks like a
+bug and is the kernel's interface: `__sigaction` copies the new action in as
+`struct __sigaction` and the old one out as `struct sigaction`, which has no
+`sa_tramp` to report.
+
+`v8s_alarm` was fixed alongside, because `sleep(3)` needs it: it returned 0
+unconditionally, having passed `setitimer`'s old-value argument as 0, so every
+`sleep()` silently cancelled its caller's pending alarm. Reading that value back
+is where Darwin's `struct timeval` being `{ long tv_sec; int tv_usec; }` starts
+to matter — writing one as two longs is harmless, since the extra zeroes land in
+padding the kernel ignores, which is why the shape survived everywhere else in
+`syscall.c`.
+
+**What let this live so long is worth more than the fix.** `tests/v8sys` covered
+signal *numbering* and never delivery, so a shim in which no handler could ever
+run passed 44 of 44. It now forks a child with a deadline for each delivery
+case — the failure mode is a hang, not a wrong answer — and
+`tests/freestanding` catches a signal in a program *v8cc compiled*, because the
+suite that proves the seam is clean is never the suite that proves the world
+built on it is.
 
 ## How it reaches the kernel, and why that mattered
 

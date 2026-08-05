@@ -43,7 +43,14 @@ TMP=${TMPDIR:-/tmp}/depstest.$$
 mkdir -p "$TMP"; trap 'rm -rf "$TMP"' EXIT
 
 # Settle the tree first: every case assumes its target starts up to date.
-if ! $MAKE >/dev/null 2>&1; then
+#
+# The v8sys test binary is named explicitly because the default target does not
+# build it -- it is a test, not part of the world -- and two cases below assert
+# its edges.  A `dep' whose target is missing is a failure rather than a skip,
+# which is right, so it has to be here rather than left to whoever ran make
+# last.  Before the sleep, or its mtime lands in the same second as the touches
+# that follow and make 3.81 cannot tell them apart.
+if ! $MAKE >/dev/null 2>&1 || ! $MAKE "$ROOT/$B/v8sys/test" >/dev/null 2>&1; then
 	echo "FAIL cannot settle the build -- run make and fix that first"
 	exit 1
 fi
@@ -296,13 +303,28 @@ dep 'nokmemu -> shim archive'  shim/v8sys/nokmemu.c            $B/v8sys/libv8sys
 dep 'tz.c -> shim archive'     shim/v8sys/tz.c                 $B/v8sys/libv8sys.a
 dep 'syscalls.def -> stubs'    shim/v8sys/syscalls.def         $B/v8sys/libv8stubs.a
 
-# The four libc files added when tests/kmemu found them resolving from
-# libSystem instead.  A missing one does not break the build, so only the
-# dependency edge says they are being compiled at all.
+# The signal trampoline is the one shim file that is ASSEMBLY, so SHIM_SRC's
+# `*.c' wildcard cannot see it and both of these edges had to be written by
+# hand.  Neither failure would look like a build problem: an archive without it
+# leaves every signal handler installed with a null trampoline, and a test
+# binary without it fails to link a suite whose whole point is to catch that.
+dep 'sigtramp -> shim archive' shim/v8sys/sigtramp.s           $B/v8sys/libv8sys.a
+dep 'sigtramp -> v8sys test'   shim/v8sys/sigtramp.s           $B/v8sys/test
+dep 'signal.c -> v8sys test'   shim/v8sys/signal.c             $B/v8sys/test
+# ...and it is the SHIM's, not startup code: crt0.o must not acquire it.
+nodep 'sigtramp is not crt0'   shim/v8sys/sigtramp.s           $B/crt0.o
+
+# The libc files added when tests/kmemu found them resolving from libSystem
+# instead.  A missing one does not break the build, so only the dependency edge
+# says they are being compiled at all.  sleep is the fifth and the odd one: it
+# was not missing by oversight but held back, because it is alarm + a handler +
+# pause() and no V8 program in this port could catch a signal until
+# shim/v8sys/sigtramp.s existed.
 dep 'atof -> libc'             src/libc/gen/atof.c             $B/libc/libv8c.a
 dep 'tolower -> libc'          src/libc/gen/tolower.c          $B/libc/libv8c.a
 dep 'getgrent -> libc'         src/libc/stdio/getgrent.c       $B/libc/libv8c.a
 dep 'getpwuid -> libc'         src/libc/stdio/getpwuid.c       $B/libc/libv8c.a
+dep 'sleep -> libc'            src/libc/gen/sleep.c            $B/libc/libv8c.a
 
 # --- negative controls: the suite must be able to say "no" ------------------
 nodep 'spell does not reach sh'   src/cmd/spell/huff.h   $B/sh/main.o

@@ -8,9 +8,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
+#include <setjmp.h>
+#include <time.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include "../../shim/v8sys/v8sys.h"
+
+typedef void (*v8handler)();
 
 extern int v8s_open(char *, int, int);
 extern long v8s_read(int, char *, long);
@@ -23,9 +29,23 @@ extern int v8s_unlink(char *);
 extern int v8s_mkdir(char *, int);
 extern int v8s_rmdir(char *);
 extern char *v8s_sbrk(long);
+extern int v8s_pipe(int *);
+extern int v8s_kill(int, int);
+extern int v8s_pause(void);
+extern unsigned v8s_alarm(unsigned);
+extern v8handler v8s_signal(int, v8handler);
 extern int v8sys_signo_to_host(int);
 extern int v8sys_signo_from_host(int);
 extern int v8sys_errno(int);
+
+/*
+ * V8's numbers, spelled out rather than taken from the host's <signal.h>.
+ * They agree today -- V8's numbering is BSD's for every signal V8 names -- and
+ * a test that reads them from the host could not tell if that stopped being
+ * true, which is the one thing the translation table exists for.
+ */
+#define V8SIG_INT	2
+#define V8SIG_ALRM	14
 
 static int pass, fail;
 
@@ -34,6 +54,206 @@ ok(int cond, const char *what)
 {
 	if (cond) pass++;
 	else { fail++; printf("FAIL %s\n", what); }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * SIGNAL DELIVERY, EACH CASE IN A FORKED CHILD WITH A DEADLINE.
+ *
+ * Not caution.  The fault these cases exist for does not produce a wrong
+ * answer: a handler installed with a null sa_tramp is entered at pc 0, so the
+ * process hangs or dies.  Run inline, the first of them would take the whole
+ * suite down with it -- printing nothing, since the counters die too -- or
+ * wedge `make test' forever.  In a child it is a failed test with a reason.
+ *
+ * It is also what makes the mutation check bearable, and these are the
+ * mutations each case is for.  Zero sa_tramp in v8s_signal: every one of the
+ * five must fail, reporting `hung' or `died' -- which of the two depends on
+ * what the kernel finds at pc 0 and neither is a wrong answer.  Drop
+ * SA_NODEFER: only the longjmp case, and only at round 2.  Pass &mask to
+ * sigsuspend again: only the pause case, and only on a machine whose stack
+ * address has the SIGALRM bit set, which is the point of it.  Pass 0 for
+ * setitimer's third argument again: only the alarm cases, which are inline.
+ * Each has to be watched to fail before it is worth anything.
+ *
+ * Every body() must leave through _exit, and its code says where it stopped.
+ * ---------------------------------------------------------------------------
+ */
+#define CH_TIMEOUT	(-1)
+#define CH_SIGNAL	(-2)
+#define CH_NOFORK	(-3)
+
+static int
+runchild(void (*body)(void), int limit_ms)
+{
+	pid_t pid;
+	int status, waited;
+
+	fflush(stdout);			/* else the child inherits our buffer */
+	if ((pid = fork()) < 0) return (CH_NOFORK);
+	if (pid == 0) { body(); _exit(99); }
+
+	for (waited = 0; waited < limit_ms; waited += 10) {
+		if (waitpid(pid, &status, WNOHANG) == pid)
+			return (WIFSIGNALED(status) ? CH_SIGNAL
+						    : WEXITSTATUS(status));
+		usleep(10000);
+	}
+	kill(pid, SIGKILL);
+	waitpid(pid, &status, 0);
+	return (CH_TIMEOUT);
+}
+
+static void
+okchild(void (*body)(void), int limit_ms, const char *what)
+{
+	int rc = runchild(body, limit_ms);
+
+	if (rc == 0) { pass++; return; }
+	fail++;
+	printf("FAIL %s\n", what);
+	if (rc == CH_TIMEOUT)
+		printf("     the child hung -- the null-trampoline symptom\n");
+	else if (rc == CH_SIGNAL)
+		printf("     the child died on a signal\n");
+	else if (rc == CH_NOFORK)
+		printf("     fork failed\n");
+	else
+		printf("     the child stopped at _exit(%d)\n", rc);
+}
+
+static volatile sig_atomic_t hits, seen;
+
+static void
+onsig(int sig)
+{
+	hits++;
+	seen = sig;
+}
+
+/*
+ * The handler runs at all -- and control comes BACK, which is the half that
+ * needs sigreturn.  kill(2) delivers before it returns, so by the line after
+ * it the handler has run and the interrupted context has been restored; a
+ * trampoline that called the handler and then failed to sigreturn would never
+ * reach the test below.
+ */
+static void
+c_delivery(void)
+{
+	hits = 0; seen = -1;
+	if (v8s_signal(V8SIG_INT, onsig) == (v8handler)-1) _exit(2);
+	if (v8s_kill(getpid(), V8SIG_INT) < 0) _exit(3);
+	if (hits != 1) _exit(4);
+	if (seen != V8SIG_INT) _exit(5);
+	_exit(0);
+}
+
+/*
+ * V7 reset-on-delivery: the handler is SIG_DFL again by the time it returns,
+ * and V8 code is written to re-arm inside itself.  Read back through
+ * v8s_signal's own return value, which reports what was installed.
+ */
+static void
+c_reset(void)
+{
+	hits = 0;
+	if (v8s_signal(V8SIG_INT, onsig) == (v8handler)-1) _exit(2);
+	if (v8s_kill(getpid(), V8SIG_INT) < 0) _exit(3);
+	if (hits != 1) _exit(4);
+	if (v8s_signal(V8SIG_INT, (v8handler)SIG_IGN) != (v8handler)SIG_DFL)
+		_exit(5);
+	_exit(0);
+}
+
+/*
+ * A slow read is INTERRUPTED, not restarted: no SA_RESTART.  V8 programs check
+ * for EINTR and would wait forever if the kernel restarted the call for them.
+ * The read is on an empty pipe with no writer, so nothing but the alarm can
+ * end it.
+ */
+static void
+c_eintr(void)
+{
+	int fd[2];
+	char b;
+
+	hits = 0;
+	if (v8s_pipe(fd) < 0) _exit(2);
+	if (v8s_signal(V8SIG_ALRM, onsig) == (v8handler)-1) _exit(3);
+	if (v8s_alarm(1) != 0) _exit(4);
+	if (v8s_read(fd[0], &b, 1) != -1) _exit(5);
+	if (v8_errno != V8_EINTR) _exit(6);
+	if (hits != 1) _exit(7);
+	_exit(0);
+}
+
+/*
+ * pause() WAITS, and wakes on delivery.  This is what V8's sleep(3) spends its
+ * time in -- `for(;;) pause()' -- and it decides the shape of sigsuspend's
+ * argument, which the kernel takes BY VALUE where POSIX's wrapper takes a
+ * pointer.  Both ways of being wrong are caught here and they fail
+ * differently: a pointer read as a mask blocks a pseudo-random set of signals,
+ * so if it happens to include SIGALRM the child hangs; a mask read as a
+ * pointer faults straight back out, so pause() returns with no signal
+ * delivered and hits is 0.
+ *
+ * One pause() call, deliberately, not a loop: a loop cannot tell waiting from
+ * spinning.
+ */
+static void
+c_pause(void)
+{
+	time_t t0;
+
+	hits = 0;
+	if (v8s_signal(V8SIG_ALRM, onsig) == (v8handler)-1) _exit(2);
+	if (v8s_alarm(1) != 0) _exit(3);
+	t0 = time(0);
+	if (v8s_pause() != -1) _exit(4);	/* pause always "fails" with EINTR */
+	if (hits != 1) _exit(5);		/* came back without a signal */
+	if (time(0) - t0 < 1) _exit(6);		/* ...or came back too early */
+	_exit(0);
+}
+
+/*
+ * THE SECOND SIGNAL, after a handler that longjmps out.
+ *
+ * This is the case that would catch a missing SA_NODEFER, and only the second
+ * round can: sigaction blocks the signal for the duration of the handler and
+ * sigreturn unblocks it, so a handler that jumps out leaves it blocked
+ * forever.  Round one passes either way; round two never gets its signal.
+ *
+ * _setjmp/_longjmp, NOT setjmp/longjmp.  Darwin's setjmp saves the signal mask
+ * and its longjmp restores it, which would paper over exactly this -- V8's
+ * setjmp.s saves registers and nothing else, as the VAX original did, so
+ * _setjmp is the contract V8 code actually has.
+ */
+static jmp_buf jb;
+
+static void
+onjmp(int sig)
+{
+	hits++;
+	_longjmp(jb, 1);
+}
+
+static void
+c_longjmp(void)
+{
+	/* volatile: a local live across a longjmp, and this one is read after */
+	volatile int round;
+
+	hits = 0;
+	for (round = 1; round <= 3; round++) {
+		if (v8s_signal(V8SIG_INT, onjmp) == (v8handler)-1) _exit(2);
+		if (_setjmp(jb) == 0) {
+			v8s_kill(getpid(), V8SIG_INT);
+			_exit(round + 10);	/* signal never arrived */
+		}
+	}
+	if (hits != 3) _exit(3);
+	_exit(0);
 }
 
 int
@@ -152,6 +372,42 @@ main(void)
 	ok(v8sys_signo_from_host(15) == 15, "SIGTERM maps back");
 	/* the flags V8 packs into the signal number must not confuse it */
 	ok(v8sys_signo_to_host(2 | 0400) == 2, "SIGDOPAUSE flag is stripped");
+
+	/* ---------------------------------------------- signal DELIVERY */
+	/*
+	 * Everything above is numbering, and numbering is all this suite
+	 * checked for a long time -- which is how a shim where no handler
+	 * could ever run passed 44 of 44.  The kernel takes a different struct
+	 * from the one libc's sigaction() takes, with a signal-trampoline
+	 * pointer where the userland one keeps sa_mask, so every handler was
+	 * installed with a null trampoline and delivery jumped to address 0.
+	 * Nothing at the seam could see it: sigaction returned 0.
+	 */
+	okchild(c_delivery, 5000,
+	    "a handler installed through v8s_signal runs, and control returns");
+	okchild(c_reset, 5000,
+	    "V7 reset-on-delivery: SIG_DFL is what is installed afterwards");
+	okchild(c_eintr, 5000,
+	    "a slow read is interrupted with EINTR rather than restarted");
+	okchild(c_pause, 5000,
+	    "pause() blocks until a signal is delivered, then returns EINTR");
+	okchild(c_longjmp, 5000,
+	    "a second signal arrives after a handler that longjmped out");
+
+	/* ------------------------------------------------------- alarm */
+	/*
+	 * alarm(2) owes the caller the time left on the previous alarm; this
+	 * returned 0 unconditionally, having passed setitimer's old-value
+	 * argument as 0.  V8's sleep(3) saves and restores its caller's alarm
+	 * across the sleep with exactly this, so a constant 0 threw it away.
+	 */
+	ok(v8s_alarm(100) == 0, "alarm with nothing pending reports 0");
+	{
+		unsigned prev = v8s_alarm(0);
+		ok(prev != 0, "alarm reports the previous alarm's remaining time");
+		ok(prev == 100, "...rounding the part-second up, as alarm(2) does");
+	}
+	ok(v8s_alarm(0) == 0, "and once cancelled there is nothing left to report");
 
 	/* --------------------------------------------------------- sbrk */
 	b0 = v8s_sbrk(0);

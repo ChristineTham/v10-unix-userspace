@@ -518,22 +518,60 @@ main()
 }
 EOF
 
-# --- NOT sleep, and the reason is worth more than the case would have been --
+# --- sleep, the function that found the signal bug -------------------------
 #
-# V8's libc/gen/sleep.c was imported alongside the others and then taken back
-# out, because it hangs: it is alarm + a handler + `for(;;) pause()', and NO V8
-# PROGRAM IN THIS PORT CAN CATCH A SIGNAL.  v8s_signal in shim/v8sys/signal.c
-# passes the userland `struct sigaction' to the raw sigaction syscall, and the
-# kernel wants `struct __sigaction', which carries a signal-trampoline pointer
-# at offset 8 -- exactly where the userland struct has sa_mask.  So every
-# handler is installed with a null trampoline and the process dies or hangs the
-# moment one is delivered.  Measured: kill(getpid(), SIGINT) with a handler
-# installed does not return.
+# V8's libc/gen/sleep.c was imported alongside the others and taken straight
+# back out, because it hung: it is alarm + a handler + `for(;;) pause()', and
+# no V8 program in this port could catch a signal.  v8s_signal handed the raw
+# sigaction syscall a userland `struct sigaction' where the kernel wants
+# `struct __sigaction' -- 24 bytes, with a signal-trampoline pointer at offset
+# 8, exactly where the userland struct keeps sa_mask -- so every handler was
+# installed with a null trampoline and delivery went to address 0.  It is here
+# now because that is fixed; shim/v8sys/sigtramp.s is the missing piece.
 #
-# Until that is fixed, sleep comes from libSystem, which is why it is on the
-# allowed-leak list in tests/kmemu rather than absent from it.  Deliberately no
-# test here: a case for a function this port does not provide would be testing
-# Apple's libc.
+# The case has its own deadline because its failure mode is a HANG, and it is
+# the whole of sleep.c that is under test: setjmp, a longjmp out of a signal
+# handler, pause(), and alarm's return value.  macOS has no timeout(1), hence
+# the four lines.
+runlimit() {
+	_lim=$1; shift
+	"$@" & _rpid=$!
+	( sleep "$_lim"; kill -9 $_rpid ) >/dev/null 2>&1 & _wpid=$!
+	wait $_rpid; _rc=$?
+	kill $_wpid >/dev/null 2>&1
+	return $_rc
+}
+
+# A PENDING ALARM SURVIVES THE SLEEP, which is the reason sleep.c needs alarm
+# to report the time remaining: `altime = alarm(1000)' saves what the caller
+# had running and `alarm(altime)' puts it back.  While v8s_alarm returned a
+# constant 0 this printed "lost" -- sleep silently cancelled its caller's
+# alarm -- and no amount of watching sleep(1) take a second would have said so.
+cat > t.c <<'EOF'
+#include <stdio.h>
+main()
+{
+	int left;
+
+	alarm(30);
+	sleep(1);
+	left = alarm(0);
+	printf("%s\n", left >= 27 && left <= 30 ? "kept" : "lost");
+	fflush(stdout);
+	return 0;
+}
+EOF
+if "$CC" -c t.c 2>e.log &&
+   clang -nostdlib -e _v8start -o t "$CRT" t.o "$LIBC" "$STUBS" "$SHIM" -lSystem 2>>e.log; then
+	runlimit 10 ./t >out.txt 2>&1; rc=$?
+	if [ "$(cat out.txt)" = "kept" ]; then pass=$((pass+1))
+	else
+		fail=$((fail+1)); echo "FAIL sleep returns, and keeps the caller's alarm"
+		echo "  exit $rc, output [$(cat out.txt)] -- exit 137 is the deadline killing a hang"
+	fi
+else
+	fail=$((fail+1)); echo "FAIL sleep (build)"; head -2 e.log
+fi
 
 echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

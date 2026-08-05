@@ -678,24 +678,80 @@ v8s_pipe(int fd[2])
 #endif
 }
 
-/* alarm and pause are setitimer/sigsuspend underneath on modern kernels. */
+/*
+ * alarm and pause are setitimer/sigsuspend underneath on modern kernels.
+ *
+ * TV_USEC IS 32 BITS.  Darwin's struct timeval is { long tv_sec; int tv_usec; }
+ * with four bytes of tail padding -- suseconds_t is __int32_t -- not the two
+ * longs the rest of this file writes at it.  As a WRITE that shape is harmless:
+ * the extra zeroes land in padding the kernel does not read, which is why it
+ * has never mattered here.  Reading one back is where it would, so the struct
+ * this call reads through is the real shape.  The class is the dominant one in
+ * this port: a field that is not the width it looks like.
+ */
+struct v8_itimerval {
+	struct { long sec; int usec; } interval, value;
+};
+_Static_assert(sizeof(struct v8_itimerval) == 32,
+    "struct itimerval on Darwin/LP64: two 16-byte timevals, usec 32 bits + pad");
+
 unsigned
 v8s_alarm(unsigned sec)
 {
-	struct { long sec, usec; } it[2];
+	struct v8_itimerval nit, oit;
+	unsigned rem;
 
-	it[0].sec = 0; it[0].usec = 0;		/* interval: one shot */
-	it[1].sec = sec; it[1].usec = 0;	/* value */
-	rawsys3(SYS_setitimer, 0 /*ITIMER_REAL*/, (long)it, 0);
-	return (0);
+	nit.interval.sec = 0; nit.interval.usec = 0;	/* one shot */
+	nit.value.sec = sec;  nit.value.usec = 0;
+	oit.value.sec = 0;    oit.value.usec = 0;
+
+	if (rawsys3(SYS_setitimer, 0 /*ITIMER_REAL*/, (long)&nit, (long)&oit) < 0)
+		return (0);
+
+	/*
+	 * alarm(2) OWES THE CALLER THE TIME LEFT ON THE PREVIOUS ALARM, and
+	 * this returned 0 unconditionally -- setitimer's third argument, the
+	 * one that reports the old value, was passed as 0 and thrown away.
+	 *
+	 * V8's sleep(3) is what that breaks: `altime = alarm(1000)' saves
+	 * whatever alarm the caller had pending so `alarm(altime)' can put it
+	 * back afterwards, and a constant 0 means every sleep() silently
+	 * cancels its caller's alarm.
+	 *
+	 * A part-second rounds UP, as every alarm(3) since 4.2BSD has: an
+	 * alarm with 0.3s to run has one second left, not none.  Truncating
+	 * would lose up to a second on each save-and-restore.
+	 */
+	rem = (unsigned)oit.value.sec;
+	if (oit.value.usec) rem++;
+	return (rem);
 }
 
+/*
+ * pause: sigsuspend with an empty mask -- wait for anything at all.
+ *
+ * THE SYSCALL TAKES THE MASK BY VALUE.  POSIX's sigsuspend() takes a
+ * `const sigset_t *' and Darwin's does too, but the wrapper is where the
+ * dereference happens: syscalls.master marks 111 NO_SYSCALL_STUB precisely
+ * because the syscall's own argument is a `sigset_t', 32 bits wide, inherited
+ * from 4.3BSD's sigpause(int sigmask).  This passed &mask, so the mask the
+ * kernel installed was the low half of a STACK ADDRESS -- an arbitrary set of
+ * blocked signals, stable within a build and different across machines.
+ *
+ * It mattered nowhere until now: no V8 program could catch a signal, so
+ * nothing ever waited here and returned.  It matters immediately now, because
+ * V8's sleep(3) is `for(;;) pause()' and a mask with bit 13 set blocks the very
+ * SIGALRM it is waiting for -- a sleep that hangs on some machines and not
+ * others, which is the same bug this change exists to remove, wearing a coin
+ * flip.  tests/v8sys asserts that one pause() call blocks until a signal is
+ * actually delivered, which is what fails if this is wrong in either direction:
+ * a pointer the kernel reads as a mask hangs, and a mask the kernel reads as a
+ * pointer faults straight back out without waiting.
+ */
 int
 v8s_pause(void)
 {
-	/* sigsuspend with an empty mask: wait for anything at all */
-	long mask = 0;
-	rawsys1(SYS_sigsuspend, (long)&mask);
+	rawsys1(SYS_sigsuspend, 0);
 	v8_errno = V8_EINTR;
 	return (-1);
 }
