@@ -133,7 +133,7 @@ main(argc, argv)
 	llist = (char **)calloc(argc, sizeof (char **));
 	plist = (char **)calloc(argc, sizeof (char **));
 	opterr = 0;
-	while (optind<argc) switch (c = getopt(argc, argv, "vsSo:RiOPgwEpPcD:I:U:C:t:B:l:d:")) {
+	while (optind<argc) switch (c = getopt(argc, argv, "vsSno:RiOPgwEpPcD:I:U:C:t:B:l:d:")) {
 	case 'i':
 		Cflag++;
 		continue;
@@ -170,6 +170,16 @@ main(argc, argv)
 		continue;
 	case 'R':
 		Rflag++;
+		continue;
+	case 'n':
+		/*
+		 * -n asked the VAX link editor for a shared-text a.out.  There
+		 * is no Mach-O equivalent and nothing to translate it to, so it
+		 * is accepted and ignored -- exactly as -O is, and for the same
+		 * reason: V8's own makefiles pass it, and the alternative is
+		 * forwarding a flag clang does not know.  src/cmd/sed/Makefile
+		 * is the one that found this: `cc -o sed -n *.o`.
+		 */
 		continue;
 	case 'O':
 		/*

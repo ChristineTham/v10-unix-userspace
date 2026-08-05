@@ -362,6 +362,30 @@ case "$(echo 'ls /bin' | "$V8ROOT/bin/v8" 2>&1)" in
 *) fail=$((fail+1)); echo "FAIL ls /bin does not show the V8 /bin" ;;
 esac
 
+# --- RUNG 5, generalised: four makefiles, four different idioms -------------
+# lex above proves the mechanism.  It does not prove the mechanism copes with
+# what upstream's makefiles actually contain, and they are not uniform:
+#
+#	sed     a recipe globbing *.o, and target and recipe on ONE line
+#	fmt     macro definition and $(OBJ) expansion
+#	tsort   .SUFFIXES and a .c.o suffix rule -- no explicit object rules
+#
+# If V8's make lacks something one of them needs, that is a finding about the
+# make we ported, and better found here than by a program failing to build.
+for prog in sed fmt tsort; do
+	d=r5_$prog
+	mkdir -p $d
+	cp "$ROOT"/src/cmd/$prog/*.c "$ROOT"/src/cmd/$prog/*.h "$d"/ 2>/dev/null
+	cp "$ROOT"/src/cmd/$prog/[Mm]akefile "$d"/ 2>/dev/null
+	out=$( cd $d && V8JAIL=strict "$MAKE8" 2>&1 )
+	ck "$prog builds from its own V8 makefile" yes \
+	   "$([ -x $d/$prog ] && echo yes || echo no)"
+	case "$out" in
+	*"leaves the jail"*) fail=$((fail+1)); echo "FAIL $prog escaped: $out" ;;
+	*) pass=$((pass+1)) ;;
+	esac
+done
+
 # --- #! scripts are interpreted INSIDE the jail ------------------------------
 # The kernel resolves a shebang against the real filesystem before the shim sees
 # it, so every shell script in the world used to run under the Mac's sh --
