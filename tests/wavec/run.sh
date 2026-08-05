@@ -156,5 +156,16 @@ case "$manout" in
 *) fail=$((fail+1)); echo "FAIL man cat rendered the wrong page" ;;
 esac
 
+# --- spell against UPSTREAM's own word list -----------------------------------
+# The cases above use a list this build generates.  That is necessary but not
+# sufficient: a reader and writer can agree with each other and both be wrong
+# about the format, which is exactly what four attempts at this bug produced.
+# hlista is Bell Labs' binary data, and reading it correctly is the claim.
+cat > sp.txt <<'SPEOF'
+the quick brown fox jumpd over teh lazy dog
+SPEOF
+check 'spell reads V8 own hlista and finds only the errors' 'jumpd teh' \
+   "$("$V8ROOT/bin/sh" "$V8ROOT/usr/bin/spell" sp.txt 2>&1 | tr '\n' ' ' | sed 's/ $//')"
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

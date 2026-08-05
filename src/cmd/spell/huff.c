@@ -166,13 +166,63 @@ long p;
 	return(z);
 }
 
+/*
+ * The exact inverse of rhuff(), and it has to be: spellin writes a list that
+ * spellprog reads, so a header written in this machine's words and read as a
+ * V8-format one is a list only this machine can use.  Fixing the reader alone
+ * made upstream's hlista work and broke every locally generated list -- which
+ * is what tests/wavec caught, and is the reason this pair is written together.
+ */
+#define DL	(BYTE*4-1)		/* 31: the file's justification */
+
+struct dhuff {
+	int xn, xw, xc, xcq, xcs, xqcs, xv0;
+};
+
 whuff()
 {
-	fwrite((char*)&huffcode,sizeof(huffcode),1,stdout);
+	struct dhuff d;
+
+	d.xn   = (int)huffcode.xn;
+	d.xw   = (int)huffcode.xw;
+	d.xc   = (int)huffcode.xc;
+	d.xcq  = (int)huffcode.xcq;
+	d.xv0  = (int)huffcode.xv0;
+	d.xcs  = (int)((unsigned long)huffcode.xcs  >> (L - DL));
+	d.xqcs = (int)((unsigned long)huffcode.xqcs >> (L - DL));
+	fwrite((char *)&d, sizeof(d), 1, stdout);
 }
 
+/*
+ * The header is 28 bytes on disk and the decoder works in machine words.
+ *
+ * Three facts have to be held at once, and holding any two of them is what
+ * made the first four attempts at this fail (PLAN.md S4e):
+ *
+ *   1. struct dhuff is the FILE layout -- seven 32-bit fields, which is what
+ *      `long` meant under NOLONG.  read() must ask for exactly that.
+ *   2. huffcode stays `long`, because with -DHALFWORD the fetch macro in
+ *      hashlook.c assembles running codes from three unsigneds into a full
+ *      machine word, and L is that word's width.
+ *   3. cs and qcs are LEFT JUSTIFIED -- to 31 in the file, to L in memory.  So
+ *      they are shifted UP on load.  Everything else is a count and is not.
+ *
+ * DL is the width the file is justified to; the shift is whatever the gap is,
+ * and is zero on a machine where they agree, which is what the VAX was.
+ */
 rhuff(f)
 FILE *f;
 {
-	return(read(fileno(f), (char*)&huffcode, sizeof(huffcode)) == sizeof(huffcode));
+	struct dhuff d;
+
+	if (read(fileno(f), (char *)&d, sizeof(d)) != sizeof(d))
+		return (0);
+	huffcode.xn   = d.xn;
+	huffcode.xw   = d.xw;
+	huffcode.xc   = d.xc;
+	huffcode.xcq  = d.xcq;
+	huffcode.xv0  = d.xv0;
+	huffcode.xcs  = ((long)(unsigned)d.xcs)  << (L - DL);
+	huffcode.xqcs = ((long)(unsigned)d.xqcs) << (L - DL);
+	return (1);
 }

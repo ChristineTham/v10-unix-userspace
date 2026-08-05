@@ -184,107 +184,46 @@ copied out before the second call. Any code holding two results from
 
 Mutation-verified: disabling the interception fails both jail cases.
 
-## 4e. spell: the header is diagnosed, the decode is not — open
+## 4e. spell — CLOSED, on V8's own word lists
 
-`spell` is installed per `src/cmd/spell/Makefile`'s own layout, `deroff` is
-ported, and the script runs end to end. `spellprog` then says
+    $ spell sp.txt
+    jumpd
+    teh
 
-    spell: cannot initialize hash table
+against `hlista` as Bell Labs shipped it. `spell` is installed per
+`src/cmd/spell/Makefile`'s own layout, `deroff` is ported, and `tests/wavec`
+checks both a locally generated list and upstream's binary one.
 
-**The cause is established, and it is arithmetic rather than inference.**
-`rhuff()` does `read(fd, &huffcode, sizeof(huffcode))` — it reads a struct
-straight off disk, so `sizeof(struct huff)` *is* the header size of every hashed
-word list V8 ever wrote. The struct is six `long` and one `int`. On the VAX,
-under `NOLONG`, that was 7 x 4 = **28 bytes**. On LP64 the identical declaration
-is **56**. The read asks for twice what the file holds, comes up short, and
-`rhuff` returns 0.
+**The bug was that `rhuff()` read a struct straight off disk**, so
+`sizeof(struct huff)` *was* the header size of every word list V8 ever wrote —
+7 × 4 = 28 bytes under `NOLONG`, and 56 for the identical declaration on LP64.
+Beyond the size, `cs` and `xqcs` are marked "left justified", and the
+justification is to `L`, which `huff.c` derives as `BYTE*sizeof(long)-1`: 31 on
+the VAX, 63 here. **The file is justified to 31 and the decoder to 63.**
 
-This is the port's first collision with V8's **on-disk** format rather than
-with its source, and there will be others: any struct that is `read()` or
-`write()`n whole has the same exposure.
+`rhuff()` now reads an explicit 28-byte `struct dhuff` and shifts those two
+fields up by `L - DL` on load; `whuff()` is its exact inverse. Everything else
+in the header is a count and moves unchanged. The in-memory type is untouched,
+so the decoder's arithmetic is exactly V8's.
 
-**The obvious fix is not sufficient, and was reverted.** Declaring the fields
-`int` — 32 bits on both machines, so exactly the widths V8 had — makes the
-header read succeed and the table load. spell then runs and gets the *wrong
-answers*: `the`, `of`, `and`, `to`, `in` all reported as misspelled. Worse, the
-`wavec` suite stopped terminating, so the narrowing also puts the huffman
-decoder into a loop.
+**Four earlier attempts failed, and the pattern in them is the useful part.**
+Each changed one declaration — narrow the struct to `int`; read an on-disk
+struct without re-justifying; pin `L` and `MASK`; add `-DHALFWORD`. Every one
+addressed a real difference and none was sufficient, because three facts have
+to hold at once: the file's *size*, the file's *justification*, and the
+decoder's *word*. Fixing any two loads the table and then mis-decodes, which
+looks like progress and is not.
 
-That says the fields are not merely storage: `huff.c` does shift and mask
-arithmetic on them, and somewhere that arithmetic depends on the width.
+Two things caught what the wrong output did not. The suite failing to
+**terminate** stopped attempts 1 and 2 — the wrong output was visible
+immediately and was not enough on its own. And fixing the reader without the
+writer passed a locally generated list while breaking upstream's, which is why
+`tests/wavec` now checks **both**: a reader and writer can agree with each
+other and be wrong about the format together.
 
-**Separating the on-disk struct from the in-memory type was tried too, and is
-also not enough.** Reading an explicit seven-`int` `struct dhuff` and widening
-each field into the existing `huffcode` makes the header read correct and
-leaves the decoder's types untouched. spell then flags *every* word, `the` and
-`quick` included, and `wavec` still does not terminate.
-
-**The answer is in the field comments.** `xcs` is "c left justified" and
-`xqcs` is "(q-1,c,q) left justified" — left justified **in a 32-bit word**.
-Widening a 32-bit left-justified value into a 64-bit `long` puts every one of
-those bits 32 positions too low, so the decoder's shifts and masks address the
-wrong end of the word. Neither narrowing the type nor widening the value can be
-right on its own: the decode is written for a 32-bit machine word throughout.
-
-**Third attempt, from the code this time, and the key fact is now known:**
-
-```c
-#define L (BYTE*(sizeof(long))-1)	/* length of signless long */
-```
-
-`L` is *derived from `sizeof(long)`* — 31 on the VAX, **63** here. Every shift
-in the decoder is expressed in terms of it, and `hlista` was written with L=31.
-So the decoder scales itself to the host word while the data does not. That is
-the root cause, and it is not a guess: `cs = cq<<(L-w)` and
-`qcs = ((q-1)<<w + cq) << (L-QW-w)` are the "left justified" fields, justified
-to L.
-
-`MASK` has the same shape: `~(1L<<L)` clears bit L and, on a 32-bit long, there
-was nothing above it. On LP64 it leaves 32 high bits set for `y` to accumulate
-garbage in.
-
-Pinning `L` to 31 and `MASK` to `(1L<<L)-1`, **together with** the `int` struct
-in `huff.h` (both are required — either alone loads the table and mis-decodes),
-gets the header read and the shifts right and spell still flags every word. So
-there is at least one more width dependency in `huff.c`. The next suspect is
-signedness: with the fields `int`, `cs` can have bit 31 set and therefore be
-negative, and it is compared against `y`, which is `long` and always
-non-negative — a comparison that was signed-32 against signed-32 on the VAX and
-is now signed-64 against a sign-extended value.
-
-**The thing that changes the shape of this, found on the fourth attempt:
-`hashlook.c` already carries a variant for this machine.**
-
-```c
-#if defined(pdp11) || defined(HALFWORD)  /* sizeof(unsigned)==sizeof(long)/2 */
-	(((((long)wp[0]<<B)|wp[1])<<(B-bp))|(wp[2]>>bp))
-#else                                    /* sizeof(unsigned)==sizeof(long)   */
-```
-
-`sizeof(unsigned) == sizeof(long)/2` is exactly LP64. Bell Labs wrote the
-fetch macro for a machine whose `long` takes two `unsigned`s to fill — the
-PDP-11 in their case — and that is our machine. Nothing defines `HALFWORD`, so
-the wrong branch has been compiling all along. **This is upstream's own escape
-hatch for the situation, and the port should be taking it rather than editing
-declarations.**
-
-`-DHALFWORD` alone does not fix spell (the 56-vs-28 header read still fails),
-and `-DHALFWORD` with the 32-bit header struct does not either. But it changes
-what the remaining question is. With HALFWORD the working values are *meant* to
-be 64-bit, assembled from three 32-bit words, so `L`=63 is right for them —
-while `cs` and `qcs` come off disk justified to 31. The likely remaining step
-is therefore to shift those two fields **up by 32 on load**, which is the
-opposite of every adjustment tried so far.
-
-Four attempts, all reverted, tree green throughout:
-
-1. narrow the struct to `int` — table loads, mis-decodes, decoder loops
-2. explicit on-disk struct widened into `long` — same
-3. pin `L` to 31 and fix `MASK`, plus (1) — header and shifts right, still wrong
-4. `-DHALFWORD`, alone and with (1) — still wrong, but reframes the problem
-
-Next attempt starts from HALFWORD being correct and asks only where the
-justification of `cs`/`qcs` has to end up, rather than what type they should be.
+`-DHALFWORD` is *not* in the fix. It was added on the strength of a comment
+that matches LP64 exactly (`sizeof(unsigned)==sizeof(long)/2`) and removed
+again when the mutation test showed spell correct without it.
 
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
