@@ -1,0 +1,9 @@
+# Provenance for src/cmd/df
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+7e4a8d5112534b3c509dff2a7143008de1686499  v8/usr/src/cmd/df/Makefile
+abb9ee37cc7f6a0fd699845e2b4b0eb7028eb8ea  v8/usr/src/cmd/df/odf.C
+fd07422335f38024c266a3593aac9e1586ddf86f  v8/usr/src/cmd/df/df.c

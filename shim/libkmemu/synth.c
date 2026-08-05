@@ -119,14 +119,16 @@ kmemu_replace(const char *hostpath, const char *buf, long n)
 }
 
 /*
- * The table of files this library manufactures.  df's /etc/mtab is the next
- * one; it lands here beside utmp rather than as a second hook in the shim.
+ * The table of files this library manufactures.  One hook in the shim, however
+ * many files end up here.
  */
 static struct {
 	const char *path;
 	int (*make)(const char *);
 } synth[] = {
 	{ "/etc/utmp", kmemu_utmp },
+	{ "/etc/mtab", kmemu_mtab },
+	{ "/etc/fstab", kmemu_fstab },
 	{ 0, 0 }
 };
 

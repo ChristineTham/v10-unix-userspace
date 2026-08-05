@@ -42,3 +42,4 @@ bcb4379351a2583dcdedd2d40715e64ecce4d306  v8/usr/src/libc/stdio/system.c
 7717005bc7d7e072d16505fc0329aff0645a2b2e  v8/usr/src/libc/stdio/getpwent.c
 9ab89f4d5e9a7adc6a164e8721a8f533451c2c9b  v8/usr/src/libc/stdio/getpwuid.c
 c9968e5543be0f61756b2fe5b052c7d196fd515d  v8/usr/src/libc/stdio/getgrent.c
+e31f1169f6a860a8e9a0ee26bca32973b3a77ead  v8/usr/src/libc/stdio/fstab.c

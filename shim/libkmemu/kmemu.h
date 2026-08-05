@@ -19,6 +19,22 @@ int kmemu_synth(const char *v8path, const char *root);
 
 /* One of these per synthetic file.  Writes `hostpath'; 0 on success, -1 not. */
 int kmemu_utmp(const char *hostpath);
+int kmemu_mtab(const char *hostpath);
+int kmemu_fstab(const char *hostpath);
+
+/*
+ * What df(1) would have read out of a superblock.  Counts are in 1024-byte
+ * blocks, which is BSIZE(dev) for a device number with bit 64 clear -- the
+ * only kind this port hands out.  See mtab.c for why df gets this through a
+ * call where who(1) got a manufactured file.
+ */
+struct kmemu_fs {
+	long	blocks;		/* total, 1K units */
+	long	bfree;		/* available to a user */
+	long	files;		/* total inodes */
+	long	ffree;		/* free inodes */
+};
+int kmemu_fsstat(const char *path, struct kmemu_fs *out);
 
 /* Shared plumbing, raw-syscall only -- see the boundary note in synth.c. */
 int  kmemu_replace(const char *hostpath, const char *buf, long n);

@@ -145,8 +145,84 @@ libcimports() {
 	nm -mu "$1" 2>/dev/null | grep -v dyld_stub_binder |
 	    sed 's/.*external _//;s/ (from.*//' | sort | tr '\n' ' ' | sed 's/ $//'
 }
-check "who imports exactly the utmpx trio" \
-	"endutxent getutxent setutxent" "$(libcimports "$WHO")"
+# The set is libkmemu's WHOLE surface, not just what who happens to call: the
+# synth table in synth.c names every generator, so linking any one of them pulls
+# all of them. That is the honest statement and the one worth pinning -- five
+# symbols, all of them "what is mounted / who is logged in", and a sixth
+# appearing here means the exception grew.
+KMEMU_IMPORTS="endutxent getfsstat getutxent setutxent statfs"
+check "who imports libkmemu's whole surface and no more" \
+	"$KMEMU_IMPORTS" "$(libcimports "$WHO")"
+check "df imports the same set, being the same library" \
+	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/bin/df")"
+
+# ------------------------------------------------------------------ df ---
+DF=$V8ROOT/bin/df
+MTAB=$V8ROOT/etc/mtab
+FSTAB=$V8ROOT/etc/fstab
+
+# Both files are manufactured, like utmp. fstab too, and that one is a
+# DELIBERATE overwrite of an authentic artefact: the rootfs used to carry Bell
+# Labs' own /etc/fstab, listing /dev/ra00 through /dev/ra23. df's devlen() reads
+# fstab, merges anything not already mounted, and takes BOTH column widths from
+# it -- so with the museum piece in place df printed rows for /usr1, /fsave and
+# /v8, disks belonging to a VAX in New Jersey in 1985.
+rm -f "$MTAB" "$FSTAB"
+"$DF" > "$TMP/df.out" 2>"$TMP/df.err"
+[ -f "$MTAB" ]  && ok || bad "df creates /etc/mtab"
+[ -f "$FSTAB" ] && ok || bad "df creates /etc/fstab"
+
+# No phantom disks. The specific failure this replaced, named by its symptom.
+if grep -qE '\bra[0-9][0-9]\b|/usr1|/fsave' "$TMP/df.out"; then
+	bad "df is reporting Bell Labs' VAX disks" "$(grep -m2 -E 'ra[0-9]|/usr1' "$TMP/df.out")"
+else ok; fi
+
+# THE BUG THAT COST THE MOST HERE: mtab fields are NUL-terminated and utmp's are
+# not. df does strcpy(&specbuf[5], mtab[i].spec) into 38 bytes, so a field
+# filled to its 32-byte brim with no terminator runs into the next record,
+# overflows specbuf and smashes the static after it -- which was ecvt's digit
+# buffer, so the %use column emitted hundred-digit strings SEVERAL ROWS LATER.
+# Assert the terminator directly; the symptom is too far from the cause.
+for off in 31 63; do
+	b=$(dd if="$MTAB" bs=1 skip=$off count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+	[ "$b" = "0" ] && ok || bad "mtab field at $off is not NUL-terminated (got $b)"
+done
+# ...and the symptom, so a regression is caught even if the layout changes:
+# every %use must be a number followed by %, never a digit avalanche.
+if awk 'NR>1 {print $NF}' "$TMP/df.out" | grep -qvE '^[0-9]{1,3}%$'; then
+	bad "df printed a malformed %use column" \
+	    "$(awk 'NR>1 {print $NF}' "$TMP/df.out" | grep -vE '^[0-9]{1,3}%$' | head -1 | cut -c1-40)"
+else ok; fi
+
+# The numbers are the host's. df's kbytes column is s_fsize - s_isize, which
+# libkmemu fills from statfs f_blocks scaled to 1K -- so it must equal what the
+# host's own df -k calls 1024-blocks for the same device.
+#
+# The device is taken from df's OWN first row rather than from the host's `/'.
+# In the V8 world "/" is $V8ROOT, which lives on whichever volume holds the
+# repo -- so df legitimately reports that one and not the host's root device.
+# Asking the host about the device df named is the comparison that means
+# something; asking about a device df never mentions only tests the test.
+hostdev=$(awk 'NR==2 {print $2}' "$TMP/df.out")
+hostkb=$(df -k "/dev/$hostdev" 2>/dev/null | awk 'NR==2 {print $2}')
+v8kb=$(awk -v d="$hostdev" '$2 == d {print $3; exit}' "$TMP/df.out")
+if [ -n "$hostkb" ]; then
+	check "df's kbytes matches the host for $hostdev" "$hostkb" "$v8kb"
+else bad "could not ask the host about /dev/$hostdev"; fi
+
+# df -i reports the FORMAT's ceiling, not the volume's contents, and that is
+# the honest answer rather than a plausible one: s_isize and s_tinode are 16-bit
+# in V7, so a volume with 548 million inodes cannot be described. A V8 df could
+# not have shown it either. What must never happen is a number in between.
+"$DF" -i > "$TMP/dfi.out" 2>/dev/null
+ifree=$(awk -v d="$hostdev" '$2 == d {print $(NF-1); exit}' "$TMP/dfi.out")
+check "df -i saturates ifree at the 16-bit ceiling" "65535" "$ifree"
+
+# -l walks the free-block list, and there is no free list -- there is no disk.
+# df says so in its own words rather than being handed a fabricated one.
+"$DF" -l > "$TMP/dfl.out" 2>&1
+grep -q 'bad free count' "$TMP/dfl.out" && ok ||
+	bad "df -l invented a free list instead of failing" "$(head -2 "$TMP/dfl.out")"
 
 # --- ...and NO other V8 binary imports anything at all -------------------
 # EVERY binary in /bin, not a sample. This check is why the suite exists: it
@@ -208,7 +284,7 @@ check "ccom and cpp are still the clang-built ones" "" "$stillhost"
 
 leaked="" used=""
 for b in $allbins; do
-	case " who $NOTV8 " in *" ${b##*/} "*) continue ;; esac
+	case " who df $NOTV8 " in *" ${b##*/} "*) continue ;; esac
 	imp=$(libcimports "$b")
 	for a in $ALLOWED; do
 		case " $imp " in

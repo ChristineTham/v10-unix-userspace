@@ -277,13 +277,17 @@ dep 'kmemu header -> archive'  shim/libkmemu/kmemu.h           $B/kmemu/libkmemu
 dep 'kmemu -> who'             shim/libkmemu/synth.c           $B/bin/who
 dep 'who source -> who'        src/cmd/who.c                   $B/bin/who
 dep 'who -> installed who'     $B/bin/who                      rootfs/bin/who
+dep 'df source -> df'          src/cmd/df/df.c                 $B/bin/df
+dep 'kmemu -> df'              shim/libkmemu/mtab.c            $B/bin/df
+dep 'df -> installed df'       $B/bin/df                       rootfs/bin/df
+dep 'fstab -> libc'            src/libc/stdio/fstab.c          $B/libc/libv8c.a
 
 # THE POINT OF THE SEPARATE ARCHIVE.  libkmemu links host libc, so if it ever
 # became a prerequisite of an ordinary command that command would start
 # importing libSystem -- silently, since the link would still succeed. These
 # negative controls are what make that a build-graph fact rather than a habit.
 # (tests/kmemu asserts the same thing from the other end, on the symbol table.)
-nodep 'kmemu does not reach cat'   shim/libkmemu/utmp.c   $B/bin/cat
+nodep 'kmemu does not reach cat'   shim/libkmemu/mtab.c   $B/bin/cat
 nodep 'kmemu does not reach libc'  shim/libkmemu/utmp.c   $B/libc/gen/malloc.o
 nodep 'kmemu does not reach shim'  shim/libkmemu/synth.c  $B/v8sys/syscall.o
 # ...and the shim's own do-nothing half is NOT in libkmemu: it has to travel
@@ -312,7 +316,7 @@ nodep 'grap does not reach pic'   src/cmd/grap/grap.h    $B/pic/main.o
 for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
          rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
-         rootfs/bin/cal rootfs/bin/who; do
+         rootfs/bin/cal rootfs/bin/who rootfs/bin/df; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then

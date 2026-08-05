@@ -519,7 +519,7 @@ LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/strout.c $(LIBCSRC)/stdio/getw.c \
           $(LIBCSRC)/stdio/getpw.c $(LIBCSRC)/stdio/putw.c $(LIBCSRC)/stdio/tmpnam.c \
           $(LIBCSRC)/stdio/getpwent.c $(LIBCSRC)/stdio/getpwuid.c \
-          $(LIBCSRC)/stdio/getgrent.c \
+          $(LIBCSRC)/stdio/getgrent.c $(LIBCSRC)/stdio/fstab.c \
           $(LIBCSRC)/stdio/doscan.c $(LIBCSRC)/stdio/scanf.c \
           $(LIBCSRC)/stdio/popen.c $(LIBCSRC)/stdio/system.c
 # scanf/doscan, popen and system were missing until spell needed scanf.  A
@@ -790,7 +790,8 @@ $(ROOTFS)/usr/lib/units: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/units
 $(ROOTFS)/usr/lib/eign: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/eign
 	@mkdir -p $(@D) && cp $< $@
 
-v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA)
+v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
+       $(BINDIR)/df $(ROOTFS)/bin/df
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
 # it to the rootfs.  Two pattern rules chain here -- cat.c -> build/bin/cat ->
@@ -822,6 +823,16 @@ $(BINDIR)/who: $(SRC)/cmd/who.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
 	@mkdir -p $(BINDIR)
 	@$(V8CCRUN) -c -o $(BINDIR)/who.o $<
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/who.o \
+	    $(KMEMU_LDADD) $(V8LIBS)
+
+# df, the second groveler.  It lives in a directory of its own upstream, so it
+# is not in $(V8BIN) and does not use the single-file pattern rule; odf.C in the
+# same directory is the older version and is not built, exactly as upstream's
+# own makefile leaves it.
+$(BINDIR)/df: $(SRC)/cmd/df/df.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
+	@mkdir -p $(BINDIR)
+	@$(V8CCRUN) -c -o $(BINDIR)/df.o $<
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BINDIR)/df.o \
 	    $(KMEMU_LDADD) $(V8LIBS)
 
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
