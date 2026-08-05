@@ -113,12 +113,14 @@ the documented as/ld exception. The makefile is plain 1985 make — no pattern
 rules, no automatic variables past `$@`. The result compiles real source, the
 build settles, and a second build from clean generates identical code.
 
-**Rung 5 is demonstrated on six programs, chosen for their makefile idioms
+**Rung 5 is demonstrated on seven programs, chosen for their makefile idioms
 rather than their size**: `lex` (dependency line on `#include`d non-headers),
 `sed` (target, prerequisites and recipe on one line; `*.o` glob), `fmt` (macro
 expansion), `tsort` (`.SUFFIXES` and a `.c.o` suffix rule, no explicit object
 rules), `tbl` (`t?.o` glob, three flags at once, a 22-target dependency line on
-`t..c`), `yacc` (`$(CC)`, `y?.o`, dependencies on `dextern` and `files`).
+`t..c`), `yacc` (`$(CC)`, `y?.o`, dependencies on `dextern` and `files`), `spell`
+(four programs from one makefile — `spellprog` specifically, since `all`
+regenerates the word lists).
 V8's make handled every one unchanged.
 
 Two things came out of that which our own rules could not have surfaced. `sed`

@@ -379,7 +379,13 @@ esac
 #	        was in the tree all along.
 #	yacc    $(CC) rather than a literal, a y?.o glob, and the same shape of
 #	        dependency on dextern and files.
-for prog in sed fmt tsort tbl yacc; do
+#	spell   FOUR programs from one makefile, and `spellprog` rather than
+#	        `all`, because all regenerates the word lists from the american
+#	        and british dictionaries -- a different claim, and a slow one.
+for spec in "sed sed" "fmt fmt" "tsort tsort" "tbl tbl" "yacc yacc" \
+            "spell spellprog"; do
+	set -- $spec
+	prog=$1 target=$2
 	d=r5_$prog
 	mkdir -p $d
 	cp "$ROOT"/src/cmd/$prog/*.c "$ROOT"/src/cmd/$prog/*.h "$d"/ 2>/dev/null
@@ -387,9 +393,9 @@ for prog in sed fmt tsort tbl yacc; do
 	cp "$ROOT"/src/cmd/$prog/t..c "$ROOT"/src/cmd/$prog/dextern \
 	   "$ROOT"/src/cmd/$prog/files "$d"/ 2>/dev/null
 	cp "$ROOT"/src/cmd/$prog/[Mm]akefile "$d"/ 2>/dev/null
-	out=$( cd $d && V8JAIL=strict "$MAKE8" 2>&1 )
-	ck "$prog builds from its own V8 makefile" yes \
-	   "$([ -x $d/$prog ] && echo yes || echo no)"
+	out=$( cd $d && V8JAIL=strict "$MAKE8" $target 2>&1 )
+	ck "$prog builds $target from its own V8 makefile" yes \
+	   "$([ -x $d/$target ] && echo yes || echo no)"
 	case "$out" in
 	*"leaves the jail"*) fail=$((fail+1)); echo "FAIL $prog escaped: $out" ;;
 	*) pass=$((pass+1)) ;;
