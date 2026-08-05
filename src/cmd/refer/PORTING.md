@@ -34,7 +34,36 @@ $ hunt -p refs kernighan
 `mkey` produces the right keys; `hunt` finds no record for them, so refer emits
 `.nr [W \w''` and passes the `.[` / `.]` block through unsubstituted. Nothing
 leaves the jail during the run (checked with `V8JAIL=warn`), so this is refer's
-own logic rather than a path or exec problem. `hunt` is where to look next.
+own logic rather than a path or exec problem. ~~`hunt` is where to look next.~~ **It is not — see below.**
+
+### CORRECTION: the fault is in `inv`, not `hunt`
+
+Driving the pipeline by hand with the helpers at their installed path
+(`$V8ROOT/usr/lib/refer/`, not `/usr/bin` — refer execs them from there):
+
+```
+$ mkey refs
+refs:0,57	kernig the progra langua 1978        <- correct
+$ inv refs
+$ ls -l refs.i?
+refs.ia  3080     <- the hash table, written
+refs.ib     4     <- essentially empty
+refs.ic     0     <- the posting lists: NOTHING
+```
+
+`hunt` finds no records because **there are no records to find.** `inv` writes
+the hash table and then writes an empty `.ic`. Every hour spent reading
+`hunt1.c`'s header handling was spent on the wrong program — the header it
+reads is consistent with the file `inv` produced, which is why
+`_assert(kk == nhash)` passes and the read looks clean.
+
+The `hpt`-is-`long*` and `iflong` observations below remain true and remain
+worth checking, but they are not the cause. Look at `inv`'s output path first:
+`inv5.c` and `inv6.c` are where the tables are written.
+
+This is the second time in this port that a "reader" bug has turned out to be a
+writer bug (spell was the first — PLAN.md §4e), and both times the reader
+looked wrong because it was the program producing the visible symptom.
 
 ### Narrowed: the index header, and `iflong`
 
