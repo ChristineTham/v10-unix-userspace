@@ -300,6 +300,28 @@ dep 'w -> installed w'         $B/bin/w                        rootfs/bin/w
 # one inode cannot drift.  What can go wrong is the link being BROKEN and not
 # remade, so that is what gets asserted, below, after the restore loop.
 
+# --- section 8a step 1: V8's kernel source, and the seam under it -----------
+# Two dialects meet at this archive, so both edges are asserted.  stream.c is
+# authentic K&R compiled with gnu89; machdep.c is ours, compiled with SHIMFLAGS.
+dep 'stream.c -> kern archive'  src/sys/dev/stream.c        $B/kern/libv8kern.a
+dep 'stream.h -> stream.o'      src/sys/h/stream.h          $B/kern/stream.o
+dep 'sparam.h -> stream.o'      src/sys/research/sparam.h   $B/kern/stream.o
+# The stand-in headers are a build input like any other, and they are reached by
+# -I rather than by being next to the source -- which is exactly the kind of
+# edge a dependency scanner misses and a hand-written rule forgets.
+dep 'our param.h -> stream.o'   shim/kern/h/param.h         $B/kern/stream.o
+dep 'our mtpr.h -> stream.o'    shim/kern/h/mtpr.h          $B/kern/stream.o
+dep 'our conf.h -> stream.o'    shim/kern/h/conf.h          $B/kern/stream.o
+dep 'machdep.c -> kern archive' shim/kern/dev/machdep.c     $B/kern/libv8kern.a
+dep 'rawsys.h -> machdep.o'     shim/v8sys/rawsys.h         $B/kern/machdep.o
+
+# ...and the kernel archive must NOT be a prerequisite of an ordinary command.
+# 85 KB of bss and a 60 KB page-touching qinit() belong to programs that open a
+# stream, which today is none of them.  Same reasoning as libkmemu, different
+# cost.
+nodep 'streams do not reach cat'  src/sys/dev/stream.c  $B/bin/cat
+nodep 'streams do not reach libv8sys' shim/kern/dev/machdep.c $B/v8sys/libv8sys.a
+
 # THE POINT OF THE SEPARATE ARCHIVE.  libkmemu links host libc, so if it ever
 # became a prerequisite of an ordinary command that command would start
 # importing libSystem -- silently, since the link would still succeed. These

@@ -182,18 +182,18 @@ SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-hooks clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
+stage0: cpp v8ccom v8cc libv8sys libv8kern crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
 # driver for free because the library install rules said `| rootfs`.  Naming
 # $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
-test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-hooks
+test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks
 # First, because it tests the thing every other suite's result depends on: that
 # what was built is what the sources say.  Four bugs in this port were a stale
 # object rather than wrong code.  It settles the build itself, so it takes no
@@ -237,6 +237,11 @@ test-wavec: nroff troff tbl eqn pic spell $(ROOTFS_TERM) $(ROOTFS_FONT)
 # all of them being built and installed, not just on who.
 test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/kmemu/run.sh
+# V8's stream machinery.  libv8c is a prerequisite because one case asserts that
+# the compiler-emitted memcpy in allocq() resolves to V8's own rather than
+# Apple's, and that is a fact about libv8c's symbol table.
+test-streams: libv8kern libv8c
+	@$(ROOT)tests/streams/run.sh
 # The .claude hooks.  No build prerequisites -- they are shell and python, and
 # the point is that they are code and rot like code.
 test-hooks:
@@ -502,6 +507,65 @@ $(BUILD)/kmemu/%.o: $(ROOT)shim/libkmemu/%.c
 # statement about this line rather than about the linker's search strategy.
 # tests/kmemu checks the symbol table of the built binary either way.
 KMEMU_LDADD = -Wl,-force_load,$(KMEMU_LIB)
+
+# ---------------------------------------------------------------------------
+# libv8kern -- V8's own kernel source, running in the shim.
+#
+# THE FIRST BELL LABS KERNEL CODE IN THIS PORT.  src/sys/dev/stream.c is
+# Dennis Ritchie's stream machinery, byte-identical to upstream, and
+# shim/kern/ is the machine-dependent half it compiles against.  PLAN.md
+# section 8a step 1; src/sys/PORTING.md has the account.
+#
+# A SEPARATE ARCHIVE, for libkmemu's reason and one more.  qinit() threads every
+# block onto a freelist, touching ~60 KB of otherwise-clean pages, and NBLOCK
+# blocks plus NQUEUE queues are ~85 KB of bss.  `cat' should not carry the
+# storage of a message-passing engine it never opens.
+#
+# TWO DIALECTS, and they are not interchangeable.  stream.c is 1985 K&R --
+# implicit int, implicit function declarations, no prototypes -- so it gets
+# gnu89 with those diagnostics off.  That is a BUILD FLAG rather than a source
+# change, which is the fidelity contract working: CLAUDE.md says do not
+# modernise K&R declarations, and the way to obey that is to compile the
+# dialect the code is written in.  machdep.c is ours and gets SHIMFLAGS.
+#
+# -Ishim/kern/dev is what makes `#include "../h/param.h"' land in shim/kern/h.
+# A quoted include tries the includer's directory FIRST, so src/sys/h/stream.h
+# -- authentic -- still wins for "../h/stream.h" from the same source file.
+# Where an authentic header exists it is used; ours fill only the gaps.
+KERNFLAGS = -std=gnu89 -Wall -fno-stack-protector -fno-stack-check \
+            -Wno-implicit-int -Wno-implicit-function-declaration \
+            -Wno-deprecated-non-prototype -Wno-parentheses -Wno-return-type \
+            -Wno-char-subscripts -Wno-unused-variable \
+            -I$(ROOT)shim/kern/dev -I$(SRC)/sys/research
+#
+# The last two are the only ones NOT about K&R syntax, so they were checked
+# rather than waved through.  -Wchar-subscripts fires on `bsize[bp->class]',
+# and char is signed on this target -- but class is assigned 0..3 by allocb()
+# and by qinit(), nowhere else, so it cannot index backwards.  -Wunused-variable
+# is freeb()'s bp1, which is used only under #ifdef CAREFUL, V8's own debug
+# switch.  Left in the build noise they would train the eye past the warnings
+# that matter.
+
+KERN_LIB = $(BUILD)/kern/libv8kern.a
+KERN_OBJ = $(BUILD)/kern/stream.o $(BUILD)/kern/machdep.o
+
+libv8kern: $(KERN_LIB)
+$(KERN_LIB): $(KERN_OBJ)
+	@rm -f $@ && ar rcs $@ $(KERN_OBJ)
+	@echo "built $@"
+
+$(BUILD)/kern/stream.o: $(SRC)/sys/dev/stream.c $(SRC)/sys/h/stream.h \
+                        $(SRC)/sys/research/sparam.h \
+                        $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \
+                        $(ROOT)shim/kern/h/conf.h
+	@mkdir -p $(BUILD)/kern
+	$(HOSTCC) $(KERNFLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(BUILD)/kern/machdep.o: $(ROOT)shim/kern/dev/machdep.c \
+                         $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \
+                         $(ROOT)shim/v8sys/rawsys.h
+	@mkdir -p $(BUILD)/kern
+	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -I$(ROOT)shim/kern/dev -c $< -o $@
 
 # ---------------------------------------------------------------------------
 # libv8c -- V8's own libc, compiled by v8cc, on top of the shim.

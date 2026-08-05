@@ -989,6 +989,31 @@ Ordered so that value lands before risk, and so each step is testable alone.
    no disk, no scheduler. Independent of everything below, highest ceiling,
    and forward-compatible (V10 renames it `io/stream.c`). Unlocks the Datakit
    and `netfs` work PLAN S7 currently excludes, and feeds blitterm Tier 2.
+
+   **The engine is IN -- `dev/stream.c`, byte-identical to upstream.** This is
+   the first Bell Labs *kernel* source in the port; `src/sys/PORTING.md` and
+   `shim/kern/NOTES.md` have it, `tests/streams` is 43 cases. The claim worth
+   repeating is that not one line changed, and it was affordable because the
+   footprint is **nine names**: NULL, caddr_t, u_char, u_short, spl6, splx,
+   panic, printf, uballoc. A 483-line message-passing engine that barely knows
+   what machine it is on -- which is also why streams are the piece of V8 that
+   outlived the VAX kernel into System V and SunOS.
+
+   Two decisions generalise to the rest of `sys/`. Machine facts go in
+   `shim/kern/h/`, reached because a quoted include tries the includer's
+   directory first and `src/sys/h/` is authentic-only -- so **an authentic
+   header always wins and ours fill the gaps**, with no flag saying which is
+   which. And K&R gets a *dialect flag* rather than an edit: `-std=gnu89` with
+   the implicit-int and implicit-declaration diagnostics off is how S1's "do not
+   modernise K&R declarations" is actually obeyed.
+
+   **Still to do here: `sys/streamio.c`**, the syscall side -- `stopen`,
+   `stread`, `stwrite`, `stioctl`, `I_PUSH`/`I_POP`. It wants inodes,
+   `u.u_error`, `tsleep`/`wakeup` and a file table, so unlike `stream.c` it is
+   entangled with the process model, and it raises the question this port's
+   **per-binary** shim has been able to avoid so far: a stream between two
+   processes is not per-binary. That is the same question step 2 answers for
+   filesystems, so they should be answered together rather than twice.
 2. **The 9P switch itself**, with exactly one server behind it: **passthrough**,
    reproducing today's behaviour byte for byte. Nothing user-visible changes;
    the whole point is that the suites stay green while the floor is replaced.

@@ -16,9 +16,9 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 15 suites (~649 tests)
+make test             # all 16 suites (~731 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
-                      #            libv8c wavea waveb sh wavec kmemu hooks
+                      #            libv8c wavea waveb sh wavec kmemu streams hooks
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)
 make clean            # remove build/ and rootfs/
 ```
@@ -66,6 +66,33 @@ V8DBG=1 $V8ROOT/bin/cc -c x.c        # type tracing from the ARM64 backend
 
 `V8JAIL=warn` names each host binary reached; `strict` refuses it. Use `strict`
 when the claim is "this ran entirely on V8 code".
+
+## `src/sys/` — V8's kernel, and it plays by layer 1's rules
+
+New as of PLAN §8a step 1. `src/sys/dev/stream.c` is Dennis Ritchie's stream
+machinery, **byte-identical to upstream** — `tests/streams` compares
+`git hash-object` against PROVENANCE, so an edit is a test failure. The
+machine-dependent half is `shim/kern/`, in the same relationship
+`compiler/ccom-arm64/` has to ccom.
+
+Three things about it generalise to the rest of `sys/`, so know them before
+importing more:
+
+- **Machine facts go in `shim/kern/h/`, never in `src/sys/h/`.** A quoted
+  include tries the includer's directory first, so `"../h/stream.h"` from
+  `src/sys/dev/` finds the authentic header and `"../h/param.h"` falls through
+  to `-Ishim/kern/dev`. An authentic header always wins; ours fill gaps.
+- **K&R gets a dialect flag, not an edit.** `$(KERNFLAGS)` is `-std=gnu89` with
+  implicit-int and implicit-declaration off. That is how "do not modernise K&R
+  declarations" is obeyed rather than worked around.
+- **Prefer a redirection in the header to a deletion in the source.** `printf`,
+  `bcopy` and `uballoc` are all `#define`d aside in `shim/kern/h/param.h`, which
+  is what keeps the blob hash intact. A three-line deletion would have been
+  easier and would have cost the strongest claim available.
+
+`libv8kern.a` is separate from `libv8sys.a` for libkmemu's reason plus a
+storage one: 85 KB of bss, and `qinit()` dirties ~60 KB of pages. `cat` does not
+carry it.
 
 ## Architecture: three layers, three different rules
 

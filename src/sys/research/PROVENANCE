@@ -1,0 +1,7 @@
+# Provenance for src/sys/research
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+8a7971e71bfb284f4c5d773fa588bcf6a03245f6  v8/usr/sys/research/sparam.h
