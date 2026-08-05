@@ -932,6 +932,37 @@ does not have; not `.L`, which is Linux-shaped.
 One switch, several servers, one protocol. The switch is the VFS V10 grew and
 V8 was already growing (`proca.c`, `neta.c` sit in V8's `sys/sys/`).
 
+**MEASURED AFTER STEP 1, AND STRONGER THAN THAT SENTENCE CLAIMED: V8 already had
+the switch, and it was already dispatching.** `sys/h/conf.h` defines
+
+```c
+struct fstypsw {
+	int (*t_put)(); struct inode *(*t_get)(); int (*t_free)();
+	int (*t_updat)(); int (*t_read)(); int (*t_write)(); int (*t_trunc)();
+	int (*t_stat)(); int (*t_nami)(); int (*t_mount)(); int (*t_ioctl)();
+};
+```
+
+and `sys/dev/conf.c` fills it with **four entries**: the ordinary filesystem
+(`rnami`, `smount`), the network filesystem (`na*`, `sys/neta.c`, 710 lines),
+**`/proc` (`pr*`, `sys/proca.c`, 716 lines)**, and mpx (`mp*`, `sys/mp.c`).
+`iget.c`, `nami.c`, `rdwri.c`, `ioctl.c` and `sys3.c` all dispatch through it.
+So V8 was not "growing towards" a VFS -- it had one, four years before Sun's
+paper, and Killian's `/proc` was already a client of it.
+
+Two consequences, both narrowing what has to be designed:
+
+- **Step 2 does not invent an interface.** The shim's switch takes the shape of
+  `struct fstypsw`, eleven operations, because that is the shape the things
+  being plugged into it were written against. An interface of our own devising
+  would mean writing an adapter for every authentic filesystem afterwards.
+- **Step 3 is an import, not an implementation.** `proca.c` already *is* the
+  eleven operations. It slots in the way `stream.c` did, and the work is the
+  machine-dependent half rather than the filesystem.
+
+The 9P seam sits *below* `fstypsw`, not in place of it: a `t_read` that speaks
+9P to a server is one entry in the table beside a `t_read` that calls `pread`.
+
 ```
 V8 program -> libv8sys -> 9P -> +-- passthrough server   (today's transparent mode)
                                 +-- proc server          (Killian's /proc)
@@ -1023,6 +1054,11 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `ps` and `w` honest -- a server that records `fork`/`exec` *knows* the V8
    subtree instead of guessing it from `libproc`. Note `p_wchan` stays
    unanswerable either way; the sentinel rule still applies.
+
+   **And it is an import rather than an implementation**: `sys/proca.c` is 716
+   lines of authentic V8 already written to `struct fstypsw`'s eleven
+   operations, `prput` through `prioctl`. The work is the machine-dependent
+   half, as it was for `stream.c`.
 
    **Upgraded from "makes them honest" to "is the only way to have them at
    all", by measurement** -- see S7. V8's `ps` does not grovel `/dev/kmem`; it
