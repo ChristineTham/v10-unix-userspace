@@ -178,6 +178,13 @@ scanner *and* to a `*.c` glob: `lex/ldefs.c`, `lex/once.c`, `tbl/t..c`,
 `refer/refer..c`, `make/defs`, `yacc/dextern`, `yacc/files`. All are declared
 explicitly in the Makefile.
 
+**The compiler has one known unimplemented feature: `STARG`** — passing a
+struct by value. `gencall()` in `compiler/ccom-arm64/gencode.c` has no path for
+it, which went unnoticed through 156 Wave A programs and all of Wave B and C
+because none of them does it. `grap` does, so `grap` is imported and its rules
+written but kept out of `stage0`; `make grap` reproduces it. PLAN.md §4f has
+the convention question that needs settling before it can be written.
+
 ## Build-system discipline
 
 The Makefile is written defensively for reasons recorded in its comments. Before

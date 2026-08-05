@@ -152,7 +152,7 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: install man wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -1276,4 +1276,60 @@ $(ROOTFS)/usr/lib/spell: $(BUILD)/spell/spellprog
 $(ROOTFS)/usr/bin/spell: $(SPELLSRC)/spell.sh
 	@mkdir -p $(@D) && cp $< $@ && chmod 755 $@
 $(ROOTFS)/usr/dict/%: $(DICTSRC)/%
+	@mkdir -p $(@D) && cp $< $@
+
+# ---------------------------------------------------------------------------
+# grap -- NOT in the default build.  `make grap` builds what it can; the rules
+# are here because they are correct and the program is imported, but plot.c
+# stops at
+#
+#	compiler error: gencode: unimplemented operator 99 (STARG)
+#
+# which is v8cc having no code path for passing a STRUCT BY VALUE.  grap's
+# Point is {struct obj *; double x, y} -- 24 bytes -- and `line(type, p1, p2,
+# desc)` takes two of them.  It is the first program in this port to need it;
+# see PLAN.md S4f.  Leaving the rules in place and grap out of stage0 keeps the
+# tree green while making the gap reproducible with one command.
+#
+# grap -- pic's sibling: a preprocessor for graphs, and pic-shaped in every way
+# that matters here.  Its own makefile builds grap.o and grapl.o from the yacc
+# and lex sources plus ten ordinary objects, and names prevy.tab.h as a
+# prerequisite of all of them -- the same "y.tab.h under another name" trick pic
+# uses, and not reproduced here for the same reason (see the pic block above).
+#
+# Upstream links -lm.  V8's libc carries the maths it needs, so the link line is
+# the standard V8 one; if something turns out to be missing it will fail loudly
+# at link rather than resolving from -lSystem, because -nostdlib means there is
+# no host libm on the line to resolve from.
+# ---------------------------------------------------------------------------
+GRAPSRC = $(SRC)/cmd/grap
+GRAP_NAMES = main input print frame for coord ticks plot label misc
+GRAP_OBJ = $(patsubst %,$(BUILD)/grap/%.o,$(GRAP_NAMES)) \
+           $(BUILD)/grap/grapy.o $(BUILD)/grap/grapl.o
+
+grap: $(BUILD)/grap/grap
+$(BUILD)/grap/grap: $(GRAP_OBJ) $(V8DEPS)
+	$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(GRAP_OBJ) $(V8LIBS)
+	@echo "built $@"
+
+$(BUILD)/grap/y.tab.c: $(GRAPSRC)/grap.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/grap
+	cd $(BUILD)/grap && V8ROOT=$(ROOTFS) $(YACC) -d $(GRAPSRC)/grap.y
+
+$(BUILD)/grap/lex.yy.c: $(GRAPSRC)/grapl.l $(LEX) $(ROOTFS_NCFORM) $(BUILD)/grap/y.tab.c
+	@mkdir -p $(BUILD)/grap
+	cd $(BUILD)/grap && V8ROOT=$(ROOTFS) $(LEX) $(GRAPSRC)/grapl.l
+
+$(BUILD)/grap/grapy.o: $(BUILD)/grap/y.tab.c $(V8CC_DEPS)
+	$(V8CCRUN) -I$(BUILD)/grap -I$(GRAPSRC) -c -o $@ $(BUILD)/grap/y.tab.c
+$(BUILD)/grap/grapl.o: $(BUILD)/grap/lex.yy.c $(V8CC_DEPS)
+	$(V8CCRUN) -I$(BUILD)/grap -I$(GRAPSRC) -c -o $@ $(BUILD)/grap/lex.yy.c
+$(BUILD)/grap/%.o: $(GRAPSRC)/%.c $(BUILD)/grap/y.tab.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/grap
+	$(V8CCRUN) -I$(BUILD)/grap -I$(GRAPSRC) -c -o $@ $<
+# grap.defines is #included by grap.h and is not a .h -- invisible to every
+# dependency scanner and to a *.c glob, the fourth file of that shape here.
+$(GRAP_OBJ): $(GRAPSRC)/grap.h $(GRAPSRC)/grap.defines
+
+$(ROOTFS)/usr/bin/grap: $(BUILD)/grap/grap
 	@mkdir -p $(@D) && cp $< $@

@@ -1,0 +1,24 @@
+# Provenance for src/cmd/grap
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+6328b191758fa460597973a22a908e6dd3247189  v8/usr/src/cmd/grap/print.c
+ca97e24a1295c7efedb1e92b5820e13f5a56ba91  v8/usr/src/cmd/grap/makefile
+cc09e2c61bd31b0ffef3f32715de7c9c43d7f971  v8/usr/src/cmd/grap/WISH
+2a9da59b602b6f74fddc60cfd6fadec141e8f349  v8/usr/src/cmd/grap/grap.h
+c38e7cd5a41a0e891c119bfa207efd9bd7f12c48  v8/usr/src/cmd/grap/grap.1
+18d1c0763c07f6291de6bfb76e0d046307a2133b  v8/usr/src/cmd/grap/ticks.c
+2c3220a2546ac3d9beff53c5e3548676a3db1e78  v8/usr/src/cmd/grap/grap.defines
+18da5b20a071c27b8f1725e0b3cbb4c325c0a757  v8/usr/src/cmd/grap/plot.c
+aa8ae7a39a3197de3155027c91cc544a42a33e44  v8/usr/src/cmd/grap/label.c
+7c8ed926c6d7a4a81728251bff15739a80724c41  v8/usr/src/cmd/grap/input.c
+7479a085f4752f02d69b1705c08a531363c15b9d  v8/usr/src/cmd/grap/main.c
+33470ee5178118935803ea945b377ef0fa498032  v8/usr/src/cmd/grap/for.c
+2c3220a2546ac3d9beff53c5e3548676a3db1e78  v8/usr/src/cmd/grap/grap.202
+5d03f48af19d8227c57486f573cf2c8b60387729  v8/usr/src/cmd/grap/frame.c
+af0eb0e1365aaaef8c0aecd204301c4362c32dcd  v8/usr/src/cmd/grap/grap.y
+1501bc3f3acfa012f6ccea05cbba1da9de2a4568  v8/usr/src/cmd/grap/misc.c
+2a76928d83c8621480e2e3d76f9626bf26315254  v8/usr/src/cmd/grap/grapl.l
+6ee44e6584da0750e7549ddbab70295aa4b79346  v8/usr/src/cmd/grap/coord.c

@@ -225,6 +225,32 @@ other and be wrong about the format together.
 that matches LP64 exactly (`sizeof(unsigned)==sizeof(long)/2`) and removed
 again when the mutation test showed spell correct without it.
 
+## 4f. grap needs struct-by-value, which v8cc does not implement — open
+
+`grap` is imported and its build rules are written (modelled on pic: yacc, lex,
+ten objects). It is deliberately **not** in `stage0`, because plot.c stops at
+
+    compiler error: gencode: unimplemented operator 99 (STARG)
+
+`STARG` is pass 1's node for **passing a struct by value**, and `gencall()` in
+`compiler/ccom-arm64/gencode.c` has never had a path for it — the note above
+`acctype()` has said so since the back end was written, as a thing no program
+had yet required. grap requires it: `Point` is
+`{struct obj *obj; double x, y;}`, 24 bytes, and `line(type, p1, p2, desc)`
+takes two of them by value.
+
+This is a calling-convention feature, not a bug. What it needs deciding first
+is which convention: v8cc passes arguments positionally in x0–x7 with a spill
+area (which is what makes V8's `printf(fmt, args)` work at all), so the natural
+implementation is to copy the aggregate into consecutive argument slots, the
+way the VAX pushed it whole — *not* AAPCS64's rule of passing composites over
+16 bytes by reference, which would be right for a foreign call and wrong for a
+V8-to-V8 one. The two conventions already differ here deliberately, and the
+exception list in CLAUDE.md is where that boundary is recorded.
+
+Reproduce with `make grap`. Nothing else in the tree needs STARG, which is why
+it has gone unnoticed through 156 Wave A programs and all of Wave B and C.
+
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
 Every translation unit of `cpp` and `ccom` compiles with `v8cc` and links
