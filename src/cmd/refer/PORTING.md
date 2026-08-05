@@ -71,6 +71,17 @@ it, in whatever produces the sorted key list `inv6.c` walks — `inv5.c` and the
 sort/merge feeding it. Start by printing how many entries that stage believes
 it has.
 
+**Not a threshold effect.** Re-run with a five-record bibliography and the
+output is byte-identical in shape: `.ia` 3080, `.ib` 4, `.ic` 0. The hash table
+is the same size for one record and for five, which is what an all-zero table
+looks like. `mkey` meanwhile prints correct keys for all five.
+
+So `inv` processes **zero keys for any input**, and the question is narrower
+than "why is the posting list empty": it is *what does `inv` read, and does it
+get anything at all*. `inv` and `mkey` are separate programs and refer runs
+them as a pipeline — check whether `inv` is reading `mkey`'s output, reading
+the bibliography directly, or reading nothing.
+
 This is the second time in this port that a "reader" bug has turned out to be a
 writer bug (spell was the first — PLAN.md §4e), and both times the reader
 looked wrong because it was the program producing the visible symptom.
