@@ -140,5 +140,21 @@ else
 	fail=$((fail+4)); echo "FAIL spell not built"
 fi
 
+# --- man, end to end ---------------------------------------------------------
+# man.sh is run by V8's sh EXPLICITLY, not by its #! line: a shebang is resolved
+# by the host kernel before the shim sees it, so `./man` would be run by the
+# Mac's shell and look for the Mac's /usr/man.  PLAN.md S4d has the detail; this
+# invokes it the way that works so the rest of man is actually covered.
+manout=$("$V8ROOT/bin/sh" "$V8ROOT/usr/bin/man" cat 2>&1)
+case "$manout" in
+*"Eighth Edition"*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL man cat did not render a page"
+   echo "  got [$(echo "$manout" | head -2)]" ;;
+esac
+case "$manout" in
+*"catenate and print"*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL man cat rendered the wrong page" ;;
+esac
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

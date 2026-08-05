@@ -152,12 +152,12 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: install man all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: install man wavec-install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
@@ -666,7 +666,7 @@ BINDIR = $(BUILD)/bin
 # had been ported.
 V8BIN = cat echo cmp rm touch ln test chmod pwd wc head tail tee tr \
         grep fgrep sort uniq comm cut paste col fold expand unexpand rev \
-        basename printenv split sum od pr look join number seq yes ls v8
+        basename printenv split sum od pr look join number seq yes ls v8 newer
 
 V8BIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8BIN))
 V8BIN_INSTALL = $(patsubst %,$(ROOTFS)/bin/%,$(V8BIN))
@@ -1211,3 +1211,43 @@ $(ROOTFS)/usr/man/.stamp: $(MANPAGESRC)/man1/cat.1
 	@mkdir -p $(ROOTFS)/usr/man
 	@cp -R $(MANPAGESRC)/. $(ROOTFS)/usr/man/
 	@touch $@
+
+# ---------------------------------------------------------------------------
+# The Wave C programs, INSTALLED.  They were built and tested for months and
+# never put where the V8 world could reach them -- the same gap that hid yacc
+# and lex until a program built from its own makefile asked for one.  man is
+# what surfaced it here: man.sh runs `nroff`, and nroff was in build/ only.
+# spell is not here: it builds several programs (hashcheck, hashmake, spellin,
+# spellout) rather than one binary called `spell`, and installing it properly
+# means deciding where each goes.  That is its own piece of work, not a line in
+# this list -- see PLAN.md S4d.
+WAVEC_INSTALL = nroff troff eqn tbl pic refer
+WAVEC_TARGETS = $(patsubst %,$(ROOTFS)/usr/bin/%,$(WAVEC_INSTALL))
+
+wavec-install: $(WAVEC_TARGETS) $(ROOTFS)/usr/lib/tmac/.stamp
+
+# The macro packages nroff and troff read by absolute path.  tmac.an is what
+# man formats with; without it nroff says "cannot open file /usr/lib/tmac/
+# tmac.an" and man produces nothing.  Upstream's files, installed unchanged.
+TMACSRC = $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/tmac
+# tmac.an is a two-line stub that sources /usr/lib/macros/an -- the actual
+# macro definitions -- so both directories go in or neither is any use.
+MACROSRC = $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/macros
+$(ROOTFS)/usr/lib/tmac/.stamp: $(TMACSRC)/tmac.an $(MACROSRC)/an
+	@mkdir -p $(ROOTFS)/usr/lib/tmac $(ROOTFS)/usr/lib/macros
+	@cp -R $(TMACSRC)/. $(ROOTFS)/usr/lib/tmac/
+	@cp -R $(MACROSRC)/. $(ROOTFS)/usr/lib/macros/
+	@touch $@
+
+$(ROOTFS)/usr/bin/nroff: $(BUILD)/nroff/nroff
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/troff: $(BUILD)/troff/troff
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/eqn: $(BUILD)/eqn/eqn
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/tbl: $(BUILD)/tbl/tbl
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/pic: $(BUILD)/pic/pic
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/refer: $(BUILD)/refer/refer
+	@mkdir -p $(@D) && cp $< $@
