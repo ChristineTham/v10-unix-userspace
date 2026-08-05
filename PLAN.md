@@ -160,6 +160,32 @@ dependency knowledge was in the tree the whole time, in files the build
 ignored. Program builds move onto their own makefiles, minimally adapted, with
 every deviation recorded in that program's `PORTING.md`.
 
+## 4d. Shell scripts leave the jail — open
+
+`man` is installed and its 1200 pages with it, but `man cat` prints "cat not
+found" for a page sitting in the rootfs. The reason is architectural and
+applies to **every shell script in the world**, not to man:
+
+**A `#!` line is resolved by the host kernel, before the shim gets a say.**
+`/usr/bin/man` opens `#!/bin/sh`, XNU resolves that against the real
+filesystem, and the Mac's shell runs the script — so it looks for the Mac's
+`/usr/man`, runs the Mac's commands, and never calls `rootpath()` once. This is
+the jail's last hole, and the most invisible kind: a script that works looks
+exactly like a script that works.
+
+The fix belongs in `v8s_execve` — read the interpreter line, rewrite the exec
+through `vpath()`, exactly as a kernel does, since the shim is this port's
+kernel. That was attempted and **reverted**: V8's `sh` then failed with
+`syntax error at line 1: '{' unexpected`, meaning the rewritten argv was wrong
+or the interception fired on something it should not have (it sees every
+`execve`, including the compiler's exec of clang). It needs doing carefully,
+with the argv construction tested on its own before the shim is touched.
+
+Until then: scripts run under the host shell. `[` is now installed (V8 shipped
+it as a link to `test`, and `man.sh` opens with `if [ -d $MAN ]`), `/usr/man/`
+and `/usr/spool/` are in `v8dirs`, and everything else `man` needs is in place —
+so this one change should make it work.
+
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
 Every translation unit of `cpp` and `ccom` compiles with `v8cc` and links

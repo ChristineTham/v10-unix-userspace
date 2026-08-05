@@ -1,0 +1,10 @@
+# Provenance for src/cmd/man
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+d4873d54c6af63bddcad55792fc89603ec24fd64  v8/usr/src/cmd/man/man.c
+163498439c405185d134a03ec23b45404dbe2c51  v8/usr/src/cmd/man/Makefile
+cb43f6b1135d64be34350e72447cca9e02016dfd  v8/usr/src/cmd/man/mancache.sh
+ec2e3678f07b660e98f0923cafc80fd4daed1920  v8/usr/src/cmd/man/man.sh

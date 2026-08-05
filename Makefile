@@ -152,12 +152,12 @@ STAGE0_COMPAT = $(ROOT)tools/stage0-compat.c
 SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
                         $(wildcard $(ROOT)shim/v8sys/*.c))
 
-.PHONY: install all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
+.PHONY: install man all stage0 test-deps test-jail test-selfhost v8bin v8make cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
+stage0: cpp v8ccom v8cc libv8sys crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
@@ -710,6 +710,14 @@ $(ROOTFS)/bin/sh: $(BUILD)/sh/sh
 # which is the guard working exactly as intended -- they were built, tested and
 # used by this repo's own Makefile for months without ever being reachable from
 # inside the world they belong to.
+# `[` is test under its other name, and shell scripts use that name almost
+# exclusively -- man.sh opens with `if [ -d $$MAN ]`, which without this simply
+# fails and sends man to a cache directory that does not exist.  V8 shipped it
+# as a link; a copy is the same thing here and avoids a link rule that would
+# need a different recipe on a filesystem without hard links.
+$(ROOTFS)/bin/[: $(BINDIR)/test
+	@mkdir -p $(@D) && cp $< $@
+
 $(ROOTFS)/bin/yacc: $(YACC)
 	@mkdir -p $(@D) && cp $< $@
 $(ROOTFS)/bin/lex: $(LEX)
@@ -1165,3 +1173,41 @@ install:
 	 } > $(BINDIR_HOST)/v8
 	@chmod 755 $(BINDIR_HOST)/v8
 	@echo "installed.  run: $(BINDIR_HOST)/v8"
+
+# ---------------------------------------------------------------------------
+# man -- and man is mostly a shell script.
+#
+# man.c is 19 lines: it stats a page and prints -rd/-rm/-ry, the troff number
+# registers that put a date in the footer.  man.sh is the actual program, and
+# mancache.sh maintains the formatted cache.  Upstream's own Makefile says
+# where each goes -- /usr/lib/man, /usr/bin/man, /usr/lib/mancache -- and that
+# layout is followed rather than invented, because man.sh reaches for its
+# helper by that path.
+#
+# The pages themselves are upstream's, installed unchanged.  man without pages
+# is not man.
+MANSRC = $(SRC)/cmd/man
+MANPAGESRC = $(ROOT)third_party/Research-Unix-v8/v8/usr/man
+
+man: $(ROOTFS)/usr/lib/man $(ROOTFS)/usr/bin/man $(ROOTFS)/usr/lib/mancache \
+     $(ROOTFS)/usr/man/.stamp
+
+$(BUILD)/man/man: $(MANSRC)/man.c $(V8CC_DEPS) $(V8DEPS)
+	@mkdir -p $(BUILD)/man
+	@$(V8CCRUN) -c -o $(BUILD)/man/man.o $<
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/man/man.o $(V8LIBS)
+	@echo "built $@"
+
+$(ROOTFS)/usr/lib/man: $(BUILD)/man/man
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/man: $(MANSRC)/man.sh
+	@mkdir -p $(@D) && cp $< $@ && chmod 755 $@
+$(ROOTFS)/usr/lib/mancache: $(MANSRC)/mancache.sh
+	@mkdir -p $(@D) && cp $< $@ && chmod 755 $@
+
+# One stamp for ~1200 pages: the unit that matters is "are the pages there",
+# and per-file rules would buy nothing but a slower read of this file.
+$(ROOTFS)/usr/man/.stamp: $(MANPAGESRC)/man1/cat.1
+	@mkdir -p $(ROOTFS)/usr/man
+	@cp -R $(MANPAGESRC)/. $(ROOTFS)/usr/man/
+	@touch $@
