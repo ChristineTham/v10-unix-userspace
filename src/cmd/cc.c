@@ -237,6 +237,24 @@ main(argc, argv)
 		}
 		continue;
 	case 'R':
+		/*
+		 * -R is the THIRD spelling of one 1985 idea, and Rflag is set
+		 * and never read on purpose.  V8's driver forwarded it to the
+		 * assembler (`av[na++] = "-R"' in upstream's assemble: block),
+		 * where VAX as put initialised data into read-only text so
+		 * every process running the binary shared one copy.
+		 *
+		 * The other two spellings are -n, below, and the `:fix' and
+		 * `:yyfix' helpers that sh's and cpp's makefiles run.  All
+		 * three ask for shared read-only text; arm64 Mach-O cannot give
+		 * it, because an initialised pointer in __TEXT is a relocation
+		 * and -no_pie is ignored for arm64.  See PLAN.md S4a, which is
+		 * where rung 5 stops for exactly this reason.
+		 *
+		 * So: accepted and ignored, like -n and -O.  Forwarding it
+		 * would hand clang a flag it does not know, and dropping the
+		 * case would make cpp's makefile fail on an unknown option.
+		 */
 		Rflag++;
 		continue;
 	case 'n':

@@ -743,12 +743,20 @@ not testable until it is installed.
   compiled looks exactly like a test correctly passing (this has now produced
   two false "the guard did not fire" readings) — and remember that mutation
   proves a test can fail, never that it can *pass elsewhere*.
-- **A test that asserts a property of the machine passes here and fails in CI,
-  and mutation testing cannot see it.** Both of the CI breaks in this repo were
-  this: `p_nice == NZERO` assumed the host's baseline nice is 0 (a GitHub runner
+- **A test that asserts a property of the machine fails on some other machine,
+  and mutation testing cannot see it.** Both CI breaks in this repo were this:
+  `p_nice == NZERO` assumed the host's baseline nice is 0 (a GitHub runner
   starts jobs renice'd), and "some pid exceeds 32767" assumed a host that has
   been up a while (a runner is always freshly booted — the very property that
   let the 16-bit `p_pid` survive). Assert a *relation* the port controls — a
   difference between two processes, a field width — and where coverage genuinely
   depends on the host, print "not exercised" rather than passing silently or
   failing. `tests/kmemu`'s nice and pid checks are the worked examples.
+
+  **It runs the other way too, and that direction is easier to miss.** `who -i`
+  compared `who | head -1` — one line — against *every* line of `who -i`, an
+  equality only while the host has exactly one login session. It passed for
+  months, passes on a runner, and broke the moment a second terminal was open,
+  with a diff that reads like `who` printing the user twice. Do not treat "green
+  in CI" as evidence the assumption is gone; a runner is a *machine*, with its
+  own peculiarities, not a neutral referee.
