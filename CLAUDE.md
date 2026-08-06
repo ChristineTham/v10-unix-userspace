@@ -238,6 +238,14 @@ with every deviation recorded" — this is what that clause is for, and the
 adaptation is one flag. Do not let a green rung-5 test tempt you into pretending
 such a makefile ran unmodified.
 
+**The seven still off their own makefiles are each blocked on one nameable
+thing, and none of it is the makefile**: `cpp` on `-Dvax=1` and a `:yyfix`
+helper, `sh` on a generated `msg.o`, `make` on a generated `ident.c`, `df` on
+`libkmemu`, `pic`/`grap` on `_errno` and a `libm` this port has never built,
+`eqn` on a link failure after `cc -g`. Two categories wanting different answers:
+a generated source is a build-description question the sweep should grow to
+handle, a library upstream never had is not. PLAN.md §4a has the table.
+
 `tests/jail` builds `lex` from `src/cmd/lex/Makefile`
 — upstream V8, unmodified — with V8's make, cc and yacc, in a directory holding
 nothing but V8 sources, under `V8JAIL=strict`. That makefile is the one worth

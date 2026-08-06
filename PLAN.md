@@ -191,6 +191,37 @@ dependency knowledge was in the tree the whole time, in files the build
 ignored. Program builds move onto their own makefiles, minimally adapted, with
 every deviation recorded in that program's `PORTING.md`.
 
+**Thirteen of twenty are on their own makefiles**, in `tests/jail`'s rung-5
+sweep: `lex`, `sed`, `fmt`, `tsort`, `tbl`, `yacc`, `spell`, `man`, `troff`,
+`refer`, `ps`, `load`, `w`. All unmodified, all under `V8JAIL=strict`.
+
+The sweep pays for itself in findings rather than in coverage. `sed` exposed a
+driver gap (`-n`); `tbl` and `yacc` proved V8's make gets the
+`#include`d-non-header dependency lines right; and `Cannot load mv` is how
+**eleven commands were discovered to have been imported and never built** —
+which in turn exposed `v8s_mknod` passing its path unresolved, the last hole
+left by the creation fix.
+
+**The remaining seven are each blocked on one nameable thing**, measured rather
+than assumed, and none of them is the makefile:
+
+| program | blocker |
+|---|---|
+| `cpp` | `-Dvax=1` in `CFLAGS`, plus a `:yyfix` helper whose name matches no glob |
+| `sh` | `msg.o` — a generated source |
+| `make` | `ident.c` — likewise generated |
+| `df` | undefined symbols: `libkmemu`, which upstream never had |
+| `pic`, `grap` | link fails on `_errno`; both also want a `libm` this port has never built |
+| `eqn` | link fails after `cc -g` |
+
+Two categories, and they want different answers. A **generated source** or a
+colon-prefixed helper is a build-description question and the sweep should grow
+to handle it. A **library upstream never had** is not: `load` and `w` are in the
+sweep precisely to make that distinction visible — rung 5 builds a real program
+from Bell Labs' description that cannot answer, because the answer needs
+`libkmemu`. Rung 5 is a claim about the description, not about the binary being
+the installed one.
+
 ## 4d. Shell scripts run inside the jail — CLOSED
 
 A `#!` line is resolved by the host kernel, against the real filesystem, before
