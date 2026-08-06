@@ -74,6 +74,34 @@ else bad "-o names the object" "$(head -2 err.log)"; fi
 if "$CC" -O -c -o o2.o oflag.c 2>err.log && [ -f o2.o ]; then ok
 else bad "-O is accepted" "$(head -2 err.log)"; fi
 
+# --- -n and -R: the SHARED-TEXT flags, accepted and ignored -------------
+# Three spellings of one 1985 request -- put initialised data in read-only text
+# so every process running the binary maps one copy.  -n asked the VAX link
+# editor, -R asked the assembler, and sh's `:fix' did it by hand with ed.  arm64
+# Mach-O cannot give any of them: an initialised pointer in __TEXT is a
+# relocation and -no_pie is ignored for arm64.  So all three are accepted and
+# dropped, which is a decision and not an oversight -- see the comments on these
+# cases in src/cmd/cc.c, and PLAN.md S4a for where it stops rung 5.
+#
+# Both directions matter here and neither is theoretical.  FORWARDING the flag
+# hands clang an option it does not know; DELETING the case makes getopt reject
+# it and an authentic makefile die on "illegal option".  -n was found exactly
+# that way, by src/cmd/sed/Makefile's `cc -o sed -n *.o'.
+#
+# -R has no such witness in the sweep, because its only user is cpp's :yyfix and
+# cpp is the one program whose makefile names the target machine.  That is the
+# argument for testing it here rather than waiting: an unexercised flag cannot
+# be seen to have regressed.
+if "$CC" -n -c -o n1.o oflag.c 2>err.log && [ -f n1.o ]; then ok
+else bad "-n is accepted" "$(head -2 err.log)"; fi
+if "$CC" -R -c -o r1.o oflag.c 2>err.log && [ -f r1.o ]; then ok
+else bad "-R is accepted" "$(head -2 err.log)"; fi
+# ...and ignoring them means IGNORING them: the object must be the one -O and
+# the bare compile produce, not merely some object.  A flag quietly changing
+# code generation would pass the two cases above and be invisible.
+if cmp -s n1.o r1.o && cmp -s n1.o o2.o; then ok
+else bad "-n/-R changed the generated object" "$(ls -l n1.o r1.o o2.o)"; fi
+
 # --- several translation units link together ----------------------------
 cat > m1.c <<'EOF'
 helper() { return 20; }

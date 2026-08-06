@@ -109,22 +109,41 @@ else bad "struct utmp probe build" "$(head -3 "$TMP/size.log")"; fi
 # ut_name is bytes 8..15 of the record, and a name that exactly fills it must
 # have no NUL after it -- a C-string habit here silently truncates every
 # 8-character login to 7. Read as bytes, not as whatever printf made of them.
-me=$(id -un)
+# WHOSE name is in record 0 is a host question, and this used to answer it with
+# `id -un'.  The ut_line check on the next line already gets it right -- it
+# compares against $hostwho, the FIRST record of the host's own who -- and the
+# name check reached for the tester's login instead.  Those agree only while
+# record 0 belongs to whoever is running the suite; a second user's session
+# ordering first in getutxent (a shared Mac, an ssh, Screen Sharing) failed it,
+# with a diff that reads like who naming the wrong person.  Neither
+# /usr/bin/who nor shim/libkmemu/utmp.c sorts, so both walk getutxent in the
+# same order and $hostwho is the record actually being examined.
+rec0=$(echo "$hostwho" | awk '{print $1}')
 name=$(dd if="$UTMP" bs=1 skip=8 count=8 2>/dev/null | tr -d '\0')
-check "ut_name holds the login, terminator or not" "$(echo "$me" | cut -c1-8)" "$name"
+check "ut_name holds the login, terminator or not" "$(echo "$rec0" | cut -c1-8)" "$name"
 line=$(dd if="$UTMP" bs=1 skip=0 count=8 2>/dev/null | tr -d '\0')
 check "ut_line holds the tty" \
 	"$(echo "$hostwho" | awk '{print $2}' | cut -c1-8)" "$line"
-if [ ${#me} -eq 8 ]; then
+# CLAMPED TO THE FIELD WIDTH, and that is the bug this line used to have.  The
+# else branch below was taken for names both SHORTER and LONGER than 8, and for
+# a 9-character login `skip=$((8 + 9))' is byte 17 -- past ut_name, which is
+# bytes 8..15, and into ut_time.  It asserted a byte of the timestamp was zero.
+# `christie' is exactly 8 and `runner' is 6, so neither this host nor CI ever
+# took the broken path; `administrator' does, and fails talking about zero-fill.
+#
+# A name longer than the field fills it, so clamping sends it to the branch
+# that is actually true of it.
+n=${#rec0}; [ "$n" -gt 8 ] && n=8
+if [ "$n" -eq 8 ]; then
 	# The case that would pass anyway with a NUL-terminating copy: the
 	# eighth byte must be the eighth character, not '\0'.
 	last=$(dd if="$UTMP" bs=1 skip=15 count=1 2>/dev/null)
 	check "an 8-character login fills ut_name with no terminator" \
-		"$(echo "$me" | cut -c8)" "$last"
+		"$(echo "$rec0" | cut -c8)" "$last"
 else
 	# Not this host's shape. Assert the other half of the rule instead: a
 	# short name is zero-filled, which is what who(1) tests for a free slot.
-	pad=$(dd if="$UTMP" bs=1 skip=$((8 + ${#me})) count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+	pad=$(dd if="$UTMP" bs=1 skip=$((8 + n)) count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
 	check "a short login is zero-filled to the field width" "0" "$pad"
 fi
 
@@ -245,10 +264,44 @@ else ok; fi
 # overflows specbuf and smashes the static after it -- which was ecvt's digit
 # buffer, so the %use column emitted hundred-digit strings SEVERAL ROWS LATER.
 # Assert the terminator directly; the symptom is too far from the cause.
-for off in 31 63; do
-	b=$(dd if="$MTAB" bs=1 skip=$off count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
-	[ "$b" = "0" ] && ok || bad "mtab field at $off is not NUL-terminated (got $b)"
+#
+# THE OFFSETS ARE DERIVED, and hardcoding them silently disarmed this guard for
+# a whole release of the port.  They were 31 and 63, the last bytes of fields 0
+# and 1 when FSNMLG was 32.  Widening FSNMLG to 1024 (src/include/fstab.h:39)
+# moved the field ends to 1023 and 2047 and left the constants behind, so both
+# probes landed INSIDE field 0 -- and the case became "the first mount point's
+# path is at most 31 characters", true here only because record 0 is `/'.  The
+# bug it exists for was undetectable, and the comment above it still said 128
+# while the code below said 1024.  Three numbers for one quantity.
+#
+# So FSNMLG comes from one place, above its first use, and every offset is
+# computed from it.  This is dir.c's DIRSIZ lesson at test scope: a constant
+# spelled more than once is a constant that will disagree with itself.
+FSNMLG=1024
+recsz=$((FSNMLG * 2))
+#
+# ...AND THE ASSERTION IS THE INVARIANT, NOT TWO BYTES.  Probing the last byte
+# of each field only says anything when a path FILLS the field: shorter ones are
+# zero-filled, so the byte is 0 either way and the case cannot fail on a host
+# whose longest mount point is 60 characters.  Mutating mtab.c to drop the
+# terminator changed nothing at all, which is how that was established.
+#
+# What df actually requires is that a NUL exist SOMEWHERE inside each field,
+# because dfree() does strcpy(&specbuf[5], ...) and stops at one.  That is true
+# and checkable at every path length, so it is what is checked -- per record,
+# both fields, across the whole file.
+badterm=""
+nrec0=$(( $(wc -c < "$MTAB" | tr -d ' ') / recsz ))
+r=0
+while [ "$r" -lt "$nrec0" ]; do
+	for fo in 0 $FSNMLG; do
+		z=$(dd if="$MTAB" bs=1 skip=$((r * recsz + fo)) count=$FSNMLG 2>/dev/null |
+		    tr -d '\0' | wc -c | tr -d ' ')
+		[ "$z" -lt "$FSNMLG" ] || badterm="$badterm record $r field $fo;"
+	done
+	r=$((r + 1))
 done
+[ -z "$badterm" ] && ok || bad "an mtab field has no NUL inside its width" "$badterm"
 # ...and the symptom, so a regression is caught even if the layout changes:
 # every %use must be a number followed by %, never a digit avalanche.
 if awk 'NR>1 {print $NF}' "$TMP/df.out" | grep -qvE '^[0-9]{1,3}%$'; then
@@ -295,10 +348,9 @@ grep -q 'bad free count' "$TMP/dfl.out" && ok ||
 # /Library/Developer/CoreSimulato, failed to stat, and printed as a row with an
 # empty dir column and the path's first nine characters in the dev column.
 #
-# FSNMLG is 128 now (src/include/fstab.h, src/include/PORTING.md), so the
-# record is 256 bytes rather than 64.
-FSNMLG=1024
-recsz=$((FSNMLG * 2))
+# FSNMLG is 1024 (src/include/fstab.h:39, src/include/PORTING.md), so a record
+# is 2048 bytes rather than 64.  Defined once, above the terminator check that
+# is its first use -- see the note there for what hardcoding it cost.
 bytes=$(wc -c < "$MTAB" | tr -d ' ')
 [ $((bytes % recsz)) -eq 0 ] && ok ||
 	bad "mtab is a whole number of $recsz-byte records" "$bytes bytes"
@@ -1250,11 +1302,23 @@ bare=$(echo "$psout" | tail -n +2 | grep -v '([^)]*)$' | head -3)
 check "every command reads as V8's swapped-out (comm) form" "" "$bare"
 
 # Selecting one process by pid takes a different path through doselect.
-selp=$(echo "$psout" | tail -n +2 | awk 'NR==2 {print $1}')
-if [ -n "$selp" ]; then
+#
+# THE SUITE'S OWN PID, not whatever was third in /proc order.  This read
+# `awk 'NR==2 {print $1}'' and then ran a SECOND ps against it, so an arbitrary
+# system process exiting in the gap left $sel empty and the failure read as
+# doselect being broken.  A rare flake that accuses the wrong code is worse than
+# a common one.  $$ is the only pid in the run guaranteed alive at both calls,
+# because it is the process doing the asking.
+selp=$$
+inlist=$(echo "$psout" | tail -n +2 | awk -v p="$selp" '$1 == p {print $1}')
+if [ -n "$inlist" ]; then
 	sel=$("$PS" "$selp" 2>/dev/null | awk '{print $1}')
 	check "ps <pid> selects exactly that process" "$selp" "$sel"
-else bad "no pid to select"; fi
+else
+	# ps lists every process, so the suite's own shell missing from it is a
+	# finding rather than a reason to skip.
+	bad "ps ax omits the running shell" "pid $selp not in the listing"
+fi
 
 # THE NICE MARKER, which is the only thing that can see the NZERO bias: printp
 # prints " N"[p_nice > NZERO], so a renice'd process earns the N only if the
@@ -1273,7 +1337,23 @@ fi
 
 # The time column comes from the u-area, which is the half PIOCGETPR does not
 # carry -- so a non-zero time anywhere proves the u-area read reached ps.
-nz=$(echo "$psout" | tail -n +2 | awk '$4 != "0:00"' | wc -l | tr -d ' ')
+#
+# $4 IS NOT ALWAYS THE TIME, and the correction for that landed 25 lines above
+# and not here.  printp.c prints state as `%-5.5s' built from the state letter
+# plus an optional `W' and an optional `N', and awk collapses the run of
+# spaces -- so a renice'd process shifts every later field right by one and $4
+# is the marker:
+#
+#	986 ?     R N   0:12 (mdbulkimport)
+#
+# "N" != "0:00" is true, so a marker counts as a cpu time.  This suite starts
+# `nice -n 10 sleep 30' before taking the listing, which guarantees at least one
+# such row -- so the case could pass having read no cpu time at all, and would
+# be a real check only on a host where nice does not apply.  Precisely the
+# coverage it was meant to have, inverted.
+nz=$(echo "$psout" | tail -n +2 |
+     awk '{ t = $4; if (t == "N" || t == "W") t = $5; if (t != "0:00") print }' |
+     wc -l | tr -d ' ')
 [ "$nz" -gt 0 ] && ok || bad "some process has non-zero cpu time from the u-area"
 
 echo "kmemu: $pass passed, $fail failed"
