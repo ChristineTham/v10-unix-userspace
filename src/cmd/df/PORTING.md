@@ -155,7 +155,9 @@ characters into the `dev` column — which is where `/Library/` came from. The
 numbers were not "real" either; they were `statfs` of a path that does not
 exist, which happened to fall back to the enclosing volume.
 
-`FSNMLG` is 128 now, and anything that still will not fit is reported and
+`FSNMLG` is 1024 now — `MAXPATHLEN`, the host's own width for this field, after
+128 turned out to be too small for a 154-character Siri asset bundle on a CI
+runner — and anything that still will not fit is reported and
 dropped rather than truncated. `src/include/PORTING.md` has the reasoning and
 `shim/libkmemu/NOTES.md` the shim side; `tests/kmemu` asserts that every mount
 point in mtab is a directory that exists, which is the invariant that broke.
@@ -233,3 +235,64 @@ Worth separating from `w`, which *is* the `/dev/kmem` question
 grouping them under "needs kernel memory" would have sent the work in the wrong
 direction — the same mistake as assuming `ps` wanted `libproc` when it is a
 `/proc` client.
+
+## The garbled row had a SECOND cause, and widening the field could not fix it
+
+`FSNMLG` 32 → 1024 cured the truncation. It did not cure the symptom, which
+came back the moment the host mounted a Time Machine snapshot and an SMB share
+mid-test:
+
+```
+dir                                                  dev       kbytes   used   free %use
+                                                     /Volumes/ 46253757308 35674958276 10578799032  77%
+```
+
+Empty `dir`, and the mount point's first nine characters in `dev` — the exact
+shape `/Library/` produced before, from a completely different cause. The path
+this time is **not truncated**. It is 100 characters, stored whole, and
+correct:
+
+```
+/Volumes/.timemachine/NAS2(TimeMachine)._smb._tcp.local./7AB74491-.../Backup
+```
+
+What fails is the `stat`:
+
+```
+$ stat '/Volumes/.timemachine/NAS2(TimeMachine)._smb._tcp.local./…'
+stat: Permission denied
+```
+
+`getfsstat(2)` reports the mount, so it genuinely exists; the process just
+cannot stat it. `dfree()` branches on `stat(file)` succeeding and takes its
+"this string is a device name" arm when it does not — so **one symptom, two
+causes**, and the first fix taught nothing about the second.
+
+Note which mounts do *not* need the fix, because it sharpens what the rule is.
+`/System/Volumes/Data/home` (autofs) and the snapshot volumes stat fine and
+merely have no `/dev` node; `df` prints upstream's own
+`mounted on unknown device` on stderr and moves on. That is an honest answer
+from a 1985 program meeting a filesystem it has no vocabulary for. **The
+discriminator is the stat, not the device.**
+
+`unstattable()` in `shim/libkmemu/mtab.c` drops such a mount and says so, by the
+same rule and for the same reason as `toolong()`: an entry that cannot be
+described truthfully is better absent-and-announced than present-and-wrong. It
+is applied to **both** files, because `devlen()` merges any fstab entry not
+already in mtab and would otherwise hand the dropped mount straight back.
+
+A raw `SYS_stat64` rather than `stat(3)`: `tests/kmemu` asserts libkmemu's libc
+surface symbol by symbol, and a seventh import is a decision to make
+deliberately rather than smuggle in behind a bug fix.
+
+### What this says about the sweep
+
+The suite-wide sweep for host assumptions had finished an hour earlier and could
+not have found this: **the host did not have these mounts at the time.** Two of
+the three failures were test assumptions of exactly the class swept for — one of
+them in the very block whose comment already records learning this lesson once,
+where the qualifier added then was about path *length* and the assumption left
+standing was that a mount in the window is one `df` can put in a table at all.
+
+A sweep is a snapshot of the machine it ran on. That is not an argument against
+sweeping; it is the reason the fixes must assert relations rather than values.

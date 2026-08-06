@@ -6,6 +6,21 @@
 *.i
 *.out
 
+# Scratch at the REPO ROOT, which is where debugging lands when a reproduction
+# is quicker to write than to place.  313 KB of it got committed -- fourteen
+# files including four Mach-O binaries (gw, ls1, pwd2, so) -- because the list
+# above covers *.o and *.out and nothing else these produce.
+#
+# Anchored with a leading slash: compiler/crt0.s, compiler/setjmp.s and
+# shim/v8sys/sigtramp.s are real tracked sources and must stay tracked.
+/*.s
+/*.c
+/*.h
+#
+# An EXTENSIONLESS binary cannot be pattern-matched apart from a legitimate
+# file, so this list cannot be complete and is not the guard.  tests/deps
+# asserts the root holds nothing but the known files -- see the case there.
+
 # Stage-0 host-built tools
 /tools/bin/
 

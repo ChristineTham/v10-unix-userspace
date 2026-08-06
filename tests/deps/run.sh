@@ -539,5 +539,35 @@ else
 	echo "FAIL build does not settle: $busy objects recompiled with nothing changed"
 fi
 
+# --- the repo root holds nothing but the known files ------------------------
+# Debugging lands at the root, because a reproduction is quicker to write there
+# than to place properly.  313 KB of it got COMMITTED -- fourteen tracked files
+# including four 73 KB Mach-O binaries (gw, ls1, pwd2, so) and eight .s files --
+# and none of it was referenced by the Makefile, the suites, CI or the hooks.
+#
+# .gitignore cannot be the guard.  It now anchors /*.c, /*.h and /*.s at the
+# root, but an EXTENSIONLESS binary is indistinguishable by pattern from a
+# legitimate file, and those were four of the fourteen.  So the guard is an
+# allowlist: anything at the root that is not named here is a finding.
+#
+# Directories are not checked -- they are the structure.  Only regular files.
+rootfiles=$(cd "$ROOT" && ls -p | grep -v '/$' | tr '\n' ' ')
+allowed=" .gitignore ARTICLE.md CLAUDE.md Makefile PLAN.md README.md "
+strays=""
+for f in $rootfiles; do
+	case "$allowed" in
+	*" $f "*) ;;
+	*) strays="$strays $f" ;;
+	esac
+done
+if [ -z "$strays" ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL the repo root has files that are not in the allowlist:$strays"
+	echo "  scratch belongs in the session scratchpad, not the repo."
+	echo "  if one of these is real, add it to \$allowed in this case."
+fi
+
 echo "deps: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

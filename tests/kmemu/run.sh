@@ -412,14 +412,27 @@ check "mtab and fstab name the same mount points" "$fs" "$mt"
 # of a mount point that can answer it, and say so when the host supplies none.
 #
 # Past the OLD 32-byte field but inside the new one: df must show it whole.
-longmp=$(mount | sed 's/.* on //; s/ (.*//' |
+#
+# THE QUALIFIER IS ABOUT MORE THAN LENGTH, and this block has now learned that
+# twice. The first version asked for "the longest mount point" full stop, and
+# a 154-character Siri asset bundle on a CI runner failed it. The fix added a
+# length window -- and left the other assumption standing: that a mount point
+# in the window is one df can put in a TABLE at all.
+#
+# A Time Machine local snapshot is not. Its device is
+# `com.apple.TimeMachine.2026-...local@/dev/disk3s5', which is not a /dev node,
+# so df prints upstream's own "mounted on unknown device" on STDERR and the
+# path never reaches df.out. Correct behaviour, failing check. So the mount
+# must also be one whose device is a real /dev entry -- `mount' prints those as
+# `/dev/diskNsM on /path', which is exactly the filter.
+longmp=$(mount | grep '^/dev/' | sed 's/.* on //; s/ (.*//' |
          awk -v n="$FSNMLG" 'length($0) > 31 && length($0) < n' |
          awk '{print length($0), $0}' | sort -rn | head -1 | cut -d' ' -f2-)
 if [ -n "$longmp" ]; then
 	grep -qF "$longmp" "$TMP/df.out" && ok ||
 		bad "df shows a mount point past the old 32-byte field" "missing: $longmp"
 else
-	echo "  (not exercised: no mount point here between 32 and $FSNMLG characters)"
+	echo "  (not exercised: no /dev-backed mount point here between 32 and $FSNMLG characters)"
 fi
 
 # Past the NEW field: reported on stderr and absent from the listing, never

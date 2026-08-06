@@ -122,6 +122,50 @@ toolong(const char *mp, int say)
 	return (1);
 }
 
+/*
+ * ...AND A MOUNT POINT THIS PROCESS CANNOT STAT IS DROPPED FOR THE SAME REASON.
+ *
+ * The second cause of the garbled row, found when a Time Machine snapshot and
+ * an SMB share appeared on the host mid-test.  Widening FSNMLG fixed the
+ * TRUNCATION that made stat() fail; it could not fix a path that is complete,
+ * correct, and still will not stat:
+ *
+ *	$ stat '/Volumes/.timemachine/NAS2(TimeMachine)._smb._tcp.local./...'
+ *	stat: Permission denied
+ *
+ * getfsstat(2) reports it, so it is genuinely mounted, and the 100-character
+ * path is stored whole.  But df's dfree() branches on stat(file) succeeding and
+ * takes its "this string is a device name" arm when it does not -- so the row
+ * came out with an empty dir column and `/Volumes/' in the dev column, which is
+ * the exact symptom FSNMLG was widened to cure.  One symptom, two causes.
+ *
+ * Note which mounts do NOT need this.  /System/Volumes/Data/home (autofs) and
+ * the snapshot volumes stat fine and merely have no /dev node; df says
+ * "mounted on unknown device" on stderr and moves on, which is upstream's own
+ * message and an honest answer.  The discriminator is the stat, not the device.
+ *
+ * Raw syscall rather than stat(3): libkmemu's libc surface is asserted symbol
+ * by symbol in tests/kmemu, and a seventh import is a decision to be made
+ * deliberately rather than smuggled in behind a bug fix.
+ */
+static int
+unstattable(const char *mp, int say)
+{
+	char buf[512];			/* struct stat is 144 here; room to spare */
+	long len = 0;
+
+	if (rawsys2(SYS_stat64, (long)mp, (long)buf) >= 0) return (0);
+	while (mp[len]) len++;
+	if (say) {
+		static const char msg[] =
+		    "df: mount point cannot be stat'd, not listed: ";
+		rawsys3(SYS_write, 2, (long)msg, (long)sizeof msg - 1);
+		rawsys3(SYS_write, 2, (long)mp, len);
+		rawsys3(SYS_write, 2, (long)"\n", 1L);
+	}
+	return (1);
+}
+
 int
 kmemu_mtab(const char *hostpath)
 {
@@ -160,6 +204,7 @@ kmemu_mtab(const char *hostpath)
 
 		for (i = 0; i < n; i++) {
 			if (toolong(sb[i].f_mntonname, 1)) continue;
+			if (unstattable(sb[i].f_mntonname, 1)) continue;
 			field0(rec[kept].path, (long)sizeof rec[kept].path,
 			    sb[i].f_mntonname);
 			devname(rec[kept].spec, (long)sizeof rec[kept].spec,
@@ -226,6 +271,13 @@ kmemu_fstab(const char *hostpath)
 
 		/* Silent here: kmemu_mtab already said it, and df reads both. */
 		if (toolong(sb[i].f_mntonname, 0)) continue;
+		/*
+		 * ...and the same for one that will not stat.  Not redundant
+		 * with the mtab pass: devlen() MERGES any fstab entry that is
+		 * not already mounted, so an entry dropped from mtab alone
+		 * comes straight back in through here and garbles the same row.
+		 */
+		if (unstattable(sb[i].f_mntonname, 0)) continue;
 
 		/*
 		 * Only a real device can be opened under /dev, and only "rw" or
