@@ -318,6 +318,15 @@ dep 'src/include -> rootfs headers'     src/include/dir.h \
 # proc.h joined them with ps: the four pid fields are int here, not short.
 dep 'src/include/sys/proc.h too'        src/include/sys/proc.h \
                                         rootfs/usr/include/.stamp
+# fstab.h carries FSNMLG, which df and libc's getfsent both compile against;
+# mtab.h is patched to agree even though nothing includes it.
+dep 'src/include/fstab.h too'           src/include/fstab.h \
+                                        rootfs/usr/include/.stamp
+dep 'src/include/mtab.h too'            src/include/mtab.h \
+                                        rootfs/usr/include/.stamp
+# ...and FSNMLG has to reach df and libc, not just the rootfs copy.
+dep 'fstab.h -> df'                     src/include/fstab.h     $B/bin/df
+dep 'fstab.h -> libc getfsent'          src/include/fstab.h     $B/libc/libv8c.a
 
 # --- section 8a step 3: ps, and the /dev it refuses to start without --------
 # Ten objects from one directory, and upstream's whole dependency statement is

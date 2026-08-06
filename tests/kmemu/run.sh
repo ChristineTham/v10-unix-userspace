@@ -254,6 +254,66 @@ check "df -i saturates ifree at the 16-bit ceiling" "65535" "$ifree"
 grep -q 'bad free count' "$TMP/dfl.out" && ok ||
 	bad "df -l invented a free list instead of failing" "$(head -2 "$TMP/dfl.out")"
 
+# --- a mount point in mtab MUST BE A PATH THAT RESOLVES ---------------------
+# This is the invariant the 32-byte field broke, and it is not the cosmetic
+# loss the comment in mtab.c used to claim. A truncated NAME is a wrong name;
+# a truncated PATH stops resolving -- and df's dfree() branches on stat(file)
+# succeeding, taking its "this string is a device name" arm when it does not.
+# So /Library/Developer/CoreSimulator/Volumes/iOS_23F77 became
+# /Library/Developer/CoreSimulato, failed to stat, and printed as a row with an
+# empty dir column and the path's first nine characters in the dev column.
+#
+# FSNMLG is 128 now (src/include/fstab.h, src/include/PORTING.md), so the
+# record is 256 bytes rather than 64.
+FSNMLG=128
+recsz=$((FSNMLG * 2))
+bytes=$(wc -c < "$MTAB" | tr -d ' ')
+[ $((bytes % recsz)) -eq 0 ] && ok ||
+	bad "mtab is a whole number of $recsz-byte records" "$bytes bytes"
+
+# Every path, read out of the file at the record stride and checked against the
+# filesystem. Nothing else in this suite would notice a truncated one: the
+# bytes are well-formed, the field is terminated, and df prints SOMETHING.
+badpath="" mtpaths=""
+nrec=$((bytes / recsz))
+i=0
+while [ "$i" -lt "$nrec" ]; do
+	p=$(dd if="$MTAB" bs=1 skip=$((i * recsz)) count=$FSNMLG 2>/dev/null |
+	    tr -d '\0')
+	if [ -n "$p" ]; then
+		mtpaths="$mtpaths$p
+"
+		[ -d "$p" ] || badpath="$badpath [$p]"
+	fi
+	i=$((i + 1))
+done
+check "every mount point in mtab is a directory that exists" "" "$badpath"
+
+# The symptom, asserted directly: df's dir column is fixed width and a row that
+# took the wrong branch leaves it blank.
+blank=$(awk 'NR>1 && substr($0,1,1) == " "' "$TMP/df.out" | head -2)
+check "no df row has an empty dir column" "" "$blank"
+
+# The two manufactured files must agree about which filesystems exist, because
+# df's devlen() MERGES any fstab entry whose device is not already in mtab --
+# so dropping a mount from one and not the other hands it back through the
+# merge. They already disagreed about the CoreSimulator mounts by one
+# character, field0 terminating where puts0 did not.
+mt=$(printf '%s' "$mtpaths" | sort -u)
+fs=$(awk -F: '{print $2}' "$FSTAB" | grep '^/' | sort -u)
+check "mtab and fstab name the same mount points" "$fs" "$mt"
+
+# ...and if this host has a mount point past the OLD 32-byte field, df must
+# show it whole. Conditional, because a host without one cannot exercise it --
+# reported rather than silently counted as a pass.
+longmp=$(mount | sed 's/.* on //; s/ (.*//' | awk 'length($0) > 31' | head -1)
+if [ -n "$longmp" ]; then
+	grep -qF "$longmp" "$TMP/df.out" && ok ||
+		bad "df shows a >31-character mount point in full" "missing: $longmp"
+else
+	echo "  (skipped: this host has no mount point past 31 characters)"
+fi
+
 # ---------------------------------------------------------------- load ---
 # The first program to need a NAMELIST. load(1) does not ask the system for the
 # load average: it looks up the address of the kernel's _avenrun in /unix, then

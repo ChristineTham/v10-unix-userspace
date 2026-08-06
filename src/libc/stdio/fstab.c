@@ -42,8 +42,20 @@ static	int	fstabscan(fsp)
 	struct	fstab *fsp;
 {
 	register	char	*cp;
-	char	buf[256];
-	if (fgets(buf, 256, fs_file) == NULL)
+	/*
+	 * PORT: sized from FSNMLG rather than V7's flat 256.  The two fields are
+	 * FSNMLG each and this port raised FSNMLG from 32 to 128 -- see
+	 * src/include/PORTING.md -- so a line the header now permits is up to
+	 * 265 bytes and would not have fitted.  fgets would truncate it, and
+	 * fs_string would then fail to find its ':' and drop the entry.
+	 *
+	 * No line on this host is anywhere near that; the point is that the
+	 * parser must honour what the struct promises, which is the same
+	 * two-ends rule the widening itself is about.  Derived, so it cannot
+	 * drift from FSNMLG the way a second literal would.
+	 */
+	char	buf[2 * FSNMLG + 16];
+	if (fgets(buf, sizeof buf, fs_file) == NULL)
 		return(EOF);
 	cp = buf;
 	cp = fs_string(&fsp->fs_spec[0], cp, FSNMLG, ':');

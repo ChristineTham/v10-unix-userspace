@@ -77,6 +77,34 @@ crosses it.
 `getgrent` is the one that mattered most. The output looked entirely plausible,
 because a list of group names is a list of group names.
 
+## A truncated path is not a shortened name
+
+`/etc/mtab`'s fields were V7's 32 bytes, and this file used to truncate a long
+mount point into one and call it "the same loss as dir.c's 14-character names".
+That comparison was wrong, and it is worth keeping as an example of a comment
+that documented a bug into invisibility.
+
+A truncated **name** is a wrong name and still just a name — every reader treats
+it as an opaque string. A truncated **path** stops resolving, and `df`'s
+`dfree()` branches on `stat(file)` succeeding: when it fails, it takes the arm
+that assumes the string is a device name. So the two CoreSimulator volumes on
+this machine printed as rows with an empty `dir` column and the first nine
+characters of the mount point sitting in the `dev` column, which reads as
+corruption rather than as truncation.
+
+Widened to 128 in `<fstab.h>` — `src/include/PORTING.md` has the account and
+names all four places that spell the number. Anything that still does not fit is
+**reported and dropped**, the way `/proc` reports a process-table overflow: an
+entry whose path cannot be stored cannot be described truthfully. Both mtab and
+fstab apply the same rule, because `df`'s `devlen()` merges any fstab entry
+whose device is not already in mtab — drop it from one file only and the merge
+hands it straight back.
+
+The two files had in fact already disagreed about those mounts **by one
+character**: `field0()` copies `dlen-1` and terminates, `puts0()` copies up to
+`max` and does not, so mtab held 31 characters where fstab held 32. Nothing
+noticed, because `devlen()` matches on the device rather than the path.
+
 ## The timezone, and a measurement that lied
 
 `ftime(2)` is syscall 35 in V8 and the shim did not have it. `tz.c` implements

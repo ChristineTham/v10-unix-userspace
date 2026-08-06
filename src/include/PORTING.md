@@ -18,6 +18,8 @@ deviations.
 | `sys/param.h` | `DIRSIZ` 14 → 254 | same, and it is the one that decides |
 | `setjmp.h` | `int[10]` → `long[24]` | AAPCS64 has 21 doublewords to save |
 | `sys/proc.h` | four pid fields `short` → `int` | macOS pids run to 99998 |
+| `fstab.h` | `FSNMLG` 32 → 128, and `FSTABFMT` with it | host mount points exceed 31 characters |
+| `mtab.h` | two literal `32`s → `128` | must agree with `FSNMLG`; nothing includes it |
 
 ## The two rules
 
@@ -36,6 +38,62 @@ tree; the shim is clang-compiled and re-spells any struct it has to produce
 drifting from itself and can say nothing about whether v8cc agrees, because it
 only ever sees one compiler. `tests/kmemu` measures the same offsets from the
 V8 side for that half. Change a struct here and both ends need updating.
+
+## `fstab.h`, and why a path is not a name
+
+The `DIRSIZ` change above is about *names*. This one looks like the same change
+and is not, and the difference is the whole reason the bug survived being
+documented.
+
+`shim/libkmemu/mtab.c` used to truncate a mount point to the field and say so
+in a comment: "same loss as dir.c's 14-character names and utmp's 8 — the field
+is the field, and a V8 df could not have shown more either." **That premise is
+false.** A truncated name is a wrong name and still just a name. A truncated
+*path stops resolving*, and `df`'s `dfree()` branches on it:
+
+```c
+if (stat(file, &stbuf) == 0 && (stbuf.st_mode&S_IFMT) == S_IFDIR)
+        ... look the mount point up by device ...
+else if (strncmp("/dev/", file, sizeof "/dev/" - 1) != 0)
+        strcpy(&specbuf[5], file), file = specbuf;   /* it must be a device */
+```
+
+So `/Library/Developer/CoreSimulator/Volumes/iOS_23F77` truncated to
+`/Library/Developer/CoreSimulato`, failed to `stat`, and fell into the arm that
+assumes the string names a device. `mpath()` then found no mtab entry with that
+"device", so the `dir` column printed empty, and `file + sizeof "/dev"` printed
+the path's first nine characters — giving a row reading `/Library/` in the
+`dev` column. **A V8 machine could not reach that branch with a mount point,
+because mount points were short.**
+
+128 covers every mount point this host has — the longest is 52 — and makes the
+mtab record exactly 256 bytes, the same shape `DIRSIZ` 254 chose.
+
+**Widening moves the boundary; it does not remove it.** So a mount point that
+still will not fit is now *reported on stderr and left out*, the way `/proc`
+reports a process-table overflow rather than quietly listing fewer processes.
+An entry whose path cannot be stored cannot be described truthfully, and a
+garbled row is worse than an absent one that says it is absent. Both
+manufactured files apply the same rule, and they have to: `df`'s `devlen()`
+merges any fstab entry whose device is not already in mtab, so dropping a mount
+from one file and not the other hands it straight back through the merge.
+
+One consumer had to move with it, and finding it is the whole reason to count
+the spellings: `src/libc/stdio/fstab.c`'s `fstabscan()` read a line into a flat
+`char buf[256]`, which was ample for two 32-byte fields and is *smaller than a
+line the widened header now permits* (265 bytes). `fgets` would have truncated
+it and `fs_string` would then have failed to find its `:` and dropped the entry.
+No line on this host comes close; the point is that the parser must honour what
+the struct promises. It is `2 * FSNMLG + 16` now — derived, so it cannot drift.
+
+Four places spell this number — `FSNMLG` here, `FSTABFMT` in the same header,
+`<mtab.h>`'s two literals, and `shim/libkmemu/mtab.c`'s own copy. `FSTABFMT`
+carries the digits by hand because V8's cpp is from 1985 and has no `#`
+stringification. `<mtab.h>` is patched even though **nothing in this port
+includes it** — `df` declares its own `struct mtab` from `FSNMLG` — precisely
+because leaving it at 32 would cost nothing today and would tell the next
+reader the record is 64 bytes when it is 256. That is the `DIRSIZ` failure
+exactly: three headers, two patched, the unpatched one still believed.
 
 ## `sys/proc.h`, in more detail
 

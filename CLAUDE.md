@@ -358,6 +358,17 @@ one class:
 | `DIRSIZ` | 14-char names | any length | truncated names, `pwd` could not `chdir` back |
 | `d_ino` | 16-bit inode | 64-bit | wraps; harmless *except* the value that wraps to 0 |
 | `p_pid` | `short`, wrapped at 30000 | to 99998 | **negative pids** — 44145 read as −21391 |
+| `FSNMLG` | 32-char mount points | to 52 here | `df` printed a mount point as a *device* |
+
+**A truncated PATH is not the same class of loss as a truncated NAME**, and
+conflating them is what let `FSNMLG` hide: `shim/libkmemu/mtab.c` documented the
+truncation as "the same loss as dir.c's 14-character names" and was wrong. A
+name is an opaque string to every reader; a path has to *resolve*, and `df`'s
+`dfree()` branches on `stat()` succeeding — so the truncation did not shorten a
+column, it sent df down the arm that assumes the string names a device. Widening
+moves that boundary rather than removing it, so what still overflows is now
+**reported and dropped** rather than truncated: an entry whose path cannot be
+stored cannot be described truthfully. `src/include/PORTING.md`.
 
 The `p_pid` one is the shape to remember: **a freshly booted host has low pids**,
 so every check passes until the counter crosses 32767 and the same binary starts

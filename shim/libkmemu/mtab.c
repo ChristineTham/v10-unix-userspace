@@ -27,10 +27,17 @@
  */
 
 #include "kmemu.h"
+#include "../v8sys/rawsys.h"	/* the overflow report; libc is for FACTS only */
 #include <sys/param.h>
 #include <sys/mount.h>
 
-#define FSNMLG	32		/* <fstab.h>: the width of both mtab fields */
+/*
+ * <fstab.h>: the width of both mtab fields, and this port raises it from V7's
+ * 32 to 128.  Spelled again here because this file is clang-compiled and
+ * <fstab.h> belongs to the V8 include tree; src/include/PORTING.md carries the
+ * reason, and the other three spellings are named there.
+ */
+#define FSNMLG	128
 
 /*
  * df's own struct, which is NOT <mtab.h>'s -- it declares
@@ -90,6 +97,31 @@ devname(char *dst, long dlen, const char *from)
 	field0(dst, dlen, p);
 }
 
+/*
+ * Too long for the field, reported and refused.  Used by BOTH files, and the
+ * "both" is the point: df's devlen() merges any fstab entry whose device is not
+ * already in mtab, so dropping a mount from one file and not the other would
+ * hand it straight back through the merge.  The two ends have to agree about
+ * which filesystems exist -- they already disagreed about this very mount, by
+ * one character, because field0 terminates and puts0 does not.
+ */
+static int
+toolong(const char *mp, int say)
+{
+	long len = 0;
+
+	while (mp[len]) len++;
+	if (len < FSNMLG) return (0);
+	if (say) {
+		static const char msg[] =
+		    "df: mount point too long for /etc/mtab, not listed: ";
+		rawsys3(SYS_write, 2, (long)msg, (long)sizeof msg - 1);
+		rawsys3(SYS_write, 2, (long)mp, len);
+		rawsys3(SYS_write, 2, (long)"\n", 1L);
+	}
+	return (1);
+}
+
 int
 kmemu_mtab(const char *hostpath)
 {
@@ -101,16 +133,41 @@ kmemu_mtab(const char *hostpath)
 	if (n < 0) return (-1);
 	if (n > MAXFS) n = MAXFS;
 
-	for (i = 0; i < n; i++) {
-		field0(rec[i].path, (long)sizeof rec[i].path, sb[i].f_mntonname);
-		devname(rec[i].spec, (long)sizeof rec[i].spec, sb[i].f_mntfromname);
-	}
 	/*
-	 * A mount point longer than 32 characters is truncated, and on this Mac
-	 * several are -- /Library/Developer/CoreSimulator/Volumes/... among
-	 * them.  Same loss as dir.c's 14-character names and utmp's 8: the field
-	 * is the field, and a V8 df could not have shown more either.
+	 * A MOUNT POINT THAT DOES NOT FIT IS DROPPED AND SAID SO, not truncated.
+	 *
+	 * This comment used to read "same loss as dir.c's 14-character names and
+	 * utmp's 8: the field is the field", and that premise was wrong -- which
+	 * is why the bug survived being documented.  A truncated NAME is a wrong
+	 * name and still just a name.  A truncated PATH stops resolving, and
+	 * df's dfree() branches on stat(file) succeeding: when it fails it takes
+	 * the arm that assumes the string is a device name, and the row comes out
+	 * with an empty dir column and the path's first nine characters sitting
+	 * in the dev column.  Measured, on two CoreSimulator volumes.  A V8
+	 * machine could never reach that branch with a mount point.
+	 *
+	 * So the field was widened to 128 (<fstab.h>, and see
+	 * src/include/PORTING.md), which covers every mount point this host
+	 * actually has -- the longest is 52.  Widening MOVES the boundary rather
+	 * than removing it, so what still will not fit is reported on stderr and
+	 * left out, the way /proc reports a process table overflow rather than
+	 * silently listing fewer processes.  An entry whose path cannot be stored
+	 * cannot be described truthfully, and a garbled row is worse than an
+	 * absent one that says it is absent.
 	 */
+	{
+		int kept = 0;
+
+		for (i = 0; i < n; i++) {
+			if (toolong(sb[i].f_mntonname, 1)) continue;
+			field0(rec[kept].path, (long)sizeof rec[kept].path,
+			    sb[i].f_mntonname);
+			devname(rec[kept].spec, (long)sizeof rec[kept].spec,
+			    sb[i].f_mntfromname);
+			kept++;
+		}
+		n = kept;
+	}
 	return (kmemu_replace(hostpath, (const char *)rec,
 	    (long)n * (long)sizeof rec[0]));
 }
@@ -149,7 +206,12 @@ puts0(char *buf, long *n, long cap, const char *s, long max, char end)
 int
 kmemu_fstab(const char *hostpath)
 {
-	static char buf[MAXFS * 80];
+	/* Sized from FSNMLG rather than a round number: a line is two fields
+	 * plus four separators and two digits, and at FSNMLG 128 the old
+	 * MAXFS*80 would have held a third of the table and truncated the rest
+	 * inside puts0's guard -- silently, because that guard stops writing
+	 * rather than complaining. */
+	static char buf[MAXFS * (2 * FSNMLG + 16)];
 	struct statfs sb[MAXFS];
 	long n = 0;
 	int cnt, i;
@@ -161,6 +223,9 @@ kmemu_fstab(const char *hostpath)
 	for (i = 0; i < cnt; i++) {
 		const char *spec = sb[i].f_mntfromname;
 		const char *type = (sb[i].f_flags & MNT_RDONLY) ? "ro" : "rw";
+
+		/* Silent here: kmemu_mtab already said it, and df reads both. */
+		if (toolong(sb[i].f_mntonname, 0)) continue;
 
 		/*
 		 * Only a real device can be opened under /dev, and only "rw" or

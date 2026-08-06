@@ -132,9 +132,48 @@ host-dependent — it only bites when a mount name is exactly 32 characters, whi
 none is here — so it was the *symptom* check that caught the mutation. Worth
 keeping both.
 
+## The blank `dir` rows, chased: a truncated path is not a shortened name
+
+This section used to say two rows printed with a blank `dir` column, that they
+were "real mounts with real numbers, so the output is not wrong, only
+unlabelled", and that it had not been chased. Both halves of that were wrong.
+
+The cause was `/etc/mtab`'s 32-byte field. `dfree()` opens with
+
+```c
+if (stat(file, &stbuf) == 0 && (stbuf.st_mode&S_IFMT) == S_IFDIR)
+        ... find the mount point's device ...
+else if (strncmp("/dev/", file, sizeof "/dev/" - 1) != 0)
+        strcpy(&specbuf[5], file), file = specbuf;
+```
+
+so it *branches on the mount point resolving*. Truncated to
+`/Library/Developer/CoreSimulato`, it does not, and df takes the arm that
+assumes the string names a device: `mpath()` then matches nothing, printing an
+empty `dir`, and `file + sizeof "/dev"` prints the path's first `DEVNMLG`
+characters into the `dev` column — which is where `/Library/` came from. The
+numbers were not "real" either; they were `statfs` of a path that does not
+exist, which happened to fall back to the enclosing volume.
+
+`FSNMLG` is 128 now, and anything that still will not fit is reported and
+dropped rather than truncated. `src/include/PORTING.md` has the reasoning and
+`shim/libkmemu/NOTES.md` the shim side; `tests/kmemu` asserts that every mount
+point in mtab is a directory that exists, which is the invariant that broke.
+
 ## Still open
 
-- Two rows print with a blank `dir` column, where `mpath()` finds no mtab entry
-  whose `spec` matches. They are real mounts with real numbers, so the output is
-  not wrong, only unlabelled. Not chased yet.
+- **`/` is labelled `/System/Volumes/Data`.** Not the jail, and not this port:
+  `stat("/")` and `stat("/System/Volumes/Data")` report the **same `st_dev`** on
+  the host as well, because APFS puts them in one volume group. `dfree()`
+  identifies a mount point by matching `stat(mountpoint).st_dev` against
+  `stat("/dev/<spec>").st_rdev`, takes the first match, and cannot tell the two
+  apart. A V8 machine had one device per filesystem, so the question never
+  arose. Fixing it means identifying by mount point rather than by device,
+  which is a change to df's algorithm rather than to its inputs.
+- **`/dev` is labelled `/System/Volumes/Data` too**, and that one *is* the jail:
+  `rootfs/dev` exists (libkmemu writes `/dev/kmem` there, and `/dev/dk`,
+  `/dev/pt` and `/dev/drum` are build targets for `ps`), so `stat("/dev")`
+  inside the jail reports the volume the rootfs lives on rather than devfs.
+  Same root cause as the row above — identification by device number — with the
+  jail supplying the collision instead of APFS.
 - `df /some/path` with an explicit argument is untested.
