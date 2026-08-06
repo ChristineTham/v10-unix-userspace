@@ -54,6 +54,84 @@ else
 	pass=$((pass+1))
 fi
 
+# --- CREATION LANDS INSIDE THE JAIL, NOT ON THE MAC -------------------------
+# rootpath() decides by asking whether the rootfs has the path -- which is the
+# right rule for a reader and is unanswerable for a name that does not exist
+# yet.  So for a long time nothing being CREATED could be resolved, and
+# creat("/etc/x") inside the jail went to the Mac's /etc.
+#
+# It failed there, because every V8 directory on macOS is root-owned, and it
+# failed with EACCES -- which reads as a permissions problem rather than as a
+# missing jail.  On a host directory that happened to be writable it would not
+# have failed at all.
+#
+# The tell was the asymmetry: open("/etc/group", 0) read the jail's copy while
+# creat("/etc/group") reached for the Mac's.  The same name meaning two
+# different worlds depending on which syscall asked.  So both directions are
+# checked here, and the read case is what makes the write case meaningful.
+cat > mk.c <<'EOF'
+#include <stdio.h>
+main()
+{
+	extern int errno;
+	int f;
+	f = creat("/etc/v8jailprobe", 0644);
+	printf("creat %d %d\n", f >= 0, f < 0 ? errno : 0);
+	if (f >= 0) { write(f, "in-jail\n", 8); close(f); }
+	f = open("/etc/v8jailprobe", 0);
+	printf("reopen %d\n", f >= 0);
+	if (f >= 0) close(f);
+	if (mkdir("/usr/lib/v8jaildir", 0755) == 0) printf("mkdir 1\n");
+	else printf("mkdir 0 %d\n", errno);
+	exit(0);
+}
+EOF
+rm -rf "$V8ROOT/etc/v8jailprobe" "$V8ROOT/usr/lib/v8jaildir"
+"$V8ROOT/bin/cc" -o mk mk.c >/dev/null 2>&1
+mkout=$(./mk 2>&1)
+ck 'creat inside a jailed directory succeeds'   'creat 1 0' "$(echo "$mkout" | sed -n 1p)"
+ck '...and the file is readable afterwards'     'reopen 1'  "$(echo "$mkout" | sed -n 2p)"
+ck 'mkdir inside a jailed directory succeeds'   'mkdir 1'   "$(echo "$mkout" | sed -n 3p)"
+
+# WHERE it landed is the actual assertion.  Both of the above would also pass
+# on a host that let the write through, which is the outcome being ruled out.
+[ -f "$V8ROOT/etc/v8jailprobe" ] && pass=$((pass+1)) ||
+	{ fail=$((fail+1)); echo "FAIL the created file is not in the rootfs"; }
+[ -d "$V8ROOT/usr/lib/v8jaildir" ] && pass=$((pass+1)) ||
+	{ fail=$((fail+1)); echo "FAIL the created directory is not in the rootfs"; }
+[ -e /etc/v8jailprobe ] && { fail=$((fail+1)); echo "FAIL it escaped to the Mac's /etc"; } ||
+	pass=$((pass+1))
+
+# link took NEITHER of its names through rootpath, so `ln /bin/cat x' linked the
+# MAC's /bin/cat -- a file the V8 world cannot even see with open(2).  Compared
+# by size, because the two /bin/cat are different programs.
+"$V8ROOT/bin/ln" /bin/cat lnprobe 2>/dev/null
+if [ -f lnprobe ]; then
+	ck 'link resolves its existing name inside the jail' \
+	   "$(wc -c < "$V8ROOT/bin/cat")" "$(wc -c < lnprobe)"
+else
+	fail=$((fail+1)); echo "FAIL ln /bin/cat produced nothing"
+fi
+rm -f lnprobe
+rm -rf "$V8ROOT/etc/v8jailprobe" "$V8ROOT/usr/lib/v8jaildir"
+
+# ...and the union's READ rule is untouched by all of that: a path the rootfs
+# does not have still falls through to the host.  This is the case that would
+# fail if mkpath's parent rule had been applied to readers too.
+cat > rd.c <<'EOF'
+#include <stdio.h>
+main()
+{
+	int f = open("/usr/lib/dyld", 0);	/* the Mac has it; the rootfs does not */
+	printf("hostread %d\n", f >= 0);
+	if (f >= 0) close(f);
+	exit(0);
+}
+EOF
+"$V8ROOT/bin/cc" -o rd rd.c >/dev/null 2>&1
+ck 'a path the rootfs lacks still reads through to the host' \
+   'hostread 1' "$(./rd 2>&1)"
+
 # --- a build runs entirely inside the jail ----------------------------------
 cat > makefile <<'EOF'
 all: out.txt

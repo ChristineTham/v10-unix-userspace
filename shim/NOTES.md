@@ -194,3 +194,57 @@ isolation and has only ever been wrong about combinations.
 `sys_errlist`/`sys_nerr` are ported from V8's own `errlst.c`. The `ed` script in
 V8's libc Makefile that appears to build them is a VAX trick for moving the
 table into read-only text, not part of the interface.
+
+## The jail could be read but not written, and that was invisible
+
+Found while surveying `syscall.c` for the S8a step-2 switch, and closed before
+it.
+
+`rootpath()` decides by asking whether the rootfs has the path. That is exactly
+right for a reader and it is **unanswerable for a name that does not exist
+yet** -- so nothing being created could be resolved, and creation escaped the
+jail:
+
+```
+creat("/etc/x")        ->  the MAC's /etc, refused with EACCES
+open("/etc/x", 0)      ->  the JAIL's /etc, works
+```
+
+The same name meaning two different worlds depending on which syscall asked --
+the same shape as the `/etc` versus `/etc/` bug already recorded in
+`rootpath()`'s own comment, and the reason it survived is that on macOS every
+V8 directory is root-owned, so it always failed, and it failed with **EACCES**.
+That reads as a permissions problem, not as a missing jail. On a host directory
+that happened to be writable it would not have failed at all -- it would have
+written outside, quietly.
+
+Three defects, one family:
+
+- `v8s_creat` resolved **nothing**. Not just new files: `creat` on an existing
+  jailed path reached for the Mac's copy too.
+- `v8s_link` resolved **neither** name, so `ln /bin/cat x` linked the Mac's
+  `/bin/cat` -- a file the V8 world cannot see with `open(2)`.
+- `v8s_mkdir` resolved nothing, and could not have benefited if it did.
+
+The fix is a second resolution mode. `V8P_LOOK` is today's rule and every
+reader keeps it, so the union is unchanged: a path the rootfs lacks still falls
+through to the host. `V8P_MAKE` keys on the **parent** -- if `$V8ROOT/etc`
+exists then `/etc/newfile` resolves inside the jail whether or not it is there
+yet. `mkpath()` tries LOOK first so an existing rootfs file still wins, and is
+used by `open(O_CREAT)`, `creat`, `mkdir`, `mknod`, and the *new* name of `link`
+and `symlink`.
+
+Two details worth keeping:
+
+- **`symlink`'s first argument is not resolved.** It is link text, stored
+  verbatim and interpreted later, inside the jail. Resolving it would bake this
+  machine's rootfs path into the link.
+- **`link` holds two resolutions at once**, which is the aliasing trap CLAUDE.md
+  names: `rootpath()` returns a pointer into its own static buffer, so the
+  second call overwrites the first and you get `link(new, new)`. The existing
+  name is copied out before the new one is resolved.
+
+`tests/jail` gained eight cases, and they check *where the file landed* rather
+than that the call succeeded -- both would pass on a host that let the write
+through, which is the outcome being ruled out. One case reads a path only the
+Mac has, which is what fails if the parent rule is ever applied to readers too.

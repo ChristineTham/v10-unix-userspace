@@ -952,13 +952,40 @@ paper, and Killian's `/proc` was already a client of it.
 
 Two consequences, both narrowing what has to be designed:
 
-- **Step 2 does not invent an interface.** The shim's switch takes the shape of
-  `struct fstypsw`, eleven operations, because that is the shape the things
-  being plugged into it were written against. An interface of our own devising
-  would mean writing an adapter for every authentic filesystem afterwards.
-- **Step 3 is an import, not an implementation.** `proca.c` already *is* the
-  eleven operations. It slots in the way `stream.c` did, and the work is the
-  machine-dependent half rather than the filesystem.
+- **Step 2 has a shape to answer to** rather than one to invent: eleven
+  operations, and the things that will plug in were written against them.
+- **Step 3 has less to write than it looked.** `proca.c` already *is* those
+  operations.
+
+**CORRECTED IMMEDIATELY, by reading `proca.c` instead of its function names.**
+The paragraph above first said step 3 was "an import, not an implementation",
+`stream.c`-style. It is not, and the difference is the substrate.
+`stream.c` needed nine names. `proca.c`'s operations are written against the
+V8 kernel's *internals*: `struct inode` and `ip->i_number`, the u-area
+(`u.u_offset`, `u.u_count`, `u.u_error`), `iomove()`, the `proc[]` table. None
+of that exists in the shim, and `fstypsw`'s signatures *are* that model --
+`t_read(ip)` takes no buffer because the buffer is in `u`.
+
+Measured, classifying all 716 lines by whether they touch VAX virtual memory
+(`struct pte`, `prclmap`, `btop`, `P1OFF`, `p_szpt`, `Prbufmap`):
+
+| Half | Functions | Lines | VAX-VM |
+|---|---|---|---|
+| Filesystem | `prput` `prget` `prfree` `prupdat` `prread` `prwrite` `prtrunc` `prstat` `prnami` `prmount` **`prioctl`** `prlock` `prunlock` `prxdup` | ~500 | 2 refs |
+| Process image | `prusrio` `priomove` `prclmap` `prclunmap` `prxread` | ~169 | 20 refs |
+
+So the filesystem half is portable and the process-image half is not -- and the
+split falls in a useful place. `prioctl` is 131 lines with **no** VM reference
+at all, and it is what answers `PIOCGETPR`; `prread` on `ROOTINO` is the 50-line
+directory listing that `ps` does `getdir("/proc")` against. Both of `ps`'s
+non-u-area needs are in the portable half.
+
+What `ps` reads *through* the VAX half is the u-area, and there the answer is
+not to port `prusrio` but to manufacture the `struct user`, from `proc_pidinfo`
+-- `u_comm`, `u_uid`, `u_ruid`, `u_ttyino`, `u_ofile` are all things Darwin will
+say without anyone reading another process's memory. That is `libkmemu`'s
+pattern exactly, one level down, and it keeps `task_for_pid` and its
+entitlements out of the design.
 
 The 9P seam sits *below* `fstypsw`, not in place of it: a `t_read` that speaks
 9P to a server is one entry in the table beside a `t_read` that calls `pread`.
@@ -1055,10 +1082,12 @@ Ordered so that value lands before risk, and so each step is testable alone.
    subtree instead of guessing it from `libproc`. Note `p_wchan` stays
    unanswerable either way; the sentinel rule still applies.
 
-   **And it is an import rather than an implementation**: `sys/proca.c` is 716
-   lines of authentic V8 already written to `struct fstypsw`'s eleven
-   operations, `prput` through `prioctl`. The work is the machine-dependent
-   half, as it was for `stream.c`.
+   **`sys/proca.c` is 716 lines of authentic V8 already written to the eleven
+   operations**, and about 500 of them are portable -- see the table above.
+   `prioctl` answers `PIOCGETPR` in 131 VM-free lines and `prread` lists the
+   directory in 50. What it needs that the shim has not got is the *substrate*:
+   `struct inode`, the u-area, `iomove`, `proc[]`. That is the real cost of this
+   step, and it is shared with step 5, which wants `iget.c` anyway.
 
    **Upgraded from "makes them honest" to "is the only way to have them at
    all", by measurement** -- see S7. V8's `ps` does not grovel `/dev/kmem`; it

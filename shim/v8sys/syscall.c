@@ -230,8 +230,31 @@ v8root(void)
 	return (0);
 }
 
+/*
+ * ROOTPATH HAS TWO MODES, AND FOR A LONG TIME IT HAD ONLY THE FIRST.
+ *
+ * V8P_LOOK is the union rule and is what every reader wants: a path under one
+ * of the directories above resolves into $V8ROOT *if the rootfs copy exists*,
+ * and otherwise falls through to the host, so the Mac's /usr/lib is still
+ * visible through the gaps in ours.
+ *
+ * That rule cannot resolve a path that DOES NOT EXIST YET, which means it
+ * cannot resolve anything being created -- and creation is half of what a
+ * filesystem is for.  Measured: creat("/etc/anything") inside the jail went to
+ * the HOST's /etc, and on macOS was refused with EACCES.  So a V8 program could
+ * read /etc/group and not write it, and the failure looked like a permission
+ * problem rather than a missing jail.  On a host directory that happened to be
+ * writable it would not have failed at all; it would have written outside.
+ *
+ * V8P_MAKE keys on the PARENT instead: if $V8ROOT/etc exists, then /etc/newfile
+ * resolves inside the jail whether or not it is there yet.  Reads are untouched
+ * because readers still pass V8P_LOOK.
+ */
+#define V8P_LOOK	0		/* redirect if the path itself is there */
+#define V8P_MAKE	1		/* redirect if its PARENT is there */
+
 static char *
-rootpath(char *p)
+rootpath(char *p, int mode)
 {
 	static char buf[1024];
 	char *root;
@@ -301,15 +324,50 @@ rootpath(char *p)
 	 * V8ROOT=/usr/lib/anything and it would clobber.  Not worth leaving to
 	 * luck for a call that only asks whether the file exists.
 	 */
+	if (mode == V8P_MAKE) {
+		/*
+		 * Ask about the parent, by cutting the buffer at the last slash
+		 * and putting it back.  n is the length built above, and the
+		 * root's own slash is always at or before buf[strlen(root)], so
+		 * there is one to find.
+		 */
+		int cut = -1, ok;
+		for (i = 0; i < n; i++)
+			if (buf[i] == '/') cut = i;
+		if (cut <= 0) return (p);
+		buf[cut] = '\0';
+		ok = rawsys2(SYS_access, (long)buf, 0) == 0;
+		buf[cut] = '/';
+		return (ok ? buf : p);
+	}
 	if (rawsys2(SYS_access, (long)buf, 0) == 0) return (buf);
 	return (p);
 }
 
+/* The reader's path: today's rule, unchanged. */
 static char *
 vpath(char *p)
 {
 	if (p && *p == '\0') return ".";
-	return rootpath(p);
+	return rootpath(p, V8P_LOOK);
+}
+
+/*
+ * The creator's path.  V8P_LOOK first, so that an existing rootfs file still
+ * wins and nothing about the union's read behaviour changes; only when the
+ * rootfs does not already have the path does the parent rule decide.  Every
+ * syscall that can bring a name into existence uses this -- open with O_CREAT,
+ * creat, mkdir, mknod, and the NEW name of link and symlink.
+ */
+static char *
+mkpath(char *p)
+{
+	char *q;
+
+	if (p && *p == '\0') return ".";
+	q = rootpath(p, V8P_LOOK);
+	if (q != p) return (q);
+	return rootpath(p, V8P_MAKE);
 }
 
 /* ------------------------------------------------------- PASSTHROUGH */
@@ -357,6 +415,10 @@ dotlink(const char *b)
 
 int v8s_link(char *a, char *b)
 {
+	char old[1024];
+	char *q;
+	int i;
+
 	if (dotlink(b)) {
 		struct v8_stat st;
 
@@ -365,7 +427,21 @@ int v8s_link(char *a, char *b)
 		    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
 			return (0);
 	}
-	RET(rawsys2(SYS_link, (long)a, (long)b));
+	/*
+	 * BOTH names were unresolved until now, so `ln /bin/cat x' linked the
+	 * MAC's /bin/cat -- read the same name with open(2) and you got the
+	 * jail's.  The existing name takes the reader's rule and the new name
+	 * the creator's, which is the same split rename(2) would want.
+	 *
+	 * COPIED, and that is the aliasing trap CLAUDE.md names: rootpath()
+	 * returns a pointer into its own static buffer, so holding two results
+	 * at once silently gives you the same string twice.  Here that would
+	 * have been link(new, new).
+	 */
+	q = vpath(a);
+	for (i = 0; q[i] && i < (int)sizeof old - 1; i++) old[i] = q[i];
+	old[i] = '\0';
+	RET(rawsys2(SYS_link, (long)old, (long)mkpath(b)));
 }
 
 /*
@@ -431,9 +507,12 @@ int v8s_chown(char *p, int u, int g)     { RET(rawsys3(SYS_chown, (long)vpath(p)
 int v8s_fchmod(int f, int m)             { RET(rawsys2(SYS_fchmod, f, m)); }
 int v8s_fchown(int f, int u, int g)      { RET(rawsys3(SYS_fchown, f, u, g)); }
 int v8s_access(char *p, int m)           { RET(rawsys2(SYS_access, (long)vpath(p), m)); }
-int v8s_mkdir(char *p, int m)            { RET(rawsys2(SYS_mkdir, (long)p, m)); }
+int v8s_mkdir(char *p, int m)            { RET(rawsys2(SYS_mkdir, (long)mkpath(p), m)); }
 int v8s_rmdir(char *p)                   { RET(rawsys1(SYS_rmdir, (long)vpath(p))); }
-int v8s_symlink(char *a, char *b)        { RET(rawsys2(SYS_symlink, (long)a, (long)b)); }
+/* a is the link TEXT and is stored verbatim -- resolving it would bake this
+ * machine's rootfs path into a symlink the jail is supposed to interpret for
+ * itself.  Only the new name is resolved. */
+int v8s_symlink(char *a, char *b)        { RET(rawsys2(SYS_symlink, (long)a, (long)mkpath(b))); }
 int v8s_dup(int f)                       { RET(rawsys1(SYS_dup, f)); }
 int v8s_dup2(int a, int b)               { RET(rawsys2(SYS_dup2, a, b)); }
 int v8s_getpid(void)                     { return ((int)rawsys0(SYS_getpid)); }
@@ -863,10 +942,17 @@ v8s_open(char *path, int flags, int mode)
 	return ((int)fd);
 }
 
+/*
+ * creat.  It resolved NOTHING before this, so every creat on a jailed path went
+ * to the host: `creat("/etc/x")' inside the jail was refused by the Mac's /etc,
+ * while open("/etc/x", 0) two lines later read the jail's copy.  The same name
+ * meaning two different worlds depending on which syscall asked -- the same
+ * shape as the /etc versus /etc/ bug in rootpath's own comment above.
+ */
 int
 v8s_creat(char *path, int mode)
 {
-	RET(rawsys3(SYS_open, (long)path,
+	RET(rawsys3(SYS_open, (long)mkpath(path),
 	    0x0001 /*O_WRONLY*/ | 0x0200 /*O_CREAT*/ | 0x0400 /*O_TRUNC*/, mode));
 }
 

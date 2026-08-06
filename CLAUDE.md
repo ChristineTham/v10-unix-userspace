@@ -245,6 +245,16 @@ per-process-tree**. Host binaries never call `rootpath()`, so they see the real
 macOS with no special casing; anything `cc` produces links `libv8sys`, so it is
 jailed by construction.
 
+**A path resolver that keys on existence cannot resolve a creation, and that
+gap was one-directional.** `rootpath()` redirects a path whose rootfs copy
+exists — right for a reader, unanswerable for a name that does not exist yet —
+so `creat("/etc/x")` went to the *Mac's* `/etc` while `open("/etc/x", 0)` read
+the jail's. It always failed on macOS, and it failed with **EACCES**, which
+reads as a permissions problem rather than as a missing jail. `v8s_creat`,
+`v8s_link` and `v8s_mkdir` resolved nothing at all. Closed: `V8P_MAKE` keys on
+the *parent*, and `mkpath()` (LOOK first, then MAKE) is what every creating
+syscall uses. Readers keep `vpath()`, so the union is unchanged. `shim/NOTES.md`.
+
 `v8s_execve` also interprets `#!` itself. The kernel would resolve a shebang
 against the real filesystem before the shim saw it, so every shell script ran
 under the Mac's shell — the last hole in the chroot, and the most invisible.
