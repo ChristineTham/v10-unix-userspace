@@ -848,7 +848,15 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 		echo "  (not exercised: nice -n 10 gave the host no difference to"
 		echo "   report -- ps says self=$hostself kid=$hostkid)"
 	elif [ "$((kidnice - mynice))" -eq 10 ]; then
-		ok; nicelive=yes
+		ok
+		# The MARKER needs a stronger precondition than the difference
+		# does, and they are not the same question. printp tests
+		# `p_nice > NZERO', strictly -- so the child has to end up above
+		# the host's zero, not merely ten above its parent. A runner
+		# whose baseline is -10 puts a `nice -n 10' child at exactly 0,
+		# which maps to NZERO, and 20 > 20 is false: no marker, and that
+		# is correct behaviour rather than a bug.
+		[ "$hostkid" -gt 0 ] && nicelive=yes
 	elif [ "$((kidnice - mynice))" -eq 0 ]; then
 		echo "  (not exercised: ps sees the renice and proc_pidinfo does"
 		echo "   not -- the host's two interfaces disagree, shim self=$mynice"
@@ -1212,7 +1220,8 @@ kill "$nicekid" 2>/dev/null; wait "$nicekid" 2>/dev/null
 if [ "$nicelive" = yes ]; then
 	check "a renice'd process carries V8's N marker" "N" "$nmark"
 else
-	echo "  (not exercised: the host reports no nice, so nothing earns the marker)"
+	echo "  (not exercised: no process here ends up above the host's nice 0,"
+	echo "   so none can be above NZERO and none earns the marker)"
 fi
 
 # The time column comes from the u-area, which is the half PIOCGETPR does not
