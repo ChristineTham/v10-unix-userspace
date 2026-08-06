@@ -12,22 +12,55 @@ library and the authentic V8 programs, on hardware that did not exist in 1985.
 breakdown, and the running record of what has been learned. Read §1 (fidelity
 contract) and §4a (bootstrap ladder) before making architectural decisions.
 
+## The repo holds a SERIES of ports, and paths below are release-relative
+
+V8 is a rung, not the destination — this repository is named for V10 — so the
+tree is split by what varies per release and what does not:
+
+```
+v8/          this release: src/ shim/ compiler/ tests/ Makefile, and its own
+             build/ and rootfs/.  v9/ and v10/ become siblings.
+third_party/ the vendored upstreams, read-only, versioned inside themselves
+tools/       import.sh and friends, shared
+.claude/     hooks, agents, skills, shared
+*.md         the prose, shared
+```
+
+**Every path in this file is relative to `v8/` unless it begins with
+`third_party/`, `tools/`, `.claude/` or `.github/`.** So `src/cmd/cat.c` means
+`v8/src/cmd/cat.c`. This convention exists because spelling `v8/` several
+hundred times would bury the content, and because the same sentences will be
+true of `v9/` when it lands.
+
+The split is by **what actually varies**, and the compiler is the case that
+shows why it is not simply "one directory per release". `compiler/ccom-arm64/`
+is about arm64, Mach-O and AAPCS64 — not about V8 — and `shim/kern/` and
+`shim/libkmemu/` are about macOS. A V9 tree inherits their *content* even
+though it gets its own copy. That is the same authentic-versus-machine-dependent
+line `src/sys/h/` and `shim/kern/h/` already draw one level down.
+
 ## Commands
 
 ```bash
-make -j8              # full build (~4s clean)
-make test             # all 16 suites (~940 tests)
+make -j8              # full build (~4s clean) -- dispatches to v8/
+make test             # all 16 suites (~942 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams hooks
-./tests/deps/run.sh   # a suite directly (same thing, no build first)
-make clean            # remove build/ and rootfs/
+v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
+make clean            # remove v8/build and v8/rootfs
 ```
 
+The root `Makefile` builds nothing; it forwards to `$(CURRENT)`, which is `v8`.
+`make -C v8 <target>` is the same thing said explicitly, and `make -j8` still
+parallelises because the sub-make inherits the jobserver. Each release's
+makefile derives its own root from where it sits, which is why moving the tree
+under `v8/` changed no path inside it.
+
 Building a single object or program requires an **absolute** path, because
-`$(BUILD)` is absolute:
+`$(BUILD)` is absolute — and it must be asked of the release, not the root:
 
 ```bash
-make $(pwd)/build/stage0/bin/cat
+make -C v8 $(pwd)/v8/build/stage0/bin/cat
 ```
 
 Test suites are shell scripts that print `name: N passed, M failed`. There is no

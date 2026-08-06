@@ -1,6 +1,7 @@
-# Build outputs
-/build/
-/rootfs/
+# Build outputs.  Per RELEASE, not per repo: each of v8/, v9/, v10/ builds its
+# own world, and two of them cannot share a rootfs.
+build/
+rootfs/
 *.o
 *.a
 *.i

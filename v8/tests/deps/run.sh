@@ -33,7 +33,8 @@
 # same second a build finished and make will not notice.  Nothing in the rules
 # can fix it -- it is make's comparison, not our graph.)
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)		# the release tree, v8/
+REPO=$(cd "$ROOT/.." && pwd)			# the repository above it
 MAKE=${MAKE:-make}
 cd "$ROOT" || exit 1
 
@@ -268,7 +269,7 @@ dep 'wave A command install'  $B/bin/cal      rootfs/bin/cal
 # tree treats as immutable -- an interrupted run would leave a pristine file
 # with a rewritten mtime, and git would not show it.
 if cmp -s "$ROOT/rootfs/usr/lib/units" \
-          "$ROOT/third_party/Research-Unix-v8/v8/usr/lib/units"; then
+          "$REPO/third_party/Research-Unix-v8/v8/usr/lib/units"; then
 	pass=$((pass+1))
 else
 	fail=$((fail+1)); echo "FAIL installed units table differs from upstream's"
@@ -551,20 +552,29 @@ fi
 # allowlist: anything at the root that is not named here is a finding.
 #
 # Directories are not checked -- they are the structure.  Only regular files.
-rootfiles=$(cd "$ROOT" && ls -p | grep -v '/$' | tr '\n' ' ')
-allowed=" .gitignore ARTICLE.md CLAUDE.md Makefile PLAN.md README.md "
+# BOTH ROOTS, because there are two now and scratch lands in either.  $REPO is
+# the repository (prose, the dispatching Makefile, third_party, tools); $ROOT is
+# this release's tree, and a reproduction written while debugging v8 lands
+# there.  Checking only one would leave the other exactly as unguarded as the
+# whole repo was before this case existed.
 strays=""
-for f in $rootfiles; do
-	case "$allowed" in
-	*" $f "*) ;;
-	*) strays="$strays $f" ;;
+for d in "$REPO" "$ROOT"; do
+	case "$d" in
+	"$REPO") allowed=" .gitignore ARTICLE.md CLAUDE.md Makefile PLAN.md README.md " ;;
+	*)       allowed=" Makefile " ;;
 	esac
+	for f in $(cd "$d" && ls -p | grep -v '/$' | tr '\n' ' '); do
+		case "$allowed" in
+		*" $f "*) ;;
+		*) strays="$strays ${d##*/}/$f" ;;
+		esac
+	done
 done
 if [ -z "$strays" ]; then
 	pass=$((pass+1))
 else
 	fail=$((fail+1))
-	echo "FAIL the repo root has files that are not in the allowlist:$strays"
+	echo "FAIL a tree root has files that are not in the allowlist:$strays"
 	echo "  scratch belongs in the session scratchpad, not the repo."
 	echo "  if one of these is real, add it to \$allowed in this case."
 fi

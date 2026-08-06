@@ -6,6 +6,21 @@ See "Current state" at the bottom.
 **Targets:** macOS on Apple Silicon (primary), Linux on ARM64 (secondary).
 **Source of truth:** `third_party/Research-Unix-v8/` (TUHS release, Alhadis git mirror; case-collision recoveries documented in `third_party/Research-Unix-v8/CASE_COLLISIONS.md`).
 
+**Layout, and paths in this document.** The repository holds a *series* of
+ports, so it is split by what varies per release: `v8/` carries `src/`, `shim/`,
+`compiler/`, `tests/` and its own `Makefile`, `build/` and `rootfs/`, and `v9/`
+and `v10/` become siblings. `third_party/`, `tools/`, `.claude/` and the prose
+are the repository's and are shared. The root `Makefile` only dispatches, so
+`make`, `make test` and `make install` still work from there.
+
+**Every path below is relative to `v8/`** unless it starts with `third_party/`,
+`tools/`, `.claude/` or `.github/`. The split is by what actually varies, which
+is why it is not simply one directory per release: `compiler/ccom-arm64/` is
+about arm64 and Mach-O and `shim/kern/` and `shim/libkmemu/` are about macOS, so
+a V9 tree inherits their content even though it gets its own copy. Same
+authentic-versus-machine-dependent line `src/sys/h/` and `shim/kern/h/` draw one
+level down (§8a step 1).
+
 ---
 
 ## 1. Goal and fidelity contract

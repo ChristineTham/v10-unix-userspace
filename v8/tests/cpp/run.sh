@@ -13,9 +13,12 @@
 # and no failures.  A silently vanishing case is indistinguishable from a
 # passing one -- the same disease as a test that asserts a host property, minus
 # even the eventual red build.
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)		# the release tree, v8/
+REPO=$(cd "$ROOT/.." && pwd)				# the repository above it
 CPP=${1:-$ROOT/build/stage0/cpp/cpp}
-V8INC=$ROOT/third_party/Research-Unix-v8/v8/usr/include
+# third_party/ is the repository's, not this release's -- it is vendored once
+# and versioned inside itself (Research-Unix-v8/), which is why v8/ has no copy.
+V8INC=$REPO/third_party/Research-Unix-v8/v8/usr/include
 TMP=${TMPDIR:-/tmp}/cpptest.$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT

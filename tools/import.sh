@@ -30,14 +30,25 @@ if [ $# -lt 1 ]; then
 	exit 2
 fi
 
-# Map an upstream path to its destination under src/.
+# Map an upstream path to its destination under <release>/src/.
+#
+# THE RELEASE WAS ALWAYS IN THE ARGUMENT AND USED TO BE DROPPED HERE.  Every
+# invocation names it -- `tools/import.sh v8/usr/src/cmd/cpp' -- and the old
+# mapping sent it to a bare src/, so the version was in the source path and
+# gone from the destination.  That asymmetry is what made the tree V8-shaped
+# with nowhere for V9 to go.
+#
+# blit/ and jerq/ have no release component of their own: they are the 5620 and
+# its predecessor, V8-contemporary hardware from the same upstream archive, and
+# they belong to the release that talks to them.
 destfor() {
 	case "$1" in
-	v8/usr/src/*)   echo "src/${1#v8/usr/src/}" ;;
-	v8/usr/include/*) echo "src/include/${1#v8/usr/include/}" ;;
-	v8/usr/*)       echo "src/${1#v8/usr/}" ;;
-	blit/*|jerq/*)  echo "src/$1" ;;
-	*)              echo "src/$1" ;;
+	v8/usr/src/*)     echo "v8/src/${1#v8/usr/src/}" ;;
+	v8/usr/include/*) echo "v8/src/include/${1#v8/usr/include/}" ;;
+	v8/usr/*)         echo "v8/src/${1#v8/usr/}" ;;
+	v8/*)             echo "v8/src/${1#v8/}" ;;
+	blit/*|jerq/*)    echo "v8/src/$1" ;;
+	*)                echo "v8/src/$1" ;;
 	esac
 }
 

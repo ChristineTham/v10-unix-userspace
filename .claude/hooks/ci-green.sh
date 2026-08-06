@@ -96,7 +96,26 @@ fail() { printf '%s\n' "$1" >&2; exit 2; }
 # runs a target's recipe only when all its prerequisites succeeded, so the
 # stamp's existence IS the green run.  Staleness is any source file newer than
 # it; build/ and rootfs/ are excluded because they are outputs.
-stamp=$root/build/stage0/.tests-passed
+#
+# PER RELEASE, because the repo holds a series of ports rather than one.  A
+# release tree is a directory with its own Makefile and src/ -- v8/ today, v9/
+# and v10/ later -- and each builds and tests its own world, so each has its own
+# stamp.  Checking one tree's stamp against another's sources would be an
+# answer to a question nobody asked.
+#
+# The fallback to $root itself is not dead code: a single-tree checkout has no
+# release directory, and so does the scratch repo tests/hooks builds.  Losing
+# that would make the suite test a layout the hook never sees.
+trees=$(cd "$root" 2>/dev/null && for d in */; do
+	[ -f "$d/Makefile" ] && [ -d "$d/src" ] && printf '%s\n' "${d%/}"
+done)
+[ -n "$trees" ] || trees=.
+
+for t in $trees; do
+	tree=$root/$t
+	stamp=$tree/build/stage0/.tests-passed
+	[ -f "$stamp" ] || break
+done
 if [ ! -f "$stamp" ]; then
 	fail "BLOCKED: the local suite has not passed since the last \`make clean'.
 
@@ -113,9 +132,18 @@ fi
 # -name '*.md' is excluded because a PORTING.md cannot break a build, and this
 # project rewrites them constantly -- a gate that demands a three-minute test
 # run after a documentation edit is a gate that gets switched off.
-newer=$(find "$root/src" "$root/shim" "$root/compiler" "$root/tests" \
-             "$root/.github" "$root/Makefile" \
-             -newer "$stamp" -type f ! -name '*.md' -print 2>/dev/null | head -3)
+# Each tree against its OWN stamp, plus the repo-level things that affect every
+# tree -- .github/ and the dispatching Makefile.
+newer=
+for t in $trees; do
+	tree=$root/$t
+	newer="$newer$(find "$tree/src" "$tree/shim" "$tree/compiler" "$tree/tests" \
+	    "$tree/Makefile" "$root/.github" "$root/Makefile" \
+	    -newer "$tree/build/stage0/.tests-passed" \
+	    -type f ! -name '*.md' -print 2>/dev/null | head -3)
+"
+done
+newer=$(printf '%s' "$newer" | grep -v '^$' | head -3)
 if [ -n "$newer" ]; then
 	fail "BLOCKED: files have changed since the suite last passed.
 

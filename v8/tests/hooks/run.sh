@@ -14,7 +14,8 @@
 # the everyday `make -j8` gets switched off within the hour, and then it is not
 # protecting anything either.
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)		# the release tree, v8/
+REPO=$(cd "$ROOT/.." && pwd)			# the repository above it
 cd "$ROOT" || exit 1
 pass=0 fail=0
 
@@ -23,7 +24,7 @@ hook() {
 	printf '{"cwd":%s,"tool_input":{"command":%s}}' \
 	    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$2")" \
 	    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$3")" |
-	CLAUDE_PROJECT_DIR=$ROOT "$ROOT/.claude/hooks/$1" >/dev/null 2>&1
+	CLAUDE_PROJECT_DIR=$REPO "$REPO/.claude/hooks/$1" >/dev/null 2>&1
 	[ $? -eq 2 ] && echo block || echo pass
 }
 
@@ -98,7 +99,7 @@ else fail=$((fail+1)); echo "FAIL v8-make: covers every authentic makefile"
 # v8-make.sh to recognise mkfile and to name `mk' rather than V8's make in its
 # message, extend the PROVENANCE-coverage case above, then replace this one.
 # PLAN.md section 4a has the reasoning and what else the step costs.
-mkfiles=$(find src third_party -name mkfile -o -name 'mkfile.*' 2>/dev/null | head -5)
+mkfiles=$(find "$ROOT/src" "$REPO/third_party" -name mkfile -o -name 'mkfile.*' 2>/dev/null | head -5)
 if [ -z "$mkfiles" ]; then pass=$((pass+1))
 else
 	fail=$((fail+1))
@@ -111,12 +112,12 @@ fi
 tp() {	# tp <label> <pass|block> <path>
 	got=$(printf '{"tool_input":{"file_path":%s}}' \
 	      "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$3")" |
-	      CLAUDE_PROJECT_DIR=$ROOT "$ROOT/.claude/hooks/block-third-party.sh" >/dev/null 2>&1
+	      CLAUDE_PROJECT_DIR=$REPO "$REPO/.claude/hooks/block-third-party.sh" >/dev/null 2>&1
 	      [ $? -eq 2 ] && echo block || echo pass)
 	if [ "$got" = "$2" ]; then pass=$((pass+1))
 	else fail=$((fail+1)); echo "FAIL third-party: $1 (want $2, got $got)"; fi
 }
-tp 'an upstream source'  block "$ROOT/third_party/Research-Unix-v8/v8/usr/src/cmd/who.c"
+tp 'an upstream source'  block "$REPO/third_party/Research-Unix-v8/v8/usr/src/cmd/who.c"
 tp 'a relative path'     block 'third_party/Research-Unix-v8/README'
 tp 'our own source'      pass  "$ROOT/src/cmd/who.c"
 tp 'a name merely alike' pass  "$ROOT/src/third_party_notes.md"
@@ -131,7 +132,7 @@ tp 'a name merely alike' pass  "$ROOT/src/third_party_notes.md"
 # answer depends on what GitHub happens to say today.  A test that asks the
 # network is a test of the network; see the nice/pid checks in tests/kmemu for
 # where that lesson was learnt the expensive way.
-CG=$ROOT/.claude/hooks/ci-green.sh
+CG=$REPO/.claude/hooks/ci-green.sh
 
 cgrepo() {	# build a scratch repo: HEAD one commit ahead of origin/main
 	r=$(mktemp -d)

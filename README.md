@@ -14,30 +14,46 @@ phase breakdown, per-program port policy, and risk register.
 
 ## Layout
 
+The repository holds a **series** of ports, so it is split by what varies per
+release and what does not.
+
 | Path | What |
 |---|---|
-| `third_party/` | Vendored upstream sources. Read-only. See `third_party/PROVENANCE`. |
+| `v8/` | The Eighth Edition port — everything below, plus its own `Makefile`. `v9/` and `v10/` become siblings. |
+| `third_party/` | Vendored upstream sources. Read-only, and versioned inside themselves. See `third_party/PROVENANCE`. |
+| `tools/` | Import script and build glue. Shared. |
+| `Makefile` | Dispatches to a release; builds nothing itself. `make`, `make test` and `make install` work from here as before. |
+
+Inside a release:
+
+| Path | What |
+|---|---|
 | `src/` | Ported sources — copied from upstream via `tools/import.sh`, then patched. |
-| `shim/` | `libv8sys`: modern C standing in for the VAX kernel (63 syscalls). |
+| `shim/` | `libv8sys`: modern C standing in for the VAX kernel (63 syscalls), plus `libkmemu` and the kernel-side machine facts. |
 | `compiler/` | Only *new* compiler code: the ARM64 backend for `ccom`, `crt0`, `setjmp`. |
-| `tools/` | Import script and build glue. |
 | `tests/` | Golden-output fixtures, compiler bootstrap checks, and the build-graph and jail suites. |
 | `build/` | Intermediate build output. Not checked in. |
 | `rootfs/` | Build output: the V8-shaped tree `$V8ROOT` points at — `bin`, `lib`, `usr/include`, `usr/lib`. Nothing runs without it. |
+
+Note what is **not** per-release even though it sits inside one.
+`compiler/ccom-arm64/` is about arm64, Mach-O and AAPCS64; `shim/kern/` and
+`shim/libkmemu/` are about macOS. A V9 tree inherits their content. The split is
+by what varies, and those vary with the *host*, not with the edition.
 
 Planned, not yet present: `blitterm/` (Swift Blit/5620 terminal app, Phase 5).
 
 ## Importing upstream files
 
-Never edit `third_party/` in place. To bring a file or directory into `src/`:
+Never edit `third_party/` in place. To bring a file or directory into a release:
 
 ```bash
 tools/import.sh v8/usr/src/cmd/cpp
 ```
 
-This copies it to the mirrored path under `src/` and records the upstream path
-and git blob hash in a `PROVENANCE` file, so the diff against pristine V8 is
-always reconstructible.
+The release is already in the argument — that leading `v8/` — so this lands at
+`v8/src/cmd/cpp`, mirroring the upstream path, and records the upstream path and
+git blob hash in a `PROVENANCE` file so the diff against pristine V8 is always
+reconstructible.
 
 ## License
 
