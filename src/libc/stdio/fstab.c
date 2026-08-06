@@ -44,9 +44,9 @@ static	int	fstabscan(fsp)
 	register	char	*cp;
 	/*
 	 * PORT: sized from FSNMLG rather than V7's flat 256.  The two fields are
-	 * FSNMLG each and this port raised FSNMLG from 32 to 128 -- see
+	 * FSNMLG each and this port raised FSNMLG from 32 to MAXPATHLEN -- see
 	 * src/include/PORTING.md -- so a line the header now permits is up to
-	 * 265 bytes and would not have fitted.  fgets would truncate it, and
+	 * 2064 bytes and would not have fitted.  fgets would truncate it, and
 	 * fs_string would then fail to find its ':' and drop the entry.
 	 *
 	 * No line on this host is anywhere near that; the point is that the

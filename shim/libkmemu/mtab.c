@@ -33,11 +33,11 @@
 
 /*
  * <fstab.h>: the width of both mtab fields, and this port raises it from V7's
- * 32 to 128.  Spelled again here because this file is clang-compiled and
+ * 32 to 1024, matching the host's own f_mntonname.  Spelled again here because this file is clang-compiled and
  * <fstab.h> belongs to the V8 include tree; src/include/PORTING.md carries the
  * reason, and the other three spellings are named there.
  */
-#define FSNMLG	128
+#define FSNMLG	1024
 
 /*
  * df's own struct, which is NOT <mtab.h>'s -- it declares
@@ -146,9 +146,9 @@ kmemu_mtab(const char *hostpath)
 	 * in the dev column.  Measured, on two CoreSimulator volumes.  A V8
 	 * machine could never reach that branch with a mount point.
 	 *
-	 * So the field was widened to 128 (<fstab.h>, and see
-	 * src/include/PORTING.md), which covers every mount point this host
-	 * actually has -- the longest is 52.  Widening MOVES the boundary rather
+	 * So the field was widened to MAXPATHLEN (<fstab.h>, and see
+	 * src/include/PORTING.md), which is the host's own width for this field
+	 * and so covers anything it can report.  Widening MOVES the boundary rather
 	 * than removing it, so what still will not fit is reported on stderr and
 	 * left out, the way /proc reports a process table overflow rather than
 	 * silently listing fewer processes.  An entry whose path cannot be stored
@@ -207,8 +207,8 @@ int
 kmemu_fstab(const char *hostpath)
 {
 	/* Sized from FSNMLG rather than a round number: a line is two fields
-	 * plus four separators and two digits, and at FSNMLG 128 the old
-	 * MAXFS*80 would have held a third of the table and truncated the rest
+	 * plus four separators and two digits, and at a widened FSNMLG the old
+	 * MAXFS*80 would have held a fraction of the table and truncated the rest
 	 * inside puts0's guard -- silently, because that guard stops writing
 	 * rather than complaining. */
 	static char buf[MAXFS * (2 * FSNMLG + 16)];

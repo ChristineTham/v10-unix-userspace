@@ -265,7 +265,7 @@ grep -q 'bad free count' "$TMP/dfl.out" && ok ||
 #
 # FSNMLG is 128 now (src/include/fstab.h, src/include/PORTING.md), so the
 # record is 256 bytes rather than 64.
-FSNMLG=128
+FSNMLG=1024
 recsz=$((FSNMLG * 2))
 bytes=$(wc -c < "$MTAB" | tr -d ' ')
 [ $((bytes % recsz)) -eq 0 ] && ok ||
@@ -303,15 +303,38 @@ mt=$(printf '%s' "$mtpaths" | sort -u)
 fs=$(awk -F: '{print $2}' "$FSTAB" | grep '^/' | sort -u)
 check "mtab and fstab name the same mount points" "$fs" "$mt"
 
-# ...and if this host has a mount point past the OLD 32-byte field, df must
-# show it whole. Conditional, because a host without one cannot exercise it --
-# reported rather than silently counted as a pass.
-longmp=$(mount | sed 's/.* on //; s/ (.*//' | awk 'length($0) > 31' | head -1)
+# --- both sides of the boundary, each only where the host provides one -------
+# The first version of this asked for "the longest mount point" and asserted df
+# showed it. That is another assertion about the machine: it holds only if the
+# longest one FITS. A CI runner mounts a Siri asset bundle at 154 characters,
+# which fitted in neither the old 32 nor the 128 first tried here -- so the
+# check failed for the right reason and the wrong assertion. Ask each question
+# of a mount point that can answer it, and say so when the host supplies none.
+#
+# Past the OLD 32-byte field but inside the new one: df must show it whole.
+longmp=$(mount | sed 's/.* on //; s/ (.*//' |
+         awk -v n="$FSNMLG" 'length($0) > 31 && length($0) < n' |
+         awk '{print length($0), $0}' | sort -rn | head -1 | cut -d' ' -f2-)
 if [ -n "$longmp" ]; then
 	grep -qF "$longmp" "$TMP/df.out" && ok ||
-		bad "df shows a >31-character mount point in full" "missing: $longmp"
+		bad "df shows a mount point past the old 32-byte field" "missing: $longmp"
 else
-	echo "  (skipped: this host has no mount point past 31 characters)"
+	echo "  (not exercised: no mount point here between 32 and $FSNMLG characters)"
+fi
+
+# Past the NEW field: reported on stderr and absent from the listing, never
+# truncated into a row. Unreachable on a host whose paths all fit -- MAXPATHLEN
+# is the host's own width for this field -- so this is a guard for a case the
+# kernel cannot currently produce, verified by mutation instead (lower the
+# threshold in toolong() and watch df report and drop).
+toobig=$(mount | sed 's/.* on //; s/ (.*//' | awk -v n="$FSNMLG" 'length($0) >= n' | head -1)
+if [ -n "$toobig" ]; then
+	grep -qF "$toobig" "$TMP/df.err" && ok ||
+		bad "an over-long mount point is reported" "silent: $toobig"
+	grep -qF "$toobig" "$TMP/df.out" &&
+		bad "...and left out of the listing" "still listed: $toobig" || ok
+else
+	echo "  (not exercised: every mount point here fits in $FSNMLG)"
 fi
 
 # ---------------------------------------------------------------- load ---
@@ -652,7 +675,8 @@ struct proc p;
 extern int errno;
 long sink;		/* global, because v8cc is 1985 C and has no `volatile' */
 #define OFF(f)	((long)((char *)&p.f - (char *)&p))
-main()
+main(argc, argv)
+int argc; char **argv;
 {
 	int fd, dir, pct;
 	char me[16];
@@ -682,7 +706,28 @@ main()
 	printf("load %d\n", (p.p_flag & SLOAD) != 0);
 	printf("stat %d\n", p.p_stat == SRUN);
 	printf("rss %d\n",  p.p_rssize > 0);
-	printf("nice %d\n", p.p_nice == NZERO);
+	/*
+	 * NOT `p_nice == NZERO'.  That asserts the HOST's baseline nice is 0,
+	 * which is a property of the machine and not of this port -- it held on
+	 * the development Mac and failed on the CI runner, whose jobs start
+	 * renice'd.  What the bias actually has to do is TRACK, so the shell
+	 * hands us a child started with `nice -n 10' and we report both values;
+	 * the difference is 10 whatever the baseline is.
+	 */
+	printf("nice %d\n", p.p_nice);
+	if (argc > 1) {
+		int kid = atoi(argv[1]);
+		int kfd;
+		char kn[16];
+		sprintf(kn, "/proc/%05d", kid);
+		if ((kfd = open(kn, 0)) >= 0 &&
+		    ioctl(kfd, PIOCGETPR, &p) >= 0)
+			printf("kidnice %d\n", p.p_nice);
+		else
+			printf("kidnice X\n");
+		if (kfd >= 0) close(kfd);
+		if (ioctl(fd, PIOCGETPR, &p) < 0) { printf("nereread\n"); return 1; }
+	}
 
 	/*
 	 * %cpu, AND THE POINT IS THE MAGNITUDE.  "Between 0 and 100" would pass
@@ -731,7 +776,13 @@ EOF
 if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
    clang -nostdlib -e _v8start -o "$TMP/gp" "$CRT" "$TMP/gp.o" \
 	-Wl,-force_load,"$KMEMU" "$LIBC" "$STUBS" "$SHIM" -lSystem >> "$TMP/gp.log" 2>&1; then
-	out=$("$TMP/gp" 2>/dev/null)
+	# A child ten nicer than us, so the bias below can be checked as a
+	# DIFFERENCE rather than against an assumed baseline of 0. nice(1) here
+	# is the host's -- the shell arranging the world, not part of the test.
+	nice -n 10 sleep 30 >/dev/null 2>&1 & kidpid=$!
+	out=$("$TMP/gp" "$kidpid" 2>/dev/null)
+	kill "$kidpid" 2>/dev/null
+	wait "$kidpid" 2>/dev/null
 	g() { echo "$out" | awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}'; }
 	# 208 and not upstream's 200: the four pid-shaped fields are int here,
 	# because a macOS pid does not fit in a short. src/include/PORTING.md.
@@ -749,8 +800,25 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 	# macOS SRUN is 2 and V8's is 3; a straight copy would print 'w'.
 	check "...SRUN translated, not copied"         "1" "$(g stat)"
 	check "...a resident set size"                 "1" "$(g rss)"
-	# V8's nice is 0..39 about NZERO, macOS's -20..19 about 0.
-	check "...nice biased to V8's NZERO"           "1" "$(g nice)"
+	# V8's nice is 0..39 about NZERO, macOS's -20..19 about 0, so the shim
+	# adds NZERO. Checked as a DIFFERENCE against a child started ten nicer,
+	# because the absolute value depends on the host's baseline -- asserting
+	# NZERO exactly held on the development Mac and failed on CI, whose jobs
+	# start renice'd. A test that passes on one machine and fails on another
+	# is testing the machine.
+	#
+	# A difference cannot see the BIAS, only the scale and the sign: drop
+	# NZERO entirely and the gap is still ten. What the bias exists FOR is
+	# printp's `" N"[p_nice > NZERO]', and that is asserted against ps's
+	# real output in the ps section below -- biased, a ten-nicer process
+	# reads baseline+30 and earns the marker; unbiased it reads baseline+10
+	# and never earns it, at any baseline. The two checks fail to different
+	# mutations, which is why there are two.
+	mynice=$(g nice); kidnice=$(g kidnice)
+	if [ -n "$mynice" ] && [ "$kidnice" != "X" ] && [ -n "$kidnice" ]; then
+		check "...nice tracks the host's, ten apart" \
+			"10" "$((kidnice - mynice))"
+	else bad "could not read both nice values" "self=$mynice kid=$kidnice"; fi
 	# Ticks read as nanoseconds would give 2 here, not ~100.
 	pct=$(g pct)
 	[ "$pct" -gt 40 ] && [ "$pct" -le 100 ] &&
@@ -1044,6 +1112,9 @@ PS=$V8ROOT/bin/ps
 # /dev/dk, /dev/pt and /dev/drum have to exist or ps error()s before doing
 # anything (ps.c:21-28). The load section above removes all of /dev and puts
 # those three back; tests/deps is what asserts the Makefile makes them.
+# A renice'd child, so the nice marker has something to mark. Started before
+# the listing so it is in it.
+nice -n 10 sleep 30 >/dev/null 2>&1 & nicekid=$!
 psout=$("$PS" hax 2>/dev/null)
 psrc=$?
 check "ps ax exits 0" "0" "$psrc"
@@ -1063,9 +1134,16 @@ neg=$(echo "$psout" | tail -n +2 | awk '$1 <= 0' | head -3)
 check "no process has a negative pid" "" "$neg"
 
 # ...and the high ones are actually reached, or the check above proves nothing.
+# ...and whether the high ones were actually reached, because if they were not
+# the check above proves nothing. NOT a failure when they were not: a freshly
+# booted host has low pids, which is the very property that let the 16-bit field
+# survive in the first place, and a CI runner is always freshly booted. Reported
+# so a green run does not silently claim coverage it did not have; the
+# deterministic guard is the FIELD WIDTH assertion in the PIOCGETPR probe above,
+# which holds at every pid.
 himax=$(echo "$psout" | tail -n +2 | awk '{if ($1+0 > m) m = $1+0} END {print m+0}')
-[ "$himax" -gt 32767 ] && ok ||
-	bad "ps saw a pid past the 16-bit boundary" "highest was $himax"
+if [ "$himax" -gt 32767 ]; then ok
+else echo "  (not exercised: highest pid here is $himax, inside 16 bits)"; fi
 
 # ps must see ITSELF: the one process guaranteed to exist while it runs.
 echo "$psout" | grep -q '(ps)' && ok || bad "ps lists itself"
@@ -1084,6 +1162,15 @@ if [ -n "$selp" ]; then
 	sel=$("$PS" "$selp" 2>/dev/null | awk '{print $1}')
 	check "ps <pid> selects exactly that process" "$selp" "$sel"
 else bad "no pid to select"; fi
+
+# THE NICE MARKER, which is the only thing that can see the NZERO bias.
+# printp prints " N"[p_nice > NZERO], so a process ten nicer than the shell
+# reads baseline+30 and earns the N; without the bias it reads baseline+10 and
+# never earns it, at any baseline. That makes this the check a difference
+# cannot replace -- and it works on a CI runner whose jobs start renice'd.
+nmark=$(echo "$psout" | awk -v p="$nicekid" '$1 == p {print $4}')
+kill "$nicekid" 2>/dev/null; wait "$nicekid" 2>/dev/null
+check "a renice'd process carries V8's N marker" "N" "$nmark"
 
 # The time column comes from the u-area, which is the half PIOCGETPR does not
 # carry -- so a non-zero time anywhere proves the u-area read reached ps.

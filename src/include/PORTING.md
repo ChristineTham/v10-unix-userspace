@@ -18,8 +18,8 @@ deviations.
 | `sys/param.h` | `DIRSIZ` 14 → 254 | same, and it is the one that decides |
 | `setjmp.h` | `int[10]` → `long[24]` | AAPCS64 has 21 doublewords to save |
 | `sys/proc.h` | four pid fields `short` → `int` | macOS pids run to 99998 |
-| `fstab.h` | `FSNMLG` 32 → 128, and `FSTABFMT` with it | host mount points exceed 31 characters |
-| `mtab.h` | two literal `32`s → `128` | must agree with `FSNMLG`; nothing includes it |
+| `fstab.h` | `FSNMLG` 32 → 1024, and `FSTABFMT` with it | host mount points exceed 31 characters |
+| `mtab.h` | two literal `32`s → `1024` | must agree with `FSNMLG`; nothing includes it |
 
 ## The two rules
 
@@ -66,8 +66,14 @@ the path's first nine characters — giving a row reading `/Library/` in the
 `dev` column. **A V8 machine could not reach that branch with a mount point,
 because mount points were short.**
 
-128 covers every mount point this host has — the longest is 52 — and makes the
-mtab record exactly 256 bytes, the same shape `DIRSIZ` 254 chose.
+**1024 because that is the host's own width for the field**, not because it
+looks big enough: `struct statfs`'s `f_mntonname` is `char[MAXPATHLEN]`, so 1024
+is exactly the set of mount points the host can report, and any smaller choice
+is a boundary that has to be defended against the next machine. 128 was tried
+first — the longest mount point on the development Mac is 52, and 128 makes the
+record a tidy 256 bytes. CI refuted it within the hour: a GitHub runner mounts a
+Siri asset bundle at 140 characters. Picking the host's own number is what stops
+this being a guess.
 
 **Widening moves the boundary; it does not remove it.** So a mount point that
 still will not fit is now *reported on stderr and left out*, the way `/proc`
@@ -81,7 +87,7 @@ from one file and not the other hands it straight back through the merge.
 One consumer had to move with it, and finding it is the whole reason to count
 the spellings: `src/libc/stdio/fstab.c`'s `fstabscan()` read a line into a flat
 `char buf[256]`, which was ample for two 32-byte fields and is *smaller than a
-line the widened header now permits* (265 bytes). `fgets` would have truncated
+line the widened header now permits* (2064 bytes). `fgets` would have truncated
 it and `fs_string` would then have failed to find its `:` and dropped the entry.
 No line on this host comes close; the point is that the parser must honour what
 the struct promises. It is `2 * FSNMLG + 16` now — derived, so it cannot drift.
@@ -92,7 +98,7 @@ carries the digits by hand because V8's cpp is from 1985 and has no `#`
 stringification. `<mtab.h>` is patched even though **nothing in this port
 includes it** — `df` declares its own `struct mtab` from `FSNMLG` — precisely
 because leaving it at 32 would cost nothing today and would tell the next
-reader the record is 64 bytes when it is 256. That is the `DIRSIZ` failure
+reader the record is 64 bytes when it is 2048. That is the `DIRSIZ` failure
 exactly: three headers, two patched, the unpatched one still believed.
 
 ## `sys/proc.h`, in more detail

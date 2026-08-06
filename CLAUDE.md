@@ -358,7 +358,7 @@ one class:
 | `DIRSIZ` | 14-char names | any length | truncated names, `pwd` could not `chdir` back |
 | `d_ino` | 16-bit inode | 64-bit | wraps; harmless *except* the value that wraps to 0 |
 | `p_pid` | `short`, wrapped at 30000 | to 99998 | **negative pids** — 44145 read as −21391 |
-| `FSNMLG` | 32-char mount points | to 52 here | `df` printed a mount point as a *device* |
+| `FSNMLG` | 32-char mount points | to 140 seen | `df` printed a mount point as a *device* |
 
 **A truncated PATH is not the same class of loss as a truncated NAME**, and
 conflating them is what let `FSNMLG` hide: `shim/libkmemu/mtab.c` documented the
@@ -600,4 +600,18 @@ not testable until it is installed.
   the program print what a value *is* rather than arguing about what it should
   be — `V8DBG=1`, or logging what `malloc` wrote versus what was found there later.
 - A guard that has never been seen to fail is not a guard. New test suites are
-  verified by mutation (break the thing, watch the test fail, restore).
+  verified by mutation (break the thing, watch the test fail, restore). Two
+  traps in doing that: **verify the object actually rebuilt** — mtimes compare
+  at whole-second granularity, and a mutation that silently did not get
+  compiled looks exactly like a test correctly passing (this has now produced
+  two false "the guard did not fire" readings) — and remember that mutation
+  proves a test can fail, never that it can *pass elsewhere*.
+- **A test that asserts a property of the machine passes here and fails in CI,
+  and mutation testing cannot see it.** Both of the CI breaks in this repo were
+  this: `p_nice == NZERO` assumed the host's baseline nice is 0 (a GitHub runner
+  starts jobs renice'd), and "some pid exceeds 32767" assumed a host that has
+  been up a while (a runner is always freshly booted — the very property that
+  let the 16-bit `p_pid` survive). Assert a *relation* the port controls — a
+  difference between two processes, a field width — and where coverage genuinely
+  depends on the host, print "not exercised" rather than passing silently or
+  failing. `tests/kmemu`'s nice and pid checks are the worked examples.

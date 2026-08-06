@@ -92,8 +92,11 @@ this machine printed as rows with an empty `dir` column and the first nine
 characters of the mount point sitting in the `dev` column, which reads as
 corruption rather than as truncation.
 
-Widened to 128 in `<fstab.h>` — `src/include/PORTING.md` has the account and
-names all four places that spell the number. Anything that still does not fit is
+Widened to `MAXPATHLEN` in `<fstab.h>` — the host's own width for
+`f_mntonname`, so it covers anything the host can report. 128 was tried first
+and CI refuted it inside an hour with a 140-character asset mount.
+`src/include/PORTING.md` has the account and names all four places that spell
+the number. Anything that still does not fit is
 **reported and dropped**, the way `/proc` reports a process-table overflow: an
 entry whose path cannot be stored cannot be described truthfully. Both mtab and
 fstab apply the same rule, because `df`'s `devlen()` merges any fstab entry
