@@ -198,23 +198,35 @@ the documented as/ld exception. The makefile is plain 1985 make — no pattern
 rules, no automatic variables past `$@`. The result compiles real source, the
 build settles, and a second build from clean generates identical code.
 
-**Rung 5 is demonstrated on seven programs, chosen for their makefile idioms
+**Rung 5 is demonstrated on thirteen programs, chosen for their makefile idioms
 rather than their size**: `lex` (dependency line on `#include`d non-headers),
 `sed` (target, prerequisites and recipe on one line; `*.o` glob), `fmt` (macro
 expansion), `tsort` (`.SUFFIXES` and a `.c.o` suffix rule, no explicit object
 rules), `tbl` (`t?.o` glob, three flags at once, a 22-target dependency line on
 `t..c`), `yacc` (`$(CC)`, `y?.o`, dependencies on `dextern` and `files`), `spell`
 (four programs from one makefile — `spellprog` specifically, since `all`
-regenerates the word lists).
+regenerates the word lists), `man` (the minimal case, one rule), `troff`
+(**22 objects**, the largest — scale is its own idiom), `refer` (four programs
+and an `#include`d non-header), `ps` (V8 make's `&`, which nothing else here
+uses), and `load` and `w` (two lines each, and grovelers — see below).
 V8's make handled every one unchanged.
 
-Two things came out of that which our own rules could not have surfaced. `sed`
-found a *driver* gap — `-n`, the VAX shared-text flag, now accepted and ignored
-like `-O`. And `tbl` and `yacc` prove V8's make gets the `#include`d-non-header
-dependency lines right, which means **the knowledge our Makefile had to be told
-was in the tree the whole time.** That is the argument for doing the rest of
-them: upstream's makefiles exercise the toolchain in ways our rules never do,
-because our rules were written to work.
+Three things came out of that which our own rules could not have surfaced.
+`sed` found a *driver* gap — `-n`, the VAX shared-text flag, now accepted and
+ignored like `-O`. `tbl` and `yacc` prove V8's make gets the
+`#include`d-non-header dependency lines right, which means **the knowledge our
+Makefile had to be told was in the tree the whole time.** And four makefiles
+died on `Cannot load mv` — which is how it was discovered that **eleven
+commands had been imported and never built**, so the V8 world had no `cp`, no
+`mv` and no `sed`. That is the argument for doing the rest of them: upstream's
+makefiles exercise the toolchain in ways our rules never do, because our rules
+were written to work.
+
+**`load` and `w` are in the sweep as grovelers, and the distinction they make
+visible is worth keeping.** Upstream's makefile knows nothing about `libkmemu`,
+which this port invented, so what rung 5 builds is a real program that cannot
+answer — `w` says `No mem`. Rung 5 is a claim about the build *description*
+being Bell Labs', not about the binary being the installed one.
 
 **Where rung 5 stops, and it is a real line rather than a to-do.** A makefile
 that names the target machine cannot be used unchanged. `src/cmd/cpp/Makefile`
@@ -266,6 +278,14 @@ reads as a permissions problem rather than as a missing jail. `v8s_creat`,
 `v8s_link` and `v8s_mkdir` resolved nothing at all. Closed: `V8P_MAKE` keys on
 the *parent*, and `mkpath()` (LOOK first, then MAKE) is what every creating
 syscall uses. Readers keep `vpath()`, so the union is unchanged. `shim/NOTES.md`.
+
+`v8s_mknod` was the LAST creating syscall still passing its path raw, and it
+survived the V8P_MAKE conversion because nothing called it: `mkdir(1)` is the
+only user of `mknod` in the tree, and `mkdir(1)` was one of eleven commands
+imported and never built. **An unreachable syscall cannot be seen to be wrong.**
+`mkdir(1)` shows both halves in one run — its `access()` asked the jail and its
+`mknod` asked the host — and it failed closed only because every jailed prefix
+is SIP-protected here.
 
 `v8s_execve` also interprets `#!` itself. The kernel would resolve a shebang
 against the real filesystem before the shim saw it, so every shell script ran
@@ -359,6 +379,29 @@ one class:
 | `d_ino` | 16-bit inode | 64-bit | wraps; harmless *except* the value that wraps to 0 |
 | `p_pid` | `short`, wrapped at 30000 | to 99998 | **negative pids** — 44145 read as −21391 |
 | `FSNMLG` | 32-char mount points | to 140 seen | `df` printed a mount point as a *device* |
+
+**A 1985 BUFFER SIZE IS THE SAME CLASS, and the ratio is what breaks.** Raising
+`DIRSIZ` 14 → 254 did not just widen a field; it invalidated every buffer sized
+*against* it. Four programs, all found by the `lp64-auditor` subagent reading
+the source before it was built, all verified by reproducing the crash:
+
+| program | was | symptom |
+|---|---|---|
+| `mv` | `MAXN 100`, guard `strlen(target) > MAXN-DIRSIZ-2` | the guard became `> -156`, so **every** directory move was refused with a false message |
+| `mkdir` | `pname[128]`, `dname[128]` | a 255-char name (macOS `NAME_MAX`) SIGSEGVs — *after* making the directory |
+| `rmdir` | `name[500]` | SIGBUS at 550 chars, on the argument alone |
+| `sed -n l` | `trans[*p1]`, signed char | any byte ≥ 0200 indexes backwards; **UTF-8 crashes it** |
+
+All four are now `PATH_MAX`-sized or unsigned-indexed, each recorded in its own
+`PORTING.md`. Two lessons generalise. `mv`'s is that a constant can encode a
+*relationship* — `MAXN-DIRSIZ-2` is a sentence about two numbers, and changing
+one of them silently rewrote it. `sed`'s is that LP64 and Mach-O can turn an
+upstream out-of-bounds *read* into a fault: `trans[]` is an array of pointers,
+so the stride doubled, and Mach-O maps nothing where a.out did.
+
+**A crash can happen after the work is done.** `mkdir`'s fault lands on the
+return, so the directory exists and `[ -d ... ]` is satisfied by a run that died
+of SIGSEGV. Assert the exit status.
 
 **A truncated PATH is not the same class of loss as a truncated NAME**, and
 conflating them is what let `FSNMLG` hide: `shim/libkmemu/mtab.c` documented the

@@ -909,7 +909,97 @@ $(ROOTFS)/usr/lib/units: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/units
 $(ROOTFS)/usr/lib/eign: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/eign
 	@mkdir -p $(@D) && cp $< $@
 
+# ---------------------------------------------------------------------------
+# COMMANDS UPSTREAM KEEPS IN A DIRECTORY OF THEIR OWN, imported and then never
+# built.  Eleven of them, and the V8 world had no `cp', no `mv', no `mkdir',
+# no `rmdir' and no `sed'.
+#
+# HOW ELEVEN PROGRAMS HID.  $(V8BIN) above is checked for completeness -- the
+# comment there says `ls src/cmd/*.c' should differ from it by `cc' alone, and
+# tests/wavea asserts exactly that.  The glob is the hole: it matches
+# src/cmd/cat.c and never src/cmd/mv/mv.c, so a program upstream happens to
+# keep in its own directory was invisible to the check that exists to find
+# missing programs.  The test now walks directories too.
+#
+# It surfaced from the other end, which is the argument for rung 5: four
+# upstream makefiles (eqn, pic, grap, make) died on `Cannot load mv' -- V8's
+# make trying to run `mv y.tab.c grap.c', the ordinary yacc rename.  Our own
+# rules never needed mv because they were written to work.
+#
+# All eleven compile under v8cc with ZERO warnings and needed no source change.
+V8DIRBIN = cp dc ed factor mkdir mv primes rmdir sed fmt tsort
+
+# The objects each one is built from, spelled out for ALL of them rather than
+# defaulted for the eight whose single source is named after the program.  The
+# short version costs nothing and reads better:
+#
+#	dirsrcs = $(if $(dirsrc_$(1)),$(dirsrc_$(1)),$(1))
+#
+# but $(if $(dirsrc_cp),...) READS an undefined variable, and this Makefile is
+# checked with --warn-undefined-variables precisely because a variable used
+# above its definition expands to nothing in a prerequisite and the dependency
+# silently is not there.  A probe that is legitimate and a mistake that is not
+# are indistinguishable to that flag, so the flag wins and these are explicit.
+# .claude/hooks/check-makefile.sh refused the short version on the way in.
+#
+# The three multi-object lists are upstream's own: sed's makefile says
+# `sed: sed0.o sed1.o', fmt's says `OBJ = fmt.o head.o'.
+dirsrc_cp     = cp
+dirsrc_dc     = dc
+dirsrc_ed     = ed
+dirsrc_factor = factor
+dirsrc_mkdir  = mkdir
+dirsrc_mv     = mv
+dirsrc_primes = primes
+dirsrc_rmdir  = rmdir
+dirsrc_sed    = sed0 sed1
+dirsrc_fmt    = fmt head
+dirsrc_tsort  = refstore subs tsort
+dirsrcs       = $(dirsrc_$(1))
+
+# GENERATED RULES, and the reason is a measured limit rather than a preference.
+# The natural spelling is a static pattern rule,
+#
+#	$(DIRBIN): $(BINDIR)/%: $(SRC)/cmd/%/%.c
+#
+# and GNU make substitutes the stem for only the FIRST % in a prerequisite
+# pattern, so the second stays literal and make reports
+# "No rule to make target src/cmd/mv/%.c".  .SECONDEXPANSION would do it and
+# changes how EVERY prerequisite in this file is expanded, which is too large a
+# blast radius for eleven programs.  foreach/eval is contained.
+# Objects go in $(BUILD)/<prog>/, NOT $(BINDIR)/<prog>/, and that is not a
+# style choice: the binary is $(BINDIR)/<prog>, so objects under the same name
+# make the path a directory and a file at once.  ld says
+# "open() failed, errno=21 (Is a directory)", which reads as a linker problem
+# and is a layout one.  Every other multi-file program here already uses
+# $(BUILD)/<prog>/ -- build/stage0/ps, build/stage0/eqn -- so this follows them.
+define dirobj_rule
+$(BUILD)/$(1)/$(2).o: $$(SRC)/cmd/$(1)/$(2).c $$(V8CC_DEPS)
+	@mkdir -p $$(@D)
+	@$$(V8CCRUN) -I$$(SRC)/cmd/$(1) -c -o $$@ $$<
+endef
+
+define dirprog_rule
+$(BINDIR)/$(1): $(patsubst %,$(BUILD)/$(1)/%.o,$(2)) $$(V8DEPS)
+	@mkdir -p $$(@D)
+	@$$(HOSTCC) $$(V8LDFLAGS) -o $$@ $$(BUILD)/crt0.o \
+	    $(patsubst %,$(BUILD)/$(1)/%.o,$(2)) $$(V8LIBS)
+endef
+
+$(foreach p,$(V8DIRBIN),\
+  $(foreach s,$(call dirsrcs,$(p)),$(eval $(call dirobj_rule,$(p),$(s))))\
+  $(eval $(call dirprog_rule,$(p),$(call dirsrcs,$(p)))))
+
+V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN))
+V8DIRBIN_INSTALL = $(patsubst %,$(ROOTFS)/bin/%,$(V8DIRBIN))
+
+# Same reason as $(V8BIN_BUILT) above: without this make treats each of these
+# as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
+# working rootfs and no build tree to compare it against.
+.SECONDARY: $(V8DIRBIN_BUILT)
+
 v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
+       $(V8DIRBIN_BUILT) $(V8DIRBIN_INSTALL) \
        $(BINDIR)/df $(ROOTFS)/bin/df \
        $(BINDIR)/load $(ROOTFS)/bin/load \
        $(BINDIR)/w $(ROOTFS)/bin/w $(ROOTFS)/bin/uptime \
@@ -997,6 +1087,7 @@ $(ROOTFS)/bin/w: $(BINDIR)/w
 
 $(ROOTFS)/bin/uptime: $(ROOTFS)/bin/w
 	@mkdir -p $(@D) && rm -f $@ && ln $< $@
+
 
 # ---------------------------------------------------------------------------
 # ps -- and it is not a groveler.  Every other program in this section reads a

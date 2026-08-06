@@ -12,7 +12,24 @@
 #define	DOTDOT	".."
 #define	DELIM	'/'
 #define SDELIM "/"
-#define	MAXN	100
+/*
+ * PORT: 1024, not V7's 100.  MAXN is not an independent number -- mv's own
+ * guard is
+ *
+ *	if (strlen(target) > MAXN-DIRSIZ-2)
+ *
+ * so it states a RELATIONSHIP between the buffer and the longest name that can
+ * be appended to it.  V7 had 100 and 14, leaving 84 for the directory part.
+ * This port raises DIRSIZ to 254 (src/include/PORTING.md), which makes
+ * MAXN-DIRSIZ-2 equal -156: strlen() is never less than that, so the guard
+ * fires on EVERY directory-into-directory move and mv refuses with a message
+ * that is false.  Measured, not deduced -- v8cc emits `mov x10, #-156'.
+ *
+ * 1024 is macOS's PATH_MAX, which is the longest path mv can be handed and the
+ * longest the join may produce, so the guard means again what it says and the
+ * budget for the directory part goes from 84 to 768.  src/cmd/mv/PORTING.md.
+ */
+#define	MAXN	1024
 #define MODEBITS 07777
 
 char	*pname();

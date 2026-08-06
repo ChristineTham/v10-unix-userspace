@@ -32,7 +32,15 @@ rmdir(d)
 char *d;
 {
 	int	fd;
-	char	*np, name[500];
+	/*
+	 * PORT: 1024, not V7's 500.  strcpy(name, d) below is the FIRST
+	 * statement, before any stat, so the argument alone overruns it and the
+	 * path need not even exist.  Measured: SIGBUS from 550 characters, which
+	 * is well inside macOS's PATH_MAX of 1024.  Three strcat calls further
+	 * down add to it.  Same change as mkdir's, one buffer larger, so it
+	 * needs a long path rather than a single long component.
+	 */
+	char	*np, name[1024];
 	struct	stat	st, cst;
 	struct	direct	dir;
 

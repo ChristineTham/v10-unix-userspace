@@ -514,7 +514,33 @@ union reptr	*ipc;
 			p2 = genbuf;
 			genbuf[72] = 0;
 			while(*p1)
-				if(*p1 >= 040) {
+				/*
+				 * PORT: `& 0377'.  char is signed here, as it
+				 * was on the VAX, so a byte >= 0200 is NEGATIVE
+				 * and this test sent it down the control-
+				 * character arm -- where `trans[*p1]' indexes a
+				 * 32-entry array with a negative subscript and
+				 * the next line dereferences what it loaded.
+				 *
+				 * The out-of-bounds read is upstream's; two
+				 * things about the target turned it into a
+				 * fault.  trans[] is an array of POINTERS, so
+				 * LP64 doubles the stride and trans[-128] now
+				 * reads 1024 bytes before the array rather than
+				 * 512; and Mach-O has nothing mapped there where
+				 * a.out did.  The VAX printed nonsense, this
+				 * crashes.  It is also newly REACHABLE: the byte
+				 * that does it is any UTF-8 continuation, and
+				 * `printf '\303\251' | sed -n l' is an ordinary
+				 * thing to type on this host and was not in 1985.
+				 *
+				 * Masking makes the comparison unsigned, so a
+				 * high byte takes the printable arm and is
+				 * emitted as itself -- which is what an
+				 * unsigned-char machine would always have done.
+				 * Line 537 is then reachable only with 0..037.
+				 */
+				if((*p1 & 0377) >= 040) {
 					if(*p1 == 0177) {
 						p3 = rub;
 						while(*p2++ = *p3++)

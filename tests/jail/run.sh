@@ -39,8 +39,13 @@ ck() {
 [ -x "$MAKE8" ] || { echo "missing $MAKE8 -- run make v8make"; exit 1; }
 
 # --- the /bin the jail needs ------------------------------------------------
-for t in sh make cc cat echo rm cp mv; do
-	if [ -x "$V8ROOT/bin/$t" ] || [ "$t" = cp ] || [ "$t" = mv ]; then
+# cp and mv used to be excused here, because they had been imported into
+# src/cmd/cp/ and src/cmd/mv/ and never built -- and an excused case is a case
+# that has stopped asking. They are built now, so the exemption is gone and
+# `mv' in particular is load-bearing: four upstream makefiles in the rung-5
+# sweep below run `mv y.tab.c foo.c' and died on "Cannot load mv" without it.
+for t in sh make cc cat echo rm cp mv sed mkdir rmdir; do
+	if [ -x "$V8ROOT/bin/$t" ]; then
 		pass=$((pass+1))
 	else
 		fail=$((fail+1)); echo "FAIL /bin/$t missing from the rootfs"
@@ -101,6 +106,35 @@ ck 'mkdir inside a jailed directory succeeds'   'mkdir 1'   "$(echo "$mkout" | s
 	{ fail=$((fail+1)); echo "FAIL the created directory is not in the rootfs"; }
 [ -e /etc/v8jailprobe ] && { fail=$((fail+1)); echo "FAIL it escaped to the Mac's /etc"; } ||
 	pass=$((pass+1))
+
+# ...AND THE SAME QUESTION OF mknod, which is how mkdir(1) makes a directory.
+#
+# The probe above calls mkdir(2) and always passed, because v8s_mkdir resolves.
+# v8s_mknod did NOT -- it handed the raw path straight to SYS_mkdir. It was the
+# one creating syscall the V8P_MAKE conversion missed, and it was missed for a
+# reason worth keeping: mkdir(1) is the only caller of mknod in the entire tree,
+# and mkdir(1) was among eleven commands imported and never built. An
+# unreachable syscall cannot be seen to be wrong.
+#
+# mkdir(1) shows both halves of the split in one program: its access() asked the
+# JAIL and its mknod asked the HOST. It failed closed only because every jailed
+# prefix happens to be SIP-protected here; on a writable one it would have made
+# the directory outside the jail and reported success. So the assertion is where
+# the directory LANDS, tested through mkdir(1) because that is the only path to
+# the syscall.
+rm -rf "$V8ROOT/usr/lib/v8mknodprobe"
+"$V8ROOT/bin/mkdir" /usr/lib/v8mknodprobe >/dev/null 2>&1
+ck 'mkdir(1) creates inside the jail' 'yes' \
+   "$([ -d "$V8ROOT/usr/lib/v8mknodprobe" ] && echo yes || echo no)"
+[ -e /usr/lib/v8mknodprobe ] &&
+	{ fail=$((fail+1)); echo "FAIL mkdir(1) escaped to the Mac's /usr/lib"; } ||
+	pass=$((pass+1))
+# ...and rmdir(1) takes it apart again, which is three unlink(2)s in V7 and
+# proves the two resolve the same path rather than merely both succeeding.
+"$V8ROOT/bin/rmdir" /usr/lib/v8mknodprobe >/dev/null 2>&1
+ck 'rmdir(1) removes it from the jail' 'gone' \
+   "$([ -d "$V8ROOT/usr/lib/v8mknodprobe" ] && echo NO || echo gone)"
+rm -rf "$V8ROOT/usr/lib/v8mknodprobe"
 
 # link took NEITHER of its names through rootpath, so `ln /bin/cat x' linked the
 # MAC's /bin/cat -- a file the V8 world cannot even see with open(2).  Compared
@@ -466,8 +500,25 @@ esac
 #	spell   FOUR programs from one makefile, and `spellprog` rather than
 #	        `all`, because all regenerates the word lists from the american
 #	        and british dictionaries -- a different claim, and a slow one.
+#	man     the minimal case -- one .c, one rule -- kept because a sweep
+#	        that only covers elaborate makefiles proves nothing about plain
+#	        ones, and most of upstream's are plain.
+#	troff   TWENTY-TWO objects from one makefile, the largest here. Scale is
+#	        its own idiom: it is the case where a toolchain that is subtly
+#	        wrong about include paths or object naming stops getting lucky.
+#	refer   four programs and an #included non-header (refer..c), the same
+#	        invisible-to-every-scanner class as tbl's t..c.
+#	ps      `ps: & $(OBJ)' -- V8 make's `&', which no other makefile here
+#	        uses -- plus `$(OBJ): ps.h' as the whole dependency statement.
+#	load    two lines, and a GROVELER: upstream's makefile knows nothing of
+#	w	libkmemu, which this port invented, so what it builds is a real
+#	        program that cannot answer. Rung 5 is a claim about the build
+#	        DESCRIPTION being Bell Labs', not about the binary being the
+#	        installed one, and these two are where that distinction is
+#	        visible rather than academic.
 for spec in "sed sed" "fmt fmt" "tsort tsort" "tbl tbl" "yacc yacc" \
-            "spell spellprog"; do
+            "spell spellprog" "man man" "troff troff" "refer refer" \
+            "ps ps" "load load" "w w"; do
 	set -- $spec
 	prog=$1 target=$2
 	d=r5_$prog
@@ -475,7 +526,8 @@ for spec in "sed sed" "fmt fmt" "tsort tsort" "tbl tbl" "yacc yacc" \
 	cp "$ROOT"/src/cmd/$prog/*.c "$ROOT"/src/cmd/$prog/*.h "$d"/ 2>/dev/null
 	# the #included non-headers, which are not *.c and not *.h
 	cp "$ROOT"/src/cmd/$prog/t..c "$ROOT"/src/cmd/$prog/dextern \
-	   "$ROOT"/src/cmd/$prog/files "$d"/ 2>/dev/null
+	   "$ROOT"/src/cmd/$prog/files "$ROOT"/src/cmd/$prog/refer..c \
+	   "$d"/ 2>/dev/null
 	# sh's makefile runs `sh ./:fix ctype`.  A build helper whose name
 	# begins with a colon matches no glob at all -- the same invisibility
 	# as the #included non-headers, one layer further out.

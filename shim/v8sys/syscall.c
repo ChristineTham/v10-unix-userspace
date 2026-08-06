@@ -448,11 +448,25 @@ int v8s_link(char *a, char *b)
  * the only mode that does anything here is S_IFDIR, which becomes mkdir(2).
  * Without this, mknod fell through to libSystem's, which needs root for a
  * directory, and mkdir(1) reported "cannot make directory".
+ *
+ * mkpath(), AND IT WAS MISSING -- the last hole left by the creation fix.
+ * When V8P_MAKE arrived, creat, link, mkdir and unlink were all converted and
+ * this one was not, because nothing called it: mkdir(1) is the ONLY user of
+ * mknod in the whole tree, and mkdir(1) was among the eleven commands that had
+ * been imported and never built.  An unreachable syscall cannot be seen to be
+ * wrong, so building mkdir(1) is what exposed it.
+ *
+ * The shape is the one CLAUDE.md warns about, and mkdir(1) shows both halves in
+ * one program: its `access(pname, 02)' goes through v8s_access -> vpath() and
+ * asks the JAIL, then its mknod asked the HOST.  Checked one filesystem, wrote
+ * to another.  It failed closed only because every jailed prefix happens to be
+ * SIP-protected on this Mac -- on a writable one it would have created the
+ * directory outside the jail and reported success.
  */
 int v8s_mknod(char *p, int mode, int dev)
 {
 	if ((mode & 0170000) == 0040000)
-		RET(rawsys2(SYS_mkdir, (long)p, mode & 07777));
+		RET(rawsys2(SYS_mkdir, (long)mkpath(p), mode & 07777));
 	v8_errno = v8sys_errno(EPERM);
 	return (-1);
 }

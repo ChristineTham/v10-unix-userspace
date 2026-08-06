@@ -32,7 +32,21 @@ char *argv[];
 mkdir(d)
 char *d;
 {
-	char pname[128], dname[128];
+	/*
+	 * PORT: 1024, not V7's 128.  Both are filled by unbounded copies --
+	 * strncpy(pname, d, slash) and strcpy(dname, d) -- so the argument's
+	 * length is the only bound there is, and 128 was chosen when a name was
+	 * DIRSIZ = 14 bytes and 128 held nine components.  This port raises
+	 * DIRSIZ to 254 and macOS NAME_MAX is 255, so ONE legal component
+	 * overruns both.  Measured: a 255-character name SIGSEGVs, and it does
+	 * so after creating the directory and unlinking it again, so it destroys
+	 * what it made and reports nothing.
+	 *
+	 * 1024 is macOS's PATH_MAX -- the longest argument the kernel will hand
+	 * over -- which makes the copies bounded by construction rather than by
+	 * a guard that has to be maintained.  src/cmd/mkdir/PORTING.md.
+	 */
+	char pname[1024], dname[1024];
 	register i, slash = 0;
 
 	pname[0] = '\0';

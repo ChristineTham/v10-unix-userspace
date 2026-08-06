@@ -279,6 +279,38 @@ else
 	echo "FAIL these src/cmd commands are built but not installed:$missing"
 fi
 
+# ...AND THE SAME QUESTION OF THE DIRECTORIES, which is where the glob above
+# was blind. `src/cmd/*.c' matches src/cmd/cat.c and never src/cmd/mv/mv.c, so
+# a command upstream happens to keep in a directory of its own was invisible to
+# the check whose whole job is finding commands that were imported and never
+# shipped. ELEVEN were hiding there -- cp, dc, ed, factor, mkdir, mv, primes,
+# rmdir, sed, fmt, tsort -- so the V8 world had no cp, no mv and no sed.
+#
+# It surfaced from the far end instead: four upstream makefiles in the rung-5
+# sweep died on `Cannot load mv'.
+#
+# Not every directory is a /bin command -- the compiler passes, the Wave C
+# document tools install to /usr/bin, and refer and spell build several
+# programs under other names -- so this asks only that SOMETHING executable by
+# that name was installed somewhere in the rootfs.
+dmissing=
+for d in "$ROOT"/src/cmd/*/; do
+	name=$(basename "$d")
+	ls "$d"*.c >/dev/null 2>&1 || continue
+	case "$name" in
+	# built into the toolchain rather than installed under their own name
+	ccom|cc) continue ;;
+	esac
+	find "$V8ROOT" -name "$name" -type f -perm -u+x 2>/dev/null | grep -q . ||
+		dmissing="$dmissing $name"
+done
+if [ -z "$dmissing" ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL these src/cmd DIRECTORIES are imported but nothing is installed:$dmissing"
+fi
+
 # ...and the ones just added must actually run, not merely exist.  A binary
 # that dies on startup still satisfies the check above -- which is exactly what
 # units and ptx did until their data files were installed too.
@@ -298,6 +330,145 @@ check 'installed units converts' '1' \
 # rotation.  Without the file it exits with "Cannot open  file /usr/lib/eign".
 check 'installed ptx permutes' '3' \
     "$(printf 'alpha beta gamma\n' | "$V8ROOT/bin/ptx" | grep -c '^\.xx')"
+
+# --- the eleven that were imported into their own directories and never built
+# Same rule as above: existing is not running. These are the ones the glob
+# missed, and cp/mv/mkdir/rmdir are the ones upstream's makefiles reach for.
+W=${TMPDIR:-/tmp}/wavea_dir.$$
+mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
+echo hello > "$W/a"
+
+"$V8ROOT/bin/cp" "$W/a" "$W/b" 2>/dev/null
+check 'installed cp copies'  'hello' "$(cat "$W/b" 2>/dev/null)"
+"$V8ROOT/bin/mv" "$W/b" "$W/c" 2>/dev/null
+check 'installed mv moves'   'hello gone' \
+    "$(cat "$W/c" 2>/dev/null) $([ -f "$W/b" ] && echo still || echo gone)"
+
+# A FILE into an existing directory -- move()'s path, which has no length guard
+# of its own and joins with sprintf. Distinct from mv-a-DIRECTORY below, which
+# is the guarded path; getting those two the wrong way round makes a test that
+# cannot see the bug it is named for.
+mkdir -p "$W/into"; echo m > "$W/m"
+mverr=$("$V8ROOT/bin/mv" "$W/m" "$W/into" 2>&1)
+check 'mv file into a directory is silent' '' "$mverr"
+check '...and the file arrives'  'm' "$(cat "$W/into/m" 2>/dev/null)"
+
+# ...and the unguarded sprintf that the same change had widened: move() joins
+# target and basename into char buf[MAXN] with no length check of its own. That
+# is upstream's code, so it is not fixed -- but at MAXN 1024 an ordinary long
+# filename no longer overruns it, where at 100 a 92-character name did.
+long=$(printf 'n%.0s' 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 \
+                     1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 \
+                     1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 \
+                     1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0)
+echo L > "$W/$long"
+"$V8ROOT/bin/mv" "$W/$long" "$W/into" 2>/dev/null
+check 'a 110-character name survives the join' 'L' "$(cat "$W/into/$long" 2>/dev/null)"
+
+# MV OF A DIRECTORY is the guarded path -- mvdir()'s
+# `strlen(target) > MAXN-DIRSIZ-2', a RELATIONSHIP between the buffer and the
+# longest name that can be appended to it. Raising DIRSIZ 14 -> 254 made that
+# -156, so the guard fired on every such move with a message that is false.
+#
+# It cannot SUCCEED here either: mvdir renames the V7 way, link() then unlink(),
+# and macOS refuses link() on a directory with EPERM. So the assertion is that
+# it fails for the HONEST reason -- the same treatment as w's `No mem', and it
+# doubles as the check that the -156 guard is gone. rename(2) is what a fix
+# would use; src/cmd/mv/PORTING.md.
+mkdir -p "$W/dsrc" "$W/ddst"
+case "$("$V8ROOT/bin/mv" "$W/dsrc" "$W/ddst" 2>&1)" in
+*"cannot link"*) pass=$((pass+1)) ;;
+*) fail=$((fail+1))
+   echo "FAIL mv of a directory: expected the link() refusal, got [$("$V8ROOT/bin/mv" "$W/dsrc" "$W/ddst" 2>&1)]" ;;
+esac
+"$V8ROOT/bin/mkdir" "$W/d" 2>/dev/null
+check 'installed mkdir makes a directory' 'yes' "$([ -d "$W/d" ] && echo yes)"
+"$V8ROOT/bin/rmdir" "$W/d" 2>/dev/null
+check 'installed rmdir removes it'        'yes' "$([ ! -d "$W/d" ] && echo yes)"
+
+# A NAME AT macOS's NAME_MAX. mkdir's pname[]/dname[] were 128 bytes, sized when
+# a component was DIRSIZ = 14; at DIRSIZ 254 one legal name overruns both, and
+# a 255-character one SIGSEGV'd *after* creating the directory and unlinking it
+# again -- destroying what it made and reporting nothing.
+# src/cmd/mkdir/PORTING.md.
+# THE EXIT STATUS IS THE ASSERTION, not whether the directory appeared. With
+# the 128-byte buffers the crash lands on the RETURN from mkdir(), after the
+# work is done -- so `[ -d ... ]' is satisfied by a run that died of SIGSEGV,
+# and a test that checks only for the directory passes on the broken build.
+# Measured while mutating: exit 139, directory present.
+n255=$(awk 'BEGIN{s="";while(length(s)<255)s=s "x";print substr(s,1,255)}')
+"$V8ROOT/bin/mkdir" "$W/$n255" 2>/dev/null
+mkrc=$?
+check 'mkdir exits cleanly on a 255-character name' '0' "$mkrc"
+check '...and the directory is there'               'yes' \
+    "$([ -d "$W/$n255" ] && echo yes)"
+"$V8ROOT/bin/rmdir" "$W/$n255" 2>/dev/null
+
+# rmdir's name[] was 500 and strcpy(name, d) is its FIRST statement, so the
+# argument alone overran it -- SIGBUS at 550, no filesystem access needed. The
+# path need not exist; only the exit status matters, and 138 is the crash.
+long550=$(awk 'BEGIN{s="";while(length(s)<550)s=s "y";print substr(s,1,550)}')
+"$V8ROOT/bin/rmdir" "$long550" >/dev/null 2>&1
+rc=$?
+[ "$rc" -lt 128 ] && pass=$((pass+1)) ||
+    bad_rmdir=1
+[ "${bad_rmdir:-0}" = 1 ] &&
+    { fail=$((fail+1)); echo "FAIL rmdir crashed on a 550-character argument (exit $rc)"; }
+
+# sed is the one whose absence would have been felt hardest, and -n with a line
+# address exercises the address parser rather than just the copy loop.
+check 'installed sed selects a line' 'b' \
+    "$(printf 'a\nb\nc\n' | "$V8ROOT/bin/sed" -n '2p')"
+check 'installed sed substitutes'    'xbc' \
+    "$(printf 'abc\n' | "$V8ROOT/bin/sed" 's/a/x/')"
+
+# `sed -n l' ON A HIGH BYTE, which crashed. char is signed, so a byte >= 0200 is
+# negative, `if(*p1 >= 040)' sent it down the control-character arm, and
+# `trans[*p1]' indexed a 32-entry array of POINTERS with a negative subscript.
+# The out-of-bounds read is upstream's; LP64 doubled the stride and Mach-O maps
+# nothing there, so the VAX printed nonsense and this faulted. Newly reachable
+# too -- the byte that does it is any UTF-8 continuation. src/cmd/sed/PORTING.md.
+check 'sed -n l survives a UTF-8 byte' 'éx' \
+    "$(printf '\303\251x\n' | "$V8ROOT/bin/sed" -n l)"
+utf8rc=$(printf '\303\251x\n' | "$V8ROOT/bin/sed" -n l >/dev/null 2>&1; echo $?)
+check '...and exits cleanly rather than crashing' '0' "$utf8rc"
+# ...while the control characters it DOES have escapes for still get them: the
+# fix must not have sent 0..037 down the printable arm as well. Asserted as a
+# property rather than a literal, because trans[011] is ">\\t" -- a prefix
+# character and then the escape -- and hard-coding that spelling tests the table
+# rather than the branch. What matters is that no raw tab reaches the output.
+tabout=$(printf 'a\tb\n' | "$V8ROOT/bin/sed" -n l)
+case "$tabout" in
+*'\t'*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL sed -n l did not escape a tab: [$tabout]" ;;
+esac
+# ...and no RAW tab survives. od -c renders a real tab as the two adjacent
+# characters \t, while the escape sed emits is a backslash and a t with od's
+# column padding between them -- so a match here means the byte came through
+# unescaped, which is the opposite of what the first case asks.
+if printf 'a\tb\n' | "$V8ROOT/bin/sed" -n l | od -An -c | grep -q '\\t'; then
+	fail=$((fail+1)); echo "FAIL sed -n l let a raw tab through"
+else
+	pass=$((pass+1))
+fi
+# tsort is a real algorithm, so a cycle-free order is a real answer.
+check 'installed tsort orders'  'a b c' \
+    "$(printf 'a b\nb c\n' | "$V8ROOT/bin/tsort" | tr '\n' ' ' | sed 's/ $//')"
+# factor echoes the number, then each factor on its own indented line, then a
+# blank one -- so the factors are lines 2..n-1 with the indentation stripped.
+check 'installed factor factors' '7 13' \
+    "$("$V8ROOT/bin/factor" 91 | tail -n +2 | tr -d ' \t' | grep -v '^$' |
+       tr '\n' ' ' | sed 's/ $//')"
+check 'installed dc computes'   '42'   "$(echo '6 7 * p' | "$V8ROOT/bin/dc")"
+check 'installed fmt reflows'   'one two three' \
+    "$(printf 'one\ntwo\nthree\n' | "$V8ROOT/bin/fmt" | head -1)"
+# ed is a line editor driven entirely by stdin; append, write, quit.
+printf 'a\nhello ed\n.\nw %s/e.txt\nq\n' "$W" | "$V8ROOT/bin/ed" >/dev/null 2>&1
+check 'installed ed writes a file' 'hello ed' "$(cat "$W/e.txt" 2>/dev/null)"
+# primes takes a starting value and counts up.
+check 'installed primes generates' '11 13 17' \
+    "$(echo 11 | "$V8ROOT/bin/primes" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$W"
 
 # date(1) -- the first piece of Phase 4, and the only groveler that needs no
 # kernel state at all.  Compared against the host by FIELD rather than by whole
