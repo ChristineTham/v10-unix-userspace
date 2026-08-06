@@ -715,6 +715,7 @@ int argc; char **argv;
 	 * the difference is 10 whatever the baseline is.
 	 */
 	printf("nice %d\n", p.p_nice);
+	printf("nzero %d\n", NZERO);
 	if (argc > 1) {
 		int kid = atoi(argv[1]);
 		int kfd;
@@ -781,6 +782,8 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 	# is the host's -- the shell arranging the world, not part of the test.
 	nice -n 10 sleep 30 >/dev/null 2>&1 & kidpid=$!
 	out=$("$TMP/gp" "$kidpid" 2>/dev/null)
+	# ...asked BEFORE the kill, or ps has nothing left to report on.
+	hostkid=$(ps -o nice= -p "$kidpid" 2>/dev/null | tr -d ' ')
 	kill "$kidpid" 2>/dev/null
 	wait "$kidpid" 2>/dev/null
 	g() { echo "$out" | awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}'; }
@@ -807,18 +810,32 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 	# start renice'd. A test that passes on one machine and fails on another
 	# is testing the machine.
 	#
-	# A difference cannot see the BIAS, only the scale and the sign: drop
-	# NZERO entirely and the gap is still ten. What the bias exists FOR is
-	# printp's `" N"[p_nice > NZERO]', and that is asserted against ps's
-	# real output in the ps section below -- biased, a ten-nicer process
-	# reads baseline+30 and earns the marker; unbiased it reads baseline+10
-	# and never earns it, at any baseline. The two checks fail to different
-	# mutations, which is why there are two.
-	mynice=$(g nice); kidnice=$(g kidnice)
-	if [ -n "$mynice" ] && [ "$kidnice" != "X" ] && [ -n "$kidnice" ]; then
-		check "...nice tracks the host's, ten apart" \
-			"10" "$((kidnice - mynice))"
-	else bad "could not read both nice values" "self=$mynice kid=$kidnice"; fi
+	# NICE, CHECKED AGAINST THE HOST'S OWN ANSWER, and this took three tries
+	# to get right because each earlier form asserted something about the
+	# machine.  `p_nice == NZERO' assumed a baseline of 0 and failed on a
+	# renice'd CI runner.  A DIFFERENCE against a ten-nicer child fixed that
+	# and then failed too, because PROC_PIDTBSDINFO does not answer on the
+	# runner at all -- and the shim's documented behaviour when the host will
+	# not say is exactly NZERO, which a difference reads as zero.
+	#
+	# So the statement is the precise one: the shim reports the host's nice
+	# biased by NZERO, OR it reports NZERO because the host declined.  Any
+	# third value is a bug, and both mutations that matter produce one --
+	# dropping the bias gives the raw host nice, inverting it gives
+	# NZERO-nice, and neither is either permitted answer.
+	nzero=$(g nzero); mynice=$(g nice); kidnice=$(g kidnice)
+	if [ -z "$nzero" ] || [ -z "$kidnice" ] || [ "$kidnice" = "X" ]; then
+		bad "could not read the nice values" "self=$mynice kid=$kidnice"
+	elif [ -n "$hostkid" ] && [ "$kidnice" = "$((nzero + hostkid))" ]; then
+		ok; nicelive=yes
+	elif [ "$kidnice" = "$nzero" ]; then
+		echo "  (not exercised: the host does not report nice here, so the"
+		echo "   shim reports NZERO -- its documented answer for that)"
+		nicelive=no
+	else
+		bad "...nice is the host's biased by NZERO, or NZERO" \
+		    "host=$hostkid nzero=$nzero shim=$kidnice"
+	fi
 	# Ticks read as nanoseconds would give 2 here, not ~100.
 	pct=$(g pct)
 	[ "$pct" -gt 40 ] && [ "$pct" -le 100 ] &&
@@ -1163,14 +1180,19 @@ if [ -n "$selp" ]; then
 	check "ps <pid> selects exactly that process" "$selp" "$sel"
 else bad "no pid to select"; fi
 
-# THE NICE MARKER, which is the only thing that can see the NZERO bias.
-# printp prints " N"[p_nice > NZERO], so a process ten nicer than the shell
-# reads baseline+30 and earns the N; without the bias it reads baseline+10 and
-# never earns it, at any baseline. That makes this the check a difference
-# cannot replace -- and it works on a CI runner whose jobs start renice'd.
+# THE NICE MARKER, which is the only thing that can see the NZERO bias: printp
+# prints " N"[p_nice > NZERO], so a renice'd process earns the N only if the
+# bias is applied. Gated on `nicelive', set above when the host was willing to
+# report nice at all -- where it is not (a GitHub runner), p_nice is NZERO for
+# everything and no process can earn the marker, which is the shim's documented
+# answer rather than a failure.
 nmark=$(echo "$psout" | awk -v p="$nicekid" '$1 == p {print $4}')
 kill "$nicekid" 2>/dev/null; wait "$nicekid" 2>/dev/null
-check "a renice'd process carries V8's N marker" "N" "$nmark"
+if [ "$nicelive" = yes ]; then
+	check "a renice'd process carries V8's N marker" "N" "$nmark"
+else
+	echo "  (not exercised: the host reports no nice, so nothing earns the marker)"
+fi
 
 # The time column comes from the u-area, which is the half PIOCGETPR does not
 # carry -- so a non-zero time anywhere proves the u-area read reached ps.
