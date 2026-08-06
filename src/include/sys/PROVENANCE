@@ -6,3 +6,4 @@
 # <git blob hash of pristine upstream file>  <upstream path>
 737a3a66b62bee95ecaf61f3b6ac14cccc0e8e49  v8/usr/include/sys/dir.h
 5409ff3980c6c4edb6d48503bdb301383475de3b  v8/usr/include/sys/param.h
+b66298ca751715cfe7aa644403e8f1ede330b567  v8/usr/include/sys/proc.h

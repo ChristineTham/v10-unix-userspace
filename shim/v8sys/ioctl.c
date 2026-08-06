@@ -18,6 +18,13 @@
  * file-descriptor passing (FIOSNDFD, FIORCVFD, FIOACCEPT, FIOREJECT) are V8's
  * IPC primitives and belong to the kernel we are not porting; they fail.  Only
  * `pt` and the more advanced upas plumbing use them, both on the excluded list.
+ *
+ * THIS FILE IS ONE FILESYSTEM'S t_ioctl, not the syscall.  V8's fstypsw has an
+ * ioctl slot and dispatches through it (ioctl.c in the kernel does the same),
+ * and /proc's PIOCGETPR is what made the distinction load-bearing here.  The
+ * translation below did not move when the slot arrived -- it is the PASSTHROUGH
+ * type's implementation, which is what it always was.  The syscall entry that
+ * chooses between the types is v8s_ioctl in syscall.c.
  */
 
 #include <sys/ioctl.h>
@@ -160,7 +167,7 @@ sgtty_to_termios(struct v8_sgttyb *s, struct termios *t)
 }
 
 int
-v8s_ioctl(int fd, int cmd, char *arg)
+v8sys_pt_ioctl(int fd, int cmd, char *arg)
 {
 	struct termios t;
 	int n;

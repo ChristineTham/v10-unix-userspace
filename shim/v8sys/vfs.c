@@ -247,10 +247,20 @@ pt_seek(int fd, long off, int whence)
 extern int v8sys_pt_stat(char *rp, struct v8_stat *st, int follow);
 extern int v8sys_pt_fstat(int fd, struct v8_stat *st);
 
+/*
+ * ...and ioctl stays in ioctl.c for the same reason, one step further: the
+ * sgtty-over-termios translation is 200 lines of mapping that belongs beside
+ * the two flag vocabularies it converts between, and it is not per-filesystem.
+ * It is the PASSTHROUGH type's t_ioctl, which is what it has always been in
+ * fact; the switch only made that sayable.
+ */
+extern int v8sys_pt_ioctl(int fd, int cmd, char *arg);
+
 struct v8fstyp v8fs_pass = {
 	"pass",
 	pt_path,
 	pt_open, pt_close,
 	pt_read, pt_write, pt_seek,
-	v8sys_pt_stat, v8sys_pt_fstat
+	v8sys_pt_stat, v8sys_pt_fstat,
+	v8sys_pt_ioctl
 };

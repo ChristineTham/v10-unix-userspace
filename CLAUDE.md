@@ -107,10 +107,17 @@ the reasoning.
 
 **2. New code (`compiler/`, `shim/`)** — written for this port, modern C.
 `shim/v8sys/vfs.c` is the **filesystem switch** (PLAN §8a step 2): one mount
-table, one type behind it today. The table is the old `v8dirs[]` with a type
-column — do not add a second prefix list beside it. `struct v8fstyp` answers to
-V8's own `struct fstypsw`; where it departs (descriptors, not inodes) the header
-says why.
+table, two types behind it — passthrough, and `/proc` in `shim/libkmemu/`. The
+table is the old `v8dirs[]` with a type column — do not add a second prefix list
+beside it. `struct v8fstyp` answers to V8's own `struct fstypsw`; where it
+departs (descriptors, not inodes) the header says why.
+
+Dispatch is **by descriptor, not by operation**, and `ioctl` is where that stops
+being a detail: `v8s_ioctl` routes on `v8fs_fdtype(fd)`, so `PIOCGETPR` on an
+ordinary file is `ENOTTY` and `TIOCGETP` on a `/proc` descriptor is `EINVAL` —
+the same command number, two paths, which is the pair `tests/kmemu` asserts. The
+sgtty/termios translation in `ioctl.c` did not move when the slot arrived; it
+*became* the passthrough type's `t_ioctl`, which is what it always was.
 `compiler/ccom-arm64/` is the machine-dependent half of the compiler, written
 *inside ccom's own architecture* (`local.c`, `local2.c`, `gencode.c`, `macdefs.h`
 — the same file names and hooks pcc expects). `shim/v8sys/` is `libv8sys`,
@@ -340,6 +347,27 @@ This port raises 14 → 254; patching two of the three changed nothing for
 exactly the programs that read directories raw, while looking like it had. All
 three now agree, plus `shim/v8sys/v8sys.h`'s `V8_DIRSIZ` and
 `src/libc/gen/readdir.c`'s `ODIRSIZ` — five spellings of one number.
+
+**LP64 is not the only width problem: V8's 16-BIT RANGES are the other, and
+they fail later and quieter.** LP64 breaks a pointer immediately; a 16-bit field
+holds a value the host has simply not reached yet. Three so far, and they are
+one class:
+
+| field | V8's range | the host's | how it failed |
+|---|---|---|---|
+| `DIRSIZ` | 14-char names | any length | truncated names, `pwd` could not `chdir` back |
+| `d_ino` | 16-bit inode | 64-bit | wraps; harmless *except* the value that wraps to 0 |
+| `p_pid` | `short`, wrapped at 30000 | to 99998 | **negative pids** — 44145 read as −21391 |
+
+The `p_pid` one is the shape to remember: **a freshly booted host has low pids**,
+so every check passes until the counter crosses 32767 and the same binary starts
+lying. It was found by mutation-testing something unrelated, when a mutation
+produced two extra failures it had no business producing. `tests/kmemu` now
+asserts the *field width* beside the runtime value, because the width is true at
+every pid and the comparison only at high ones. Widened in
+`src/include/sys/proc.h`; `src/include/PORTING.md` is that tree's record, and it
+holds the rule that a struct there has **two ends**, since v8cc and clang each
+read one.
 
 **A directory's `st_size` is the size of what `read(2)` gives, not what the host
 charges.** The shim builds 256-byte records from variable-length host entries,

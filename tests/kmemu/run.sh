@@ -163,7 +163,17 @@ libcimports() {
 # facts from sysctl/libproc/utmpx"), it answers "what is running", and it is
 # the interface Apple documents for exactly that. Sanctioned, and recorded here
 # rather than absorbed: an eighth still has to argue its case.
-KMEMU_IMPORTS="endutxent getfsstat getutxent proc_listpids setutxent statfs sysctlbyname"
+#
+# proc_pidinfo is the eighth, and it arrived with PIOCGETPR -- the same file,
+# the same question, the next level of detail. proc_listpids answers "which
+# processes exist" and this answers "what is true of one of them", which is the
+# whole content of a struct proc. Same man page as proc_listpids, same
+# sanctioned clause. Note what it did NOT bring: the tick rate it needs comes
+# from sysctl and the wall clock from a raw syscall, because rawsys.h already
+# covers gettimeofday and mach_timebase_info() would have been a second way to
+# ask something sysctl can answer. Convenience is how an exception list stops
+# meaning anything.
+KMEMU_IMPORTS="endutxent getfsstat getutxent proc_listpids proc_pidinfo setutxent statfs sysctlbyname"
 check "who imports libkmemu's whole surface and no more" \
 	"$KMEMU_IMPORTS" "$(libcimports "$WHO")"
 check "df imports the same set, being the same library" \
@@ -548,6 +558,134 @@ if "$CC" -c -o "$TMP/pr.o" "$TMP/pr.c" > "$TMP/pr.log" 2>&1 &&
 	awk -v h="$hostn" -v v="$v8n" 'BEGIN { exit !(v > h - 40 && v < h + 40) }' &&
 		ok || bad "/proc lists roughly what ps ax does" "host $hostn, /proc $v8n"
 else bad "/proc probe build" "$(head -3 "$TMP/pr.log")"; fi
+
+# --- PIOCGETPR, and the struct it copies out -----------------------------
+# prioctl answers this with iomove of the kernel's own proc slot, verbatim
+# (proca.c:323), so struct proc's SHAPE IS THE ABI -- there is no marshalling
+# step that could absorb a disagreement between the two compilers.  procfs.c
+# _Static_asserts the offsets on the clang side, which says nothing about
+# whether v8cc agrees; this is that half.
+cat > "$TMP/gp.c" <<'EOF'
+#include <stdio.h>
+#include <sys/param.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/dir.h>
+#include <sys/user.h>
+#include <sys/proc.h>
+#include <sys/pioctl.h>
+#include <sys/ioctl.h>
+struct proc p;
+extern int errno;
+long sink;		/* global, because v8cc is 1985 C and has no `volatile' */
+#define OFF(f)	((long)((char *)&p.f - (char *)&p))
+main()
+{
+	int fd, dir, pct;
+	char me[16];
+
+	printf("size %ld\n", (long)sizeof(struct proc));
+	printf("offs %ld %ld %ld %ld %ld %ld %ld %ld %ld\n",
+	    OFF(p_stat), OFF(p_nice), OFF(p_flag), OFF(p_uid), OFF(p_pid),
+	    OFF(p_ppid), OFF(p_dsize), OFF(p_clktim), OFF(p_pctcpu));
+
+	sprintf(me, "/proc/%05d", getpid());
+	if ((fd = open(me, 0)) < 0) { printf("noopen\n"); return 1; }
+	if (ioctl(fd, PIOCGETPR, &p) < 0) { printf("noioctl\n"); return 1; }
+
+	/*
+	 * The width is asserted separately from the value, because the value
+	 * only catches the bug ABOVE PID 32767 -- and on a freshly booted host
+	 * every pid is below it, so the equality below would pass all morning
+	 * with a 16-bit field and start lying after lunch.  This is how the
+	 * truncation got in: it was invisible until the host's pid counter
+	 * happened to be high enough.
+	 */
+	printf("pidwidth %d\n", (int)sizeof(p.p_pid));
+	printf("pid %d\n",  p.p_pid  == getpid());
+	printf("rawpid %d\n", getpid());
+	printf("ppid %d\n", p.p_ppid == getppid());
+	printf("uid %d\n",  p.p_uid  == getuid());
+	printf("load %d\n", (p.p_flag & SLOAD) != 0);
+	printf("stat %d\n", p.p_stat == SRUN);
+	printf("rss %d\n",  p.p_rssize > 0);
+	printf("nice %d\n", p.p_nice == NZERO);
+
+	/*
+	 * %cpu, AND THE POINT IS THE MAGNITUDE.  "Between 0 and 100" would pass
+	 * with the tick rate wrong by 41.67x, which is precisely the mistake
+	 * procfs.c's prtickhz() exists to avoid -- pti_total_user is in mach
+	 * ticks, not the nanoseconds the header's "total time" suggests.  So
+	 * burn two seconds of cpu in a process two seconds old and demand a
+	 * number near 100: reading ticks as nanoseconds gives 2 instead.
+	 *
+	 * Self-calibrating rather than machine-timed -- it spins until the
+	 * clock says two seconds have passed, so a slow host burns just as much
+	 * cpu as a fast one and the ratio is the same on both.
+	 */
+	{
+		long end = time((long *)0) + 2, i;
+		while (time((long *)0) < end)
+			for (i = 0; i < 200000; i++) sink += i;
+	}
+	if (ioctl(fd, PIOCGETPR, &p) < 0) { printf("noioctl2\n"); return 1; }
+	/* the float crosses the seam too; keep it out of varargs to test the
+	 * struct member rather than v8cc's argument passing for floats. */
+	pct = (int)(100.0 * p.p_pctcpu);
+	printf("pct %d\n", pct);
+
+	/*
+	 * THE SAME COMMAND, TWO DESCRIPTORS, TWO PATHS.  This pair is what says
+	 * the dispatch is by filesystem and not by command number: PIOCGETPR on
+	 * an ordinary file must never reach /proc's handler, and a terminal
+	 * command on a /proc descriptor must never reach termios.
+	 */
+	dir = open("/etc/passwd", 0);
+	printf("pass %d\n", ioctl(dir, PIOCGETPR, &p) < 0 && errno == 25);
+	close(dir);
+	printf("tioc %d\n", ioctl(fd, TIOCGETP, &p) < 0 && errno == 22);
+	close(fd);
+
+	/* prioctl calls pfind(i_number - PRMAGIC) before looking at the command
+	 * (proca.c:312), and on the directory that is pfind(2 - 64). */
+	dir = open("/proc", 0);
+	printf("dir %d\n", ioctl(dir, PIOCGETPR, &p) < 0 && errno == 2);
+	close(dir);
+	fflush(stdout);
+	return 0;
+}
+EOF
+if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
+   clang -nostdlib -e _v8start -o "$TMP/gp" "$CRT" "$TMP/gp.o" \
+	-Wl,-force_load,"$KMEMU" "$LIBC" "$STUBS" "$SHIM" -lSystem >> "$TMP/gp.log" 2>&1; then
+	out=$("$TMP/gp" 2>/dev/null)
+	g() { echo "$out" | awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}'; }
+	# 208 and not upstream's 200: the four pid-shaped fields are int here,
+	# because a macOS pid does not fit in a short. src/include/PORTING.md.
+	check "v8cc agrees struct proc is 208 bytes" "208" "$(g size)"
+	check "...and on every offset PIOCGETPR's readers use" \
+		"27 29 56 60 68 72 88 152 180" "$(g offs)"
+	check "p_pid is 32 bits, at any pid the host happens to be at" \
+		"4" "$(g pidwidth)"
+	[ "$(g pid)" = 1 ] && ok ||
+		bad "PIOCGETPR reports our own pid" "pid was $(g rawpid)"
+	check "...our parent"                          "1" "$(g ppid)"
+	check "...our uid"                             "1" "$(g uid)"
+	# SLOAD is not decoration: without it ps's getuarea reads /dev/drum.
+	check "...SLOAD, so ps reads the u-area from /proc" "1" "$(g load)"
+	# macOS SRUN is 2 and V8's is 3; a straight copy would print 'w'.
+	check "...SRUN translated, not copied"         "1" "$(g stat)"
+	check "...a resident set size"                 "1" "$(g rss)"
+	# V8's nice is 0..39 about NZERO, macOS's -20..19 about 0.
+	check "...nice biased to V8's NZERO"           "1" "$(g nice)"
+	# Ticks read as nanoseconds would give 2 here, not ~100.
+	pct=$(g pct)
+	[ "$pct" -gt 40 ] && [ "$pct" -le 100 ] &&
+		ok || bad "...a busy process reads near 100%cpu" "got $pct"
+	check "PIOCGETPR on an ordinary file is ENOTTY" "1" "$(g pass)"
+	check "a terminal command on /proc is EINVAL"  "1" "$(g tioc)"
+	check "PIOCGETPR on /proc itself is ENOENT"    "1" "$(g dir)"
+else bad "PIOCGETPR probe build" "$(head -3 "$TMP/gp.log")"; fi
 
 # THE NEGATIVE HALF, and it is the one that says the boundary is real.  /proc
 # lives in libkmemu because it answers from libproc; a binary WITHOUT libkmemu

@@ -25,6 +25,7 @@
 #include "../v8sys/v8sys.h"
 #include "../v8sys/rawsys.h"
 #include <sys/types.h>
+#include <sys/sysctl.h>
 #include <libproc.h>
 
 extern int v8_errno;
@@ -176,6 +177,281 @@ static long
 prdirsize(void)
 {
 	return ((long)(PR_NPROC + 2) * PR_SDSIZ);
+}
+
+/* --------------------------------------------------------- PIOCGETPR */
+
+/*
+ * struct proc, AND ITS SHAPE IS THE ABI.
+ *
+ * prioctl answers PIOCGETPR with `iomove((char *)p, sizeof(struct proc),
+ * B_READ)' (proca.c:323) -- the kernel's own proc slot, copied out verbatim,
+ * no marshalling anywhere.  So there is no layer that could absorb a
+ * disagreement between what this file writes and what ps(1) compiled against:
+ * a field in the wrong place yields plausible numbers rather than an error.
+ *
+ * Spelled again here for utmp.c's reason -- this file is clang-compiled for the
+ * host, and <sys/proc.h> belongs to the V8 include tree v8cc reads.  Kernel
+ * struct pointers become `char *' because nothing here can dereference them,
+ * and V8's typedefs resolve as sys/types.h says: size_t and swblk_t are long,
+ * caddr_t is char *, u_short is unsigned short.
+ *
+ * Upstream, for checking against (v8/usr/include/sys/proc.h):
+ *
+ *	struct proc *p_link, *p_rlink;  struct pte *p_addr;
+ *	char p_usrpri, p_pri, p_cpu, p_stat, p_time, p_nice, p_slptime, p_cursig;
+ *	long p_sig, p_siga0, p_siga1;   int p_flag;
+ *	int p_uid, p_pgrp, p_pid, p_ppid;   short p_poip, p_szpt;
+ *	size_t p_tsize, p_dsize, p_ssize, p_rssize, p_maxrss, p_swrss;
+ *	swblk_t p_swaddr;  caddr_t p_wchan;  struct text *p_textp;
+ *	u_short p_clktim, p_tsleep;  struct pte *p_p0br;  struct proc *p_xlink;
+ *	short p_cpticks;  float p_pctcpu;  short p_ndx, p_idhash;
+ *	struct proc *p_pptr;  struct inode *p_trace;
+ *
+ * TWO GUARDS, because one cannot cover this.  The _Static_asserts below fail
+ * the clang build the moment this declaration drifts from the offsets it claims
+ * -- but they can say nothing about whether v8cc agrees, since they only ever
+ * see one compiler.  tests/kmemu measures the same numbers from the V8 side and
+ * runs ps's own ioctl end to end, which is the half a static assertion is blind
+ * to.  Both, and they fail for different reasons.
+ *
+ * ...and the four pid-shaped fields are int rather than upstream's short, which
+ * is this port's one change to the header.  A macOS pid does not fit in 16 bits
+ * and truncates NEGATIVE; src/include/PORTING.md has the measurement.  That is
+ * why sizeof is 208 and not the 200 upstream's declaration gives.
+ */
+struct v8proc {
+	char	*p_link, *p_rlink;
+	char	*p_addr;
+	char	 p_usrpri, p_pri, p_cpu, p_stat;
+	char	 p_time, p_nice, p_slptime, p_cursig;
+	long	 p_sig, p_siga0, p_siga1;
+	int	 p_flag;
+	int	 p_uid, p_pgrp, p_pid, p_ppid;
+	short	 p_poip, p_szpt;
+	long	 p_tsize, p_dsize, p_ssize, p_rssize, p_maxrss, p_swrss;
+	long	 p_swaddr;
+	char	*p_wchan;
+	char	*p_textp;
+	unsigned short p_clktim, p_tsleep;
+	char	*p_p0br;
+	char	*p_xlink;
+	short	 p_cpticks;
+	float	 p_pctcpu;
+	short	 p_ndx, p_idhash;
+	char	*p_pptr;
+	char	*p_trace;
+};
+
+#define AT(f, n)	_Static_assert(__builtin_offsetof(struct v8proc, f) == (n), \
+			    "struct proc: " #f " moved")
+_Static_assert(sizeof(struct v8proc) == 208, "struct proc is 208 bytes on LP64");
+AT(p_stat, 27);   AT(p_time, 28);    AT(p_nice, 29);    AT(p_flag, 56);
+AT(p_uid, 60);    AT(p_pgrp, 64);    AT(p_pid, 68);     AT(p_ppid, 72);
+AT(p_tsize, 80);  AT(p_dsize, 88);   AT(p_ssize, 96);   AT(p_rssize, 104);
+AT(p_swaddr, 128); AT(p_wchan, 136); AT(p_textp, 144);  AT(p_clktim, 152);
+AT(p_pctcpu, 180);
+#undef AT
+
+/* sys/h/pioctl.h.  Only PIOCGETPR is answered; see pr_ioctl. */
+#define PIOC		('p'<<8)
+#define PIOCGETPR	(PIOC|1)
+
+/* sys/proc.h stat codes and the one flag bit that matters here. */
+#define V8_SSLEEP	1
+#define V8_SWAIT	2
+#define V8_SRUN		3
+#define V8_SIDL		4
+#define V8_SZOMB	5
+#define V8_SSTOP	6
+#define V8_SLOAD	0x00000001
+
+#define V8_NZERO	20	/* sys/param.h:40 -- V8's nice is 0..39, not -20..19 */
+#define V8_NBPG		512	/* sys/param.h:65 -- a click, and ps prints clicks */
+
+/*
+ * THE STAT CODES DISAGREE ON EVERY VALUE BUT ONE, and both are small integers
+ * in the same range, so a straight copy compiles, runs, stays in bounds and
+ * prints the wrong letter for every process:
+ *
+ *	              macOS   V8
+ *	SIDL            1      4       ps prints "?swRLZT?"[p_stat]
+ *	SRUN            2      3       so a running process would read 'w',
+ *	SSLEEP          3      1       a sleeping one 'R', a stopped one 'L'.
+ *	SSTOP           4      6
+ *	SZOMB           5      5       <- the only one that agrees
+ *
+ * That is the shape of failure this whole file is trying to avoid: output that
+ * looks like output.  Hence a table rather than an assignment.
+ */
+static char
+prstat_of(unsigned int mac)
+{
+	switch (mac) {
+	case 1:  return (V8_SIDL);	/* SIDL */
+	case 2:  return (V8_SRUN);	/* SRUN */
+	case 3:  return (V8_SSLEEP);	/* SSLEEP */
+	case 4:  return (V8_SSTOP);	/* SSTOP */
+	case 5:  return (V8_SZOMB);	/* SZOMB */
+	}
+	return (V8_SWAIT);		/* V8's own abandoned state; prints 'w' */
+}
+
+/*
+ * How many mach ticks make a second.
+ *
+ * pti_total_user AND pti_total_system ARE NOT NANOSECONDS.  <sys/proc_info.h>
+ * says only "total time", and they are mach absolute-time units -- measured
+ * here against CLOCK_PROCESS_CPUTIME_ID: a 0.3096 s burn reported 7560618,
+ * which is 0.0076 s read as nanoseconds and 0.3150 s read as ticks.  On Intel
+ * the timebase is 1/1 and the two coincide exactly, so this is a bug that an
+ * x86 CI runner cannot see and an Apple Silicon one is wrong by 41.67x.  The
+ * same reason .github/workflows/ci.yml pins macos-14.
+ *
+ * hw.tbfrequency is the tick rate and comes through sysctl, which is on PLAN.md
+ * section 7's sanctioned list; mach_timebase_info() would be a second way to
+ * ask and is not.  It is a quad in the kernel, but reading it into a zeroed
+ * 64-bit variable is right whichever width it answers in, little-endian.
+ */
+static double
+prtickhz(void)
+{
+	static double hz;
+	unsigned long long f = 0;
+	size_t n = sizeof f;
+
+	if (hz == 0) {
+		if (sysctlbyname("hw.tbfrequency", &f, &n, (void *)0, 0) < 0 ||
+		    f == 0)
+			f = 1000000000ULL;	/* nanoseconds; the Intel case */
+		hz = (double)f;
+	}
+	return (hz);
+}
+
+static long
+prnow(void)
+{
+	struct { long sec, usec; } tv;
+
+	/* rawsys, not libc: gettimeofday is not a system fact this library was
+	 * given an exception for, and rawsys.h already covers it.  Same rule
+	 * that keeps synth.c writing files through raw syscalls. */
+	if (rawsys2(SYS_gettimeofday, (long)&tv, 0) < 0) return (0);
+	return (tv.sec);
+}
+
+/*
+ * Fill one.  What is left zero is left zero deliberately; the notes say which
+ * reader would have wanted it.
+ */
+static int
+prgetpr(int pid, struct v8proc *p)
+{
+	struct proc_taskallinfo ai;
+	char *q = (char *)p;
+	long i, elapsed;
+	double cpu;
+
+	for (i = 0; i < (long)sizeof *p; i++) q[i] = 0;
+
+	if (proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &ai, sizeof ai) <
+	    (int)sizeof ai)
+		return (-1);
+
+	p->p_pid  = (int)ai.pbsd.pbi_pid;
+	p->p_ppid = (int)ai.pbsd.pbi_ppid;
+	p->p_pgrp = (int)ai.pbsd.pbi_pgid;
+	p->p_uid  = (int)ai.pbsd.pbi_uid;
+	p->p_stat = prstat_of(ai.pbsd.pbi_status);
+
+	/* V8's nice runs 0..39 around NZERO; macOS's runs -20..19 around 0.
+	 * printp only asks `p_nice > NZERO', so the bias has to be applied or
+	 * every renice'd process reads as ordinary. */
+	p->p_nice = (char)(ai.pbsd.pbi_nice + V8_NZERO);
+
+	/*
+	 * SLOAD IS LOAD-BEARING, not decoration.  ps's getuarea (doselect.c)
+	 * reads the u-area from /proc only `if (pp->p_flag & SLOAD)'; without
+	 * it, it seeks into /dev/drum instead -- the swap device, which this
+	 * world does not have.  Every process here is in core in the only sense
+	 * available, so every one gets SLOAD.
+	 */
+	p->p_flag = V8_SLOAD;
+
+	/*
+	 * Sizes in clicks: printp computes (p_dsize+p_ssize)*NBPG/1024.
+	 *
+	 * macOS has one VM map, not the VAX's three segments, so there is no
+	 * honest split to make.  Data carries the whole virtual size and stack
+	 * is zero, which keeps the SUM -- the only thing ps prints -- true, and
+	 * leaves the one field that would have to lie empty.
+	 */
+	p->p_dsize  = (long)(ai.ptinfo.pti_virtual_size / V8_NBPG);
+	p->p_ssize  = 0;
+	p->p_rssize = (long)(ai.ptinfo.pti_resident_size / V8_NBPG);
+	p->p_tsize  = 0;
+
+	/*
+	 * %cpu, AND IT IS A DIFFERENT STATISTIC FROM V8'S.  p_pctcpu is a
+	 * decaying average maintained by schedcpu over recent seconds; this is
+	 * cpu time over lifetime, which is what BSD ps falls back to and what
+	 * the host can actually answer.  A long-lived idle process reads near
+	 * zero either way; a busy one that has been busy for hours reads lower
+	 * here than V8 would have shown.  Recorded rather than smoothed over.
+	 */
+	cpu = (double)(ai.ptinfo.pti_total_user + ai.ptinfo.pti_total_system) /
+	    prtickhz();
+	elapsed = prnow() - (long)ai.pbsd.pbi_start_tvsec;
+	if (elapsed < 1) elapsed = 1;
+	p->p_pctcpu = (float)(cpu / (double)elapsed);
+	if (p->p_pctcpu > 1.0f) p->p_pctcpu = 1.0f;	/* threads outrun wall time */
+
+	/*
+	 * Left zero, and each one is a reader that gets a defensible answer:
+	 *
+	 *   p_clktim  time to the alarm signal.  printp picks 'I' over 'S' with
+	 *             "IS"[p_clktim && p_clktim < 20], so every sleeping
+	 *             process reads 'I' -- idle.  macOS reports no per-process
+	 *             alarm, and inventing one would invent the distinction.
+	 *   p_wchan   the kernel address a process sleeps on; `ps -l' prints it
+	 *             masked to 20 bits.  Not exposed by any documented
+	 *             interface, so 0 -- which prints as 0.
+	 *   p_textp   the text-structure pointer, followed by `ps -F' through
+	 *             /dev/kmemr.  That path needs the kernel's inode table and
+	 *             is out of scope; see src/cmd/ps/PORTING.md when it lands.
+	 *   p_swaddr  where the u-area sits on the drum.  Unreachable while
+	 *             SLOAD is set, which it always is.
+	 */
+	return (0);
+}
+
+static int
+pr_ioctl(int fd, int cmd, char *arg)
+{
+	struct prfile *f = prfind(fd);
+
+	if (f == 0) { v8_errno = V8_EBADF; return (-1); }
+
+	/*
+	 * V8 reaches ENOENT here the same way it does for /proc/00000: prioctl
+	 * calls pfind(i_number - PRMAGIC) FIRST, for every command it knows
+	 * (proca.c:312), and on the directory itself that is pfind(ROOTINO -
+	 * PRMAGIC) = pfind(-62), which finds nothing.  An unknown command is
+	 * EINVAL and is checked second, in that order (proca.c:296).
+	 */
+	switch (cmd) {
+	case PIOCGETPR:
+		break;
+	default:
+		v8_errno = V8_EINVAL;
+		return (-1);
+	}
+	if (f->pid == 0 || prgetpr(f->pid, (struct v8proc *)arg) < 0) {
+		v8_errno = V8_ENOENT;
+		return (-1);
+	}
+	return (0);
 }
 
 /* ------------------------------------------------------ the operations */
@@ -374,7 +650,8 @@ static struct v8fstyp procfs = {
 	pr_path,
 	pr_open, pr_close,
 	pr_read, pr_write, pr_seek,
-	pr_stat, pr_fstat
+	pr_stat, pr_fstat,
+	pr_ioctl
 };
 
 /*

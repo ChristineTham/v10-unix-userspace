@@ -1089,6 +1089,16 @@ int v8sys_pt_fstat(int f, struct v8_stat *vs)
 
 int v8s_fstat(int f, struct v8_stat *vs)  { return FDFS(f)->t_fstat(f, vs); }
 
+/*
+ * ioctl dispatches on the descriptor's filesystem, exactly as V8's does: its
+ * sys/ioctl.c hands an inode's fstypsw the request, and a /proc inode answers
+ * PIOCGETPR from prioctl while an ordinary one falls through to the device.
+ * Here the sgtty translation is the passthrough type's op (ioctl.c) and /proc's
+ * is libkmemu's, and a descriptor that belongs to neither cannot reach the
+ * wrong one -- v8fs_fdtype() decides, and it was set at open.
+ */
+int v8s_ioctl(int f, int cmd, char *arg) { return FDFS(f)->t_ioctl(f, cmd, arg); }
+
 long
 v8s_time(long *tp)
 {

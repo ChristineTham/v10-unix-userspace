@@ -1144,32 +1144,65 @@ Ordered so that value lands before risk, and so each step is testable alone.
    exactly 0 and would vanish from every reader. Folded to 1, same defence as
    `v8sys_fold_ino`.
 
-   **Still to do here: `PIOCGETPR` and the u-area**, which is what `ps` needs
-   beyond the directory. The ioctl slot was deliberately left out of
-   `struct v8fstyp` until this customer arrived; it arrives now. The u-area is
-   manufactured from `proc_pidinfo` rather than read through `prusrio` -- see
-   above.
+   **`PIOCGETPR` is done, and it brought `t_ioctl` with it.** The ioctl slot
+   was deliberately left out of `struct v8fstyp` until a type needed it; that
+   type arrived, so the slot did too. The sgtty/termios translation did not
+   move -- it *became* the passthrough type's implementation, which is what it
+   always was in fact, and only the dispatch is new. `v8s_ioctl` now routes on
+   the descriptor's filesystem exactly as V8's `sys/ioctl.c` routes on the
+   inode's. The assertion that says this is real is a pair: `PIOCGETPR` on an
+   ordinary file is `ENOTTY`, and `TIOCGETP` on a `/proc` descriptor is
+   `EINVAL` -- **the same command number taking two different paths**.
 
    **The layout, measured from the V8 side so it does not have to be derived
    again.** `PIOCGETPR` copies a `struct proc` verbatim, so its shape *is* the
    `/proc` ABI and both ends must agree exactly -- the same hazard `struct utmp`
    and `struct exec` already have, and the same answer: spell it in the shim,
-   assert it from the V8 side.
+   assert it from the V8 side. Two guards, because a `_Static_assert` sees only
+   one compiler.
 
    | | |
    |---|---|
-   | `sizeof(struct proc)` | **200** (LP64; the VAX's was smaller) |
+   | `sizeof(struct proc)` | **208** -- 200 upstream, plus the pid widening below |
    | `p_stat` 27, `p_time` 28, `p_nice` 29 | chars |
    | `p_flag` 56 | int |
-   | `p_uid` 60, `p_pid` 64, `p_ppid` 66 | shorts |
-   | `p_dsize` 80, `p_ssize` 88, `p_rssize` 96 | `size_t` |
-   | `p_swaddr` 120, `p_wchan` 128, `p_textp` 136 | |
-   | `p_pctcpu` 172 | float |
+   | `p_uid` 60, `p_pgrp` 64, `p_pid` 68, `p_ppid` 72 | ints (**was shorts**) |
+   | `p_dsize` 88, `p_ssize` 96, `p_rssize` 104 | `size_t` |
+   | `p_swaddr` 128, `p_wchan` 136, `p_textp` 144 | |
+   | `p_clktim` 152 | `u_short` |
+   | `p_pctcpu` 180 | float |
    | `sizeof(struct user)` | **4016** |
    | `UPAGES` 10, `NBPG` 512 | so `UBASE` = `0x80000000 - 5120` = **0x7fffec00** |
 
    `UBASE` fits in 31 bits, so `ps`'s `Sread(fd, UBASE, up)` is an ordinary
    `lseek` and needs no special handling.
+
+   **`p_pid` had to be widened, and how it hid is the interesting part.** V7
+   wrapped `mpid` at 30000, so `short` was the whole pid range; macOS runs to
+   99998, and the truncation is *signed* -- pid 44145 came back as **-21391**.
+   `ps` would have printed a negative pid. It hid because a freshly booted host
+   has low pids: every check passes until the host's counter crosses 32767,
+   then the same code starts lying. Found by mutation-testing something else
+   entirely, when a mutation produced two extra failures it had no business
+   producing. `src/include/PORTING.md`, which this port's include tree now has;
+   `tests/kmemu` asserts the *field width* beside the runtime value, because
+   the width is true at every pid and the comparison only at high ones.
+
+   **Two host facts that would each have produced plausible wrong output.**
+   `pti_total_user` is in **mach ticks, not nanoseconds** -- `<sys/proc_info.h>`
+   says only "total time", and on Intel the timebase is 1/1 so the two coincide
+   exactly. On Apple Silicon it is 125/3 and a `%cpu` computed as nanoseconds is
+   wrong by 41.67x while staying in range. Measured against
+   `CLOCK_PROCESS_CPUTIME_ID`; the rate comes from `hw.tbfrequency`, which is
+   `sysctl` and already sanctioned, rather than from `mach_timebase_info()`,
+   which would be a second way to ask. And the **stat codes disagree on every
+   value but one**: macOS `SIDL/SRUN/SSLEEP/SSTOP/SZOMB` are 1..5 and V8's are
+   4/3/1/6/5, so a straight copy stays in range and prints the wrong letter for
+   every process. Both are guarded by tests that fail on the magnitude, not just
+   the presence, of an answer.
+
+   **Still to do here: the u-area**, manufactured from `proc_pidinfo` rather
+   than read through `prusrio` -- see above.
 
    Also required before `ps` will start at all, and unrelated to `/proc`: it
    `getdir`s `/dev`, `/dev/dk` and `/dev/pt` and opens `/dev/drum`, calling

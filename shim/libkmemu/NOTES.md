@@ -150,11 +150,53 @@ delivery, so a shim in which no handler could ever run passed 44 of 44. A guard
 on a seam is not a guard on what crosses it — and it is not a guard on the half
 of the seam nobody wrote a case for either.
 
+## `/proc`, and three host facts that would each have lied plausibly
+
+`procfs.c` is the second filesystem type in the shim's switch, and the first
+thing in this library that is not a manufactured *file* but a manufactured
+*filesystem*. The bargain is the one `utmp.c` already struck, one level up:
+`who` reads an `/etc/utmp` nothing else writes; `ps` reads a `/proc` nothing
+else mounts. `PLAN.md` §8a step 3 has why `proca.c` is not imported.
+
+`PIOCGETPR` is the interesting half, because **`prioctl` copies the kernel's own
+`struct proc` out verbatim** (`iomove((char *)p, sizeof(struct proc), B_READ)`,
+proca.c:323). There is no marshalling step, so the struct's shape *is* the ABI
+and a field in the wrong place produces plausible numbers rather than an error.
+Guarded twice: `_Static_assert` on the clang side, and the same offsets measured
+from the V8 side in `tests/kmemu`, because a static assertion only ever sees one
+compiler.
+
+Three host facts had to be measured rather than read off, and each one has the
+same failure shape — an answer in the right range that is wrong:
+
+**`pti_total_user` is in mach ticks, not nanoseconds.** `<sys/proc_info.h>` says
+only "total time". Measured against `CLOCK_PROCESS_CPUTIME_ID`: a 0.3096 s burn
+reported 7560618, which is 0.0076 s read as nanoseconds and 0.3150 s read as
+ticks. **On Intel the timebase is 1/1 and the two readings coincide exactly** —
+so this is a bug an x86 CI runner cannot see and an Apple Silicon one is wrong
+by 41.67×, which is the same reason `ci.yml` pins `macos-14`. The rate comes
+from `hw.tbfrequency` (sysctl, already sanctioned) rather than
+`mach_timebase_info()`, which would have been a second way to ask.
+
+**The stat codes disagree on every value but one.** macOS
+`SIDL/SRUN/SSLEEP/SSTOP/SZOMB` are 1..5; V8's are 4/3/1/6/5. Both are small
+integers in the same range, so a straight copy compiles, runs, stays in bounds
+and prints the wrong letter for every process — a running one would read `w`.
+Hence a table rather than an assignment.
+
+**`p_pid` was a `short`.** Not a host fact so much as a 1985 one the host
+exceeds: V7 wrapped pids at 30000, macOS runs to 99998, and the truncation is
+signed — 44145 came back as −21391. See `src/include/PORTING.md`; the reason it
+survived initial testing is that a freshly booted host has low pids.
+
+What is left zero is left zero on purpose, and `procfs.c` names the reader for
+each: `p_wchan` (no documented source — a fabricated one is the single thing
+that would make `ps -l` a lie), `p_clktim`, `p_textp`, `p_swaddr`.
+
 ## Next
 
-`/etc/mtab` for `df` lands beside `utmp.c` and in the same table in `synth.c`;
-`df` then reads a superblock per device, which is where it stops being a file
-problem. `load` and `w` want a namelist and `/dev/kmem`, which is the part this
-library is actually named for. `ps` needs `libproc` on top, shows the V8 world's
-own subtree by default, and prints a sentinel for any column with no honest
-source — a fabricated `WCHAN` is the one thing that would make the output a lie.
+The u-area. `ps` reads it with `Sread(fd, UBASE, up)` — the process's address
+space indexed by virtual address — and it is 4016 bytes at `0x7fffec00`,
+manufactured from `proc_pidinfo` rather than read through `prusrio`. After that
+`ps` itself, which also wants `/dev/dk`, `/dev/pt` and `/dev/drum` to exist
+before it will start at all (`ps.c:21-28`).

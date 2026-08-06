@@ -61,16 +61,20 @@ struct v8fstyp {
 	long  (*t_seek)(int fd, long off, int whence);
 	int   (*t_stat)(char *rp, struct v8_stat *st, int follow);   /* t_stat */
 	int   (*t_fstat)(int fd, struct v8_stat *st);
-};
 
-/*
- * t_ioctl IS DELIBERATELY ABSENT, and will arrive with /proc rather than
- * before it.  V8's fstypsw has one, and /proc needs it -- PIOCGETPR is how ps
- * asks for a struct proc.  But wiring it means restructuring ioctl.c, which
- * translates between V8's sgtty world and Darwin's termios through a table
- * that is not per-filesystem, and a slot that no type ever fills is worse than
- * no slot: it reads as a seam and guards nothing.
- */
+	/*
+	 * t_ioctl -- V8's own, and the slot this header used to say was
+	 * deliberately absent "until a type needs it".  That type has arrived:
+	 * PIOCGETPR is how ps(1) asks /proc for a struct proc, and proca.c
+	 * answers it from prioctl (proca.c:290) through exactly this vector.
+	 *
+	 * Note what the arrival changed and what it did not.  The sgtty/termios
+	 * translation in ioctl.c is not per-filesystem and did not move; it
+	 * became the PASSTHROUGH type's implementation of this operation, which
+	 * is what it always was in fact.  Only the dispatch is new.
+	 */
+	int   (*t_ioctl)(int fd, int cmd, char *arg);	/* t_ioctl */
+};
 
 /*
  * The mount table is the prefix list that used to be `v8dirs[]'.  Generalising
