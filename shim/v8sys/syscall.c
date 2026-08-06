@@ -19,6 +19,7 @@
  */
 #include <errno.h>
 #include "v8sys.h"
+#include "vfs.h"
 #include "rawsys.h"
 
 int v8_errno;
@@ -172,33 +173,16 @@ v8sys_faile(int hosterr)
  * problem.  But this file IS the kernel as far as V8 code is concerned, and
  * chroot is a kernel service, so it belongs here.
  */
-static const char *v8dirs[] = {
-	"/usr/lib/", "/usr/share/", "/usr/dict/", "/lib/", "/usr/pub/",
-	"/bin/", "/usr/bin/", "/etc/", "/usr/man/", "/usr/spool/",
-	/*
-	 * /dev/ is here for the grovelers: load(1) opens /dev/kmem, which
-	 * libkmemu manufactures.  It does NOT capture /dev/null or /dev/tty,
-	 * by the same mechanism that protects every other entry -- a path whose
-	 * rootfs copy does not exist falls through to the host, and the rootfs
-	 * has no null or tty.  Worth knowing rather than assuming: create
-	 * rootfs/dev/tty and the V8 world would stop seeing the real terminal.
-	 */
-	"/dev/", 0
-};
-
 /*
- * EXACT matches, not prefixes.  /unix is a file at the root, and there is no
- * way to spell that in the list above: an entry of "/unix" without a trailing
- * slash matches by prefix, so it would also claim /unixfoo.  The distinction is
- * cheap to make and the alternative is a rule that is subtly wrong for names
- * nobody has created yet.
+ * THE MOUNT TABLE MOVED.  What used to be `v8dirs[]' and `v8files[]' here is
+ * now shim/v8sys/vfs.c's `mounts[]', with a filesystem-type column -- PLAN.md
+ * section 8a step 2.  Generalising the existing list rather than adding a
+ * second one beside it is the point: two prefix tables that must agree by hand
+ * are the standing invitation kmem.c's one-table rule exists to refuse.
  *
- * /unix is the kernel namelist libkmemu writes -- see kmem.c.  nlist(3) reads
- * it to find _avenrun before load(1) seeks to that address in /dev/kmem.
+ * rootpath() below asks v8fs_typefor() whether any mount claims a path; the
+ * reasoning about trailing slashes and exact matches went with the table.
  */
-static const char *v8files[] = {
-	"/unix", 0
-};
 
 /*
  * Where the V8 world is.
@@ -207,13 +191,16 @@ static const char *v8files[] = {
  * a silent fall-through of exactly the kind this port keeps paying for: with it
  * unset, rootpath() quietly returned the HOST path, so a V8 binary run outside
  * the launcher operated on the real filesystem and looked like it was working.
- * That is the same shape as the variadic libc gaps -- a missing thing filled in
- * by the host, discovered only by its consequences.
  *
  * V8ROOT_DEFAULT is stamped in by the Makefile (and by `make install`, at the
  * install prefix).  An installed binary therefore knows its own world without
  * anyone having to remember to export anything, and the env var stays as the
  * override that lets a second tree be tested.
+ *
+ * THE #ifndef IS NOT DECORATION.  tests/v8sys builds this file WITHOUT the -D,
+ * and deleting the guard while moving the mount table out compiled cleanly for
+ * the whole world and broke only that one link -- which is the right place for
+ * it to break, and the reason the suite builds the shim its own way.
  */
 #ifndef V8ROOT_DEFAULT
 #define V8ROOT_DEFAULT ""
@@ -250,16 +237,29 @@ v8root(void)
  * resolves inside the jail whether or not it is there yet.  Reads are untouched
  * because readers still pass V8P_LOOK.
  */
-#define V8P_LOOK	0		/* redirect if the path itself is there */
-#define V8P_MAKE	1		/* redirect if its PARENT is there */
 
-static char *
-rootpath(char *p, int mode)
+char *
+v8sys_rootpath(char *p, int mode)
 {
 	static char buf[1024];
 	char *root;
 	int i, n, m;
 
+	/*
+	 * THE EMPTY PATH IS THE CURRENT DIRECTORY -- V7 namei()'s rule, and the
+	 * comment at the top of this file has the whole story (rmdir(1) stats
+	 * its parent with stat("", &cst) and there is no other way it could have
+	 * meant).
+	 *
+	 * It lives HERE rather than in vpath(), and that is a correction: it was
+	 * in vpath, so the switch's t_path -- which calls this directly -- lost
+	 * it, and `rmdir' stopped removing anything.  It is a namespace rule, so
+	 * every filesystem type must get it, not just the two callers that
+	 * happened to go through vpath.  tests/waveb caught it on the first run,
+	 * which is exactly what PLAN.md section 8a step 2 means by replacing the
+	 * floor while the suites stay green.
+	 */
+	if (p != 0 && *p == '\0') return (".");
 	if (p == 0 || *p != '/') return (p);
 
 	/*
@@ -284,33 +284,7 @@ rootpath(char *p, int mode)
 		return (buf);
 	}
 
-	for (i = 0; v8dirs[i]; i++) {
-		const char *d = v8dirs[i];
-		int k;
-		for (k = 0; d[k] && p[k] == d[k]; k++)
-			;
-		if (d[k] == '\0') break;		/* matched a V8 directory */
-		/*
-		 * ...and the directory ITSELF, spelled without the trailing
-		 * slash.  The entries in v8dirs carry one so that "/binary" is
-		 * not mistaken for "/bin/", but that also meant "/etc" and
-		 * "/bin" matched nothing, so `ls /etc` listed the Mac's while
-		 * `cat /etc/group` read V8's -- the same path naming two
-		 * different worlds depending on a trailing character.
-		 */
-		if (d[k] == '/' && d[k + 1] == '\0' && p[k] == '\0') break;
-	}
-	if (v8dirs[i] == 0) {
-		/* No directory claimed it; try the exact-match list. */
-		for (i = 0; v8files[i]; i++) {
-			const char *f = v8files[i];
-			int k;
-			for (k = 0; f[k] && p[k] == f[k]; k++)
-				;
-			if (f[k] == '\0' && p[k] == '\0') break;
-		}
-		if (v8files[i] == 0) return (p);
-	}
+	if (v8fs_typefor(p) == 0) return (p);
 	if ((root = v8root()) == 0) return (p);
 
 	for (n = 0; root[n] && n < (int)sizeof buf - 2; n++) buf[n] = root[n];
@@ -344,12 +318,34 @@ rootpath(char *p, int mode)
 	return (p);
 }
 
-/* The reader's path: today's rule, unchanged. */
+/*
+ * THE DISPATCH.  Which filesystem answers for this path, and which for this
+ * descriptor.  Both fall back to passthrough, so with one type in the table
+ * every call below behaves exactly as it did before the switch existed -- which
+ * is what PLAN.md section 8a step 2 asks for: replace the floor, change
+ * nothing, and let the suites say so.
+ */
+#define FSFOR(p)	fs_or_pass(v8fs_typefor(p))
+#define FDFS(fd)	v8fs_fdtype(fd)
+
+static struct v8fstyp *
+fs_or_pass(struct v8fstyp *t)
+{
+	/*
+	 * No mount claims a path outside the V8 directories -- /tmp, a relative
+	 * name, the build tree.  Those are the host's and always were, so the
+	 * passthrough type is the honest answer rather than an error: it is the
+	 * type whose t_path leaves such a name alone.
+	 */
+	return (t ? t : &v8fs_pass);
+}
+
+/* The reader's path: today's rule, unchanged.  (The empty-path rule moved into
+ * v8sys_rootpath, so that every filesystem type gets it -- see there.) */
 static char *
 vpath(char *p)
 {
-	if (p && *p == '\0') return ".";
-	return rootpath(p, V8P_LOOK);
+	return v8sys_rootpath(p, V8P_LOOK);
 }
 
 /*
@@ -364,10 +360,9 @@ mkpath(char *p)
 {
 	char *q;
 
-	if (p && *p == '\0') return ".";
-	q = rootpath(p, V8P_LOOK);
+	q = v8sys_rootpath(p, V8P_LOOK);
 	if (q != p) return (q);
-	return rootpath(p, V8P_MAKE);
+	return v8sys_rootpath(p, V8P_MAKE);
 }
 
 /* ------------------------------------------------------- PASSTHROUGH */
@@ -384,11 +379,12 @@ mkpath(char *p)
 
 int v8s_close(int fd)
 {
-	if (v8sys_isdirfd(fd)) v8sys_dirclose(fd);
-	RET(rawsys1(SYS_close, fd));
+	int r = FDFS(fd)->t_close(fd);
+	v8fs_unbind(fd);
+	return (r);
 }
 
-long v8s_write(int fd, char *b, long n)  { RET(rawsys3(SYS_write, fd, (long)b, n)); }
+long v8s_write(int fd, char *b, long n)  { return FDFS(fd)->t_write(fd, b, n); }
 /*
  * link.  One special case, for V7 directory semantics.
  *
@@ -957,18 +953,10 @@ v8s_creat(char *path, int mode)
 }
 
 long
-v8s_read(int fd, char *buf, long n)
-{
-	if (v8sys_isdirfd(fd)) return (v8sys_dirread(fd, buf, n));
-	RET(rawsys3(SYS_read, fd, (long)buf, n));
-}
+v8s_read(int fd, char *buf, long n)      { return FDFS(fd)->t_read(fd, buf, n); }
 
 long
-v8s_lseek(int fd, long off, int whence)
-{
-	if (v8sys_isdirfd(fd)) return (v8sys_dirseek(fd, off, whence));
-	RET(rawsys3(SYS_lseek, fd, off, whence));
-}
+v8s_lseek(int fd, long off, int whence)  { return FDFS(fd)->t_seek(fd, off, whence); }
 
 /*
  * struct stat.
@@ -1058,25 +1046,34 @@ v8sys_host_ino_at(int dirfd, const char *name)
 	return (r < 0 ? 0ULL : hs.st_ino);
 }
 
-int v8s_stat(char *p, struct v8_stat *vs)
+/*
+ * The passthrough type's stat, on an ALREADY-RESOLVED path.  It lives here
+ * rather than in vfs.c because it is bound to stat_translate() and to
+ * struct hoststat64 above, and a second copy of a struct conversion at this
+ * seam is how this shim's worst bugs have started.  vfs.c's table points at it.
+ */
+int v8sys_pt_stat(char *rp, struct v8_stat *vs, int follow)
 {
 	struct hoststat64 hs;
-	long r = rawsys2(SYS_stat64, (long)vpath(p), (long)&hs);
+	long r = rawsys2(follow ? SYS_stat64 : SYS_lstat64, (long)rp, (long)&hs);
 	if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
 	stat_translate(&hs, vs);
 	return (0);
+}
+
+int v8s_stat(char *p, struct v8_stat *vs)
+{
+	struct v8fstyp *t = FSFOR(p);
+	return t->t_stat(t->t_path(p, V8P_LOOK), vs, 1);
 }
 
 int v8s_lstat(char *p, struct v8_stat *vs)
 {
-	struct hoststat64 hs;
-	long r = rawsys2(SYS_lstat64, (long)vpath(p), (long)&hs);
-	if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
-	stat_translate(&hs, vs);
-	return (0);
+	struct v8fstyp *t = FSFOR(p);
+	return t->t_stat(t->t_path(p, V8P_LOOK), vs, 0);
 }
 
-int v8s_fstat(int f, struct v8_stat *vs)
+int v8sys_pt_fstat(int f, struct v8_stat *vs)
 {
 	struct hoststat64 hs;
 	long r = rawsys2(SYS_fstat64, f, (long)&hs);
@@ -1084,6 +1081,8 @@ int v8s_fstat(int f, struct v8_stat *vs)
 	stat_translate(&hs, vs);
 	return (0);
 }
+
+int v8s_fstat(int f, struct v8_stat *vs)  { return FDFS(f)->t_fstat(f, vs); }
 
 long
 v8s_time(long *tp)

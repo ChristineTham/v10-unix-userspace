@@ -300,6 +300,13 @@ dep 'w -> installed w'         $B/bin/w                        rootfs/bin/w
 # one inode cannot drift.  What can go wrong is the link being BROKEN and not
 # remade, so that is what gets asserted, below, after the restore loop.
 
+# --- section 8a step 2: the filesystem switch -------------------------------
+# vfs.c holds the mount table and the passthrough type; syscall.c dispatches
+# through it.  Both directions are edges, and the header is the contract.
+dep 'vfs.c -> shim'        shim/v8sys/vfs.c      $B/v8sys/libv8sys.a
+dep 'vfs.h -> syscall.o'   shim/v8sys/vfs.h      $B/v8sys/syscall.o
+dep 'vfs.h -> vfs.o'       shim/v8sys/vfs.h      $B/v8sys/vfs.o
+
 # --- section 8a step 1: V8's kernel source, and the seam under it -----------
 # Two dialects meet at this archive, so both edges are asserted.  stream.c is
 # authentic K&R compiled with gnu89; machdep.c is ours, compiled with SHIMFLAGS.

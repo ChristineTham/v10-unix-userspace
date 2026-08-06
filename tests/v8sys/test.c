@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include "../../shim/v8sys/v8sys.h"
+#include "../../shim/v8sys/vfs.h"
 
 typedef void (*v8handler)();
 
@@ -418,6 +419,55 @@ main(void)
 	memset(b0, 0xa5, 4096);		/* must not fault: it is committed */
 	ok(*(unsigned char *)b0 == 0xa5, "memory below the break is writable");
 	ok(v8s_sbrk(-4096) == b0 + 4096, "the break can move back");
+
+	/* ------------------------------------ the filesystem switch (S8a.2) */
+	/*
+	 * The mount table is the single source of truth for which filesystem
+	 * answers for a path.  It used to be `v8dirs[]' in syscall.c, consulted
+	 * only by rootpath(); generalising THAT list rather than adding a second
+	 * beside it is what these cases pin -- two prefix tables that must agree
+	 * by hand is the standing invitation kmem.c's one-table rule refuses.
+	 */
+	ok(v8fs_typefor("/bin/cat")   == &v8fs_pass, "a V8 directory is claimed by a mount");
+	ok(v8fs_typefor("/etc/group") == &v8fs_pass, "...and so is /etc");
+	ok(v8fs_typefor("/etc")       == &v8fs_pass, "...and the directory itself, with no slash");
+	ok(v8fs_typefor("/usr/lib/tmac/x") == &v8fs_pass, "...and anything beneath one");
+
+	/*
+	 * The negative half, which is the half that matters.  A prefix table
+	 * that claimed everything would pass every case above.
+	 */
+	ok(v8fs_typefor("/tmp/x")   == 0, "an unclaimed path has no mount");
+	ok(v8fs_typefor("relative") == 0, "nor does a relative one");
+	ok(v8fs_typefor("/binary")  == 0, "/binary is not /bin/, despite the prefix");
+	ok(v8fs_typefor("/unix")    == &v8fs_pass, "/unix is claimed exactly");
+	ok(v8fs_typefor("/unixfoo") == 0, "...and /unixfoo is not, which is why m_exact exists");
+
+	/*
+	 * Descriptor ownership defaults to passthrough for every descriptor,
+	 * including ones out of the table's range, so nothing needs initialising
+	 * and an inherited descriptor works by construction.
+	 */
+	ok(v8fs_fdtype(0) == &v8fs_pass,     "descriptor 0 is passthrough by default");
+	ok(v8fs_fdtype(9999) == &v8fs_pass,  "...and so is one past the end of the table");
+	ok(v8fs_fdtype(-1) == &v8fs_pass,    "...and a negative one, rather than faulting");
+
+	/*
+	 * THE EMPTY PATH IS THE CURRENT DIRECTORY, and this case exists because
+	 * the switch broke it.  V7's namei() resolved "" to the working
+	 * directory and rmdir(1) depends on it (`stat("", &cst)').  The rule was
+	 * inside vpath(); the switch's t_path calls the resolver directly, so it
+	 * was bypassed and rmdir silently stopped removing anything.  tests/waveb
+	 * caught it, which is what "the suites stay green" is for -- but a rule
+	 * this load-bearing should have a case of its own rather than a
+	 * consequence three layers up.
+	 */
+	{
+		struct v8_stat es, ds;
+		ok(v8s_stat("", &es) == 0, "stat(\"\") succeeds, as V7 namei made it");
+		ok(v8s_stat(".", &ds) == 0, "and so does stat(\".\")");
+		ok(es.st_ino == ds.st_ino, "...naming the same directory");
+	}
 
 	/* ------------------------------------------------------- cleanup */
 	snprintf(sub, sizeof sub, "%s/a", tmpl); v8s_unlink(sub);

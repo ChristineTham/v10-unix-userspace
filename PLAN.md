@@ -1077,6 +1077,39 @@ Ordered so that value lands before risk, and so each step is testable alone.
    the whole point is that the suites stay green while the floor is replaced.
    This is the step that must not be skipped, because it is the only one where
    a regression is unambiguous.
+
+   **The switch is in** -- `shim/v8sys/vfs.h` and `vfs.c`, with `syscall.c`
+   dispatching. `struct v8fstyp` answers to `struct fstypsw`, entry by entry,
+   and the correspondence is written beside each one. **The mount table is
+   `v8dirs[]` generalised, not a new table beside it**: two prefix lists that
+   have to agree by hand is the standing invitation `kmem.c`'s one-table rule
+   exists to refuse, and a `/proc` entry is now one row.
+
+   Where it departs from `fstypsw` and why: V8's operations take a
+   `struct inode *` and find their buffer in the u-area, so `t_read(ip)` has no
+   length argument. This shim has neither, and building that substrate before
+   there is a second filesystem to justify it would be inventing a customer --
+   so the operations are descriptor-shaped. `t_ioctl` is deliberately **absent**
+   rather than present-and-null: it arrives with `/proc`, which is the type that
+   needs it, because a slot no type ever fills reads as a seam and guards
+   nothing.
+
+   **And the step earned its keep immediately, twice.** Moving the mount table
+   out took the `V8ROOT_DEFAULT` fallback with it -- invisible to the whole
+   build, which passes `-D`, and caught only by `tests/v8sys`, which compiles
+   the shim its own way. Then `rmdir` stopped removing anything: V7 `namei()`'s
+   rule that **the empty path is the current directory** lived in `vpath()`, and
+   `t_path` calls the resolver directly, so the switch bypassed it. It is a
+   namespace rule and now lives in the resolver where every type gets it.
+   `tests/waveb` found it on the first run -- which is precisely the argument
+   for doing this step with one server behind it rather than alongside `/proc`.
+
+   Not yet dispatched, and named rather than left implicit: `chmod`, `chown`,
+   `link`, `unlink`, `mkdir`, `access` and the rest still call the passthrough
+   path directly. They resolve through the same mount table, so the namespace is
+   already unified; what they lack is a per-type entry point, and each will get
+   one when a type needs to answer differently. `/proc` needs none of them --
+   `prtrunc` is a no-op upstream too.
 3. **`/proc` as the second server.** Authentic V8, small, and it is what makes
    `ps` and `w` honest -- a server that records `fork`/`exec` *knows* the V8
    subtree instead of guessing it from `libproc`. Note `p_wchan` stays

@@ -16,7 +16,7 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 16 suites (~731 tests)
+make test             # all 16 suites (~757 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams hooks
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)
@@ -106,6 +106,11 @@ not "fix" warnings. Every change is recorded in that program's `PORTING.md` with
 the reasoning.
 
 **2. New code (`compiler/`, `shim/`)** — written for this port, modern C.
+`shim/v8sys/vfs.c` is the **filesystem switch** (PLAN §8a step 2): one mount
+table, one type behind it today. The table is the old `v8dirs[]` with a type
+column — do not add a second prefix list beside it. `struct v8fstyp` answers to
+V8's own `struct fstypsw`; where it departs (descriptors, not inodes) the header
+says why.
 `compiler/ccom-arm64/` is the machine-dependent half of the compiler, written
 *inside ccom's own architecture* (`local.c`, `local2.c`, `gencode.c`, `macdefs.h`
 — the same file names and hooks pcc expects). `shim/v8sys/` is `libv8sys`,
