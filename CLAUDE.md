@@ -525,7 +525,7 @@ that they can fail.
 
 ## Automation in this repo
 
-`.claude/` carries five things, all of them encoding a bug that has already
+`.claude/` carries six things, all of them encoding a bug that has already
 happened here:
 
 - **`hooks/block-third-party.sh`** (PreToolUse) refuses any write under
@@ -538,6 +538,18 @@ happened here:
   Keyed on `PROVENANCE` rather than a list of names, so a program is covered the
   day its makefile is imported. The everyday `make -j8` / `make test` is
   untouched by construction — our own Makefile has no PROVENANCE line.
+- **`hooks/ci-green.sh`** (PreToolUse, Bash) refuses `git push` when the last
+  push is still red, or when `make test` has not passed since a source file
+  changed. **It cannot check CI for the commit being pushed** — that run does
+  not exist yet, which is the circularity in the obvious reading of "green
+  before push". What it gates is the two things that actually fill a mailbox:
+  piling commits onto a red build, and pushing untested. Nine of the ten failure
+  mails from the session that added it were the first shape. It **fails open**
+  on no `gh`, no login, offline, no run found or a run still going — a push gate
+  that blocks when GitHub is unreachable is off within the hour. Override with
+  `PUSH_ANYWAY=1 git push`, which is also how the fix for a red build goes out.
+  The "tested" half reads `build/stage0/.tests-passed`, which `make test` writes
+  as its recipe and therefore only when all sixteen suites passed.
 - **`hooks/check-makefile.sh`** (PostToolUse) runs
   `make -n --warn-undefined-variables` after any Makefile edit, and flags
   multi-target rules that carry a recipe. ~60ms.

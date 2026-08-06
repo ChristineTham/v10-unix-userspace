@@ -211,6 +211,15 @@ stage0: cpp v8ccom v8cc libv8sys libv8kern crt0 rootfs libv8c rootfs-libs sh nro
 # driver for free because the library install rules said `| rootfs`.  Naming
 # $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
 test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks
+	@mkdir -p $(BUILD) && : > $(BUILD)/.tests-passed
+# THE STAMP IS THE GREEN RUN, and it costs nothing to be sure of: make runs a
+# target's recipe only when every prerequisite has succeeded, so this line is
+# unreachable unless all sixteen suites passed.  Nothing in the build reads it
+# -- it is for .claude/hooks/ci-green.sh, which refuses `git push' when a source
+# file is newer than the stamp.  Deliberately NOT a real file target with
+# prerequisites: "have the tests been run since I last edited" is a question
+# about wall-clock history, not about a dependency graph, and make would answer
+# the wrong one by rebuilding it.
 # First, because it tests the thing every other suite's result depends on: that
 # what was built is what the sources say.  Four bugs in this port were a stale
 # object rather than wrong code.  It settles the build itself, so it takes no
