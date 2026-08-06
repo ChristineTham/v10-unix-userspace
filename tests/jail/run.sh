@@ -350,12 +350,24 @@ echo 'main(){ return 0; }' > fixp/mstub.c
 relout=$( clang -nostdlib -e _v8start -o fixp/msgx "$V8ROOT"/lib/crt0.o \
           fixp/msg.o fixp/mstub.o "$V8ROOT"/lib/libv8c.a \
           "$V8ROOT"/lib/libv8stubs.a "$V8ROOT"/lib/libv8sys.a -lSystem 2>&1 )
-case "$relout" in
-*text-reloc*) pass=$((pass+1)) ;;
-*) fail=$((fail+1))
-   echo "FAIL sh's pointer table linked in __TEXT -- arm64 PIE rule changed?"
-   echo "  got [$relout]" ;;
-esac
+# THE CLAIM IS "THIS LINK CANNOT SUCCEED", so that is what is tested.  Keying
+# the pass on the substring `text-reloc' would test Apple's diagnostic wording
+# instead, and they have rewritten these once already (ld-prime).  A re-wording
+# would turn a correct refusal into a failure whose message actively misdirects
+# -- it would say the arm64 PIE rule had changed when nothing had.
+#
+# The wording is still printed when it is absent, because it is the evidence
+# that the refusal is the one meant rather than some unrelated link error.
+if [ -f fixp/msgx ]; then
+	fail=$((fail+1))
+	echo "FAIL sh's pointer table linked in __TEXT -- arm64 PIE rule changed?"
+else
+	pass=$((pass+1))
+	case "$relout" in
+	*text-reloc*) ;;
+	*) echo "  (note: link refused, but not for a text relocation: $(echo "$relout" | head -1))" ;;
+	esac
+fi
 rm -rf jas.c jnm.c jas jnm fixp
 
 # --- RUNG 4: V8 make rebuilds the C compiler, inside the jail ---------------

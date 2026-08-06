@@ -6,8 +6,16 @@
 #
 #   tests/cpp/run.sh [path-to-cpp]
 
-CPP=${1:-build/stage0/cpp/cpp}
-V8INC=third_party/Research-Unix-v8/v8/usr/include
+# ANCHORED TO THE SCRIPT, not to the caller's directory.  This was the one suite
+# using relative paths without cd-ing anywhere, so run from outside the repo
+# root the V8INC directory did not exist, the `if [ -d ]' below skipped the most
+# valuable case in the file, and the suite reported a smaller number of passes
+# and no failures.  A silently vanishing case is indistinguishable from a
+# passing one -- the same disease as a test that asserts a host property, minus
+# even the eventual red build.
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+CPP=${1:-$ROOT/build/stage0/cpp/cpp}
+V8INC=$ROOT/third_party/Research-Unix-v8/v8/usr/include
 TMP=${TMPDIR:-/tmp}/cpptest.$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT
@@ -129,8 +137,13 @@ else
 fi
 
 # The real job: authentic V8 source through authentic V8 headers, no diagnostics.
-if [ -d "$V8INC" ]; then
-	err=$("$CPP" -I"$V8INC" src/cmd/cat.c "$TMP/cat.i" 2>&1)
+# A MISSING third_party IS A FAILURE, not a skip. The tree is vendored and
+# checked in; if it is not there, the most valuable case in this file did not
+# run, and that is worth a red line rather than a quieter total.
+if [ ! -d "$V8INC" ]; then
+	fail=$((fail+1)); echo "FAIL: $V8INC missing -- the V8 header case did not run"
+else
+	err=$("$CPP" -I"$V8INC" "$ROOT/src/cmd/cat.c" "$TMP/cat.i" 2>&1)
 	if [ -n "$err" ]; then
 		fail=$((fail+1))
 		echo "FAIL: V8 cat.c through V8 headers emitted diagnostics:"

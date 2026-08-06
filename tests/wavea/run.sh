@@ -476,8 +476,14 @@ rm -rf "$W"
 # "GMT+10:00" where macOS says "AEST".  That difference is authentic, so the
 # test asserts the fields V8 and the host must agree on -- weekday, month, day
 # and the time to the minute -- and deliberately not the zone name.
+# LC_ALL=C ON THE HOST SIDE, because the locale is not what is under test.
+# %a and %b render through LC_TIME, and V8's date has no locale at all -- it
+# indexes a compiled-in English table. Neither the Makefile nor the CI workflow
+# pins LANG, so the developer's environment decides: under fr_FR.UTF-8 the host
+# says `jeu. aout' and all three of these fail, reading as a timezone bug in the
+# shim rather than as a locale difference in the comparison.
 check 'date agrees with the host on the day' \
-    "$(/bin/date '+%a %b %e' | tr -s ' ')" \
+    "$(LC_ALL=C /bin/date '+%a %b %e' | tr -s ' ')" \
     "$("$V8ROOT/bin/date" | awk '{print $1, $2, $3}' | tr -s ' ')"
 check 'date agrees with the host to the minute' \
     "$(/bin/date '+%H:%M')" \

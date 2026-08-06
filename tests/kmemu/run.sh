@@ -1234,10 +1234,14 @@ else bad "getgrent probe build" "$(head -3 "$TMP/grp.log")"; fi
 # ftime(2) was missing from the shim entirely. tz.c implements it by reading
 # the zone database, which is the piece that has to agree with the host or
 # every timestamp in the world is silently offset.
+# LC_ALL=C, because %a and %b render through LC_TIME and V8's date has no
+# locale -- it indexes a compiled-in English table. The TIMEZONE is what this
+# case is about, and a French host would fail it while agreeing perfectly about
+# the zone. tests/wavea has the same three checks and the same note.
 check "the shim's timezone agrees with the host" \
-	"$(date '+%a %b %e %H:%M')" "$("$V8ROOT/bin/date" | cut -c1-16)"
+	"$(LC_ALL=C date '+%a %b %e %H:%M')" "$("$V8ROOT/bin/date" | cut -c1-16)"
 check "ls -l timestamps agree with the host" \
-	"$(ls -l "$V8ROOT/etc/group" | awk '{print $6, $7, $8}')" \
+	"$(LC_ALL=C ls -l "$V8ROOT/etc/group" | awk '{print $6, $7, $8}')" \
 	"$("$V8ROOT/bin/ls" -l "$V8ROOT/etc" | awk '$NF == "group" {print $6, $7, $8}')"
 
 # --- a path libkmemu does not know is left completely alone -------------
