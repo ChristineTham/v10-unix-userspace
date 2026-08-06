@@ -760,3 +760,26 @@ not testable until it is installed.
   with a diff that reads like `who` printing the user twice. Do not treat "green
   in CI" as evidence the assumption is gone; a runner is a *machine*, with its
   own peculiarities, not a neutral referee.
+
+  **All sixteen suites were swept for this after the third instance, and the
+  finding worth keeping is where the bugs were: three of five were in blocks
+  ALREADY corrected once for this class** — the fix landed on one line and the
+  line beside it kept the assumption. `ut_name` compared against `id -un` while
+  `ut_line` one line below used `$hostwho`; the mtab terminator probe kept
+  offsets 31 and 63 after `FSNMLG` went 32 → 1024; the `$4` cpu-time column kept
+  indexing past the nice marker whose shift had been fixed 25 lines above. When
+  you correct one of these, re-read the whole block.
+
+  Residual dependencies are known and deliberate, not oversights: `tests/hooks`
+  needs `python3` and `jq` (intrinsic — they are what the hooks run),
+  `tests/wavec` uses `perl -e 'alarm'` as a deadline, `tests/wavea` assumes
+  `NAME_MAX >= 255` on `$TMPDIR`, `tests/jail` assumes the tester is the builder
+  and that `/usr/lib/dyld` exists. Each would fail loudly rather than quietly.
+
+- **A case that silently disappears is worse than one that asserts a host
+  property, because it never even goes red.** `tests/cpp` was the one suite
+  using relative paths without `cd`-ing anywhere, and wrapped its most valuable
+  case — authentic V8 source through authentic V8 headers — in
+  `if [ -d "$V8INC" ]`. Run from outside the repo root it reported
+  `cpp: 12 passed, 0 failed`. Anchor to `$(dirname "$0")`, and make a missing
+  input a **failure** rather than a skip.

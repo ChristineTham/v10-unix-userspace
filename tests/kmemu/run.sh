@@ -329,9 +329,25 @@ else bad "could not ask the host about /dev/$hostdev"; fi
 # the honest answer rather than a plausible one: s_isize and s_tinode are 16-bit
 # in V7, so a volume with 548 million inodes cannot be described. A V8 df could
 # not have shown it either. What must never happen is a number in between.
+#
+# ASSERTED AS min(host, 65535) RATHER THAN AS 65535, because the flat constant
+# assumes the volume has more than 65535 free inodes. This one has 447 million,
+# so it saturates; a small or nearly-full filesystem arriving first would give a
+# legitimate in-range number and fail. The relation is true at every volume and
+# still catches a truncated hand-off, which is the whole point.
 "$DF" -i > "$TMP/dfi.out" 2>/dev/null
 ifree=$(awk -v d="$hostdev" '$2 == d {print $(NF-1); exit}' "$TMP/dfi.out")
-check "df -i saturates ifree at the 16-bit ceiling" "65535" "$ifree"
+hostff=$(/bin/df -i "/dev/$hostdev" 2>/dev/null | awk 'NR==2 {print $7}')
+if [ -n "$hostff" ] && [ "$hostff" -eq "$hostff" ] 2>/dev/null; then
+	want=$hostff; [ "$want" -gt 65535 ] && want=65535
+	check "df -i reports min(host free inodes, the 16-bit ceiling)" "$want" "$ifree"
+else
+	# Without the host's number there is nothing to relate to. The ceiling is
+	# still the only value V7's 16-bit s_tinode can express, so assert that
+	# and say the weaker form was used.
+	check "df -i saturates ifree at the 16-bit ceiling" "65535" "$ifree"
+	echo "  (host free-inode count unavailable for /dev/$hostdev; ceiling only)"
+fi
 
 # -l walks the free-block list, and there is no free list -- there is no disk.
 # df says so in its own words rather than being handed a fabricated one.
@@ -949,10 +965,16 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 		bad "...nice tracks the host's, ten apart" \
 		    "ps self=$hostself kid=$hostkid; shim self=$mynice kid=$kidnice"
 	fi
-	# Ticks read as nanoseconds would give 2 here, not ~100.
+	# Ticks read as nanoseconds would give 2 here, not ~100 -- so the floor
+	# only has to separate those two, and 40 was asserting something else.
+	# procfs.c computes p_pctcpu as cpu-time over lifetime, which is the
+	# fraction of a core the SCHEDULER actually handed the spinner; an
+	# oversubscribed VM or a contended runner can legitimately deliver under
+	# half a core and fail a check about arithmetic. 10 keeps every bit of
+	# the discriminating power and stops claiming the machine was idle.
 	pct=$(g pct)
-	[ "$pct" -gt 40 ] && [ "$pct" -le 100 ] &&
-		ok || bad "...a busy process reads near 100%cpu" "got $pct"
+	[ "$pct" -gt 10 ] && [ "$pct" -le 100 ] &&
+		ok || bad "...a busy process reads a real %cpu (ticks, not ns)" "got $pct"
 	check "PIOCGETPR on an ordinary file is ENOTTY" "1" "$(g pass)"
 	check "a terminal command on /proc is EINVAL"  "1" "$(g tioc)"
 	check "PIOCGETPR on /proc itself is ENOENT"    "1" "$(g dir)"
