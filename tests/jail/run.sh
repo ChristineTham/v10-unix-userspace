@@ -526,6 +526,53 @@ case "$("$V8ROOT/bin/ls" -l "$V8ROOT/etc/group" 2>&1)" in
 *) fail=$((fail+1)); echo "FAIL ls -l shows a bare uid, not a name" ;;
 esac
 
+# --- -l RESOLVES INSIDE THE ROOTFS, and that is a jail question -------------
+# Until libpath() existed, every -l went straight to clang and therefore to the
+# macOS SDK.  Nothing noticed, because our own build rules pass archives by
+# absolute path and never use -l at all -- so the hole was reachable only from
+# an authentic makefile, and eleven of them say -lm.
+#
+# pic and grap in the rung-5 sweep cover this only indirectly: they assert a
+# link SUCCEEDS.  These two assert WHICH library answered, in both directions.
+cat > lm.c <<'EOF'
+#include <stdio.h>
+main() { extern double sqrt(); printf("%.4f\n", sqrt(2.0)); exit(0); }
+EOF
+# The stub is upstream's own: v8/usr/lib/libm.a is 216 bytes and defines
+# nothing, because V8's math is in libc.  So a correct -lm contributes no
+# symbols and the answer must come from libv8c.
+#
+# WHY THE VALUE IS CHECKED AND NOT JUST THE EXIT STATUS.  Deleting the stub and
+# re-running is the mutation, and it does not fail the way it looks like it
+# should: this program still links, and prints 0.0000.  Falling through to the
+# SDK's libm puts a real sqrt() ahead of V8's, and v8cc passes doubles in x0-x7
+# while AAPCS64 reads them from d0-d7 -- so the argument is read from the wrong
+# register and the answer is silently wrong.  pic fails LOUDLY on the same
+# mutation (it references errno, which then resolves to libSystem's indirect
+# symbol and cannot be relocated), so one missing archive produces a link error
+# for one program and a wrong number for another.  The value is the assertion
+# that catches the quiet half.
+ck 'the rootfs has V8s libm stub' yes \
+   "$([ -f "$V8ROOT/usr/lib/libm.a" ] && echo yes || echo no)"
+"$V8ROOT"/bin/cc -o lm lm.c -lm 2>/dev/null
+ck 'cc -lm links, and V8s own math answers' '1.4142' "$(./lm 2>&1)"
+# ...and the fall-through is REPORTED rather than silent, because a gap filled
+# quietly by the host is the shape this port has paid for three times.
+lmout=$( V8JAIL=strict "$V8ROOT"/bin/cc -o lmx lm.c -lnosuchlib 2>&1 )
+case "$lmout" in
+*"is not in the rootfs"*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL -l fall-through was silent under V8JAIL: $lmout" ;;
+esac
+# Unset stays quiet, exactly as the exec report does, so a partly-ported tree
+# is not noisy.
+lmq=$( "$V8ROOT"/bin/cc -o lmx lm.c -lnosuchlib 2>&1 )
+case "$lmq" in
+*"is not in the rootfs"*)
+   fail=$((fail+1)); echo "FAIL -l reported with V8JAIL unset" ;;
+*) pass=$((pass+1)) ;;
+esac
+rm -f lm.c lm lmx
+
 # --- PHASE 6d: the launcher, and the world it drops you into ----------------
 # V8's own v8.c is twelve lines: chroot, chdir, drop privilege, exec the shell.
 # Ours keeps chdir and umask, and drops the other two on purpose -- the chroot
