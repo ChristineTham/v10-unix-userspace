@@ -95,6 +95,29 @@ v8sys_isdirfd(int fd)
 }
 
 /*
+ * How many bytes read(2) will produce for this directory, which is NOT what the
+ * host says its size is.
+ *
+ * The snapshot is a run of 256-byte V7 records built from variable-length host
+ * entries, so the two numbers are unrelated: /etc has nine entries, 2304 bytes
+ * of records, and an APFS st_size of 288.  Every reader that loops until EOF
+ * never noticed.  ps(1) does not loop -- getdir() sizes its array as
+ * st_size/sizeof(struct direct) and then insists read(fd, dp, st_size) return
+ * exactly st_size, so it read 288 bytes of a 2304-byte directory and called
+ * that the answer.
+ *
+ * -1 for a descriptor that is not a directory, so the caller can tell "no
+ * opinion" from "genuinely empty".
+ */
+long
+v8sys_dirsize(int fd)
+{
+	struct dirshim *s = find(fd);
+
+	return (s == 0 ? -1L : s->nbytes);
+}
+
+/*
  * Fold a host inode number into 16 bits without ever producing 0, which V7
  * reserves for "this slot is empty" and which every directory reader skips.
  */

@@ -287,6 +287,67 @@ main()
 }
 EOF
 
+# --- THE THREE DIRSIZ, AND THE ONE THAT ACTUALLY DECIDES -------------------
+# V8 spells the directory-name limit in three headers, each guarded by
+# `#ifndef DIRSIZ' -- so whichever a program reaches FIRST wins, and the other
+# two are silently ignored:
+#
+#	<dir.h>        struct dir      readdir(3)'s view
+#	<sys/dir.h>    struct direct   the on-disk record, read(2) directly
+#	<sys/param.h>  (no struct)     and this is the one that decides
+#
+# This port raises it from 14 to 254 (src/include/dir.h says why).  Only the
+# first two were patched at first, which changed nothing at all for the seven
+# commands that read directories raw -- w.c and ps.h both include <sys/param.h>
+# BEFORE <sys/dir.h>, so they kept 14 while the shim wrote 256-byte records.
+#
+# The include order below is deliberately the one that used to lose.
+run 'DIRSIZ agrees whichever header is reached first' 'param=254 rec=256' <<'EOF'
+#include <stdio.h>
+#include <sys/param.h>
+#include <sys/types.h>
+#include <sys/dir.h>
+main()
+{
+	struct direct d;
+	printf("param=%d rec=%d\n", DIRSIZ, sizeof d);
+	fflush(stdout); return 0;
+}
+EOF
+
+# --- a directory's size is the size of what read(2) gives ------------------
+# ps(1)'s getdir() is the pattern: open, fstat, size an array as
+# st_size/sizeof(struct direct), then require read(fd, dp, st_size) to return
+# exactly st_size.  The host's st_size is unrelated to the record stream the
+# shim builds -- an APFS directory of nine entries reports 288 while the shim
+# produces 2304 -- so this read the first 288 bytes and called it the answer.
+#
+# Every OTHER reader in the tree loops until EOF and never noticed, which is
+# why the mismatch survived: it is only visible to code that trusts the size.
+mkdir -p sztest && : > sztest/one && : > sztest/two && : > sztest/three
+run 'fstat sizes a directory as read(2) will fill it' 'entries=5 exact=1' <<'EOF'
+#include <stdio.h>
+#include <sys/param.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/dir.h>
+main()
+{
+	struct stat sb;
+	static char buf[65536];
+	int fd, n;
+	long got;
+
+	if ((fd = open("sztest", 0)) < 0) { printf("openfail\n"); return 1; }
+	fstat(fd, &sb);
+	n = sb.st_size / sizeof(struct direct);	/* what getdir computes */
+	got = read(fd, buf, sb.st_size);	/* what getdir demands */
+	close(fd);
+	printf("entries=%d exact=%d\n", n, got == sb.st_size);
+	fflush(stdout); return 0;
+}
+EOF
+
 run 'memops' 'cpy=abc set=zzz cmp=0 lt=-1 chr=1 ccpy=3 miss=1' <<'EOF'
 #include <stdio.h>
 char *memcpy(), *memset(), *memchr(), *memccpy();

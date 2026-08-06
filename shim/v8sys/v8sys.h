@@ -139,6 +139,7 @@ int v8sys_faile(int hosterr);	/* map a captured host errno, return -1 */
 
 int v8sys_isdirfd(int fd);
 long v8sys_dirread(int fd, void *buf, long n);
+long v8sys_dirsize(int fd);
 void v8sys_dirclose(int fd);
 int v8sys_diropen(const char *path, int fd);
 

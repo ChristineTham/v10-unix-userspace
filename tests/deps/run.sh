@@ -300,6 +300,22 @@ dep 'w -> installed w'         $B/bin/w                        rootfs/bin/w
 # one inode cannot drift.  What can go wrong is the link being BROKEN and not
 # remade, so that is what gets asserted, below, after the restore loop.
 
+# --- the patched headers must reach the rootfs ------------------------------
+# ROOTFS_INC_SRC used to glob $(SRC)/include/* only, which matches the `sys'
+# DIRECTORY -- and a directory's mtime moves when an entry is created or
+# removed, not when a file inside it is edited.  So src/include/sys/param.h
+# was copied out once, when the directory first appeared, and never again.
+#
+# It was found by a mutation test that REFUSED TO FAIL: reverting the DIRSIZ
+# patch and rebuilding still passed, because the rootfs kept the old copy.
+# That is the whole argument for verifying a guard by breaking the thing.
+dep 'src/include/sys -> rootfs headers' src/include/sys/param.h \
+                                        rootfs/usr/include/.stamp
+dep 'src/include/sys/dir.h too'         src/include/sys/dir.h \
+                                        rootfs/usr/include/.stamp
+dep 'src/include -> rootfs headers'     src/include/dir.h \
+                                        rootfs/usr/include/.stamp
+
 # --- section 8a step 2: the filesystem switch -------------------------------
 # vfs.c holds the mount table and the passthrough type; syscall.c dispatches
 # through it.  Both directions are edges, and the header is the contract.

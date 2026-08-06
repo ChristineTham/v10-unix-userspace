@@ -1077,8 +1077,24 @@ int v8sys_pt_fstat(int f, struct v8_stat *vs)
 {
 	struct hoststat64 hs;
 	long r = rawsys2(SYS_fstat64, f, (long)&hs);
+	long dsz;
+
 	if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
 	stat_translate(&hs, vs);
+	/*
+	 * A DIRECTORY'S SIZE IS THE SIZE OF WHAT read(2) WILL GIVE, not what
+	 * the host filesystem happens to charge for it.  The shim presents a
+	 * run of 256-byte V7 records built from variable-length host entries,
+	 * so the host's number is unrelated -- /etc is nine entries, 2304 bytes
+	 * of records and an APFS st_size of 288.  See v8sys_dirsize() in dir.c.
+	 *
+	 * fstat only.  stat(2) by path cannot answer without snapshotting the
+	 * directory, which would put a getdirentries loop inside every `ls -l'
+	 * of a tree; and it does not need to, because nothing can READ a
+	 * directory without opening it first.  Recorded rather than hidden.
+	 */
+	if ((dsz = v8sys_dirsize(f)) >= 0)
+		vs->st_size = (v8_off_t)dsz;
 	return (0);
 }
 

@@ -16,7 +16,7 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 16 suites (~757 tests)
+make test             # all 16 suites (~768 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams hooks
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)
@@ -332,6 +332,23 @@ process tools in one tree, from different eras**, and the era shows in what
 they open. Only the `uptime` half of `w` runs here; the full half says `No mem`,
 and `tests/kmemu` asserts that message so a future `/dev/mem` is a decision
 rather than a discovery. `src/cmd/w/PORTING.md`.
+
+**V8 spells DIRSIZ in THREE headers and `#ifndef` means first-include wins.**
+`<dir.h>` (`struct dir`), `<sys/dir.h>` (`struct direct`) and `<sys/param.h>`
+(no struct, and the one that decides — `w.c` and `ps.h` both include it first).
+This port raises 14 → 254; patching two of the three changed nothing for
+exactly the programs that read directories raw, while looking like it had. All
+three now agree, plus `shim/v8sys/v8sys.h`'s `V8_DIRSIZ` and
+`src/libc/gen/readdir.c`'s `ODIRSIZ` — five spellings of one number.
+
+**A directory's `st_size` is the size of what `read(2)` gives, not what the host
+charges.** The shim builds 256-byte records from variable-length host entries,
+so the numbers are unrelated (nine entries: 2304 bytes of records, APFS says
+288). Every reader that loops to EOF never noticed; `ps`'s `getdir` sizes an
+array from `st_size` and demands `read` return exactly that. Fixed in
+`v8sys_pt_fstat` via `v8sys_dirsize()` — **fstat only**, because nothing can
+read a directory without opening it, and doing it for `stat(2)` would put a
+`getdirentries` loop inside every `ls -l`.
 
 **A preprocessor that is never fed downstream is not tested.** Both token bugs
 above were invisible while the program itself looked perfectly correct, because

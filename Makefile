@@ -1285,8 +1285,16 @@ $(ROOTFS_CC): $(BUILD)/cc/v8cc
 # The header tree, as one stamp.  Per-file rules for ~90 upstream headers would
 # buy nothing: the unit that matters is "is the include path current", and any
 # header changing invalidates every object either way.
+# $(SRC)/include/sys/*.h is listed SEPARATELY and must stay that way.  The
+# glob above it, $(SRC)/include/*, matches the `sys' DIRECTORY -- and on macOS a
+# directory's mtime moves when an entry is created or removed, not when a file
+# inside it is edited.  So adding src/include/sys/param.h rebuilt the stamp
+# (the directory appeared) and every later edit to it did not, leaving the
+# rootfs carrying a header that no longer matched its source.  Caught by a
+# mutation test that refused to fail; tests/deps has the case now.
 ROOTFS_INC_SRC = $(wildcard $(V8INCSRC)/*.h) $(wildcard $(V8INCSRC)/sys/*.h) \
-                 $(wildcard $(SRC)/include/*) $(JERQINC)/jioctl.h
+                 $(wildcard $(SRC)/include/*) $(wildcard $(SRC)/include/sys/*.h) \
+                 $(JERQINC)/jioctl.h
 $(ROOTFS_INC): $(ROOTFS_INC_SRC)
 	@mkdir -p $(ROOTFS)/usr/include
 	@cp -R $(V8INCSRC)/. $(ROOTFS)/usr/include/

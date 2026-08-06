@@ -1,0 +1,8 @@
+# Provenance for src/include/sys
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+737a3a66b62bee95ecaf61f3b6ac14cccc0e8e49  v8/usr/include/sys/dir.h
+5409ff3980c6c4edb6d48503bdb301383475de3b  v8/usr/include/sys/param.h
