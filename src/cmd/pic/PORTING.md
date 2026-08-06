@@ -163,3 +163,68 @@ which was the second case `acctype()`'s note said to wait for. Pass 1 now hands
 the declared types over: `bfcode()` in `compiler/ccom-arm64/local.c` records the
 byte ranges of aggregate parameters and `acctype()` declines to widen inside
 them. `tests/v8ccom` carries this union verbatim as a case.
+
+
+## `pic` could not compute a number, and two separate bugs did it
+
+`circle rad 0.5` was rejected with `circle has invalid radius 0.000000`. Both
+causes are floating-point calling convention, and each hides the other — fixing
+one alone changes nothing observable.
+
+### 1. `extern float atof()` where `atof` returns `double`
+
+`picl.l:17`. On the VAX a `float` and a `double` both came back in `r0/r1`, so
+the declaration was harmless there. On ARM64 a `float` return is `s0` and a
+`double` return is `d0` — the same register, read at a different width — so
+`atof("0.5")` produced 0. Measured side by side:
+
+```
+declared float:  0.000000
+declared double: 0.500000
+```
+
+A sweep found **five sites**, all upstream's: `pic/picl.l` and `troff`'s `ta.c`,
+`hc.c`, `tc.c` and `devi10/makefonts.c`. This is the same family as the
+`yylval.p` token-type bug already recorded here — a *declaration* that lies
+about a type, invisible to every test until the value crosses a register-class
+boundary.
+
+```bash
+grep -rn 'float[ 	]*atof()' src/cmd/
+```
+
+### 2. The math came from Apple's libm, on the wrong convention
+
+`tests/kmemu` carried libm as the last allowed leak, with a note saying it was
+"non-variadic, so it works and nothing looked wrong". It did not work. v8cc
+passes every argument positionally in `x0`–`x7`, doubles included:
+
+```
+ldr d16, [x9]        ; the double
+str d16, [sp, #384]
+ldr x0, [sp, #384]   ; ...into an INTEGER register
+bl  _sqrt
+```
+
+AAPCS64 puts a double argument in `d0`, so Apple's `sqrt` read whatever was
+there — `sqrt(2.0)` returned 0.000000.
+
+There is **no libm in V8's tree** to port; the math is in `libc/math`, which is
+why "port libm" was the wrong question and reading the tree was the only way to
+find out. All eighteen files compile under v8cc unmodified, and building them
+puts both ends of every call on one convention. `pic` and `grap` now import
+nothing at all from the host.
+
+### What the tests were doing instead
+
+`tests/wavec` drew `box "hello"; arrow; circle "world"` — all **default** sizes,
+which are compiled-in constants, so nothing called `atof` and nothing called the
+math library. It asserted that drawing commands come out, not that the numbers
+in them are right. There is now a case with an explicit radius.
+
+The end-to-end case had absorbed the bug more deeply: it counted `grep -c '^D'`
+on troff's device stream. troff emits a draw preceded by the motion that
+positions it — `h97Dl 0 96 .` — but while every coordinate was zero there was no
+motion, so each `D` began its line. The pattern had been calibrated against
+output from a program that could not do arithmetic, and fixing pic made that
+test fail.

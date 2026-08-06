@@ -107,6 +107,28 @@ if [ -x "$PIC" ]; then
 	# \w'hello'u twice to centre it -- so collapse runs before comparing.
 	check 'the label goes with its own object' 'hello world' \
 	    "$(grep -o "hello\|world" pc.tr | uniq | tr '\n' ' ' | sed 's/ $//')"
+
+	# EXPLICIT DIMENSIONS, which everything above avoids. The cases above
+	# use default sizes -- compiled-in constants -- so nothing calls atof
+	# and nothing calls the math library, and pic passed all of them while
+	# being unable to compute a radius at all.
+	#
+	# Two independent bugs did that, and this one input catches both.
+	# picl.l declared `extern float atof()' where atof returns a DOUBLE: on
+	# the VAX both came back in r0/r1, on ARM64 a float return is s0 and a
+	# double return is d0, so reading one as the other gave 0. And the math
+	# itself came from Apple's libm, which reads its argument from d0 while
+	# v8cc passes every argument positionally in x0-x7 -- so sqrt(2.0)
+	# returned 0.000000. src/cmd/pic/PORTING.md.
+	printf '.PS\ncircle rad 0.5 at 0,0\nline from 0,0 to 1,1\n.PE\n' > pd.in
+	"$PIC" pd.in > pd.tr 2>pd.err
+	check 'pic accepts an explicit radius' '' "$(cat pd.err)"
+	# A 0.5 radius circle at the origin plus a line to (1,1) is 1.5in square.
+	check 'pic computes the figure size from the numbers' '.PS 1.500i 1.500i' \
+	    "$(grep -m1 '^\.PS ' pd.tr | sed 's/ *$//')"
+	# ...and the circle command carries the diameter, not zero.
+	check 'the circle has a non-zero diameter' '1' \
+	    "$(grep -c "D'c1" pd.tr)"
 else
 	fail=$((fail+6)); echo "FAIL pic not built"
 fi
@@ -217,7 +239,16 @@ if [ -x "$V8ROOT/usr/bin/grap" ]; then
 	esac
 	# Drawing commands must survive all three stages.  Zero here was the
 	# symptom of the pic crash: exit status was lost through the pipe.
-	ndraw=$(printf '%s\n' "$trout" | grep -c '^D')
+	#
+	# COUNTED ANYWHERE ON THE LINE, not at the start, and the difference is
+	# a record of a bug. troff emits a draw as `Dl 0 96 .' preceded by
+	# whatever motion puts the pen in place -- `h97Dl 0 96 .'. While pic
+	# could not do arithmetic every coordinate was zero, so there was no
+	# motion to emit and every D began its line; `grep -c "^D"' was
+	# calibrated against that. Fixing pic's numbers put an h in front of
+	# each one and the pattern stopped matching, which is the test failing
+	# because the program started working.
+	ndraw=$(printf '%s\n' "$trout" | grep -c 'D[lca]')
 	if [ "$ndraw" -gt 0 ]; then pass=$((pass+1))
 	else fail=$((fail+1)); echo "FAIL grap|pic|troff drew nothing"; fi
 

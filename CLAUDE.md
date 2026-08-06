@@ -330,6 +330,33 @@ grep -n 'yylval\.p *=' src/cmd/*/*.l
 grep -nE '^%(union|type|token)[ \t]*<' src/cmd/*/*.y
 ```
 
+**A SAME-REGISTER RETURN IS NOT A SAME-TYPE RETURN, and floating point is
+where the port had never looked.** Two bugs, both measured, and each hid the
+other so that fixing one alone changed nothing observable:
+
+- **`extern float atof()` where `atof` returns `double`.** On the VAX both came
+  back in `r0/r1`; on ARM64 a `float` return is `s0` and a `double` return is
+  `d0` — the same register read at a different width — so `atof("0.5")` gave 0.
+  Five sites, all upstream's: `pic/picl.l` and `troff`'s `ta.c`, `hc.c`, `tc.c`,
+  `devi10/makefonts.c`. Same family as the `yylval.p` token bug: a *declaration*
+  that lies about a type. Sweep with `grep -rn 'float[ \t]*atof()' src/cmd/`.
+- **v8cc passes doubles in `x0`–`x7`, AAPCS64 passes them in `d0`–`d7`.** So
+  every call into the host's libm read its argument from the wrong register:
+  `sqrt(2.0)` returned 0.000000. `tests/kmemu` had tolerated libm as an allowed
+  leak on the grounds that it was "non-variadic, so it works" — **that argument
+  is about the shape of the call and is only as good as the register classes
+  agreeing.** Fixed by building V8's own math, which is in `libc/math` and not
+  in any libm: there is no libm in V8's tree, so "port libm" was the wrong
+  question. The allowed-leak list is now empty.
+
+Together these meant `pic` never computed a correct radius and every drawing it
+or `grap` produced here was geometrically wrong. `tests/wavec` missed it twice
+over: its inputs used only **default** sizes, which are compiled-in constants
+that call neither `atof` nor the math library, and its end-to-end check counted
+`grep -c '^D'` on troff's output — a pattern that only matched because every
+coordinate was zero, so no motion preceded the draw. **The test had been
+calibrated against the broken output, and fixing the program broke the test.**
+
 **A same-size conversion is not always a no-op.** Widths are the common fault;
 signedness is the other one. A signed and an unsigned value of the same size
 have identical bits, so converting between them changes nothing about the

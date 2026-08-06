@@ -90,7 +90,7 @@ main(argc, argv)
 char *argv[];
 {
 	char buf[BUFSIZ];
-	float atof();
+	double atof();	/* PORT: was float; atof returns double */
 	int done();
 
 	setbuf(stdout, buf);

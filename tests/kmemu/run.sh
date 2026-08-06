@@ -1026,12 +1026,27 @@ else bad "no-/proc probe build" "$(head -3 "$TMP/npr.log")"; fi
 # helpers all install elsewhere, and a sweep that stops at /bin would have
 # declared the world clean while missing a third of it.
 #
-# ONE ALLOWED LEAK, named rather than tolerated, and the list is the record.
+# NO ALLOWED LEAKS. The list is empty, and both entries it used to hold came
+# off the same way: someone built the V8 code that made the leak unnecessary,
+# and this check refused to let the entry linger afterwards.
 #
-# libm -- V8 shipped one and this port has never built it, so pic and grap do
-#   their geometry with Apple's. Non-variadic, so it works and nothing looked
-#   wrong; found by this sweep rather than by a bad drawing. Porting libm is its
-#   own piece of work, and until then this is what says so.
+# libm was the last one, and the note beside it was wrong in a way worth
+# keeping. It said Apple's math was "non-variadic, so it works and nothing
+# looked wrong". It did not work. v8cc passes every argument positionally in
+# x0-x7 INCLUDING doubles --
+#
+#	ldr d16, [x9] ; str d16, [sp,#384] ; ldr x0, [sp,#384] ; bl _sqrt
+#
+# -- and AAPCS64 puts a double argument in d0, so Apple's sqrt read whatever was
+# there. Measured: sqrt(2.0) returned 0.000000 and pic rejected `circle rad 0.5'
+# as "invalid radius 0.000000". Every drawing pic or grap made here was
+# geometrically wrong. There is also no libm in V8's tree to port -- the math is
+# in libc/math, which is why "port libm" was the wrong question. All eighteen
+# files compile unmodified and put both ends of the call on one convention.
+#
+# The lesson for the next entry: "non-variadic so it is compatible" is an
+# argument about the SHAPE of the call, and it is only as good as the register
+# classes agreeing. They do not for floating point.
 #
 # `sleep' used to be the other entry, and the mechanism below is what took it
 # off. V8's sleep(3) is alarm + a handler + `for(;;) pause()', and no V8 program
@@ -1042,7 +1057,7 @@ else bad "no-/proc probe build" "$(head -3 "$TMP/npr.log")"; fi
 # shim/v8sys/sigtramp.s in place, V8's own sleep.c builds and works, so nothing
 # imports the host's any more; the staleness check below is what said so rather
 # than anyone remembering to look.
-ALLOWED="sin cos atan2 sqrt exp log log10 pow floor ceil"
+ALLOWED=""
 
 # ccom and cpp in the rootfs are the CLANG-BUILT stage-0 ones -- CLAUDE.md says
 # so, and `nm' showing zero V8 symbols is how it says it. They import all of

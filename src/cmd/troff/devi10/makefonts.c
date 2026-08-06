@@ -931,7 +931,7 @@ newwidth(ch, width)
 	float	delta;						/* width change for the character */
 
 	float	getdelta();
-	float	atof();
+	double	atof();	/* PORT: was float; atof returns double */
 
 
 	/********************************************************************

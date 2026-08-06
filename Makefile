@@ -640,7 +640,43 @@ LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/getpwent.c $(LIBCSRC)/stdio/getpwuid.c \
           $(LIBCSRC)/stdio/getgrent.c $(LIBCSRC)/stdio/fstab.c \
           $(LIBCSRC)/stdio/doscan.c $(LIBCSRC)/stdio/scanf.c \
-          $(LIBCSRC)/stdio/popen.c $(LIBCSRC)/stdio/system.c
+          $(LIBCSRC)/stdio/popen.c $(LIBCSRC)/stdio/system.c \
+          $(patsubst %,$(LIBCSRC)/math/%.c,$(LIBC_MATH))
+# THE MATH IS V8'S OWN, AND IT WAS PRODUCING WRONG ANSWERS BEFORE IT WAS.
+#
+# There is no libm in V8's tree -- the math lives in libc/math, which is why
+# "port libm" was the wrong shape of question and reading the tree was the only
+# way to find that out.  Until this list existed, pic and grap resolved sqrt,
+# sin, atan2 and the rest out of the HOST's libSystem, and tests/kmemu carried
+# libm as an allowed leak on the grounds that V8 shipped one and we had not
+# built it.
+#
+# That was not a purity problem, it was a CORRECTNESS one, and the reason is the
+# calling convention.  v8cc passes every argument positionally in x0-x7,
+# including doubles -- the emitted code is
+#
+#	ldr	d16, [x9]         ; the double
+#	str	d16, [sp, #384]
+#	ldr	x0, [sp, #384]    ; ...into an INTEGER register
+#	bl	_sqrt
+#
+# and AAPCS64 says a double argument goes in d0.  Apple's sqrt read whatever
+# happened to be in d0.  Measured: sqrt(2.0) returned 0.000000, and `pic'
+# rejected `circle rad 0.5' with "circle has invalid radius 0.000000".  Every
+# drawing pic or grap ever produced here was geometrically wrong, and the wavec
+# suite did not see it because it asserts that drawing commands come out, not
+# that the numbers in them are right.
+#
+# Compiling V8's math with v8cc puts both ends of the call on the SAME
+# convention, which is the whole fix -- all eighteen files build unmodified and
+# all ten functions pic and grap use now agree to six decimal places.
+#
+# fabs is NOT here: ieeefp.o already defines it, and taking upstream's would be
+# a duplicate symbol at link time.  The rest of upstream's directory is included
+# even though nothing calls j0 or gamma yet, because leaving them out is a
+# second list to keep in step with the first -- the DIRSIZ lesson.
+LIBC_MATH = asin atan erf exp floor gamma hypot j0 j1 jn \
+            log pow sin sinh sqrt tan tanh
 # scanf/doscan, popen and system were missing until spell needed scanf.  A
 # missing libc function does not fail the link: it is resolved from -lSystem,
 # silently, and for a VARIADIC function that is an ABI mismatch rather than a
@@ -710,6 +746,10 @@ $(BUILD)/libc/gen/%.o: $(LIBCSRC)/gen/%.C $(SEED_DEPS)
 
 $(BUILD)/libc/stdio/%.o: $(LIBCSRC)/stdio/%.c $(SEED_DEPS)
 	@mkdir -p $(BUILD)/libc/stdio
+	$(V8CCSEED) -c -o $@ $<
+
+$(BUILD)/libc/math/%.o: $(LIBCSRC)/math/%.c $(SEED_DEPS)
+	@mkdir -p $(BUILD)/libc/math
 	$(V8CCSEED) -c -o $@ $<
 
 # ---------------------------------------------------------------------------

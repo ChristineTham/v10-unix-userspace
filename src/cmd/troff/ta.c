@@ -90,7 +90,7 @@ char *argv[];
 {
 	char buf[BUFSIZ];
 	int done();
-	float atof();
+	double atof();	/* PORT: was float; atof returns double */
 
 	setbuf(stdout, buf);
 	while (argc > 1 && argv[1][0] == '-') {

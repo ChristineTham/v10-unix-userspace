@@ -1,0 +1,24 @@
+# Provenance for src/libc/math
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+3c8d07ed4ee8696acabf3640fec67594322554e1  v8/usr/src/libc/math/atan.c
+06ae76f33283352a55e291f66449d93529fa5529  v8/usr/src/libc/math/log.c
+f9713a084b8a5dab04cc9a5fc8ba5323a01761e5  v8/usr/src/libc/math/jn.c
+823968f4a664f76faf5f924d1e57021b4716e568  v8/usr/src/libc/math/gamma.c
+b724b905b426f7c25bf9374e01c254d633ab00a0  v8/usr/src/libc/math/erf.c
+2b2eb5448c33bcecf2573435561c301bd8e2ea14  v8/usr/src/libc/math/j0.c
+e0e88629fdc641f15bfbacc573491acd17245a8a  v8/usr/src/libc/math/sinh.c
+3f7637421551b814e94ebdf0a08bc93d837d88d5  v8/usr/src/libc/math/sin.c
+84d28f0550d155ff82ea4d4c0b24ebaf779658a4  v8/usr/src/libc/math/exp.c
+f05d5981fae8f2fc836a91b2932be0d355af8f75  v8/usr/src/libc/math/fabs.c
+6c4aa70128cedb20f07c7a6fa5acffc9786ae828  v8/usr/src/libc/math/floor.c
+b2708db4a01ea48bfd1cb0d779c56e63f214e048  v8/usr/src/libc/math/pow.c
+028233325d726771e76b482d3a89ec9e449ca5d8  v8/usr/src/libc/math/sqrt.c
+cacb6b4fb186e20fcadeff773deefd9e12c8f856  v8/usr/src/libc/math/asin.c
+73d009f723f0d953bbe51a3e9b52b2af3dadfdfd  v8/usr/src/libc/math/hypot.c
+3f83a3fe7ac56152b08d9d96af07c18d5e475cbe  v8/usr/src/libc/math/tanh.c
+13b397fcf6acc092f1161c0c7653f96e5c8ef49b  v8/usr/src/libc/math/j1.c
+7df17194231a8d817367b9ae28ca5e1c6ecdb178  v8/usr/src/libc/math/tan.c

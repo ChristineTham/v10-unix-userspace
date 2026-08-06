@@ -14,7 +14,7 @@
 #include "pic.h"
 #include "y.tab.h"
 
-extern	float	atof();
+extern	double	atof();	/* PORT: float. atof returns a DOUBLE -- see below */
 extern	struct	symtab	symtab[];
 extern	char	*filename, *copythru();
 
