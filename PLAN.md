@@ -1150,6 +1150,32 @@ Ordered so that value lands before risk, and so each step is testable alone.
    manufactured from `proc_pidinfo` rather than read through `prusrio` -- see
    above.
 
+   **The layout, measured from the V8 side so it does not have to be derived
+   again.** `PIOCGETPR` copies a `struct proc` verbatim, so its shape *is* the
+   `/proc` ABI and both ends must agree exactly -- the same hazard `struct utmp`
+   and `struct exec` already have, and the same answer: spell it in the shim,
+   assert it from the V8 side.
+
+   | | |
+   |---|---|
+   | `sizeof(struct proc)` | **200** (LP64; the VAX's was smaller) |
+   | `p_stat` 27, `p_time` 28, `p_nice` 29 | chars |
+   | `p_flag` 56 | int |
+   | `p_uid` 60, `p_pid` 64, `p_ppid` 66 | shorts |
+   | `p_dsize` 80, `p_ssize` 88, `p_rssize` 96 | `size_t` |
+   | `p_swaddr` 120, `p_wchan` 128, `p_textp` 136 | |
+   | `p_pctcpu` 172 | float |
+   | `sizeof(struct user)` | **4016** |
+   | `UPAGES` 10, `NBPG` 512 | so `UBASE` = `0x80000000 - 5120` = **0x7fffec00** |
+
+   `UBASE` fits in 31 bits, so `ps`'s `Sread(fd, UBASE, up)` is an ordinary
+   `lseek` and needs no special handling.
+
+   Also required before `ps` will start at all, and unrelated to `/proc`: it
+   `getdir`s `/dev`, `/dev/dk` and `/dev/pt` and opens `/dev/drum`, calling
+   `error()` on any failure (`ps.c:21-28`). The last two directories and the
+   drum do not exist here.
+
    **`sys/proca.c` is 716 lines of authentic V8 already written to the eleven
    operations**, and about 500 of them are portable -- see the table above.
    `prioctl` answers `PIOCGETPR` in 131 VM-free lines and `prread` lists the
