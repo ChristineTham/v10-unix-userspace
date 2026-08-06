@@ -147,3 +147,87 @@ two processes is not.
 
 That is the same question §8a step 2 answers for filesystems, so the two should
 be answered together rather than twice.
+
+### Measured, so the cost is a number rather than a feeling
+
+The footprint survey that made `stream.c` affordable — **nine names** — was run
+again against `streamio.c` before deciding anything. It is not nine.
+
+| | `stream.c` (in) | `streamio.c` |
+|---|---|---|
+| external names needed | **9** | **~34** — 10 types, 14 functions, 6 globals, ~40 constants |
+| authentic headers to stand in for | 3 | **11** |
+| of those, mechanical translations | 9 of 9 | ~20 of 34 |
+| of those, *design decisions* | 0 | `tsleep`, `wakeup`, `longjmp`, `u`, `copyin`/`copyout`, `iomove`, the file table |
+
+Four headers drag in the entire process model — `user.h`, `proc.h`, `inode.h`,
+`file.h`. `dir.h` and `buf.h` come along innocently as prerequisites of
+`user.h` and `iomove`. `struct user` is referenced **69 times** across 10
+distinct fields, 49 of them `u.u_error` alone.
+
+**The decisive name is `tsleep`, and it is not a machine-dependent fill-in.**
+In the kernel it blocks the caller until *another process* calls `wakeup(chan)`.
+In a per-binary shim there is no other process: the only producer that could
+ever run is `queuerun()`, on the same thread, at `splx()`. So `tsleep` here can
+only mean "run `queuerun` and re-poll" — a change to the engine's semantics
+rather than a stand-in for a machine fact. The per-binary question above is not
+a caveat on this work; it is the first compile error.
+
+**A pure stratum exists and is too small to justify the rest.** Five functions —
+`qattach`, `qdetach`, `streadable`, `nilopen`, `nilput`, 86 lines, 7.9% of the
+file — need nothing beyond a two-line `nulldev()`. `qattach`/`qdetach` are the
+module push/pop primitives, which is exactly what `tests/streams` cannot reach
+today. But a byte-identical import must *compile and link whole*, so all ~34
+names must exist before the first of those five can run. Two-thirds of the file
+would be provably unreachable at the end of it.
+
+`strput` is **not** pure, despite looking it: `streamio.c:372` calls
+`forceclose()`, which walks `file[0]`…`fileNFILE`. `stexit` is 12 lines and
+calls `stclose`, which reaches `tsleep` and `closef`. Most functions inherit the
+file table through the `stenter`/`stexit` edge.
+
+**Conclusion: answer the per-binary question first, then import once.** Not
+because the work is large, but because importing first would mean writing
+`tsleep` twice and deciding its semantics under the pressure of a build that
+does not link.
+
+### Four hazards to settle BEFORE importing, not after
+
+Found while surveying, and the second is a conflict between two of this port's
+own commitments rather than a bug in anything.
+
+1. **`streamio.c:713` is an upstream LP64 bug.**
+   ```c
+   if (copyout((caddr_t)&fmt, arg, sizeof(arg)))     /* fmt is int, arg is caddr_t */
+   ```
+   Compare `:690`, which correctly says `sizeof(nld)`. On the VAX `int` and
+   `caddr_t` were both 4 bytes, so this was right *by accident*; on LP64 it
+   writes **8 bytes out of a 4-byte object** into user memory. Reached by
+   `FIOLOOKLD` with a non-null argument. A byte-identical import inherits it,
+   so it needs a recorded deviation or a documented decision to leave it.
+
+2. **`stream.h:67` is `short pgrp`, and it cannot be widened.** `streamio.c:573`
+   stores a pid into it (`stq->pgrp = u.u_procp->p_pgrp = u.u_procp->p_pid`),
+   and `:371` then does `gsignal(stp->pgrp, SIGHUP)`. This port widened
+   `p_pgrp`/`p_pid` to `int` in `src/include/sys/proc.h:36` precisely because a
+   macOS pid above 32767 reads back negative — but `src/sys/h/stream.h` is
+   **byte-identical and asserted so by `tests/streams`**, so the same fix is not
+   available. A pid over 32767 truncates negative here and signals a negative
+   process group. Exactly the `p_pid` class, including the part where a freshly
+   booted CI runner never reaches it.
+
+3. **`stream.h:69` is `char count`**, signed on ARM64 macOS, incremented
+   unbounded by `stenter` (`:890`) and tested `--stp->count==0` by `stexit`
+   (`:904`). 128 nested entries wraps negative and the stream never closes.
+
+4. **`struct user` would then exist twice in this port, under two rules.**
+   `shim/libkmemu/procfs.c` already synthesises one declared *by byte offset*
+   with `_Static_assert`s, because `/proc`'s ABI is the real 4016-byte VAX
+   layout. A kernel-side `struct user` for `streamio.c` needs no particular
+   layout — nothing outside the file reads it. Two structs of one name with
+   opposite constraints is worth naming here, before it is created.
+
+One smaller thing worth knowing: the 13 ioctl codes `streamio.c` needs
+(`FIONREAD`, `TIOCGPGRP`, `FIOPUSHLD`, …) are **already spelled with identical
+values** in `shim/v8sys/ioctl.c` as `V8_*`. A second spelling would be the
+`DIRSIZ`-in-three-headers mistake starting over.

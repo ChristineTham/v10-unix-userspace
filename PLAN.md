@@ -1149,12 +1149,34 @@ Ordered so that value lands before risk, and so each step is testable alone.
    modernise K&R declarations" is actually obeyed.
 
    **Still to do here: `sys/streamio.c`**, the syscall side -- `stopen`,
-   `stread`, `stwrite`, `stioctl`, `I_PUSH`/`I_POP`. It wants inodes,
-   `u.u_error`, `tsleep`/`wakeup` and a file table, so unlike `stream.c` it is
-   entangled with the process model, and it raises the question this port's
-   **per-binary** shim has been able to avoid so far: a stream between two
-   processes is not per-binary. That is the same question step 2 answers for
-   filesystems, so they should be answered together rather than twice.
+   `stread`, `stwrite`, `stioctl`, `I_PUSH`/`I_POP`. **Surveyed rather than
+   estimated**, and the survey says not yet; `src/sys/PORTING.md` has it in
+   full. The number that made `stream.c` affordable was nine external names.
+   `streamio.c` needs **~34**, across **11** authentic headers, four of which
+   (`user.h`, `proc.h`, `inode.h`, `file.h`) are the whole process model --
+   `struct user` alone is referenced 69 times.
+
+   **`tsleep` is the one that decides it, and it is not a machine-dependent
+   fill-in.** In the kernel it blocks until *another process* calls `wakeup`.
+   A per-binary shim has no other process: the only producer that could run is
+   `queuerun()`, on the same thread, at `splx()`. So here it can only mean
+   "run `queuerun` and re-poll", which changes the engine's semantics rather
+   than supplying a machine fact. The per-binary question is not a caveat on
+   this step; it is its first compile error.
+
+   A genuinely pure stratum exists -- `qattach`, `qdetach`, `streadable`,
+   `nilopen`, `nilput`, 86 lines, 7.9% -- and is unreachable in isolation,
+   because a byte-identical import has to compile and link *whole*. Two-thirds
+   of the file would be provably dead at the end of it. **So: answer the
+   per-binary question first, then import once.** Doing it the other way means
+   writing `tsleep` twice and settling its semantics under a build that will
+   not link.
+
+   Four hazards are already recorded against the day it happens, including an
+   upstream LP64 bug at `streamio.c:713` and a real conflict between two of
+   this port's commitments: `stream.h`'s `short pgrp` takes a pid, and
+   `stream.h` is byte-identical and asserted so, therefore cannot be widened
+   the way `p_pid` was.
 2. **The 9P switch itself**, with exactly one server behind it: **passthrough**,
    reproducing today's behaviour byte for byte. Nothing user-visible changes;
    the whole point is that the suites stay green while the floor is replaced.
