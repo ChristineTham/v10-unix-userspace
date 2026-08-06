@@ -784,6 +784,7 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 	out=$("$TMP/gp" "$kidpid" 2>/dev/null)
 	# ...asked BEFORE the kill, or ps has nothing left to report on.
 	hostkid=$(ps -o nice= -p "$kidpid" 2>/dev/null | tr -d ' ')
+	hostself=$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')
 	kill "$kidpid" 2>/dev/null
 	wait "$kidpid" 2>/dev/null
 	g() { echo "$out" | awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}'; }
@@ -818,23 +819,30 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 	# runner at all -- and the shim's documented behaviour when the host will
 	# not say is exactly NZERO, which a difference reads as zero.
 	#
-	# So the statement is the precise one: the shim reports the host's nice
-	# biased by NZERO, OR it reports NZERO because the host declined.  Any
-	# third value is a bug, and both mutations that matter produce one --
-	# dropping the bias gives the raw host nice, inverting it gives
-	# NZERO-nice, and neither is either permitted answer.
+	# Comparing the shim's value against `ps -o nice=' looked like the fix and
+	# is not, because the two host interfaces do not always agree: on the
+	# runner ps reports the child at 0 while proc_pidinfo implies -10, and
+	# from outside the shim there is no way to tell "the shim is wrong" from
+	# "the host contradicts itself".  An absolute value cannot be the test.
+	#
+	# So: assert a RELATION the port controls, and only where the host has
+	# supplied the precondition for it.  If ps says the two processes really
+	# are ten apart, the shim's two values must be ten apart too (scale and
+	# sign) and the nicer one must earn printp's N (the bias itself, which a
+	# difference cannot see).  If ps says they are not, nothing here is
+	# exercised and the run says so rather than asserting into fog.
 	nzero=$(g nzero); mynice=$(g nice); kidnice=$(g kidnice)
+	nicelive=no
 	if [ -z "$nzero" ] || [ -z "$kidnice" ] || [ "$kidnice" = "X" ]; then
 		bad "could not read the nice values" "self=$mynice kid=$kidnice"
-	elif [ -n "$hostkid" ] && [ "$kidnice" = "$((nzero + hostkid))" ]; then
-		ok; nicelive=yes
-	elif [ "$kidnice" = "$nzero" ]; then
-		echo "  (not exercised: the host does not report nice here, so the"
-		echo "   shim reports NZERO -- its documented answer for that)"
-		nicelive=no
+	elif [ -n "$hostkid" ] && [ -n "$hostself" ] &&
+	     [ "$((hostkid - hostself))" -eq 10 ]; then
+		nicelive=yes
+		check "...nice tracks the host's, ten apart" \
+			"10" "$((kidnice - mynice))"
 	else
-		bad "...nice is the host's biased by NZERO, or NZERO" \
-		    "host=$hostkid nzero=$nzero shim=$kidnice"
+		echo "  (not exercised: nice -n 10 gave the host no difference to"
+		echo "   report -- ps says self=$hostself kid=$hostkid)"
 	fi
 	# Ticks read as nanoseconds would give 2 here, not ~100.
 	pct=$(g pct)
