@@ -1115,6 +1115,41 @@ Ordered so that value lands before risk, and so each step is testable alone.
    subtree instead of guessing it from `libproc`. Note `p_wchan` stays
    unanswerable either way; the sentinel rule still applies.
 
+   **STARTED: the directory works, and it is manufactured rather than
+   imported.** `shim/libkmemu/procfs.c` is the second filesystem type in the
+   switch. `ls /proc` lists every live process -- 632 of them, matching
+   `ps ax` -- as 256-byte V7 records with `d_ino = pid + 64` and five-digit
+   zero-padded names, `.` and `..` both at ROOTINO, and a fixed
+   `(nproc + 2)`-record directory with holes. Every one of those conventions is
+   `proca.c`'s and is cited to its line in the source.
+
+   **The decision not to import `proca.c` was made by reading it.** Its
+   operations are written against the V8 kernel's internals -- `t_read(ip)`
+   takes an inode and no length, because the length is `u.u_count` -- so
+   standing it up needs `struct inode`, the u-area, `iomove`, `proc[]`,
+   `pfind`, `iget`, `namei`, `open1`, `tsleep`/`wakeup`, `psignal`, `setrq`:
+   about twenty-five substrate functions, which is most of the kernel.
+   `stream.c` needed nine names; this needs a kernel. So the conventions are
+   V8's and the answers come from `proc_listpids`, which is `libkmemu`'s
+   existing bargain one level up -- `who` reads an `/etc/utmp` nothing else
+   writes; `ps` reads a `/proc` nothing else mounts.
+
+   Two things the port had to decide for itself, both recorded in the source.
+   The table is **1024 slots** because V8's `NPROC (20 + 8 * MAXUSERS)` depends
+   on a config file `mkconf` generated that is not in the vendored tree for any
+   machine -- and an overflow is *reported*, not dropped, because a process
+   lister that silently omits processes is the one thing it must not be. And
+   `d_ino` is 16 bits while a macOS pid is not, so the sum wraps; harmless,
+   because the *name* carries the pid, except for pid 65472, which wraps to
+   exactly 0 and would vanish from every reader. Folded to 1, same defence as
+   `v8sys_fold_ino`.
+
+   **Still to do here: `PIOCGETPR` and the u-area**, which is what `ps` needs
+   beyond the directory. The ioctl slot was deliberately left out of
+   `struct v8fstyp` until this customer arrived; it arrives now. The u-area is
+   manufactured from `proc_pidinfo` rather than read through `prusrio` -- see
+   above.
+
    **`sys/proca.c` is 716 lines of authentic V8 already written to the eleven
    operations**, and about 500 of them are portable -- see the table above.
    `prioctl` answers `PIOCGETPR` in 131 VM-free lines and `prread` lists the

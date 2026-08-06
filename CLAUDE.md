@@ -16,7 +16,7 @@ contract) and §4a (bootstrap ladder) before making architectural decisions.
 
 ```bash
 make -j8              # full build (~4s clean)
-make test             # all 16 suites (~768 tests)
+make test             # all 16 suites (~779 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams hooks
 ./tests/deps/run.sh   # a suite directly (same thing, no build first)

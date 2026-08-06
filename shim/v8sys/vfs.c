@@ -14,6 +14,9 @@
 
 extern int v8_errno;
 extern char *v8sys_rootpath(char *p, int mode);
+extern void v8sys_dirinit(void);
+extern int v8sys_diropen(const char *path, int fd);
+extern int v8sys_pt_fstat(int fd, struct v8_stat *st);
 extern long v8sys_dirseek(int fd, long off, int whence);  /* dir.c; not in v8sys.h */
 
 #define RET(r)	do { long _r = (r); \
@@ -62,8 +65,32 @@ static struct v8mount {
 	{ "/dev/",	 0, &v8fs_pass },
 	/* /unix is the kernel namelist libkmemu writes -- see kmem.c. */
 	{ "/unix",	 1, &v8fs_pass },
+	/*
+	 * /proc -- Killian's process filesystem, and the SECOND TYPE.  Its row
+	 * carries no pointer because the type lives in libkmemu: it answers from
+	 * proc_listpids and proc_pidinfo, which are libc, and putting it here
+	 * would make every V8 binary import libSystem for a filesystem it never
+	 * opens.  m_typ is filled from kmemu_procfs() at lookup time, and the
+	 * do-nothing version in nokmemu.c returns null -- so in a binary without
+	 * libkmemu nothing claims /proc and it falls through to the host, where
+	 * macOS has none, which is the truth.
+	 */
+	{ "/proc/",	 0, 0 },
+	{ "/proc",	 1, 0 },
 	{ 0, 0, 0 }
 };
+
+extern struct v8fstyp *kmemu_procfs(void);
+
+/*
+ * A row's type, resolved late for the ones that have none of their own.  Only
+ * /proc is in that position today; see its rows above.
+ */
+static struct v8fstyp *
+typ(int i)
+{
+	return (mounts[i].m_typ ? mounts[i].m_typ : kmemu_procfs());
+}
 
 struct v8fstyp *
 v8fs_typefor(const char *p)
@@ -76,10 +103,10 @@ v8fs_typefor(const char *p)
 		for (k = 0; d[k] && p[k] == d[k]; k++)
 			;
 		if (mounts[i].m_exact) {
-			if (d[k] == '\0' && p[k] == '\0') return (mounts[i].m_typ);
+			if (d[k] == '\0' && p[k] == '\0') return (typ(i));
 			continue;
 		}
-		if (d[k] == '\0') return (mounts[i].m_typ);
+		if (d[k] == '\0') return (typ(i));
 		/*
 		 * ...and the directory ITSELF, spelled without the trailing
 		 * slash.  The prefixes carry one so that "/binary" is not
@@ -89,7 +116,7 @@ v8fs_typefor(const char *p)
 		 * different worlds depending on a trailing character.
 		 */
 		if (d[k] == '/' && d[k + 1] == '\0' && p[k] == '\0')
-			return (mounts[i].m_typ);
+			return (typ(i));
 	}
 	return (0);
 }
@@ -142,10 +169,36 @@ pt_path(char *p, int mode)
 	return v8sys_rootpath(p, mode);
 }
 
+/*
+ * open, and the directory registration that goes with it.  Noticing that a
+ * descriptor is a directory -- and snapshotting it into V7 records -- is a
+ * property of THIS filesystem, not of open(2); /proc builds its own directory
+ * and must not be handed to dir.c.  It moved here from v8s_open when the switch
+ * arrived, which is the sort of thing a switch is for.
+ */
 static int
 pt_open(char *rp, int flags, int mode)
 {
-	RET(rawsys3(SYS_open, (long)rp, flags, mode));
+	struct v8_stat st;
+	long fd;
+
+	v8sys_dirinit();
+	/*
+	 * V8's flags are the V7 originals -- 0 read, 1 write, 2 read/write --
+	 * and O_CREAT/O_TRUNC/O_APPEND arrived later with the values macOS
+	 * still uses, so nothing needs translating.
+	 */
+	fd = rawsys3(SYS_open, (long)rp, flags, mode);
+	if (fd < 0) { v8_errno = v8sys_errno(RAWERR(fd)); return (-1); }
+
+	if (v8sys_pt_fstat((int)fd, &st) == 0 &&
+	    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR) {
+		if (v8sys_diropen(rp, (int)fd) < 0) {
+			rawsys1(SYS_close, fd);
+			return (-1);
+		}
+	}
+	return ((int)fd);
 }
 
 static int

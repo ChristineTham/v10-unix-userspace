@@ -156,7 +156,14 @@ libcimports() {
 #
 # sysctlbyname arrived with load(1), for vm.loadavg. It is sysctl(3) under its
 # by-name spelling, same man page, same family.
-KMEMU_IMPORTS="endutxent getfsstat getutxent setutxent statfs sysctlbyname"
+#
+# proc_listpids arrived with /proc (shim/libkmemu/procfs.c), and it is the
+# seventh -- so it went through the deliberation this check exists to force.
+# It is named on PLAN.md section 7's sanctioned list already ("process/utmp
+# facts from sysctl/libproc/utmpx"), it answers "what is running", and it is
+# the interface Apple documents for exactly that. Sanctioned, and recorded here
+# rather than absorbed: an eighth still has to argue its case.
+KMEMU_IMPORTS="endutxent getfsstat getutxent proc_listpids setutxent statfs sysctlbyname"
 check "who imports libkmemu's whole surface and no more" \
 	"$KMEMU_IMPORTS" "$(libcimports "$WHO")"
 check "df imports the same set, being the same library" \
@@ -462,6 +469,107 @@ else bad "namelist probe build" "$(head -3 "$TMP/nl.log")"; fi
 
 check "w imports libkmemu's whole surface and no more" \
 	"$KMEMU_IMPORTS" "$(libcimports "$W")"
+
+# ------------------------------------------------------------- /proc ---
+# Killian's process filesystem, and the SECOND filesystem type in the shim's
+# switch.  Not proca.c: PLAN.md section 8a step 3 records why importing it
+# means importing the kernel.  The CONVENTIONS are proca.c's, so they are what
+# gets asserted -- every one is cited in shim/libkmemu/procfs.c.
+cat > "$TMP/pr.c" <<'EOF'
+#include <stdio.h>
+#include <sys/param.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/dir.h>
+main()
+{
+	struct stat sb;
+	struct direct d;
+	int fd, live = 0, dots = 0, fivedig = 1, nonzero = 1, self;
+	char me[16];
+
+	if (stat("/proc", &sb) < 0) { printf("nostat\n"); return 1; }
+	printf("mode %o\n", sb.st_mode & 0170000);
+	printf("rootino %d\n", sb.st_ino);
+	printf("dirsize %ld\n", (long)sb.st_size);
+
+	if ((fd = open("/proc", 0)) < 0) { printf("noopen\n"); return 1; }
+	while (read(fd, (char *)&d, sizeof d) == sizeof d) {
+		int i;
+		if (d.d_ino == 0) continue;
+		if (d.d_name[0] == '.') { dots++; continue; }
+		live++;
+		for (i = 0; i < 5; i++)
+			if (d.d_name[i] < '0' || d.d_name[i] > '9') fivedig = 0;
+		if (d.d_ino == 0) nonzero = 0;
+	}
+	close(fd);
+	printf("dots %d\n", dots);
+	printf("live %d\n", live);
+	printf("fivedigit %d\n", fivedig);
+	printf("nonzero %d\n", nonzero);
+
+	/* our own entry must be openable, and a pid that cannot exist must not */
+	self = getpid();
+	sprintf(me, "/proc/%05d", self);
+	fd = open(me, 0);
+	printf("self %d\n", fd >= 0);
+	if (fd >= 0) close(fd);
+	printf("bogus %d\n", open("/proc/00000", 0) < 0);
+	printf("notdigits %d\n", open("/proc/abc", 0) < 0);
+	fflush(stdout);
+	return 0;
+}
+EOF
+if "$CC" -c -o "$TMP/pr.o" "$TMP/pr.c" > "$TMP/pr.log" 2>&1 &&
+   clang -nostdlib -e _v8start -o "$TMP/pr" "$CRT" "$TMP/pr.o" \
+	-Wl,-force_load,"$KMEMU" "$LIBC" "$STUBS" "$SHIM" -lSystem >> "$TMP/pr.log" 2>&1; then
+	out=$("$TMP/pr" 2>/dev/null)
+	g() { echo "$out" | awk -v k="$1" '$1==k {print $2}'; }
+	check "/proc is a directory"            "40000" "$(g mode)"
+	# ROOTINO is 2, "i number of all roots" (h/param.h:73); /proc reuses it
+	# for its own directory, and both . and .. point at it (proca.c:109-110).
+	check "...at ROOTINO, and . and .. both point there" "2" "$(g rootino)"
+	check "both dot entries are present"    "2" "$(g dots)"
+	# (nproc + 2) records of 256 bytes: a FIXED-size directory with holes,
+	# which is proca.c:71's shape.  256 and not 16 because this port's DIRSIZ
+	# is 254 -- /proc must speak the same dialect as every other directory.
+	check "size is (nproc + 2) records"     "262656" "$(g dirsize)"
+	check "names are five zero-padded digits" "1" "$(g fivedigit)"
+	check "no live entry has inode 0"       "1" "$(g nonzero)"
+	check "a process can open its own entry" "1" "$(g self)"
+	check "pid 0 has no entry"              "1" "$(g bogus)"
+	check "a non-numeric name is refused"   "1" "$(g notdigits)"
+
+	# The count must track the host's.  Bracketed, not equal: processes come
+	# and go between the two samples, and a flaky test is worse than none.
+	hostn=$(ps ax | wc -l | tr -d ' ')
+	v8n=$(g live)
+	awk -v h="$hostn" -v v="$v8n" 'BEGIN { exit !(v > h - 40 && v < h + 40) }' &&
+		ok || bad "/proc lists roughly what ps ax does" "host $hostn, /proc $v8n"
+else bad "/proc probe build" "$(head -3 "$TMP/pr.log")"; fi
+
+# THE NEGATIVE HALF, and it is the one that says the boundary is real.  /proc
+# lives in libkmemu because it answers from libproc; a binary WITHOUT libkmemu
+# gets noprocfs.c's null, no mount claims the path, and it falls through to the
+# host -- where macOS has no /proc, so the program gets ENOENT rather than an
+# empty directory it might believe.
+cat > "$TMP/npr.c" <<'EOF'
+#include <stdio.h>
+main()
+{
+	int fd = open("/proc", 0);
+	printf("%s\n", fd < 0 ? "absent" : "PRESENT");
+	if (fd >= 0) close(fd);
+	fflush(stdout); return 0;
+}
+EOF
+if "$CC" -c -o "$TMP/npr.o" "$TMP/npr.c" > "$TMP/npr.log" 2>&1 &&
+   clang -nostdlib -e _v8start -o "$TMP/npr" "$CRT" "$TMP/npr.o" \
+	"$LIBC" "$STUBS" "$SHIM" -lSystem >> "$TMP/npr.log" 2>&1; then
+	check "a binary without libkmemu has no /proc at all" \
+		"absent" "$("$TMP/npr")"
+else bad "no-/proc probe build" "$(head -3 "$TMP/npr.log")"; fi
 
 # --- ...and NO other V8 binary imports anything at all -------------------
 # EVERY binary in /bin, not a sample. This check is why the suite exists: it

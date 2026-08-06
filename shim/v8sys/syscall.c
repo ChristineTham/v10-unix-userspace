@@ -913,29 +913,18 @@ extern int kmemu_synth(const char *, const char *);
 int
 v8s_open(char *path, int flags, int mode)
 {
-	long fd;
-	struct v8_stat st;
+	struct v8fstyp *t;
 
 	kmemu_synth(path, v8root());
-	path = vpath(path);
-
-	v8sys_dirinit();
+	t = FSFOR(path);
 	/*
-	 * V8's flags are the V7 originals -- 0 read, 1 write, 2 read/write --
-	 * and O_CREAT/O_TRUNC/O_APPEND arrived later with the values macOS
-	 * still uses, so nothing needs translating.
+	 * O_CREAT (0x0200) takes the creator's path, for the reason creat(2)
+	 * does -- rootpath cannot resolve a name that does not exist yet, so
+	 * without this an open that CREATES a file in a jailed directory writes
+	 * to the Mac.  Everything else takes the reader's.  shim/NOTES.md.
 	 */
-	fd = rawsys3(SYS_open, (long)path, flags, mode);
-	if (fd < 0) { v8_errno = v8sys_errno(RAWERR(fd)); return (-1); }
-
-	if (v8s_fstat((int)fd, &st) == 0 &&
-	    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR) {
-		if (v8sys_diropen(path, (int)fd) < 0) {
-			rawsys1(SYS_close, fd);
-			return (-1);
-		}
-	}
-	return ((int)fd);
+	return t->t_open(t->t_path(path, (flags & 0x0200) ? V8P_MAKE : V8P_LOOK),
+	    flags, mode);
 }
 
 /*

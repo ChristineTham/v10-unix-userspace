@@ -323,6 +323,16 @@ dep 'vfs.c -> shim'        shim/v8sys/vfs.c      $B/v8sys/libv8sys.a
 dep 'vfs.h -> syscall.o'   shim/v8sys/vfs.h      $B/v8sys/syscall.o
 dep 'vfs.h -> vfs.o'       shim/v8sys/vfs.h      $B/v8sys/vfs.o
 
+# --- section 8a step 3: /proc, the second filesystem type -------------------
+dep 'procfs.c -> kmemu archive' shim/libkmemu/procfs.c  $B/kmemu/libkmemu.a
+dep 'vfs.h -> procfs.o'         shim/v8sys/vfs.h        $B/kmemu/procfs.o
+dep 'noprocfs.c -> shim'        shim/v8sys/noprocfs.c   $B/v8sys/libv8sys.a
+# ...and /proc must NOT reach an ordinary command.  It answers from libproc, so
+# folding it into libv8sys would put a libSystem import in all 58 binaries --
+# the same reason libkmemu is a separate archive, and the reason noprocfs.c
+# exists at all.
+nodep '/proc does not reach cat' shim/libkmemu/procfs.c $B/bin/cat
+
 # --- section 8a step 1: V8's kernel source, and the seam under it -----------
 # Two dialects meet at this archive, so both edges are asserted.  stream.c is
 # authentic K&R compiled with gnu89; machdep.c is ours, compiled with SHIMFLAGS.
