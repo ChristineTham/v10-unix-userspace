@@ -1448,10 +1448,24 @@ $(BUILD)/troff/dev202/DESC.out: $(BUILD)/troff/makedev $(wildcard $(TROFFSRC)/de
 
 # Each installed table is its own target, so deleting one restores it.  makedev
 # writes the whole set in a single run, so the prerequisite is DESC.out for all
-# of them and the recipe copies the set -- one rule, no multi-target ambiguity,
-# which make 3.81 would otherwise turn into twelve makedev runs.
+# of them -- one rule, no multi-target ambiguity, which make 3.81 would
+# otherwise turn into twelve makedev runs.
+#
+# THE RECIPE COPIES ONE FILE, NOT THE SET, and that is a -j fix rather than
+# tidiness.  It used to be `cp $(BUILD)/troff/dev202/*.out $(@D)/', so make ran
+# twelve concurrent instances of this recipe and every one of them wrote all
+# twelve files -- 144 overlapping copies into one directory.  macOS cp clones
+# through a temporary and rename, so one job could stat a name another had
+# momentarily moved aside, and it failed with
+#
+#	cp: .../dev202/BI.out: No such file or directory
+#
+# Intermittent, which is why it survived: reproduced here in three runs out of
+# six after `rm -rf rootfs/usr/lib/font', and it took down CI only once the
+# runner happened to lose the race.  $* is the stem, so each invocation now
+# touches exactly the file its own target names.
 $(ROOTFS)/usr/lib/font/dev202/%.out: $(BUILD)/troff/dev202/DESC.out
-	@mkdir -p $(@D) && cp $(BUILD)/troff/dev202/*.out $(@D)/
+	@mkdir -p $(@D) && cp $(BUILD)/troff/dev202/$*.out $@
 
 clean:
 	rm -rf $(BUILD) $(ROOTFS)

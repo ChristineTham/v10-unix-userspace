@@ -431,7 +431,7 @@ for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
          rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
          rootfs/bin/cal rootfs/bin/who rootfs/bin/df rootfs/bin/load \
-         rootfs/bin/w rootfs/bin/uptime; do
+         rootfs/bin/w rootfs/bin/uptime rootfs/bin/ps; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then
@@ -440,6 +440,28 @@ for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
 		fail=$((fail+1)); echo "FAIL deleting $f did not restore it"
 	fi
 done
+
+# --- ...and each font recipe must write only its OWN target -----------------
+# Not a dependency question, which is why it hid here: the edges were all
+# correct. The recipe was `cp $(BUILD)/troff/dev202/*.out $(@D)/', so under -j
+# make ran twelve instances of it and each wrote all twelve files. macOS cp
+# clones through a rename, so one job could stat a name another had moved
+# aside: "cp: .../BI.out: No such file or directory", three runs in six. CI lost
+# the race before this repo did.
+#
+# Asked of the recipe rather than of an outcome, because the outcome is
+# intermittent and a test that fails half the time is worse than none.
+rm -f "$ROOT/rootfs/usr/lib/font/dev202/BI.out"
+fontcmd=$($MAKE -n "$ROOT/rootfs/usr/lib/font/dev202/BI.out" 2>/dev/null | grep '^.*cp ')
+case "$fontcmd" in
+*'*.out'*) fail=$((fail+1))
+           echo "FAIL the font install recipe copies the whole set, not its target"
+           echo "  $fontcmd" ;;
+*BI.out*)  pass=$((pass+1)) ;;
+*)         fail=$((fail+1))
+           echo "FAIL could not read the font install recipe"; echo "  $fontcmd" ;;
+esac
+$MAKE >/dev/null 2>&1
 
 # ...and w/uptime must come back as ONE INODE, not two files.  Deleting w breaks
 # the link, so the rule has to remake it; if it did not, both names would exist
