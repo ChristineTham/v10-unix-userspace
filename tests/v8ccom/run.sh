@@ -68,6 +68,48 @@ t 'return constant' '42' <<'EOF'
 f() { return 42; }
 EOF
 
+# --------------------------------------------------------- stack frame size
+# TWO immediate limits, not one, and only the first was honoured.  add/sub take
+# a 12-bit immediate, so a frame of 4096 or more goes through x16 -- that much
+# spadjust() always did.  But `mov' assembles to MOVZ, whose immediate is 16
+# bits shifted by 0/16/32/48, so it can name 65535 and cannot name 65536.
+#
+# It did not miscompile; the ASSEMBLER refused the output, which is the good
+# direction to fail in and only happens because clang is strict:
+#
+#	mov x16, #65984
+#	    ^ error: expected compatible register or logical immediate
+#
+# Nothing in the tree had wanted a 64 KB local until a test program did, which
+# is why 156 Wave A programs and all of Wave B and C never found it -- the same
+# shape as STARG.  Each case writes BOTH ends of the array and adds them, so a
+# frame that assembles but is not actually there fails too.
+#
+# 65600 RATHER THAN 65536, and that is the difference between a boundary case
+# and one that looks like a boundary case.  65536 is 0x10000, which MOVZ names
+# perfectly well with lsl #16 -- so the obvious "one past the limit" number is
+# encodable and the case passed even with the fix reverted.  Measured, then
+# corrected: 65600 is 0x10040, which needs both halves.
+t 'frame under the add/sub limit'   '16' <<'EOF'
+f() { char b[1000]; b[0] = 7; b[999] = 9; return b[0] + b[999]; }
+EOF
+
+t 'frame at the add/sub limit'      '16' <<'EOF'
+f() { char b[4096]; b[0] = 7; b[4095] = 9; return b[0] + b[4095]; }
+EOF
+
+t 'frame just under the MOVZ limit' '16' <<'EOF'
+f() { char b[65000]; b[0] = 7; b[64999] = 9; return b[0] + b[64999]; }
+EOF
+
+t 'frame past the MOVZ limit'       '16' <<'EOF'
+f() { char b[65600]; b[0] = 7; b[65599] = 9; return b[0] + b[65599]; }
+EOF
+
+t 'frame far past it'               '16' <<'EOF'
+f() { char b[1000000]; b[0] = 7; b[999999] = 9; return b[0] + b[999999]; }
+EOF
+
 t 'add' '7' <<'EOF'
 add(a,b) int a,b; { return a+b; }
 f() { return add(3,4); }

@@ -395,20 +395,42 @@ arm64_beginfunction()
 	emitstart();		/* capture the body; prologue comes later */
 }
 
-/* sp adjustment, honouring the 12-bit immediate limit on add/sub. */
+/*
+ * sp adjustment, honouring TWO immediate limits, not one.
+ *
+ * add/sub take a 12-bit immediate, so anything from 4096 up has to go through a
+ * register.  That much was here from the start.  What was missing is that `mov'
+ * has a limit of its own: it assembles to MOVZ, which carries a 16-bit
+ * immediate shifted by 0, 16, 32 or 48 -- so it can name 65535 and it cannot
+ * name 65536.  A frame between those did not produce bad code; it produced code
+ * the ASSEMBLER refused, which is the good direction to fail in but only
+ * because clang happens to be strict:
+ *
+ *	mov x16, #65984
+ *	    ^ error: expected compatible register or logical immediate
+ *
+ * Found by writing a test program with a 64 KB buffer on the stack, which is
+ * the first thing in this port to want one.  MOVK supplies the upper half.
+ */
 static void
 spadjust(op, n)
 	char *op;
 	long n;
 {
 	if (n == 0) return;
-	if (n < 4096)
+	if (n < 4096) {
 		printx("\t%s\tsp, sp, #%ld\n", op, n);
-	else {
-		/* x16 (IP0) is reserved for exactly this kind of scratch use */
-		printx("\tmov\tx16, #%ld\n", n);
-		printx("\t%s\tsp, sp, x16\n", op);
+		return;
 	}
+	/* x16 (IP0) is reserved for exactly this kind of scratch use */
+	printx("\tmov\tx16, #%ld\n", n & 0xffffL);
+	if (n > 0xffffL)
+		printx("\tmovk\tx16, #%ld, lsl #16\n", (n >> 16) & 0xffffL);
+	if (n > 0xffffffffL) {
+		printx("\tmovk\tx16, #%ld, lsl #32\n", (n >> 32) & 0xffffL);
+		printx("\tmovk\tx16, #%ld, lsl #48\n", (n >> 48) & 0xffffL);
+	}
+	printx("\t%s\tsp, sp, x16\n", op);
 }
 
 void
