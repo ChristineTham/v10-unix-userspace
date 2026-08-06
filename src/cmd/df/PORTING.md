@@ -209,9 +209,27 @@ for this port can break the rung-5 claim for a program whose makefile was
 perfectly adequate. `load` and `w` kept the claim precisely because they were
 left alone and allowed to fail honestly at runtime instead.
 
-Which suggests what closing it would look like, and it is not a makefile change.
-`df` would have to get its numbers the way `load` and `w` do — through
-`/dev/kmem` and a namelist, which `shim/libkmemu/kmem.c` already manufactures —
-so that `df.c` goes back to being upstream's. That is the same `/dev/mem`
-question `src/cmd/w/PORTING.md` leaves open for `w`'s full half, and answering
-it once would answer it for both.
+Closing it is not a makefile change, and it is **not** the `/dev/kmem` question
+either — that was the obvious guess and reading `dfree()` refutes it. Upstream
+opens the *device* and reads block 1:
+
+```c
+	fi = open(file, 0);
+	...
+	bread(1L, (char *)&sblock, sizeof(sblock));
+	blocks = (long) sblock.s_fsize - (long)sblock.s_isize;
+	free = sblock.s_tfree;
+```
+
+`struct filsys` off the raw disk. So an unmodified `df` needs a **real V8
+filesystem image** behind `/dev/<spec>` with a valid superblock in block 1 —
+which is PLAN.md §8a **step 4** (mkfs and a raw image), not step 3's `/proc`
+and not libkmemu at all. `df`'s rung 5 is therefore blocked on a step that is
+already planned, rather than being its own piece of work, and it will close as a
+side effect of that step rather than needing anything of its own.
+
+Worth separating from `w`, which *is* the `/dev/kmem` question
+(`src/cmd/w/PORTING.md`). Two grovelers, two different data sources, and
+grouping them under "needs kernel memory" would have sent the work in the wrong
+direction — the same mistake as assuming `ps` wanted `libproc` when it is a
+`/proc` client.

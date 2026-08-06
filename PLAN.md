@@ -262,9 +262,17 @@ test to say so.
 
 `df` is the odd one and the useful one: it shows that a source change made for
 this port can break the rung-5 claim for a program whose makefile was fine all
-along. Closing it means giving `df` its numbers through `/dev/kmem` and a
-namelist, as `load` and `w` already get theirs — the same `/dev/mem` question
-`src/cmd/w/PORTING.md` leaves open, and answering it once answers both.
+along.
+
+**And it closes on step 4 below, not on anything of its own** — which is only
+visible by reading `dfree()` rather than reasoning from "groveler". Upstream
+does `fi = open(file, 0)` and then `bread(1L, &sblock, sizeof sblock)`: a
+`struct filsys` off the raw device. An unmodified `df` therefore wants a real V8
+filesystem image with a valid superblock in block 1, which is §8a step 4's
+`mkfs`. Not `/dev/kmem`, which is `w`'s question and a different one. Grouping
+the two grovelers under "needs kernel memory" would have aimed the work at the
+wrong step — the same error as planning `ps` on `libproc` when it is a `/proc`
+client.
 
 ## 4d. Shell scripts run inside the jail — CLOSED
 
@@ -1360,6 +1368,13 @@ Ordered so that value lands before risk, and so each step is testable alone.
 4. **`mkfs` and the raw image.** V8's `mkfs`, free-list/1024 format only, run
    under transparent mode to create the image that image mode will use. A new
    bootstrap rung, and self-validating in a way the rootfs is not.
+   **It also closes `df`'s rung 5**, which is the cheapest confirmation
+   available that the image is right: upstream's `dfree()` does
+   `bread(1L, &sblock, sizeof sblock)` and prints what the superblock says, so
+   an unmodified `df` reading a correct free count off the image is a real
+   check on step 4 by a program that knows nothing about it. Today `df.c`
+   carries a `kmemu_fsstat()` call this port added, which is what breaks its
+   rung 5; that call comes back out here. See `src/cmd/df/PORTING.md`.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `fsck` and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
