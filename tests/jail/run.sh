@@ -571,7 +571,35 @@ case "$lmq" in
    fail=$((fail+1)); echo "FAIL -l reported with V8JAIL unset" ;;
 *) pass=$((pass+1)) ;;
 esac
-rm -f lm.c lm lmx
+
+# -lc IS THE SAME HOLE WITH A LOADED GUN, and nothing we build uses it -- which
+# is exactly why it needs a case.  28 upstream makefiles say -lc, and the ported
+# set only grows.  Before libpath() handled it, this program linked, exited 0,
+# and printed
+#
+#	printf works: 1830099536 (null)
+#
+# because -lc reaching clang puts libSystem ahead of libv8c: v8cc passes every
+# argument positionally in x0-x7, Apple's ARM64 ABI passes variadic arguments on
+# the stack.  Same bug as scanf, printf and execl, which this port has paid for
+# three times.  A variadic call is checked rather than a scalar one for that
+# reason -- a non-variadic function would have come back right and proved
+# nothing.
+cat > lc.c <<'EOF'
+#include <stdio.h>
+main() { printf("v=%d s=%s\n", 42, "str"); exit(0); }
+EOF
+"$V8ROOT"/bin/cc -o lc lc.c -lc 2>/dev/null
+ck 'cc -lc does not reach the host libc' 'v=42 s=str' "$(./lc 2>&1)"
+# ...and quietly, because -lc names a library the driver already links last.
+# Resolving it to libv8c.a instead works and makes ld warn about a duplicate on
+# every such link; a warning nobody can act on is how a real one gets skimmed.
+lcw=$( "$V8ROOT"/bin/cc -o lc lc.c -lc 2>&1 )
+case "$lcw" in
+*duplicate*) fail=$((fail+1)); echo "FAIL cc -lc warns about a duplicate: $lcw" ;;
+*) pass=$((pass+1)) ;;
+esac
+rm -f lm.c lm lmx lc.c lc
 
 # --- PHASE 6d: the launcher, and the world it drops you into ----------------
 # V8's own v8.c is twelve lines: chroot, chdir, drop privilege, exec the shell.

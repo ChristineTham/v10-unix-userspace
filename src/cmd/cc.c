@@ -143,6 +143,29 @@ libpath(name)
 {
 	char *p, *j, *getenv();
 
+	/*
+	 * -lc is the C library, and in this rootfs the C library is libv8c.a --
+	 * which the link step already adds unconditionally, last, where an
+	 * archive belongs.  So -lc asks for something already there and the
+	 * honest answer is to drop it.  Returning libc_a instead works and
+	 * makes ld warn about a duplicate on every such link; a warning nobody
+	 * can act on is how the one that matters gets skimmed past.
+	 *
+	 * Measured, because the fall-through is the worst kind of wrong.  With
+	 * -lc reaching clang, `cc x.c -lc' puts libSystem AHEAD of libv8c, the
+	 * link succeeds, the program exits 0, and
+	 *
+	 *	printf("printf works: %d %s\n", 42, "str");
+	 *
+	 * prints `printf works: 1830099536 (null)'.  That is the variadic ABI
+	 * mismatch this port has already paid for three times -- v8cc passes
+	 * every argument positionally in x0-x7, Apple's ARM64 ABI passes
+	 * variadic arguments on the stack.  No ported program uses -lc today;
+	 * 28 upstream makefiles do, and the ported set only grows.
+	 */
+	if (name[0] == 'c' && name[1] == '\0')
+		return ((char *)0);		/* caller drops it */
+
 	if (v8root != 0 && *v8root != '\0') {
 		p = strspl(v8root, strspl("/usr/lib/lib", strspl(name, ".a")));
 		if (access(p, 4) == 0)
@@ -188,7 +211,9 @@ main(argc, argv)
 		cflag++;
 		continue;
 	case 'l':
-		llist[nl++] = libpath(optarg);
+		/* a null means "already linked"; see libpath() */
+		if ((t = libpath(optarg)) != 0)
+			llist[nl++] = t;
 		continue;
 	case 'o':
 		outfile = optarg;

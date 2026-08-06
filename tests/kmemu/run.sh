@@ -132,10 +132,42 @@ fi
 # who -i stats /dev/<line> for its atime. That crosses the shim's /dev handling
 # as well as libkmemu's, and it is the one who(1) path that reads anything
 # beyond utmp.
+#
+# THIS CASE ASSERTED A PROPERTY OF THE MACHINE AND WAS WRONG ABOUT IT. It
+# compared $hostwho -- which is `who | head -1', ONE line -- against every line
+# of `who -i'. That is an equality only while the host has exactly one login
+# session, and it held for months because this one did. Opening a second
+# terminal broke it, with a diff that reads like who printing the user twice.
+#
+# Same disease as the p_nice and pid cases, running the other way: those passed
+# here and failed on a CI runner, this passes on a runner (one session) and
+# fails here. A host property is not safe just because the direction of the
+# accident is unfamiliar. So compare first line to first line, as the three
+# sibling checks above already do, and assert the RELATION separately.
 "$WHO" -i > "$TMP/idle" 2>&1
 check "who -i still names the user" \
 	"$(echo "$hostwho" | awk '{print $1}')" \
-	"$(awk '{print $1}' < "$TMP/idle")"
+	"$(head -1 "$TMP/idle" | awk '{print $1}')"
+# The relation the port actually controls: -i must not add, drop or duplicate a
+# record on its way through the shim's /dev. True at any number of sessions,
+# which is the whole point of stating it this way.
+check "who -i reports the same sessions as who" \
+	"$("$WHO" | wc -l | tr -d ' ')" \
+	"$(wc -l < "$TMP/idle" | tr -d ' ')"
+# ...and the idle column itself, which is the only thing -i adds and the only
+# reason it touches /dev. An ACTIVE tty prints no idle field, so whether any
+# line carries one depends on the host having a session nobody has typed at.
+# Printing "not exercised" rather than passing silently: a check that quietly
+# matches nothing is indistinguishable from a check that passed.
+idlecol=$(awk 'NF>=6 {print $NF}' < "$TMP/idle" | head -1)
+if [ -n "$idlecol" ]; then
+	case "$idlecol" in
+	*:*|old) ok ;;
+	*) bad "who -i idle column is not HH:MM or 'old': [$idlecol]" ;;
+	esac
+else
+	echo "  (not exercised: no idle session on this host)"
+fi
 
 # --- THE BOUNDARY: who takes the utmpx trio from libc and nothing else ---
 # This is the exception written down as an assertion. If libkmemu ever reaches
