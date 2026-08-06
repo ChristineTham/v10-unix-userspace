@@ -459,6 +459,29 @@ multiple of `ALSTACK`, because `argsize()` mutates the node in place; so the
 copy reads a few bytes past a struct whose size is not a multiple of 8, exactly
 as the VAX did from the same field.
 
+**The frame has THREE regions, and fixing one collision created another.**
+`arm64_endfunction()` in `emit.c` lays out, top to bottom: saved `x29/x30`,
+locals, callee-saved registers, call area. The saves cannot sit immediately
+below `x29` — pass 1's `oalloc()` hands out automatics as negative offsets from
+the frame pointer under BACKAUTO, so every save lands on a local, and the first
+real libc function died on it. The fix moved them to the *bottom*, which put
+them exactly where AAPCS64 puts the ninth and later arguments of a call:
+`[sp, #0]`. A function that both used register variables and called something
+with more than eight arguments **overwrote the register it had saved on behalf
+of its caller**, and handed the corrupted value back on return.
+
+Two lessons, and the second is the reusable one:
+
+- **A sweep found exactly four functions in the whole tree with a >8-argument
+  call**: `printp` in `ps`, `dfree` and `main` in `df`, `ngs` in `ls`. That is
+  why 156 Wave A programs plus all of Wave B and C never saw it. When a
+  back-end bug depends on a code shape, count the shapes before assuming
+  coverage.
+- **A test that checks the callee RECEIVED its arguments cannot see the caller
+  being destroyed.** `tests/v8ccom` already had two nine-argument cases and both
+  passed throughout. The new ones need **three frames**, because the damage
+  lands on the caller of the function making the wide call.
+
 ## Build-system discipline
 
 The Makefile is written defensively for reasons recorded in its comments. Before

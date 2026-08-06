@@ -180,6 +180,11 @@ check "df imports the same set, being the same library" \
 	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/bin/df")"
 check "and so does load" \
 	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/bin/load")"
+# ps is the reason proc_pidinfo is on the list at all, and the interesting one:
+# it is the first program here that reads a FILESYSTEM this port implements
+# rather than a file it manufactures. Same set, because it is the same library.
+check "ps too, and it is the same library not a second one" \
+	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/bin/ps")"
 
 # ------------------------------------------------------------------ df ---
 DF=$V8ROOT/bin/df
@@ -269,6 +274,14 @@ rm -rf "$V8ROOT/unix" "$V8ROOT/dev"
 for n in null tty console; do
 	[ -e "$V8ROOT/dev/$n" ] && bad "rootfs/dev/$n exists -- /dev/$n now misses the host" || ok
 done
+
+# ...and put back the parts of /dev the BUILD owns, which that rm also took.
+# /dev/dk, /dev/pt and /dev/drum are Makefile targets rather than manufactured
+# files -- ps(1) calls error() and exits if any is missing (ps.c:21-28) -- so
+# the manufacturer will not recreate them and the ps section at the end of this
+# file would fail for the wrong reason. That the RULES exist is tests/deps's
+# question; that ps works is this file's.
+mkdir -p "$V8ROOT/dev/dk" "$V8ROOT/dev/pt" && : > "$V8ROOT/dev/drum"
 
 check "load prints V8's header" "    1m    5m   15m" "$(head -1 "$TMP/load.out")"
 
@@ -885,7 +898,9 @@ check "ccom and cpp are still the clang-built ones" "" "$stillhost"
 
 leaked="" used=""
 for b in $allbins; do
-	case " who df load w uptime $NOTV8 " in *" ${b##*/} "*) continue ;; esac
+	# The grovelers link libkmemu on purpose and are checked against
+	# KMEMU_IMPORTS above, by name and exactly -- skipped here, not exempt.
+	case " who df load w uptime ps $NOTV8 " in *" ${b##*/} "*) continue ;; esac
 	imp=$(libcimports "$b")
 	for a in $ALLOWED; do
 		case " $imp " in
@@ -959,6 +974,61 @@ check "ls -l timestamps agree with the host" \
 rm -f "$V8ROOT/etc/nosuchthing"
 "$WHO" "$V8ROOT/etc/nosuchthing" > /dev/null 2>&1
 [ -e "$V8ROOT/etc/nosuchthing" ] && bad "an unknown path was synthesised" || ok
+
+# ------------------------------------------------------------------ ps ---
+# The payoff for /proc, and the first program here that reads a FILESYSTEM this
+# port implements rather than a file it manufactures.  Bell Labs' 1985 source,
+# unmodified, listing macOS processes.
+PS=$V8ROOT/bin/ps
+
+# /dev/dk, /dev/pt and /dev/drum have to exist or ps error()s before doing
+# anything (ps.c:21-28). The load section above removes all of /dev and puts
+# those three back; tests/deps is what asserts the Makefile makes them.
+psout=$("$PS" hax 2>/dev/null)
+psrc=$?
+check "ps ax exits 0" "0" "$psrc"
+echo "$psout" | head -1 | grep -q 'pid tty   stat  time command' &&
+	ok || bad "ps -h prints V8's header" "$(echo "$psout" | head -1)"
+
+# Bracketed rather than equal: processes come and go between the two samples.
+hostn=$(ps ax | wc -l | tr -d ' ')
+v8n=$(echo "$psout" | wc -l | tr -d ' ')
+awk -v h="$hostn" -v v="$v8n" 'BEGIN { exit !(v > h - 40 && v < h + 40) }' &&
+	ok || bad "ps ax lists what the host's ps ax does" "host $hostn, v8 $v8n"
+
+# EVERY PID POSITIVE.  p_pid was a short and macOS pids reach 99998, so before
+# src/include/sys/proc.h was patched every pid above 32767 printed NEGATIVE.
+# This is the end-to-end form of that; the field-width assertion is above.
+neg=$(echo "$psout" | tail -n +2 | awk '$1 <= 0' | head -3)
+check "no process has a negative pid" "" "$neg"
+
+# ...and the high ones are actually reached, or the check above proves nothing.
+himax=$(echo "$psout" | tail -n +2 | awk '{if ($1+0 > m) m = $1+0} END {print m+0}')
+[ "$himax" -gt 32767 ] && ok ||
+	bad "ps saw a pid past the 16-bit boundary" "highest was $himax"
+
+# ps must see ITSELF: the one process guaranteed to exist while it runs.
+echo "$psout" | grep -q '(ps)' && ok || bad "ps lists itself"
+
+# getargs cannot read a stack image here, so every command is V8's own
+# swapped-out form -- "(name)".  Asserted so that the day a stack image exists
+# this becomes a decision rather than a surprise.  See procfs.c's u_ssize note.
+# Matched on the FORM, not a column index: the nice marker shifts the command
+# one field right, so `$5' passed until the first renice'd process appeared.
+bare=$(echo "$psout" | tail -n +2 | grep -v '([^)]*)$' | head -3)
+check "every command reads as V8's swapped-out (comm) form" "" "$bare"
+
+# Selecting one process by pid takes a different path through doselect.
+selp=$(echo "$psout" | tail -n +2 | awk 'NR==2 {print $1}')
+if [ -n "$selp" ]; then
+	sel=$("$PS" "$selp" 2>/dev/null | awk '{print $1}')
+	check "ps <pid> selects exactly that process" "$selp" "$sel"
+else bad "no pid to select"; fi
+
+# The time column comes from the u-area, which is the half PIOCGETPR does not
+# carry -- so a non-zero time anywhere proves the u-area read reached ps.
+nz=$(echo "$psout" | tail -n +2 | awk '$4 != "0:00"' | wc -l | tr -d ' ')
+[ "$nz" -gt 0 ] && ok || bad "some process has non-zero cpu time from the u-area"
 
 echo "kmemu: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

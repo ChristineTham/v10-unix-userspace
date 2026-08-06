@@ -315,6 +315,23 @@ dep 'src/include/sys/dir.h too'         src/include/sys/dir.h \
                                         rootfs/usr/include/.stamp
 dep 'src/include -> rootfs headers'     src/include/dir.h \
                                         rootfs/usr/include/.stamp
+# proc.h joined them with ps: the four pid fields are int here, not short.
+dep 'src/include/sys/proc.h too'        src/include/sys/proc.h \
+                                        rootfs/usr/include/.stamp
+
+# --- section 8a step 3: ps, and the /dev it refuses to start without --------
+# Ten objects from one directory, and upstream's whole dependency statement is
+# `$(OBJ): ps.h' -- so ps.h is the edge that a *.c glob would miss.
+dep 'ps source -> object'      src/cmd/ps/ps.c                 $B/ps/ps.o
+dep 'ps.h -> every object'     src/cmd/ps/ps.h                 $B/ps/printp.o
+dep 'ps.h -> another object'   src/cmd/ps/ps.h                 $B/ps/getargs.o
+dep 'ps objects -> ps'         $B/ps/doselect.o                $B/bin/ps
+dep 'ps -> installed ps'       $B/bin/ps                       rootfs/bin/ps
+# ps reads /proc, which lives in libkmemu -- so procfs.c is a real edge to the
+# binary, exactly as kmem.c is for load.
+dep 'procfs.c -> ps'           shim/libkmemu/procfs.c          $B/bin/ps
+# ...and the ioctl dispatch it arrives through.
+dep 'vfs.h -> ps'              shim/v8sys/vfs.h                $B/bin/ps
 
 # --- section 8a step 2: the filesystem switch -------------------------------
 # vfs.c holds the mount table and the passthrough type; syscall.c dispatches

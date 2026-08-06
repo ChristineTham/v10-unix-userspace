@@ -51,6 +51,23 @@ ROOTFS_NCFORM  := $(ROOTFS)/usr/lib/lex/ncform
 ROOTFS_ETC     := $(patsubst $(SRC)/v8/etc/%,$(ROOTFS)/etc/%, \
                     $(wildcard $(SRC)/v8/etc/[a-z]*)) $(ROOTFS)/etc/passwd
 
+# /dev is not decoration either: ps(1) REFUSES TO START without it.  ps.c:21-28
+# getdirs /dev, /dev/dk and /dev/pt and opens /dev/drum, calling error() on any
+# failure -- Killian's /dev reorganisation put disks under dk and pseudo-
+# terminals under pt, and V8's ps was written to that layout.
+#
+# All three are EMPTY, and that is the true answer rather than a placeholder to
+# get past a check: the jail exposes no disk devices and no ptys, and this world
+# has no swap, so a zero-length drum is a drum with nothing on it.  Nothing ever
+# reads it -- ps consults the drum only for a process without SLOAD, and every
+# process here has it (shim/libkmemu/procfs.c).
+#
+# An empty directory is not empty to a reader: the shim's snapshot carries `.'
+# and `..', so fstat reports 512 bytes and getdir's malloc gets a count of 2
+# rather than 0.  Measured, because getdir would return null on malloc(0) and ps
+# would call error() -- the failure this list exists to prevent.
+ROOTFS_DEV     := $(ROOTFS)/dev/dk $(ROOTFS)/dev/pt $(ROOTFS)/dev/drum
+
 # One target per installed file, NOT a directory stamp.  A stamp records "the
 # install ran", which is not the question make needs answered -- deleting
 # rootfs/usr/lib/term/tab.37 left the stamp in place, so `make` did not put it
@@ -886,7 +903,8 @@ $(ROOTFS)/usr/lib/eign: $(ROOT)third_party/Research-Unix-v8/v8/usr/lib/eign
 v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
        $(BINDIR)/df $(ROOTFS)/bin/df \
        $(BINDIR)/load $(ROOTFS)/bin/load \
-       $(BINDIR)/w $(ROOTFS)/bin/w $(ROOTFS)/bin/uptime
+       $(BINDIR)/w $(ROOTFS)/bin/w $(ROOTFS)/bin/uptime \
+       $(BINDIR)/ps $(ROOTFS)/bin/ps
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
 # it to the rootfs.  Two pattern rules chain here -- cat.c -> build/bin/cat ->
@@ -970,6 +988,38 @@ $(ROOTFS)/bin/w: $(BINDIR)/w
 
 $(ROOTFS)/bin/uptime: $(ROOTFS)/bin/w
 	@mkdir -p $(@D) && rm -f $@ && ln $< $@
+
+# ---------------------------------------------------------------------------
+# ps -- and it is not a groveler.  Every other program in this section reads a
+# FILE this port manufactures; ps reads a FILESYSTEM this port implements.  It
+# getdirs /proc, opens /proc/<pid>, asks PIOCGETPR for a struct proc and reads a
+# struct user from the file at virtual address UBASE.  That is Killian's process
+# filesystem, V8's own, and PLAN.md section 8a step 3 is where it came from.
+#
+# So the dependency is $(ROOTFS_DEV) as well as $(KMEMU_LIB): ps calls error()
+# and exits before doing anything at all if /dev/dk, /dev/pt or /dev/drum is
+# missing (ps.c:21-28).  Naming them here rather than under `rootfs' is what
+# makes `make ps' produce something that runs.
+#
+# The object list is upstream's OFILES, unchanged.
+# ---------------------------------------------------------------------------
+PSSRC = $(SRC)/cmd/ps
+PS_OBJ_NAMES = ps doselect printp fdprint getargs gettty getuname getfs \
+               sort nalloc
+PS_OBJ = $(patsubst %,$(BUILD)/ps/%.o,$(PS_OBJ_NAMES))
+
+$(BUILD)/ps/%.o: $(PSSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/ps
+	@$(V8CCRUN) -I$(PSSRC) -c -o $@ $<
+
+# Upstream's `$(OBJ): ps.h', which is the whole of its dependency information.
+$(PS_OBJ): $(PSSRC)/ps.h
+
+$(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
+	@mkdir -p $(BINDIR)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(PS_OBJ) \
+	    $(KMEMU_LDADD) $(V8LIBS)
+	@echo "built $@"
 
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
 # them -- this port's chroot, implemented where its kernel lives.
@@ -1272,7 +1322,18 @@ $(EQN_OBJ): $(EQNSRC)/e.h
 # A phony ALIAS over real files, not a recipe.  Nothing depends on this name
 # any more; the things that used to say `| rootfs` now name the files they
 # actually read, so make can tell when they change.
-rootfs: $(V8CC_DEPS) $(ROOTFS_YACCPAR) $(ROOTFS_NCFORM) $(ROOTFS_TERM) $(ROOTFS_FONT) $(ROOTFS_ETC)
+rootfs: $(V8CC_DEPS) $(ROOTFS_YACCPAR) $(ROOTFS_NCFORM) $(ROOTFS_TERM) $(ROOTFS_FONT) $(ROOTFS_ETC) $(ROOTFS_DEV)
+
+# /dev/dk and /dev/pt are DIRECTORY targets, which is the one place that is
+# right: the rule against directory stamps elsewhere in this file is about a
+# stamp standing in for many files, and here the directory IS the artefact,
+# because its content is nothing.  Delete one and make puts it back.
+$(ROOTFS)/dev/dk:
+	@mkdir -p $@
+$(ROOTFS)/dev/pt:
+	@mkdir -p $@
+$(ROOTFS)/dev/drum:
+	@mkdir -p $(@D) && : > $@
 
 # The three passes v8cc execs, each tracking its build-tree original.
 $(ROOTFS_CPP): $(BUILD)/cpp/cpp

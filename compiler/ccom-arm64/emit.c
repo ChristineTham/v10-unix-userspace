@@ -440,7 +440,7 @@ arm64_endfunction(framebytes, minrv)
 {
 	char *body;
 	long bodylen;
-	long frame;
+	long locals, callarea;
 	int r, nsaved;
 
 	body = emitcaptured(&bodylen);
@@ -456,8 +456,13 @@ arm64_endfunction(framebytes, minrv)
 	 * Capturing the body first is what makes this possible: by now every
 	 * call in the function has been generated and the deepest nesting is
 	 * known.
+	 *
+	 * The two areas are rounded SEPARATELY, because the callee-saved
+	 * registers go between them -- see the ORDER note below -- so each has
+	 * to leave sp 16-aligned on its own.
 	 */
-	frame = (framebytes + arm64_callarea() + 15) & ~15L;
+	locals   = (framebytes + 15) & ~15L;
+	callarea = (arm64_callarea() + 15) & ~15L;
 
 	/*
 	 * Callee-saved registers actually used.  cisreg() hands out register
@@ -477,32 +482,55 @@ arm64_endfunction(framebytes, minrv)
 	printx("\tmov\tx29, sp\n");
 
 	/*
-	 * ORDER: allocate the locals FIRST, then save the callee-saved
-	 * registers below them.
+	 * ORDER, AND IT HAS THREE PARTS RATHER THAN TWO.  Top to bottom:
 	 *
-	 * Pushing the saves immediately after `mov x29, sp` puts them at
-	 * [x29,#-16] downward -- which is exactly where pass 1 placed the
-	 * automatics, since oalloc() under BACKAUTO hands out negative offsets
-	 * from the frame pointer.  Every save then landed on top of a local.
-	 * It only bit functions that both used `register` variables and had
-	 * automatics, which is why 62 synthetic tests missed it and the first
-	 * real libc function (fputs) died immediately.
+	 *	x29 ->	saved x29/x30
+	 *		locals			[x29, #-16] downward
+	 *		callee-saved registers
+	 *	sp  ->	call area		[sp, #0] upward
+	 *
+	 * The saves cannot go IMMEDIATELY BELOW x29, because pass 1's oalloc()
+	 * hands out automatics as negative offsets from the frame pointer under
+	 * BACKAUTO, so every save would land on a local.  That was the first
+	 * version of this code, and the first real libc function (fputs) died
+	 * on it.
+	 *
+	 * They cannot go AT THE BOTTOM either, which is what the fix for that
+	 * did, and the second collision took much longer to find because
+	 * nothing in the tree provoked it.  AAPCS64 puts the ninth and later
+	 * arguments of a call at [sp, #0] -- gencode.c's argslot() says exactly
+	 * that -- and [sp, #0] is where the LAST save lands.  So a function that
+	 * both used register variables and called something with more than eight
+	 * arguments overwrote its own saved register with an outgoing argument,
+	 * and handed the corrupted value back to its CALLER on return.
+	 *
+	 * Nothing hit it for 156 Wave A programs plus all of Wave B and C,
+	 * because no call in any of them has nine arguments.  printp() in ps(1)
+	 * does: sprintf with a format and seven values.  The symptom was ps
+	 * walking off the end of its /proc directory array, because main()'s
+	 * `dp' was the register that came back holding a char *.
+	 *
+	 * So: locals, then the saves, then the call area beneath them.
 	 */
-	spadjust("sub", frame);
+	spadjust("sub", locals);
 
 	for (r = 0; r < nsaved; r++)
 		printx("\tstr\t%s, [sp, #-16]!\n", rnames[minrv + 1 + r]);
+
+	spadjust("sub", callarea);
 
 	/* ---- body ---- */
 	if (body && bodylen > 0)
 		printbuf(body, (int)bodylen);
 
 	/* ---- epilogue (control arrives here via the retlab in genret) ---- */
-	/* mirror the prologue: restore the saves, THEN drop the locals */
+	/* mirror the prologue exactly, in reverse */
+	spadjust("add", callarea);
+
 	for (r = nsaved - 1; r >= 0; r--)
 		printx("\tldr\t%s, [sp], #16\n", rnames[minrv + 1 + r]);
 
-	spadjust("add", frame);
+	spadjust("add", locals);
 
 	printx("\tldp\tx29, x30, [sp], #16\n");
 	printx("\tadd\tsp, sp, #%d\n", ARGSPILL);

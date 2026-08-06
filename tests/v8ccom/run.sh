@@ -444,6 +444,64 @@ g(a,b,c,d,e,ff,gg,hh,ii,jj,kk) int a,b,c,d,e,ff,gg,hh,ii,jj,kk;
 f() { return g(1,2,3,id(4),5,6,7,8,9,10,11); }
 EOF
 
+# ---------------------------------------------- and the CALLER has to survive
+# The two cases above ask whether the callee RECEIVED the arguments.  They both
+# passed while a nine-argument call was destroying its caller's saved registers,
+# because a test that only reads the callee cannot see it.
+#
+# AAPCS64 puts arguments nine and up at [sp, #0], and the prologue used to save
+# the callee-saved registers at the bottom of the frame -- so the last one saved
+# WAS [sp, #0].  A function that both used register variables and called
+# something with more than eight arguments therefore overwrote the register it
+# had saved on behalf of its caller, and handed the corrupted value back on
+# return.  emit.c's arm64_endfunction now puts the call area beneath the saves.
+#
+# Three frames are needed to see it: the damage lands on the caller of the
+# function that makes the wide call, so `mid' must both save registers and make
+# the call, and `f' must still be using its own afterwards.  Nothing in 156 Wave
+# A programs plus Wave B and C provoked it; printp() in ps(1) did, with a
+# seven-value sprintf.
+t 'a wide call does not eat the caller-of-the-callers registers' '210' <<'EOF'
+nine(a,b,c,d,e,ff,gg,hh,ii) int a,b,c,d,e,ff,gg,hh,ii; { return 0; }
+mid()
+{
+	register int q1,q2,q3,q4,q5,q6;
+	q1=1; q2=2; q3=3; q4=4; q5=5; q6=6;
+	nine(1,2,3,4,5,6,7,8,524287);
+	return q1+q2+q3+q4+q5+q6;
+}
+f()
+{
+	register int p1,p2,p3,p4,p5,p6;
+	p1=10; p2=20; p3=30; p4=40; p5=50; p6=60;
+	mid();
+	return p1+p2+p3+p4+p5+p6;
+}
+EOF
+
+# The same shape with POINTERS, which is how it actually presented: ps(1) got a
+# char * back where main() kept a struct direct *, and walked off its array.
+t 'a wide call does not eat a caller-held pointer' '111' <<'EOF'
+static int tab[4];
+nine(a,b,c,d,e,ff,gg,hh,ii) int a,b,c,d,e,ff,gg,hh,ii; { return 0; }
+mid(junk) char *junk;
+{
+	register char *r1, *r2, *r3, *r4, *r5, *r6;
+	r1=junk; r2=junk; r3=junk; r4=junk; r5=junk; r6=junk;
+	nine(1,2,3,4,5,6,7,8,junk);
+	return r1 == junk;
+}
+f()
+{
+	register int *p; register int n;
+	tab[0]=1; tab[1]=10; tab[2]=100;
+	p = tab; n = 0;
+	mid("x");
+	n = p[0] + p[1] + p[2];
+	return n;
+}
+EOF
+
 # ------------------------------------------------------- struct passed by value
 # STARG.  The back end copies the aggregate into CONSECUTIVE 8-byte argument
 # slots -- the V8/VAX convention, not AAPCS64's by-reference rule for composites

@@ -1231,10 +1231,34 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `ptob(p_tsize+p_dsize+p_ssize+UPAGES)` (proca.c:88), the process image plus
    the u-area.
 
-   **Still to do here: `ps` itself.** Nine files, an LP64 audit (`getargs.c`
-   walks a stack with `*(long *)(sp -= 4)`, which steps four bytes and reads
-   eight), and `/dev/dk`, `/dev/pt` and `/dev/drum` have to exist or it
-   `error()`s before it starts.
+   **`ps` runs.** Bell Labs' 1985 process lister, ten objects from upstream's
+   own OFILES, listing every process on a Mac through the `/proc` above --
+   **two source changes**, both width fixes, both recorded in
+   `src/cmd/ps/PORTING.md`. What it actually took was elsewhere:
+
+   - **A COMPILER BUG, and it is the find of this step.** `printp` calls
+     `sprintf` with nine arguments; AAPCS64 puts the ninth at `[sp, #0]`; and
+     `arm64_endfunction()` was pushing the callee-saved registers at the bottom
+     of the frame, so the last one saved *was* `[sp, #0]`. `printp` overwrote
+     the register it had saved for `main` and handed it back corrupted, so
+     `main`'s `dp` came back pointing into `cmdline` and `ps` walked off its
+     `/proc` array. The frame now has three regions -- locals, saves, call area
+     -- and CLAUDE.md carries the general lesson. A sweep found exactly four
+     functions in the tree with a >8-argument call, which is why 156 Wave A
+     programs plus Wave B and C never saw it.
+   - **`/dev/dk`, `/dev/pt`, `/dev/drum`,** which `ps` `getdir`s and opens
+     before touching `/proc` at all, calling `error()` on any failure. Empty,
+     and the emptiness is the true answer.
+   - **The pid widening**, without which every pid above 32767 printed
+     negative.
+
+   The privilege boundary is per *field* and reported rather than papered over:
+   `PROC_PIDT_SHORTBSDINFO` answers for all 614 processes, and the task info
+   carrying memory and cpu is denied for the 216 this user does not own, so
+   those columns read zero. The first version asked `PROC_PIDTASKALLINFO` for
+   everything and returned ENOENT when it failed -- which made `ps` print
+   "/proc ioctl error" 215 times and list two thirds of the system. **A process
+   that exists must not answer ENOENT**; that is the shim claiming it is gone.
 
    Also required before `ps` will start at all, and unrelated to `/proc`: it
    `getdir`s `/dev`, `/dev/dk` and `/dev/pt` and opens `/dev/drum`, calling
@@ -1357,7 +1381,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 3A Wave A | done | **156 of 163** single-file commands in `usr/src/cmd` build, including `ls`. **All 48 imported into `src/cmd` are now real installed binaries in `rootfs/bin`** (every `.c` there but `cc`, which has its own rule), and `wavea` 73/73 runs the *installed* ones rather than temp-directory copies — the rule the rest of the tree already followed. That change is what surfaced seven commands (`ascii`, `bcd`, `cal`, `morse`, `ptx`, `units`, `vis`) that compiled but had never been shipped, and two data files (`/usr/lib/units`, `/usr/lib/eign`) that `units` and `ptx` read by absolute path — without which they answer "no table" and "Cannot open  file /usr/lib/eign" |
 | 3B Wave B | done | The **Bourne shell** runs (`sh` 21/21) — see `src/cmd/sh/PORTING.md`. The file and process tools run too (`waveb` 21/21): `cp`, `mv`, `mkdir`, `rmdir`, `sed`, `ed`, `dc`, `factor`, `primes`, `tsort`. **38 multi-file command directories** compile and link, including `ps`, `w`, `df`, `tbl`, `qed`, `adb`, `yacc`, `man`, `diff3`, `dump`, `su`, `cron`, `compress` |
 | 3C Wave C | **done** | **nroff, troff, tbl, eqn, pic, spell, man, grap and refer all run** (`wavec` 56/56). `tbl \| nroff` formats a table, `eqn \| nroff` sets an equation, `grap \| pic \| troff` draws a graph end to end, and `refer` resolves citations against an index its own `mkey`/`inv` built. eqn, pic and grap are built with **V8's own yacc and lex**, themselves compiled by v8cc. nroff fills and honours `.br`, `.ll`, `.ce`, `.sp`, `.na`; troff emits the device-independent stream for the 202 typesetter, with its tables compiled by `makedev` at build time. See the `PORTING.md` under `troff`, `tbl`, `pic`, `grap` and `refer` |
-| 4 grovelers | **done, to the limit of what has no `/proc`** | `date`, `who`, `df`, `load`, `w`/`uptime` all run (`kmemu` 77/77). `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` and the full form of `w` are blocked on `/proc` and move to S8a step 3 — V8's `ps` is a `/proc` client, not a kmem groveler, which is a plan revision forced by reading it. See S7 |
+| 4 grovelers | **done** | `date`, `who`, `df`, `load`, `w`/`uptime` all run. `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` was the exception and is now done too, under S8a step 3 rather than here — V8's `ps` is a `/proc` client, not a kmem groveler, which was a plan revision forced by reading it. Only the full form of `w` remains, and it says `No mem` on purpose. See S7 |
 | 5 blitterm | not started | |
 | 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 62/62 |
 

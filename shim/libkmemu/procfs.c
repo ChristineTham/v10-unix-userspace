@@ -342,33 +342,82 @@ prnow(void)
 }
 
 /*
+ * WHAT THE HOST WILL TELL US IS DECIDED PER FIELD, NOT PER PROCESS, and getting
+ * that wrong made ps print an error for a third of the system.
+ *
+ * The first attempt asked PROC_PIDTASKALLINFO for everything and returned
+ * ENOENT when it failed.  Measured: it succeeds for 398 of 614 processes and
+ * returns EPERM for the rest -- task information about a process you do not own
+ * is privileged, and reasonably so.  So ps printed "/proc ioctl error" 215
+ * times and listed two thirds of the system.  A process that EXISTS must not
+ * answer ENOENT; that is the shim claiming it is gone.
+ *
+ * PROC_PIDT_SHORTBSDINFO is the one that is not gated: 614 of 614, and the
+ * single miss was a process that exited between listing and asking (errno 0,
+ * not EPERM).  It carries identity and state -- pid, ppid, pgid, uid, ruid,
+ * status, comm -- which is most of what ps prints.  What it lacks is `nice' and
+ * the start time, and those come from the full PROC_PIDTBSDINFO where it is
+ * permitted; memory and cpu come from PROC_PIDTASKINFO on the same terms.
+ *
+ * So: three calls, one required and two optional, and a field is zero exactly
+ * when the host declined to say.  That is the privilege boundary macOS actually
+ * enforces, reported rather than papered over.
+ *
+ * The deprecated route was checked and is not needed.  sysctl KERN_PROC_ALL
+ * returns a struct kinfo_proc for all 618 in one call, with nice and start time
+ * included -- but it is deprecated in favour of exactly the libproc calls
+ * above, and those turn out to answer.  Recorded so the next reader does not
+ * have to re-measure it.
+ */
+struct prinfo {
+	struct proc_bsdshortinfo si;	/* always */
+	struct proc_bsdinfo	 bi;	/* nice, start time -- if permitted */
+	struct proc_taskinfo	 ti;	/* memory, cpu -- if permitted */
+	int			 havebi, haveti;
+};
+
+static int
+prgather(int pid, struct prinfo *g)
+{
+	g->havebi = g->haveti = 0;
+	if (proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &g->si,
+	    sizeof g->si) < (int)sizeof g->si)
+		return (-1);		/* really gone: ENOENT is the truth */
+	g->havebi = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &g->bi,
+	    sizeof g->bi) >= (int)sizeof g->bi;
+	g->haveti = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &g->ti,
+	    sizeof g->ti) >= (int)sizeof g->ti;
+	return (0);
+}
+
+/*
  * Fill one.  What is left zero is left zero deliberately; the notes say which
  * reader would have wanted it.
  */
 static int
 prgetpr(int pid, struct v8proc *p)
 {
-	struct proc_taskallinfo ai;
+	struct prinfo g;
 	char *q = (char *)p;
 	long i, elapsed;
 	double cpu;
 
 	for (i = 0; i < (long)sizeof *p; i++) q[i] = 0;
 
-	if (proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &ai, sizeof ai) <
-	    (int)sizeof ai)
-		return (-1);
+	if (prgather(pid, &g) < 0) return (-1);
 
-	p->p_pid  = (int)ai.pbsd.pbi_pid;
-	p->p_ppid = (int)ai.pbsd.pbi_ppid;
-	p->p_pgrp = (int)ai.pbsd.pbi_pgid;
-	p->p_uid  = (int)ai.pbsd.pbi_uid;
-	p->p_stat = prstat_of(ai.pbsd.pbi_status);
+	p->p_pid  = (int)g.si.pbsi_pid;
+	p->p_ppid = (int)g.si.pbsi_ppid;
+	p->p_pgrp = (int)g.si.pbsi_pgid;
+	p->p_uid  = (int)g.si.pbsi_uid;
+	p->p_stat = prstat_of(g.si.pbsi_status);
 
 	/* V8's nice runs 0..39 around NZERO; macOS's runs -20..19 around 0.
 	 * printp only asks `p_nice > NZERO', so the bias has to be applied or
-	 * every renice'd process reads as ordinary. */
-	p->p_nice = (char)(ai.pbsd.pbi_nice + V8_NZERO);
+	 * every renice'd process reads as ordinary.  Where the host will not
+	 * say, NZERO is the answer that prints no marker -- which is the same
+	 * thing an unrenice'd process prints, and is the honest default. */
+	p->p_nice = (char)(g.havebi ? g.bi.pbi_nice + V8_NZERO : V8_NZERO);
 
 	/*
 	 * SLOAD IS LOAD-BEARING, not decoration.  ps's getuarea (doselect.c)
@@ -387,9 +436,9 @@ prgetpr(int pid, struct v8proc *p)
 	 * is zero, which keeps the SUM -- the only thing ps prints -- true, and
 	 * leaves the one field that would have to lie empty.
 	 */
-	p->p_dsize  = (long)(ai.ptinfo.pti_virtual_size / V8_NBPG);
+	p->p_dsize  = g.haveti ? (long)(g.ti.pti_virtual_size / V8_NBPG) : 0;
 	p->p_ssize  = 0;
-	p->p_rssize = (long)(ai.ptinfo.pti_resident_size / V8_NBPG);
+	p->p_rssize = g.haveti ? (long)(g.ti.pti_resident_size / V8_NBPG) : 0;
 	p->p_tsize  = 0;
 
 	/*
@@ -400,12 +449,14 @@ prgetpr(int pid, struct v8proc *p)
 	 * zero either way; a busy one that has been busy for hours reads lower
 	 * here than V8 would have shown.  Recorded rather than smoothed over.
 	 */
-	cpu = (double)(ai.ptinfo.pti_total_user + ai.ptinfo.pti_total_system) /
-	    prtickhz();
-	elapsed = prnow() - (long)ai.pbsd.pbi_start_tvsec;
-	if (elapsed < 1) elapsed = 1;
-	p->p_pctcpu = (float)(cpu / (double)elapsed);
-	if (p->p_pctcpu > 1.0f) p->p_pctcpu = 1.0f;	/* threads outrun wall time */
+	if (g.haveti && g.havebi) {
+		cpu = (double)(g.ti.pti_total_user + g.ti.pti_total_system) /
+		    prtickhz();
+		elapsed = prnow() - (long)g.bi.pbi_start_tvsec;
+		if (elapsed < 1) elapsed = 1;
+		p->p_pctcpu = (float)(cpu / (double)elapsed);
+		if (p->p_pctcpu > 1.0f) p->p_pctcpu = 1.0f;   /* threads outrun wall */
+	}
 
 	/*
 	 * Left zero, and each one is a reader that gets a defensible answer:
@@ -534,7 +585,7 @@ AT(u_ssize, 2776); AT(vm_utime, 2784); AT(vm_stime, 2788);
  *   u_ofile         kernel's inode table.  Out of scope; see PLAN.md.
  */
 static void
-prgetuarea(struct proc_taskallinfo *ai, struct v8user *u)
+prgetuarea(struct prinfo *g, struct v8user *u)
 {
 	char *q = (char *)u;
 	long i;
@@ -542,16 +593,18 @@ prgetuarea(struct proc_taskallinfo *ai, struct v8user *u)
 
 	for (i = 0; i < (long)sizeof *u; i++) q[i] = 0;
 
-	u->u_uid  = (short)ai->pbsd.pbi_uid;
-	u->u_ruid = (short)ai->pbsd.pbi_ruid;
+	u->u_uid  = (short)g->si.pbsi_uid;
+	u->u_ruid = (short)g->si.pbsi_ruid;
 	u->u_procp = (char *)0x80000000L;	/* SYSADR; see above */
-	u->u_start = (long)ai->pbsd.pbi_start_tvsec;
+	u->u_start = g->havebi ? (long)g->bi.pbi_start_tvsec : 0;
 
-	for (i = 0; i < (long)sizeof ai->pbsd.pbi_comm && i < 253; i++)
-		u->u_comm[i] = ai->pbsd.pbi_comm[i];
+	/* From the SHORT bsdinfo, so a process this user does not own still has
+	 * a name -- which is the field getargs falls back to printing. */
+	for (i = 0; i < (long)sizeof g->si.pbsi_comm && i < 253; i++)
+		u->u_comm[i] = g->si.pbsi_comm[i];
 
 	u->u_tsize = 0;
-	u->u_dsize = (long)(ai->ptinfo.pti_virtual_size / V8_NBPG);
+	u->u_dsize = g->haveti ? (long)(g->ti.pti_virtual_size / V8_NBPG) : 0;
 
 	/*
 	 * u_ssize IS A BEHAVIOURAL CHOICE AND NOT A MEASUREMENT, which is why
@@ -569,10 +622,12 @@ prgetuarea(struct proc_taskallinfo *ai, struct v8user *u)
 	 */
 	u->u_ssize = 8192L / V8_NBPG;
 
-	cpu = (double)(ai->ptinfo.pti_total_user) / prtickhz();
-	u->vm_utime = (int)(cpu * V8_HZ);
-	cpu = (double)(ai->ptinfo.pti_total_system) / prtickhz();
-	u->vm_stime = (int)(cpu * V8_HZ);
+	if (g->haveti) {
+		cpu = (double)(g->ti.pti_total_user) / prtickhz();
+		u->vm_utime = (int)(cpu * V8_HZ);
+		cpu = (double)(g->ti.pti_total_system) / prtickhz();
+		u->vm_stime = (int)(cpu * V8_HZ);
+	}
 }
 
 /*
@@ -588,12 +643,13 @@ prgetuarea(struct proc_taskallinfo *ai, struct v8user *u)
 static long
 prfilesize(int pid)
 {
-	struct proc_taskallinfo ai;
+	struct prinfo g;
 
-	if (proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &ai, sizeof ai) <
-	    (int)sizeof ai)
-		return (0);
-	return ((long)(ai.ptinfo.pti_virtual_size / V8_NBPG + UPAGES) * V8_NBPG);
+	if (prgather(pid, &g) < 0) return (0);
+	/* The u-area is always there; the image size is only knowable where the
+	 * host permits it, so an unprivileged reader sees the u-area alone. */
+	return ((long)((g.haveti ? g.ti.pti_virtual_size / V8_NBPG : 0) +
+	    UPAGES) * V8_NBPG);
 }
 
 static int
@@ -728,17 +784,16 @@ pr_read(int fd, char *b, long n)
 		 * UBASE for the stack image, and a short read is precisely
 		 * what sends it to its own fallback.  See prgetuarea.
 		 */
-		struct proc_taskallinfo ai;
+		struct prinfo g;
 		struct v8user u;
 		long within, take;
 
 		if (f->off < UBASE || f->off >= UBASE + U_SIZE) return (0);
-		if (proc_pidinfo(f->pid, PROC_PIDTASKALLINFO, 0, &ai,
-		    sizeof ai) < (int)sizeof ai) {
+		if (prgather(f->pid, &g) < 0) {
 			v8_errno = V8_ENOENT;
 			return (-1);
 		}
-		prgetuarea(&ai, &u);
+		prgetuarea(&g, &u);
 		within = f->off - UBASE;
 		take = U_SIZE - within;
 		if (take > n) take = n;

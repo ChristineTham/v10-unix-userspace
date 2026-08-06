@@ -1,0 +1,18 @@
+# Provenance for src/cmd/ps
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+7afa6e4b195e72862c70d341192bbc23e573657c  v8/usr/src/cmd/ps/getfs.c
+688a9461fad74a7a1af766bf5f0e62132b4810ad  v8/usr/src/cmd/ps/nalloc.c
+447281a8588f6e720a84c10db9756874c589afc1  v8/usr/src/cmd/ps/getuname.c
+4462d5bb555538985acda679df459831dd565432  v8/usr/src/cmd/ps/ps.c
+25c6f5da06d2106055888a9ba9c538e07c0c90e0  v8/usr/src/cmd/ps/printp.c
+98bc6136d4e360b3537fdc07de3bfb755c8bcb54  v8/usr/src/cmd/ps/Makefile
+70764c81797e2c2e876156495d818aa2a81dc99a  v8/usr/src/cmd/ps/sort.c
+9521ed192495a60596c3e22334230bc233415010  v8/usr/src/cmd/ps/doselect.c
+f0b994e184d82ce534be432570e7894c56815f79  v8/usr/src/cmd/ps/gettty.c
+939bd3409237a180b54257e5793ea70cc9cb81a6  v8/usr/src/cmd/ps/fdprint.c
+a579e4dadd4cfd8979078dbc6ced5abefe3c6e11  v8/usr/src/cmd/ps/getargs.c
+0cb091218f88ce214cef4ec81a53839a3d4282e2  v8/usr/src/cmd/ps/ps.h
