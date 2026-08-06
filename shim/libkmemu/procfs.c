@@ -426,6 +426,176 @@ prgetpr(int pid, struct v8proc *p)
 	return (0);
 }
 
+/* ----------------------------------------------------------- the u-area */
+
+/*
+ * struct user, the OTHER half of the /proc ABI, and ps reads it by seeking to
+ * a virtual address:
+ *
+ *	Sread(fd, UBASE, up)   ==   lseek(fd, UBASE, 0); read(fd, up, 4016)
+ *
+ * because /proc/<pid> as a byte stream IS the process's address space --
+ * proca.c serves it through prusrio -- and the u-area sits at the top of it,
+ * at 0x80000000 - UPAGES*NBPG = 0x7fffec00.  So this is not a second file
+ * format; it is a region of the one file, and pr_read hands it out when the
+ * offset lands inside it.
+ *
+ * DECLARED BY OFFSET, unlike struct proc, and the difference is deliberate.
+ * struct proc is 208 bytes of fields this file could honestly spell.  struct
+ * user is 4016 bytes containing the VAX process control block, four disk maps,
+ * a label_t, u_signal[NSIG] and the kernel stack -- spelling all of that to
+ * reach the twelve fields ps reads would be a page of declaration for nobody,
+ * and every line of it a chance to get padding wrong.  So the pads are
+ * explicit and the _Static_asserts check them: a pad of the wrong length moves
+ * the next field and the build fails.  Same two-guard arrangement as above --
+ * tests/kmemu measures the same offsets from the V8 side.
+ */
+#define U_SIZE		4016
+#define UPAGES		10		/* sys/param.h:69 */
+#define UBASE		(0x80000000L - (long)UPAGES * V8_NBPG)
+
+struct v8user {
+	char	 pad0[282];
+	short	 u_uid;			/* 282 */
+	char	 pad1[2];		/* u_gid */
+	short	 u_ruid;		/* 286 */
+	char	 pad2[8];		/* u_rgid, then alignment */
+	char	*u_procp;		/* 296 */
+	char	 pad3[40];
+	char	*u_cdir;		/* 344 */
+	char	*u_rdir;		/* 352 */
+	char	 pad4[528];
+	char	*u_ofile[16];		/* 888 -- NOFILE */
+	char	 pad5[1434];
+	unsigned short u_ttydev;	/* 2450 */
+	unsigned short u_ttyino;	/* 2452 */
+	char	 pad6[34];
+	char	 u_comm[254];		/* 2488 -- DIRSIZ */
+	char	 pad7[2];
+	long	 u_start;		/* 2744 */
+	char	 pad8[8];		/* u_acflag, u_fpflag, u_cmask */
+	long	 u_tsize;		/* 2760 */
+	long	 u_dsize;		/* 2768 */
+	long	 u_ssize;		/* 2776 */
+	int	 vm_utime;		/* 2784 -- u_vm.vm_utime, 60ths */
+	int	 vm_stime;		/* 2788 */
+	char	 pad9[1224];
+};
+
+#define AT(f, n)	_Static_assert(__builtin_offsetof(struct v8user, f) == (n), \
+			    "struct user: " #f " moved")
+_Static_assert(sizeof(struct v8user) == U_SIZE, "struct user is 4016 bytes");
+AT(u_uid, 282);   AT(u_ruid, 286);   AT(u_procp, 296);  AT(u_cdir, 344);
+AT(u_rdir, 352);  AT(u_ofile, 888);  AT(u_ttydev, 2450); AT(u_ttyino, 2452);
+AT(u_comm, 2488); AT(u_start, 2744); AT(u_tsize, 2760); AT(u_dsize, 2768);
+AT(u_ssize, 2776); AT(vm_utime, 2784); AT(vm_stime, 2788);
+#undef AT
+
+/*
+ * V8's HZ is 60 and u_vm is in sixtieths (sys/vtimes.h says so in the comment
+ * on the field).  printp divides the sum by 60 to get seconds.
+ */
+#define V8_HZ	60
+
+/*
+ * ps looks at exactly twelve fields.  What is filled, and what is not:
+ *
+ *   u_uid, u_ruid   doselect's -r test.  Left 16 bits, unlike the proc
+ *                   struct's p_uid: there the wider field was free (alignment
+ *                   padding paid for it), here it would shift 4016 bytes of
+ *                   layout, and the highest uid measured on this host is 501.
+ *                   A uid that did not fit would truncate to a value with no
+ *                   passwd entry, so getuname prints "?" -- a visible gap
+ *                   rather than a wrong name.  Recorded as measured-safe.
+ *   u_procp         ps sets it to 0 before the read and then treats non-zero
+ *                   as "u-area already loaded" (doselect.c:19, getuarea:2).
+ *                   Nothing dereferences it.  SYSADR, so that it is non-zero
+ *                   AND shaped like the kernel pointer it claims to be -- and
+ *                   so that Kread, which demands that bit, would fail on the
+ *                   read rather than believe a small integer.
+ *   u_comm          the command name, and the one that matters: it is what
+ *                   getargs falls back to printing when it cannot read the
+ *                   stack, which here is always.
+ *   u_ssize         see below -- a behavioural choice, not a measurement.
+ *   u_start         -T prints ctime of it.
+ *   u_vm.vm_*       the TIME column.
+ *   u_tsize/u_dsize the file's own st_size, per proca.c:88.
+ *
+ *   u_ttyino        LEFT ZERO, and it is a /dev question rather than a /proc
+ *                   one.  gettty() looks the number up in the directory
+ *                   records of /dev, /dev/dk and /dev/pt; inside the jail /dev
+ *                   holds one entry, `kmem', so the lookup fails and ps prints
+ *                   "?" whatever this field says.  Filling it correctly is a
+ *                   stat of /dev/ttys<minor> folded through v8sys_fold_ino --
+ *                   e_tdev's minor does map to the name, measured -- and it
+ *                   buys exactly nothing until the jail's /dev carries tty
+ *                   nodes.  So: a decision, not a discovery.
+ *   u_cdir, u_rdir  followed by ps -F through /dev/kmemr, which needs the
+ *   u_ofile         kernel's inode table.  Out of scope; see PLAN.md.
+ */
+static void
+prgetuarea(struct proc_taskallinfo *ai, struct v8user *u)
+{
+	char *q = (char *)u;
+	long i;
+	double cpu;
+
+	for (i = 0; i < (long)sizeof *u; i++) q[i] = 0;
+
+	u->u_uid  = (short)ai->pbsd.pbi_uid;
+	u->u_ruid = (short)ai->pbsd.pbi_ruid;
+	u->u_procp = (char *)0x80000000L;	/* SYSADR; see above */
+	u->u_start = (long)ai->pbsd.pbi_start_tvsec;
+
+	for (i = 0; i < (long)sizeof ai->pbsd.pbi_comm && i < 253; i++)
+		u->u_comm[i] = ai->pbsd.pbi_comm[i];
+
+	u->u_tsize = 0;
+	u->u_dsize = (long)(ai->ptinfo.pti_virtual_size / V8_NBPG);
+
+	/*
+	 * u_ssize IS A BEHAVIOURAL CHOICE AND NOT A MEASUREMENT, which is why
+	 * it is spelled as one.  getargs reads the process's stack image to
+	 * recover argv, and this port has no stack image to give it -- so the
+	 * read must FAIL, and getargs then takes its own documented fallback
+	 * and prints "(u_comm)", exactly as V8 does for a swapped-out process.
+	 *
+	 * Zero would not do that.  getargs computes nstack = ctob(u_ssize), and
+	 * with zero it reads zero bytes, which SUCCEEDS -- and then scans
+	 * backwards from stack+0, reading stack[-1] before its own guard can
+	 * stop it.  So this is NSTACK's worth: the largest window getargs will
+	 * look at, which makes it attempt one read, get a short count, and take
+	 * the fallback deterministically.
+	 */
+	u->u_ssize = 8192L / V8_NBPG;
+
+	cpu = (double)(ai->ptinfo.pti_total_user) / prtickhz();
+	u->vm_utime = (int)(cpu * V8_HZ);
+	cpu = (double)(ai->ptinfo.pti_total_system) / prtickhz();
+	u->vm_stime = (int)(cpu * V8_HZ);
+}
+
+/*
+ * The size of /proc/<pid>, which proca.c defines rather than leaves to us:
+ *
+ *	ip->i_size = (int)ptob(p->p_tsize+p->p_dsize+p->p_ssize+UPAGES)
+ *	                                                    (proca.c:88, :189)
+ *
+ * -- the process's whole image plus the u-area, in bytes.  Worth taking from
+ * upstream rather than inventing, because it is the only statement anywhere
+ * about what this file's extent means.
+ */
+static long
+prfilesize(int pid)
+{
+	struct proc_taskallinfo ai;
+
+	if (proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &ai, sizeof ai) <
+	    (int)sizeof ai)
+		return (0);
+	return ((long)(ai.ptinfo.pti_virtual_size / V8_NBPG + UPAGES) * V8_NBPG);
+}
+
 static int
 pr_ioctl(int fd, int cmd, char *arg)
 {
@@ -550,12 +720,32 @@ pr_read(int fd, char *b, long n)
 	if (f->pid != 0) {
 		/*
 		 * /proc/<pid> as a byte stream is the process's ADDRESS SPACE,
-		 * indexed by virtual address -- ps(1) seeks to UBASE and reads
-		 * a struct user.  Answering that means manufacturing a u-area
-		 * from proc_pidinfo, which is the next slice of section 8a step
-		 * 3.  Until then it reads empty rather than reading a lie.
+		 * indexed by virtual address.  One region of it is answerable
+		 * here -- the u-area at UBASE -- and everything else reads as
+		 * end of file rather than as zeroes that could be believed.
+		 *
+		 * That EOF is load-bearing, not a gap: getargs seeks below
+		 * UBASE for the stack image, and a short read is precisely
+		 * what sends it to its own fallback.  See prgetuarea.
 		 */
-		return (0);
+		struct proc_taskallinfo ai;
+		struct v8user u;
+		long within, take;
+
+		if (f->off < UBASE || f->off >= UBASE + U_SIZE) return (0);
+		if (proc_pidinfo(f->pid, PROC_PIDTASKALLINFO, 0, &ai,
+		    sizeof ai) < (int)sizeof ai) {
+			v8_errno = V8_ENOENT;
+			return (-1);
+		}
+		prgetuarea(&ai, &u);
+		within = f->off - UBASE;
+		take = U_SIZE - within;
+		if (take > n) take = n;
+		for (done = 0; done < take; done++)
+			b[done] = ((char *)&u)[within + done];
+		f->off += done;
+		return (done);
 	}
 	while (done < n) {
 		struct prdirect rec;
@@ -595,7 +785,7 @@ pr_seek(int fd, long off, int whence)
 	switch (whence) {
 	case 0: base = 0; break;
 	case 1: base = f->off; break;
-	case 2: base = f->pid ? 0 : prdirsize(); break;
+	case 2: base = f->pid ? prfilesize(f->pid) : prdirsize(); break;
 	default: v8_errno = V8_EINVAL; return (-1);
 	}
 	f->off = base + off;
@@ -619,7 +809,7 @@ prstat(struct v8_stat *st, int pid)
 	} else {
 		st->st_ino = (v8_ino_t)(pid + PRMAGIC);
 		st->st_mode = (unsigned short)(V8_S_IFREG | 0600);
-		st->st_size = 0;
+		st->st_size = (v8_off_t)prfilesize(pid);
 	}
 }
 

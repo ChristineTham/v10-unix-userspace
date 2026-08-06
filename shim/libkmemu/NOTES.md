@@ -193,10 +193,38 @@ What is left zero is left zero on purpose, and `procfs.c` names the reader for
 each: `p_wchan` (no documented source — a fabricated one is the single thing
 that would make `ps -l` a lie), `p_clktim`, `p_textp`, `p_swaddr`.
 
+## The u-area, and the read that has to fail
+
+`ps` gets the other half with `Sread(fd, UBASE, up)` — a seek to a *virtual
+address*, because `/proc/<pid>` is the process's address space and the u-area
+sits at its top. So this is a region of the one file rather than a second
+format, and `pr_read` serves `[UBASE, UBASE+4016)` and reports end of file
+everywhere else.
+
+**That EOF is load-bearing.** `getargs` reads the process's stack image to
+recover `argv`; there is no stack image here, so the read must come up short,
+and `getargs` then prints `"(u_comm)"` — which is exactly what V8 shows for a
+swapped-out process. Getting there needs `u_ssize` non-zero: with zero,
+`ctob(0)` is a zero-length read, which *succeeds*, and `getargs` scans backwards
+from `stack+0`, reading `stack[-1]` before its own guard can stop it. So
+`u_ssize` is `NSTACK`'s worth — a behavioural choice, spelled as one in the
+source, not a measurement.
+
+`u_ttyino` is left zero and that is a `/dev` question, not a `/proc` one:
+`gettty()` looks the number up in the directory records of `/dev`, `/dev/dk` and
+`/dev/pt`, and inside the jail `/dev` holds one entry, `kmem`. Filling it is a
+stat of `/dev/ttys<minor>` folded through `v8sys_fold_ino` — `e_tdev`'s minor
+does map to the name, measured — and buys nothing until those nodes exist.
+
+The boundary is where this shape of code breaks, so it is tested from both
+sides: one byte below `UBASE` must read as EOF rather than indexing the buffer
+*negatively*, the last byte of the u-area must be readable, and the one after it
+must not. That gap was found by a mutation that widened the window eight bytes
+and which nothing failed on.
+
 ## Next
 
-The u-area. `ps` reads it with `Sread(fd, UBASE, up)` — the process's address
-space indexed by virtual address — and it is 4016 bytes at `0x7fffec00`,
-manufactured from `proc_pidinfo` rather than read through `prusrio`. After that
-`ps` itself, which also wants `/dev/dk`, `/dev/pt` and `/dev/drum` to exist
-before it will start at all (`ps.c:21-28`).
+`ps` itself: nine files, an LP64 audit — `getargs.c` walks the stack with
+`*(long *)(sp -= 4)`, stepping four bytes and reading eight — and `/dev/dk`,
+`/dev/pt` and `/dev/drum` have to exist or it `error()`s before it starts
+(`ps.c:21-28`).

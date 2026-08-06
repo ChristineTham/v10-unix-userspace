@@ -1201,8 +1201,40 @@ Ordered so that value lands before risk, and so each step is testable alone.
    every process. Both are guarded by tests that fail on the magnitude, not just
    the presence, of an answer.
 
-   **Still to do here: the u-area**, manufactured from `proc_pidinfo` rather
-   than read through `prusrio` -- see above.
+   **The u-area is done too, and it is a region of the same file rather than a
+   second format.** `ps` reads it with `Sread(fd, UBASE, up)` -- a seek to a
+   *virtual address*, because `/proc/<pid>` as a byte stream is the process's
+   address space and `proca.c` serves it through `prusrio`. So `pr_read` hands
+   out `struct user` when the offset lands in `[UBASE, UBASE+4016)` and reports
+   end of file everywhere else. `struct user` is declared by explicit padding
+   rather than spelled out: 4016 bytes containing the VAX process control
+   block, four disk maps and the kernel stack, to reach the twelve fields `ps`
+   reads. The pads are checked by `_Static_assert`, so one of the wrong length
+   moves the next field and the build fails.
+
+   Two things there are decisions rather than measurements, and are written as
+   such. **`u_ssize` is set to `NSTACK`'s worth on purpose**: `getargs` reads
+   the process's stack image to recover `argv`, this port has no stack image,
+   so the read has to *fail* and send `getargs` to its own documented
+   `"(u_comm)"` fallback -- which is exactly what V8 prints for a swapped-out
+   process. Zero would not do it: `ctob(0)` is a zero-length read, which
+   *succeeds*, and `getargs` then scans backwards past the start of its own
+   buffer. And **`u_ttyino` is left zero, which is a `/dev` question rather
+   than a `/proc` one**: `gettty()` looks the number up in the directory
+   records of `/dev`, `/dev/dk` and `/dev/pt`, and inside the jail `/dev` holds
+   exactly one entry (`kmem`), so `ps` prints `?` whatever the field says.
+   Filling it is a stat of `/dev/ttys<minor>` folded through `v8sys_fold_ino`
+   -- `e_tdev`'s minor does map to the name, measured -- and buys nothing until
+   the jail's `/dev` carries tty nodes.
+
+   The file's *size* is upstream's rather than invented:
+   `ptob(p_tsize+p_dsize+p_ssize+UPAGES)` (proca.c:88), the process image plus
+   the u-area.
+
+   **Still to do here: `ps` itself.** Nine files, an LP64 audit (`getargs.c`
+   walks a stack with `*(long *)(sp -= 4)`, which steps four bytes and reads
+   eight), and `/dev/dk`, `/dev/pt` and `/dev/drum` have to exist or it
+   `error()`s before it starts.
 
    Also required before `ps` will start at all, and unrelated to `/proc`: it
    `getdir`s `/dev`, `/dev/dk` and `/dev/pt` and opens `/dev/drum`, calling

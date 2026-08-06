@@ -687,6 +687,122 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 	check "PIOCGETPR on /proc itself is ENOENT"    "1" "$(g dir)"
 else bad "PIOCGETPR probe build" "$(head -3 "$TMP/gp.log")"; fi
 
+# --- the u-area, which ps reads by seeking to a virtual address ----------
+# /proc/<pid> IS the process's address space (proca.c serves it through
+# prusrio), so the u-area is a REGION of that one file rather than a second
+# format. This probe is ps's getuarea and getargs, spelled out: the same seek,
+# the same read, the same sizes -- including the stack read that has to FAIL so
+# that getargs takes its documented "(comm)" fallback.
+cat > "$TMP/gu.c" <<'EOF'
+#include <stdio.h>
+#include <sys/param.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/dir.h>
+#include <sys/user.h>
+#include <sys/proc.h>
+#include <sys/pioctl.h>
+#define SYSADR	0x80000000L
+#define UBASE	(SYSADR-UPAGES*NBPG)
+struct proc p;
+union { struct user user; char chars[UPAGES*NBPG]; } usp;
+#define u usp.user
+main()
+{
+	int fd; long n; char me[16]; char stack[8192];
+	struct stat sb;
+
+	printf("usize %ld\n", (long)sizeof(struct user));
+	printf("ubase %lx\n", (long)UBASE);	/* hex: it is a documented address */
+	printf("uoffs %ld %ld %ld %ld %ld %ld %ld\n",
+	    (long)((char *)&u.u_uid   - (char *)&u),
+	    (long)((char *)&u.u_ruid  - (char *)&u),
+	    (long)((char *)&u.u_procp - (char *)&u),
+	    (long)((char *)u.u_comm   - (char *)&u),
+	    (long)((char *)&u.u_start - (char *)&u),
+	    (long)((char *)&u.u_ssize - (char *)&u),
+	    (long)((char *)&u.u_vm.vm_utime - (char *)&u));
+
+	sprintf(me, "/proc/%05d", getpid());
+	if ((fd = open(me, 0)) < 0) { printf("noopen\n"); return 1; }
+	ioctl(fd, PIOCGETPR, &p);
+
+	/* getuarea, verbatim: Sread(fd, UBASE, up) */
+	printf("seek %d\n", lseek(fd, UBASE, 0) == UBASE);
+	n = read(fd, (char *)&u, sizeof(struct user));
+	printf("read %d\n", n == sizeof(struct user));
+
+	printf("procp %d\n", u.u_procp != 0);
+	printf("uid %d\n",  u.u_uid  == getuid());
+	printf("ruid %d\n", u.u_ruid == getuid());
+	printf("comm %s\n", u.u_comm);
+	printf("start %d\n", u.u_start > 1000000000L &&
+	                     u.u_start <= time((long *)0));
+	printf("times %d\n", u.u_vm.vm_utime >= 0 && u.u_vm.vm_stime >= 0);
+
+	/*
+	 * getargs, verbatim: seek to UBASE - ctob(u_ssize) and read it.  This
+	 * MUST come up short -- there is no stack image -- because that is what
+	 * sends getargs to "(u_comm)".  A zero u_ssize would make it a
+	 * zero-length read, which succeeds, and getargs would then scan
+	 * backwards past the start of its own buffer.
+	 */
+	n = ctob(u.u_ssize);
+	printf("nstack %d\n", n == 8192);
+	printf("staddr %d\n", lseek(fd, UBASE - n, 0) == UBASE - n);
+	printf("stack %d\n", read(fd, stack, n) != n);
+
+	/*
+	 * THE EDGES OF THE REGION, which is where this shape of code breaks.
+	 * One byte below UBASE must read as end of file and not as data: the
+	 * shim indexes its buffer by (offset - UBASE), so a window that opened
+	 * even slightly early would index it NEGATIVELY and hand out whatever
+	 * precedes it.  And the last byte of the u-area must be readable while
+	 * the one after it is not.
+	 */
+	printf("below %d\n", lseek(fd, UBASE - 1, 0) == UBASE - 1 &&
+	    read(fd, stack, 16) == 0);
+	printf("last %d\n", lseek(fd, UBASE + sizeof(struct user) - 1, 0) > 0 &&
+	    read(fd, stack, 16) == 1);
+	printf("past %d\n", lseek(fd, UBASE + sizeof(struct user), 0) > 0 &&
+	    read(fd, stack, 16) == 0);
+
+	/* proca.c:88 -- the file's size is the process image plus the u-area */
+	printf("fstat %d\n", fstat(fd, &sb) == 0 && sb.st_size > UPAGES*NBPG);
+	close(fd);
+	fflush(stdout);
+	return 0;
+}
+EOF
+if "$CC" -c -o "$TMP/gu.o" "$TMP/gu.c" > "$TMP/gu.log" 2>&1 &&
+   clang -nostdlib -e _v8start -o "$TMP/gu" "$CRT" "$TMP/gu.o" \
+	-Wl,-force_load,"$KMEMU" "$LIBC" "$STUBS" "$SHIM" -lSystem >> "$TMP/gu.log" 2>&1; then
+	out=$("$TMP/gu" 2>/dev/null)
+	g() { echo "$out" | awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}'; }
+	check "v8cc agrees struct user is 4016 bytes" "4016" "$(g usize)"
+	check "...and UBASE is 0x80000000 - UPAGES*NBPG" "7fffec00" "$(g ubase)"
+	check "...and on every offset the u-area's readers use" \
+		"282 286 296 2488 2744 2776 2784" "$(g uoffs)"
+	check "a seek to UBASE lands there"        "1" "$(g seek)"
+	check "...and reads a whole struct user"   "1" "$(g read)"
+	# ps sets u_procp to 0 before the read and reads non-zero as "loaded".
+	check "u_procp is non-zero, so ps caches the read" "1" "$(g procp)"
+	check "the u-area reports our uid"         "1" "$(g uid)"
+	check "...our real uid"                    "1" "$(g ruid)"
+	check "...our command name"                "gu" "$(g comm)"
+	check "...a start time in the past"        "1" "$(g start)"
+	check "...cpu times that are not negative" "1" "$(g times)"
+	# The one field that is a behavioural choice rather than a measurement.
+	check "u_ssize is NSTACK's worth, so getargs reads once" "1" "$(g nstack)"
+	check "...the stack address is seekable"   "1" "$(g staddr)"
+	check "...and the stack read comes up short, as getargs needs" \
+		"1" "$(g stack)"
+	check "one byte below UBASE is EOF, not a negative index" "1" "$(g below)"
+	check "...the last byte of the u-area is readable"  "1" "$(g last)"
+	check "...and the byte after it is not"             "1" "$(g past)"
+	check "the file's size is the image plus the u-area" "1" "$(g fstat)"
+else bad "u-area probe build" "$(head -3 "$TMP/gu.log")"; fi
+
 # THE NEGATIVE HALF, and it is the one that says the boundary is real.  /proc
 # lives in libkmemu because it answers from libproc; a binary WITHOUT libkmemu
 # gets noprocfs.c's null, no mount claims the path, and it falls through to the
