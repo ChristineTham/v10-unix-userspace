@@ -363,11 +363,14 @@ prnow(void)
  * when the host declined to say.  That is the privilege boundary macOS actually
  * enforces, reported rather than papered over.
  *
- * The deprecated route was checked and is not needed.  sysctl KERN_PROC_ALL
- * returns a struct kinfo_proc for all 618 in one call, with nice and start time
- * included -- but it is deprecated in favour of exactly the libproc calls
- * above, and those turn out to answer.  Recorded so the next reader does not
- * have to re-measure it.
+ * The deprecated route was checked, and the conclusion has since been half
+ * refuted.  sysctl KERN_PROC_ALL returns a struct kinfo_proc for all 618 in one
+ * call, with nice and start time included -- deprecated in favour of exactly
+ * the libproc calls above, and those looked sufficient.  They are, for identity
+ * and state, everywhere.  For NICE they are not: on a GitHub macos-14 runner
+ * pbi_nice does not track renice while sysctl does, measured twice.  So the ps
+ * N column can be wrong on such a host; src/cmd/ps/PORTING.md records it, and
+ * moving that one field to sysctl means carrying both interfaces.
  */
 struct prinfo {
 	struct proc_bsdshortinfo si;	/* always */

@@ -92,6 +92,32 @@ up short and `getargs` always takes the fallback.
 stack image exists this becomes a failing test rather than a silent wrong
 answer.
 
+## `pbi_nice` does not track `renice` on every host
+
+Measured on a GitHub `macos-14` runner, twice, in different runs:
+
+- `ps -o nice=` reported a `nice -n 10` child ten nicer than its parent while
+  `proc_pidinfo(PROC_PIDTBSDINFO)` reported **the same `pbi_nice` for both**.
+- On another run `pbi_nice` implied −10 for a child `ps` called 0.
+
+`ps(1)` reads `sysctl kern.proc`; the shim reads `proc_pidinfo`. On the
+development Mac the two agree exactly; on that runner they do not — so the `N`
+column can be absent for a genuinely renice'd process there, and `-l`'s nice
+can be wrong.
+
+Not fixed, and the reason is that the fix is a *choice* rather than a
+correction. `sysctl kern.proc` is the interface that demonstrably tracks, and
+it is also the deprecated `struct kinfo_proc` that `shim/libkmemu/procfs.c`
+checked and set aside on the grounds that libproc could answer. That note is
+now half wrong: libproc answers identity and state reliably everywhere, and
+**nice only on some hosts**. Moving the one field means carrying both
+interfaces, which is worth doing only if the `N` column matters more than the
+simplicity does.
+
+`tests/kmemu` reports "not exercised" with both numbers when it observes the
+disagreement, rather than asserting through it, and still fails on the two
+mutations that matter wherever the interfaces agree.
+
 ## Lower-priority width issues, measured and left
 
 - **`fdprint.c:34,62`** print an `off_t` and an inode number with `%d`. Wrong
