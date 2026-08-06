@@ -135,6 +135,15 @@ driver execs `clang` for assembly and linking. This is a decision, not a gap —
 do not "fix" it. Everything else is ported rather than passed through; host
 passthrough is meant to be the exception, not the rule.
 
+**The prose list and `hosttools[]` are not the same list, deliberately.**
+`sanctioned()` in `shim/v8sys/syscall.c` permits only what something actually
+execs — for a long time that was `/usr/bin/clang` alone, on the reasoning that
+`cc` reaches the rest through it. `as` joined it when `sh`'s `:fix` invoked the
+assembler by name, which is the first thing in this port to do so. `nm` is still
+absent and `tests/jail` asserts it is *refused*, so the array cannot quietly
+drift into "everything the prose mentions". Same shape as `v8s_mknod` passing
+its path unresolved: **an unexercised rule cannot be seen to be incomplete.**
+
 **`shim/libkmemu/` may link host libc** — the one component that may, and it is
 built: `who` runs, with **no changes to `who.c` at all**, because the shim
 manufactures `/etc/utmp` when a reader opens it rather than giving the program a
@@ -198,7 +207,7 @@ the documented as/ld exception. The makefile is plain 1985 make — no pattern
 rules, no automatic variables past `$@`. The result compiles real source, the
 build settles, and a second build from clean generates identical code.
 
-**Rung 5 is demonstrated on thirteen programs, chosen for their makefile idioms
+**Rung 5 is demonstrated on seventeen programs, chosen for their makefile idioms
 rather than their size**: `lex` (dependency line on `#include`d non-headers),
 `sed` (target, prerequisites and recipe on one line; `*.o` glob), `fmt` (macro
 expansion), `tsort` (`.SUFFIXES` and a `.c.o` suffix rule, no explicit object
@@ -208,8 +217,10 @@ rules), `tbl` (`t?.o` glob, three flags at once, a 22-target dependency line on
 regenerates the word lists), `man` (the minimal case, one rule), `troff`
 (**22 objects**, the largest — scale is its own idiom), `refer` (four programs
 and an `#include`d non-header), `ps` (V8 make's `&`, which nothing else here
-uses), and `load` and `w` (two lines each, and grovelers — see below).
-V8's make handled every one unchanged.
+uses), `load` and `w` (two lines each, and grovelers — see below), `make`
+(**V8's make building V8's make from V8's makefile** — the only entry that
+closes a loop), `eqn` (whose target is `a.out`, not its own name), and `pic` and
+`grap` (`-lm`). V8's make handled every one unchanged.
 
 Three things came out of that which our own rules could not have surfaced.
 `sed` found a *driver* gap — `-n`, the VAX shared-text flag, now accepted and
@@ -228,30 +239,60 @@ which this port invented, so what rung 5 builds is a real program that cannot
 answer — `w` says `No mem`. Rung 5 is a claim about the build *description*
 being Bell Labs', not about the binary being the installed one.
 
-**Where rung 5 stops, and it is a real line rather than a to-do.** A makefile
-that names the target machine cannot be used unchanged. `src/cmd/cpp/Makefile`
-opens `CFLAGS=-O -Dunix=1 -Dvax=1 ...`, and `cpp.c` tests `vax` in three
-places, so running it as written would build a VAX preprocessor. It is the only
-one in the tree that does (`grep -l 'Dvax' src/cmd/*/[Mm]akefile`). PLAN.md §4a
-already says program builds move onto their own makefiles "minimally adapted,
-with every deviation recorded" — this is what that clause is for, and the
-adaptation is one flag. Do not let a green rung-5 test tempt you into pretending
-such a makefile ran unmodified.
+**FOUR OF THE SEVEN "BLOCKERS" WERE WRONG, AND TWO WERE BUGS IN THE SWEEP.**
+The table that stood here named a blocker per program; re-measured, most of it
+was false, and the errors have one shape — **something described as *generated*
+or *missing* that was sitting in the tree, unread.** `make` was blocked on
+"generated `ident.c`": `ident.c` is checked in, and the real cause was the
+sweep not copying `defs`, an `#include`d non-header. `eqn` was blocked on "a
+link failure": its target is `a.out`, and asking for `eqn` fell through to a
+built-in rule that linked one object. Both build now, unchanged. Before
+recording a program as blocked, run its makefile and read the error — a wrong
+target and a missing input both produce output that reads like a port bug.
 
-**The seven still off their own makefiles are each blocked on one nameable
-thing, and none of it is the makefile**: `cpp` on `-Dvax=1` and a `:yyfix`
-helper, `sh` on a generated `msg.o`, `make` on a generated `ident.c`, `df` on
-`libkmemu`, `pic`/`grap` on `_errno` and a `libm` this port has never built,
-`eqn` on a link failure after `cc -g`. Two categories wanting different answers:
-a generated source is a build-description question the sweep should grow to
-handle, a library upstream never had is not. PLAN.md §4a has the table.
+**`-lm` was the real one, and the answer was inside the archive.** Eleven
+upstream makefiles link `-lm`, which reads as a claim that V8 had a math
+library. `v8/usr/lib/libm.a` is **216 bytes**: one member, `dummy.o`, whose
+entire symbol table is `_________`. It defines nothing — V8's math is in
+`libc/math`, so `-lm` there linked an empty archive. Our driver handed the flag
+to clang, which answered with the SDK's libm, a **libSystem re-export ahead of
+`libv8c`**, and `_errno` resolved to an indirect symbol with no address. Behind
+the specific bug was a general one: **every `-l` escaped to the host SDK.**
+`libpath()` in `src/cmd/cc.c` resolves `-lNAME` against
+`$V8ROOT/usr/lib/libNAME.a` first, by the same union rule `rootpath()` uses;
+`shim/libm/dummy.c` reproduces the stub so the driver needs no special case.
+
+**Where rung 5 genuinely stops: 1985 wanted its data in read-only text.** A
+build description that names the target machine cannot be used unchanged, and
+there are **two ways it can do that** — a flag and a helper. `src/cmd/cpp/Makefile`
+opens `CFLAGS=-O -Dunix=1 -Dvax=1 ...`, and `cpp.c` tests `vax` in three places,
+so running it as written builds a VAX preprocessor; it is the only makefile in
+the tree that does (`grep -l 'Dvax' src/cmd/*/[Mm]akefile`). But `cpp` *also*
+runs `:yyfix`, which lifts the yacc tables into `rodata.c` for `cc -R` — and
+V8's driver passes `-R` straight to `as`. `sh` runs `:fix`, which compiles to
+assembly, rewrites `.data` to `.text` with `ed`, and reassembles. **Those are
+the same optimisation**: put initialised data in shared read-only text, which a
+VAX gave and an arm64 Mach-O structurally cannot. `msg.c`'s `commands[]` is a
+table of pointers, an initialised pointer in `__TEXT` is a text relocation, and
+`-no_pie` is *ignored for arm64* — so it is not a flag away from working.
+`tests/jail` asserts that boundary rather than leaving `sh` unmentioned. Do not
+let a green rung-5 test tempt you into pretending such a build ran unmodified.
+
+**`df` is the third stop and the instructive one: OUR source change broke a
+makefile that was fine.** It is grouped with `load` and `w` as "blocked on
+`libkmemu`", and that flattens the distinction those two exist to make. `load`
+and `w` are unmodified, so upstream's makefiles link them and the result is a
+real program that cannot answer (`No mem`). `df.c` was changed *by this port*
+to call `kmemu_fsstat` — 0 occurrences upstream — so the link fails outright.
+PLAN.md §4a has all three.
 
 `tests/jail` builds `lex` from `src/cmd/lex/Makefile`
 — upstream V8, unmodified — with V8's make, cc and yacc, in a directory holding
 nothing but V8 sources, under `V8JAIL=strict`. That makefile is the one worth
 proving: its line 11 declares `lmain.o: lmain.c ldefs.c once.c`, the dependency
-whose absence caused this port's worst bug. Moving the remaining programs onto
-their own makefiles is mechanical from here; the pattern and the guard exist.
+whose absence caused this port's worst bug. What is left is three programs and
+none of them is mechanical: two are the shared-text stop above, and `df` needs
+its numbers to come from `/dev/kmem` rather than from a call this port added.
 
 **Phase 6 is done.** `make install PREFIX=... BINDIR_HOST=...` (defaults
 `/usr/local/v8` and `/usr/local/bin`) rebuilds with the prefix stamped into
@@ -346,8 +387,12 @@ other so that fixing one alone changed nothing observable:
   leak on the grounds that it was "non-variadic, so it works" — **that argument
   is about the shape of the call and is only as good as the register classes
   agreeing.** Fixed by building V8's own math, which is in `libc/math` and not
-  in any libm: there is no libm in V8's tree, so "port libm" was the wrong
-  question. The allowed-leak list is now empty.
+  in any libm, so "port libm" was the wrong question. The allowed-leak list is
+  now empty. **`v8/usr/lib/libm.a` does exist — and inspecting it is what
+  settled the question.** It is 216 bytes: one member, `dummy.o`, 62 bytes,
+  whose entire symbol table is the name `_________`. It defines nothing.
+  `shim/libm/dummy.c` reproduces it, because eleven upstream makefiles link
+  `-lm` and the honest answer to them is the empty archive V8 actually shipped.
 
 Together these meant `pic` never computed a correct radius and every drawing it
 or `grap` produced here was geometrically wrong. `tests/wavec` missed it twice
@@ -494,12 +539,14 @@ that says about `tests/freestanding`: it links its own small programs, so it
 proved the shim was clean and never the world built on it. **A guard on a seam is
 not a guard on what crosses it.**
 
-Every remaining import is on `tests/kmemu`'s allowed list, named with its reason,
-and the suite fails if an entry goes stale. Today that is libm alone, for
-`pic`/`grap` (V8 shipped one; this port has never built one). `sleep` was the
-other entry until signal delivery worked, and the staleness check is what took
-it off: V8's own `sleep.c` built, nothing imported the host's any more, and the
-suite failed until the entry was deleted.
+`tests/kmemu`'s allowed list names each remaining import with its reason, and the
+suite fails if an entry goes stale. **It is empty** — `ALLOWED=""` — and getting
+there took two deletions, both forced by the staleness check rather than
+noticed. `sleep` came off when signal delivery worked and V8's own `sleep.c`
+built. `libm` came off when V8's math went into `libv8c`; it had been excused on
+the grounds that it was "non-variadic, so it works", and it was in fact
+returning wrong answers the whole time. **An entry on that list is a claim, and
+the staleness check is the only thing that has ever audited one.**
 
 **The struct a syscall takes is not always the struct libc takes.** For four
 months no V8 program in this port could catch a signal, because `v8s_signal`

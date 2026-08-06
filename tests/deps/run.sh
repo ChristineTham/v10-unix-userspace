@@ -202,6 +202,14 @@ dep 'ncform -> rootfs copy'    src/cmd/lex/ncform              rootfs/usr/lib/le
 dep '/etc/group -> rootfs'     src/v8/etc/group                rootfs/etc/group
 dep '/etc/ttys -> rootfs'      src/v8/etc/ttys                 rootfs/etc/ttys
 
+# libm, which is a stub because V8's was one -- shim/libm/dummy.c has the
+# account.  It is in the graph rather than made once and forgotten because the
+# driver now RESOLVES -l against the rootfs (libpath() in src/cmd/cc.c): if this
+# archive goes missing, -lm silently reaches the macOS SDK again, and the way
+# that failed was a link error naming _errno and neither libm nor the jail.
+dep 'libm stub -> object'      shim/libm/dummy.c               $B/libm/dummy.o
+dep 'libm object -> archive'   $B/libm/dummy.o                 rootfs/usr/lib/libm.a
+
 # --- /bin: the jail's contents must track the shim --------------------------
 # These are the rules that had no library dependency at all.  Editing the shim
 # left every /bin binary stale, which is worse than usual: the jail is what the

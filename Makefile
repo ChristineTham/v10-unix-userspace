@@ -109,7 +109,8 @@ LEX  := $(BUILD)/lex/lex
 # expanded to `/v8ccom` and `make test` failed with "No rule to make target".
 A64BUILD    := $(BUILD)/ccom-arm64
 ROOTFS_LIBS := $(ROOTFS)/lib/crt0.o $(ROOTFS)/lib/libv8c.a \
-               $(ROOTFS)/lib/libv8stubs.a $(ROOTFS)/lib/libv8sys.a
+               $(ROOTFS)/lib/libv8stubs.a $(ROOTFS)/lib/libv8sys.a \
+               $(ROOTFS)/usr/lib/libm.a
 
 # The V8 link line, hoisted for the same reason and after the same bug bit a
 # THIRD time.  V8DEPS was defined beside the pic rules, and the /bin and make
@@ -1567,6 +1568,19 @@ $(ROOTFS)/lib/libv8stubs.a: $(BUILD)/v8sys/libv8stubs.a
 	@mkdir -p $(@D) && cp $< $@
 $(ROOTFS)/lib/libv8sys.a: $(BUILD)/v8sys/libv8sys.a
 	@mkdir -p $(@D) && cp $< $@
+
+# libm, and it is a stub because V8's was one.  See shim/libm/dummy.c: upstream's
+# libm.a holds a single 62-byte object defining nothing, because the math is in
+# libc.  Built with the HOST compiler, like crt0's neighbours in spirit -- there
+# is no code in it to be authentic about, and making it a v8cc target would put
+# a chicken-and-egg between the driver's -l resolution and the library it
+# resolves to.
+$(BUILD)/libm/dummy.o: shim/libm/dummy.c
+	@mkdir -p $(@D)
+	@$(HOSTCC) -fcommon -c -o $@ $<
+$(ROOTFS)/usr/lib/libm.a: $(BUILD)/libm/dummy.o
+	@mkdir -p $(@D)
+	@rm -f $@ && ar rc $@ $< && ranlib $@
 
 # troff's device tables.  makedev compiles the plain-text description in
 # dev202/ into the binary DESC.out and per-font .out files troff opens at

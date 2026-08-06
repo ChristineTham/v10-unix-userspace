@@ -52,7 +52,7 @@ char	*libsys_a   = "/lib/libv8sys.a";
 char	tmp0[30];		/* big enough for /tmp/ctm%05.5d */
 char	*tmp1, *tmp2, *tmp3, *tmp4, *tmp5;
 char	*outfile;
-char	*savestr(), *strspl(), *setsuf();
+char	*savestr(), *strspl(), *setsuf(), *libpath();
 void	idexit();
 char	**av, **clist, **llist, **plist;
 int	cflag, eflag, gflag, oflag, pflag, sflag, wflag, Rflag, exflag, proflag;
@@ -112,6 +112,49 @@ setpaths()
 	incdir     = strspl("-I", strspl(r, "/usr/include"));
 }
 
+/*
+ * -lNAME.  On a real V8 system /usr/lib IS the system's, so cc could hand the
+ * flag to ld and be done.  Here it cannot: clang resolves -l against the macOS
+ * SDK, so every -l was a hole in the jail, and one of them was load-bearing.
+ *
+ * `-lm' is the case that found this.  pic and grap and nine other upstream
+ * makefiles ask for it, and clang answered with the SDK's libm -- a libSystem
+ * re-export, placed BEFORE libv8c on the link line.  _errno then resolved to
+ * libSystem's, which is an indirect symbol with no address, and the link died
+ * on `fixup error (kind=arm64_adrp_lo12) ... target '_errno' does not have
+ * address' -- a message that names neither libm nor the jail.
+ *
+ * What V8 actually shipped settles what to do about it, and it is not what the
+ * makefiles suggest: v8/usr/lib/libm.a is 216 bytes holding one 62-byte member,
+ * dummy.o, whose only symbol is `_________'.  It defines no math whatsoever.
+ * V8's math is in libc/math and is linked into libv8c here, so -lm on V8 links
+ * an empty archive and always did.  Reproducing that is fidelity, not a
+ * workaround; rootfs/usr/lib/libm.a is the same empty stub.
+ *
+ * The fall-through is deliberate and is the union rule rootpath() already uses:
+ * a rootfs copy wins, and absent one the host answers, so a partly-ported tree
+ * still builds.  It is reported under V8JAIL rather than being silent, because
+ * a gap filled quietly by the host is the shape of bug this port has paid for
+ * three times over.
+ */
+char *
+libpath(name)
+	char *name;
+{
+	char *p, *j, *getenv();
+
+	if (v8root != 0 && *v8root != '\0') {
+		p = strspl(v8root, strspl("/usr/lib/lib", strspl(name, ".a")));
+		if (access(p, 4) == 0)
+			return (p);
+	}
+	if ((j = getenv("V8JAIL")) != 0 && *j != '\0')
+		fprintf(stderr,
+		    "cc: -l%s is not in the rootfs; the host answers%s\n",
+		    name, j[0] == 's' ? " (V8JAIL=strict does not cover -l)" : "");
+	return (strspl("-l", name));
+}
+
 main(argc, argv)
 	char **argv;
 {
@@ -145,7 +188,7 @@ main(argc, argv)
 		cflag++;
 		continue;
 	case 'l':
-		llist[nl++] = strspl("-l", optarg);
+		llist[nl++] = libpath(optarg);
 		continue;
 	case 'o':
 		outfile = optarg;

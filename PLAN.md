@@ -191,9 +191,11 @@ dependency knowledge was in the tree the whole time, in files the build
 ignored. Program builds move onto their own makefiles, minimally adapted, with
 every deviation recorded in that program's `PORTING.md`.
 
-**Thirteen of twenty are on their own makefiles**, in `tests/jail`'s rung-5
+**Seventeen of twenty are on their own makefiles**, in `tests/jail`'s rung-5
 sweep: `lex`, `sed`, `fmt`, `tsort`, `tbl`, `yacc`, `spell`, `man`, `troff`,
-`refer`, `ps`, `load`, `w`. All unmodified, all under `V8JAIL=strict`.
+`refer`, `ps`, `load`, `w`, `make`, `eqn`, `pic`, `grap`. All unmodified, all
+under `V8JAIL=strict`. `make` is the one that closes a loop: V8's make building
+V8's make from V8's makefile.
 
 The sweep pays for itself in findings rather than in coverage. `sed` exposed a
 driver gap (`-n`); `tbl` and `yacc` proved V8's make gets the
@@ -202,25 +204,67 @@ driver gap (`-n`); `tbl` and `yacc` proved V8's make gets the
 which in turn exposed `v8s_mknod` passing its path unresolved, the last hole
 left by the creation fix.
 
-**The remaining seven are each blocked on one nameable thing**, measured rather
-than assumed, and none of them is the makefile:
+### The seven "blockers" were four wrong answers and three real ones
 
-| program | blocker |
+The table that used to sit here named a blocker per program. Re-measured, four
+of the seven entries were false, and two of those were bugs in the **sweep**
+rather than in the port. Recorded in full because the error has a shape: every
+wrong entry described something as *generated* or *missing* that was sitting in
+the tree, unread.
+
+| program | recorded blocker | what was actually true |
+|---|---|---|
+| `make` | "`ident.c` — generated" | `ident.c` is checked in — a version string and a changelog comment. `$(OBJECTS): defs` names another `#include`d non-header, and the **sweep did not copy it**, so make said `Don't know how to make defs`. Copies it now; builds. |
+| `eqn` | "link fails after `cc -g`" | Upstream declares no target named `eqn`; the target is **`a.out`**. Asked for the wrong one, make fell through to its built-in `.c`→executable rule, linked `eqn.o` alone and failed on every symbol in the other 21 objects — which reads exactly like a broken link. Builds. |
+| `pic`, `grap` | "`_errno`; want a `libm` this port never built" | Real, and the diagnosis was inverted — see below. Both build. |
+| `sh` | "`msg.o` — a generated source" | `msg.c` is checked in. The makefile runs `:fix msg`, a **VAX shared-text helper**, and that is a genuine stop — see below. |
+| `cpp` | `-Dvax=1`, plus `:yyfix` | Genuine, and `:yyfix` turns out to be the *same* stop as `sh`'s. |
+| `df` | "`libkmemu`, which upstream never had" | Genuine, but not the same failure as `load` and `w`. `src/cmd/df/PORTING.md`. |
+
+**`-lm` was the interesting one, because the answer was in the archive.** Eleven
+upstream makefiles link `-lm`, which reads as a claim that V8 had a math
+library. `v8/usr/lib/libm.a` is **216 bytes**: one member, `dummy.o`, 62 bytes,
+whose entire symbol table is the name `_________`. It defines nothing. V8's math
+is in `libc/math` — which this port now links into `libv8c` — so `-lm` on V8
+resolved to an empty archive and always had. Our driver was handing the flag to
+clang, which answered with the macOS SDK's libm, a **libSystem re-export placed
+ahead of `libv8c` on the link line**; `_errno` then resolved to an indirect
+symbol with no address and ld died on
+`fixup error (kind=arm64_adrp_lo12) ... target '_errno' does not have address`
+— a message naming neither libm nor the jail.
+
+That exposed the general hole behind the specific one: **every `-l` escaped to
+the host SDK, unchecked.** `libpath()` in `src/cmd/cc.c` now resolves `-lNAME`
+against `$V8ROOT/usr/lib/libNAME.a` first — the same union rule `rootpath()`
+uses, reported under `V8JAIL` when it falls through — and `shim/libm/dummy.c`
+reproduces V8's stub, so the fix stays a general rule about where libraries live
+instead of a flag the driver knows by name.
+
+### Where rung 5 genuinely stops: 1985 wanted its data in read-only text
+
+The three that remain are not three problems. Two are one problem, and it is
+the target refusing rather than the port lacking.
+
+| program | the stop |
 |---|---|
-| `cpp` | `-Dvax=1` in `CFLAGS`, plus a `:yyfix` helper whose name matches no glob |
-| `sh` | `msg.o` — a generated source |
-| `make` | `ident.c` — likewise generated |
-| `df` | undefined symbols: `libkmemu`, which upstream never had |
-| `pic`, `grap` | link fails on `_errno`; both also want a `libm` this port has never built |
-| `eqn` | link fails after `cc -g` |
+| `sh` | `:fix` compiles to assembly, rewrites `.data` to `.text` with `ed`, reassembles. `msg.c` holds `struct sysnod commands[]` — a table of **pointers** — and an initialised pointer in `__TEXT` is a text relocation. `-no_pie` is **ignored for arm64**, so it can never be resolved statically the way a.out resolved it at link time. `:fix ctype` works; `:fix msg` cannot, here, ever. |
+| `cpp` | `CFLAGS=-O -Dunix=1 -Dvax=1 ...`, and `cpp.c` tests `vax` in three places — running it as written builds a VAX preprocessor. Plus `:yyfix`, which lifts the yacc tables into `rodata.c` and compiles it with `cc -R`; V8's driver passes `-R` straight to `as`. **The same optimisation as `:fix`, by a different mechanism.** |
+| `df` | This port modified `df.c` to call `kmemu_fsstat` (0 occurrences upstream), so the link fails. Unlike `load` and `w`, whose source is untouched and whose makefiles therefore work — they build a real program that says `No mem`. A **source** change of ours broke a makefile that was adequate. |
 
-Two categories, and they want different answers. A **generated source** or a
-colon-prefixed helper is a build-description question and the sweep should grow
-to handle it. A **library upstream never had** is not: `load` and `w` are in the
-sweep precisely to make that distinction visible — rung 5 builds a real program
-from Bell Labs' description that cannot answer, because the answer needs
-`libkmemu`. Rung 5 is a claim about the description, not about the binary being
-the installed one.
+So the boundary is principled rather than a to-do list: rung 5 stops where the
+build *description* names the target machine, and there are two ways it can do
+that — a flag (`cpp`) and a helper (`sh`, `cpp` again). Both are asking for
+shared read-only text, which a VAX gave and an arm64 Mach-O structurally cannot.
+`tests/jail` asserts the boundary: the rewrite happens, the result assembles,
+and the link then fails on a text relocation. Making that link succeed would be
+a real change in what this port can claim, and it has to come past a failing
+test to say so.
+
+`df` is the odd one and the useful one: it shows that a source change made for
+this port can break the rung-5 claim for a program whose makefile was fine all
+along. Closing it means giving `df` its numbers through `/dev/kmem` and a
+namelist, as `load` and `w` already get theirs — the same `/dev/mem` question
+`src/cmd/w/PORTING.md` leaves open, and answering it once answers both.
 
 ## 4d. Shell scripts run inside the jail — CLOSED
 

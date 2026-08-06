@@ -285,6 +285,79 @@ case "$warnout" in
 *) pass=$((pass+1)) ;;
 esac
 
+# --- as(1) IS sanctioned, and only because an authentic makefile reaches it --
+# PLAN.md S1 has sanctioned as/ld/ar/strip/nm from the start, but hosttools[]
+# in shim/v8sys/syscall.c named only clang, on the reasoning that cc(1) reaches
+# the rest THROUGH clang.  That held for every recipe this port had run, and
+# stopped holding when sh's `:fix' -- an upstream build helper -- invoked $AS
+# by name.  The same shape as v8s_mknod passing its path unresolved: a rule
+# nothing exercises cannot be seen to be incomplete.
+#
+# Both directions, because the value of an exception list is that it excludes.
+cat > jas.c <<'EOF'
+main(c, v) char **v; { execl("/usr/bin/as", "as", "--version", 0); _exit(3); }
+EOF
+cat > jnm.c <<'EOF'
+main(c, v) char **v; { execl("/usr/bin/nm", "nm", "--version", 0); _exit(3); }
+EOF
+"$V8ROOT"/bin/cc -o jas jas.c 2>/dev/null
+"$V8ROOT"/bin/cc -o jnm jnm.c 2>/dev/null
+asout=$( V8JAIL=strict ./jas 2>&1 >/dev/null )
+case "$asout" in
+*"leaves the jail"*) fail=$((fail+1)); echo "FAIL as refused under strict: $asout" ;;
+*) pass=$((pass+1)) ;;
+esac
+# nm is on PLAN's prose list but NOT in hosttools[], because nothing execs it.
+# Asserting the refusal keeps the array honest about what it actually permits:
+# if a later change adds nm, this case says so rather than letting the list
+# drift into "everything the prose mentions".
+nmout=$( V8JAIL=strict ./jnm 2>&1 >/dev/null )
+case "$nmout" in
+*"leaves the jail"*) pass=$((pass+1)) ;;
+*) fail=$((fail+1)); echo "FAIL nm is not in hosttools[] but was permitted" ;;
+esac
+
+# --- WHERE :fix STOPS, and it is arm64 that stops it ------------------------
+# sh's makefile runs `:fix msg' and `:fix ctype'.  Both compile to assembly and
+# rewrite .data to .text so the tables land in shared read-only text -- the VAX
+# optimisation.  ctype.c is a character table and relocates nothing, so it
+# assembles and links.  msg.c holds `struct sysnod commands[]', a table of
+# pointers; an initialised pointer in __TEXT is a text relocation, and arm64
+# executables are position-independent by force (`-no_pie ignored for arm64'),
+# so it can never be resolved at link time the way a.out resolved it.
+#
+# Asserting the boundary rather than leaving sh unmentioned: if a future change
+# makes this link, that is a real change in what the port can claim, and it
+# should have to come past a failing test to say so.
+mkdir -p fixp && cp "$ROOT"/src/cmd/sh/msg.c "$ROOT"/src/cmd/sh/*.h fixp/ 2>/dev/null
+( cd fixp && "$V8ROOT"/bin/cc -S -c msg.c ) 2>/dev/null
+( cd fixp && "$V8ROOT"/bin/ed - msg.s >/dev/null 2>&1 <<'EOF'
+g/^[ 	]*\.data/s/data/text/
+w
+q
+EOF
+)
+ck ":fix's ed rewrite moves sh's tables into text" yes \
+   "$(grep -q '^	\.text' fixp/msg.s 2>/dev/null && echo yes || echo no)"
+( cd fixp && as -o msg.o msg.s ) 2>/dev/null
+ck "the rewritten assembly still assembles" yes \
+   "$([ -f fixp/msg.o ] && echo yes || echo no)"
+# A real link, not a bare one: ld reports undefined symbols and stops before it
+# ever looks at relocations, so linking msg.o alone fails for the wrong reason
+# and the case would pass on a machine where the rewrite worked fine.
+echo 'main(){ return 0; }' > fixp/mstub.c
+( cd fixp && "$V8ROOT"/bin/cc -c mstub.c ) 2>/dev/null
+relout=$( clang -nostdlib -e _v8start -o fixp/msgx "$V8ROOT"/lib/crt0.o \
+          fixp/msg.o fixp/mstub.o "$V8ROOT"/lib/libv8c.a \
+          "$V8ROOT"/lib/libv8stubs.a "$V8ROOT"/lib/libv8sys.a -lSystem 2>&1 )
+case "$relout" in
+*text-reloc*) pass=$((pass+1)) ;;
+*) fail=$((fail+1))
+   echo "FAIL sh's pointer table linked in __TEXT -- arm64 PIE rule changed?"
+   echo "  got [$relout]" ;;
+esac
+rm -rf jas.c jnm.c jas jnm fixp
+
 # --- RUNG 4: V8 make rebuilds the C compiler, inside the jail ---------------
 # The ladder's whole point, and the first time every part of it is V8's at once:
 # V8's make reads the makefile, V8's sh runs the recipes, V8's cc drives V8's
@@ -491,12 +564,19 @@ esac
 #	        was in the tree all along.
 #	yacc    $(CC) rather than a literal, a y?.o glob, and the same shape of
 #	        dependency on dextern and files.
-#	sh is NOT here, and got two real fixes into the tree on its way out.
-#	Its makefile needs `-g` (which ccom rejects; the driver now drops it)
-#	and runs `sh ./:fix ctype` (a helper whose name matches no glob).  With
-#	both handled it gets as far as the link and wants an msg.o this sweep
-#	does not produce -- a generated source, which is more setup than a
-#	sweep should carry.  Worth doing properly; see PLAN.md S4a.
+#	sh is NOT here, and the reason is architectural rather than clerical.
+#	It was recorded for a while as wanting "a generated source, msg.o",
+#	which was simply wrong -- msg.c is checked in.  What the makefile does
+#	with it is run `sh ./:fix msg', and :fix is a VAX SHARED-TEXT helper:
+#	compile to assembly, rewrite .data to .text with ed, reassemble, so
+#	every shell process maps one copy of the tables.  msg.c holds
+#	`struct sysnod commands[]', a table of POINTERS, and an initialised
+#	pointer in __TEXT needs a load-time fixup -- a text relocation, which
+#	ld refuses.  Nor can it be waived: -no_pie is IGNORED for arm64, so
+#	position independence is mandatory and the fixup can never be resolved
+#	statically the way a.out resolved it at link time.  :fix ctype works
+#	(a char table relocates nothing); :fix msg cannot, here, ever.
+#	So sh sits with cpp in the category below, not in this sweep.
 #	spell   FOUR programs from one makefile, and `spellprog` rather than
 #	        `all`, because all regenerates the word lists from the american
 #	        and british dictionaries -- a different claim, and a slow one.
@@ -516,17 +596,40 @@ esac
 #	        DESCRIPTION being Bell Labs', not about the binary being the
 #	        installed one, and these two are where that distinction is
 #	        visible rather than academic.
+#	make    V8 make building ITSELF from its own makefile, which is the
+#	        only entry here that closes a loop.  Its dependency statement
+#	        is `$(OBJECTS): defs' -- defs being another #included
+#	        non-header -- and for a while this sweep did not copy it, so
+#	        make died on "Don't know how to make defs" and the blocker was
+#	        recorded as a generated ident.c.  ident.c is checked in and
+#	        always was.  The sweep was the bug, not the port.
+#	eqn     builds `a.out', not `eqn'; upstream's makefile declares no
+#	        target of its own name.  Asked for the wrong one, make fell
+#	        through to the built-in .c -> executable rule, linked eqn.o
+#	        alone and failed on every symbol in the other 21 objects --
+#	        which read exactly like a broken link and was a wrong question.
+#	pic     -lm, and the whole reason it now works: see shim/libm/dummy.c.
+#	grap    Upstream's libm.a is a 216-byte archive holding one 62-byte
+#	        object that defines nothing, because V8's math is in libc. The
+#	        driver used to hand -lm to clang, which answered with the SDK's
+#	        libm -- a libSystem re-export ahead of libv8c on the link line
+#	        -- and _errno resolved to an indirect symbol with no address.
 for spec in "sed sed" "fmt fmt" "tsort tsort" "tbl tbl" "yacc yacc" \
             "spell spellprog" "man man" "troff troff" "refer refer" \
-            "ps ps" "load load" "w w"; do
+            "ps ps" "load load" "w w" \
+            "make make" "eqn a.out" "pic pic" "grap grap"; do
 	set -- $spec
 	prog=$1 target=$2
 	d=r5_$prog
 	mkdir -p $d
 	cp "$ROOT"/src/cmd/$prog/*.c "$ROOT"/src/cmd/$prog/*.h "$d"/ 2>/dev/null
+	# grammars and lexers: make, eqn, pic and grap each generate a .c the
+	# makefile never mentions, through V8 make's built-in .y and .l rules.
+	cp "$ROOT"/src/cmd/$prog/*.y "$ROOT"/src/cmd/$prog/*.l "$d"/ 2>/dev/null
 	# the #included non-headers, which are not *.c and not *.h
 	cp "$ROOT"/src/cmd/$prog/t..c "$ROOT"/src/cmd/$prog/dextern \
 	   "$ROOT"/src/cmd/$prog/files "$ROOT"/src/cmd/$prog/refer..c \
+	   "$ROOT"/src/cmd/$prog/defs \
 	   "$d"/ 2>/dev/null
 	# sh's makefile runs `sh ./:fix ctype`.  A build helper whose name
 	# begins with a colon matches no glob at all -- the same invisibility

@@ -177,3 +177,41 @@ point in mtab is a directory that exists, which is the invariant that broke.
   Same root cause as the row above — identification by device number — with the
   jail supplying the collision instead of APFS.
 - `df /some/path` with an explicit argument is untested.
+
+## Why df fails rung 5, and why it is not the same failure as load and w
+
+`df` is not in `tests/jail`'s rung-5 sweep. PLAN.md grouped it with `load` and
+`w` as "blocked on `libkmemu`, which upstream never had", and that description
+flattens a distinction worth keeping.
+
+`load` and `w` **are** in the sweep and **do** build. Their source is upstream's,
+unmodified; upstream's makefile links it; the result is a real program that
+cannot answer at runtime and says `No mem`. Rung 5 is a claim about the build
+*description* being Bell Labs', not about the binary being the installed one,
+and those two are where that distinction stops being academic.
+
+`df` fails earlier and for the opposite reason. **This port changed `df.c`** to
+call libkmemu directly:
+
+```c
+struct kmemu_fs { long blocks, bfree, files, ffree; };
+int kmemu_fsstat();
+...
+if (kmemu_fsstat(mp0, &kfs) < 0) {
+```
+
+`grep -c kmemu third_party/.../v8/usr/src/cmd/df/df.c` is **0**. The call is
+ours. So upstream's makefile is not insufficient — it is describing a program
+that no longer exists, and the link dies on an undefined `_kmemu_fsstat`.
+
+The distinction generalises, and it is the useful part: a **source** change made
+for this port can break the rung-5 claim for a program whose makefile was
+perfectly adequate. `load` and `w` kept the claim precisely because they were
+left alone and allowed to fail honestly at runtime instead.
+
+Which suggests what closing it would look like, and it is not a makefile change.
+`df` would have to get its numbers the way `load` and `w` do — through
+`/dev/kmem` and a namelist, which `shim/libkmemu/kmem.c` already manufactures —
+so that `df.c` goes back to being upstream's. That is the same `/dev/mem`
+question `src/cmd/w/PORTING.md` leaves open for `w`'s full half, and answering
+it once would answer it for both.

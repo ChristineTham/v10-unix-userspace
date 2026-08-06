@@ -91,3 +91,76 @@ parent and 1 in the child — and the shim was reading only x0 through `rawsys0`
 Both processes carried on as the shell, neither execd, and the real parent
 waited forever. Fixed in `shim/v8sys/syscall.c`, which already had the same
 two-register handling for `pipe`.
+
+## Where rung 5 stops for sh, and it is arm64 that stops it
+
+`sh` is not in `tests/jail`'s rung-5 sweep, and the reason recorded here for a
+while was wrong. PLAN.md said the blocker was "`msg.o` — a generated source".
+`msg.c` is checked in, and always was. Nothing about it is generated.
+
+What upstream's makefile actually does with it is this:
+
+```
+msg.o:		msg.c $(FRC)
+			CC=$(CC) AS=$(AS) CFLAGS="$(CFLAGS)" sh ./:fix msg
+```
+
+and `:fix` — a build helper whose name begins with a colon, so it matches no
+glob and is invisible the way `t..c` and `dextern` are — is:
+
+```sh
+for i do
+	$CC $CFLAGS -S -c $i.c
+	ed - <<\! $i.s
+	g/^[ 	]*\.data/s/data/text/
+	w
+	q
+!
+	$AS -o $i.o $i.s
+done
+```
+
+Compile to assembly, **rewrite `.data` to `.text`**, reassemble. That is the
+VAX shared-text optimisation: the tables land in the read-only text segment, so
+every shell process on the machine maps one copy of them instead of getting a
+private writable page each. In 1985, with a shell per login, that was real
+memory.
+
+`ctype` works here. `msg` cannot, and the reason is structural rather than
+fixable:
+
+| file | what it holds | outcome |
+|---|---|---|
+| `ctype.c` | a character table — no relocations | assembles, links, runs |
+| `msg.c` | `struct sysnod commands[]`, a table of **pointers** | `ld: Found illegal text-relocations` |
+
+An initialised pointer in `__TEXT` needs its value written at load time, which
+is a text relocation. Mach-O refuses them, and the usual escape is not
+available: `-no_pie` is **ignored for arm64**, so position independence is
+mandatory and the address can never be resolved statically the way a.out
+resolved it at link time. This is not a flag away from working. It is the
+target saying no.
+
+So `sh` sits beside `cpp` in PLAN.md §4a's second category — programs whose own
+build *description* names the target machine — rather than in the sweep. That
+category had one member and looked like a curiosity about `-Dvax=1`; it has two
+now, and the shared property is sharper than the flag: **both are 1985 asking
+for initialised data in read-only text.** `cpp` asks with `:yyfix` and `cc -R`
+(which V8's driver passes through to `as -R`); `sh` asks with `ed`.
+
+`tests/jail` asserts the boundary rather than leaving it unmentioned: that the
+rewrite happens, that the result assembles, and that the link then fails on a
+text relocation. If a future change makes that link succeed, it is a real change
+in what this port can claim and it has to come past a failing test to say so.
+
+### What did come out of it
+
+`:fix` invokes `$AS` **by name**, and V8's make supplies `AS=as` from its
+built-in macros. That is the first thing in this port to exec the assembler
+without going through `cc`, and it found `hosttools[]` in
+`shim/v8sys/syscall.c` listing only `/usr/bin/clang` — while PLAN.md §1 has
+sanctioned `as`, `ld`, `ar`, `strip` and `nm` since the beginning. The array
+was not wrong so much as unexercised, the same shape as `v8s_mknod` passing its
+path unresolved because `mkdir(1)` had never been built. `as` is spelled there
+now, and `tests/jail` checks both directions: `as` permitted, `nm` — on the
+prose list, but still not execed by anything — refused.

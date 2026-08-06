@@ -591,11 +591,24 @@ injail(char *p)
 }
 
 /*
- * The exception list, spelled as the paths cc(1) actually execs.  Short on
- * purpose: every entry here is a hole in the jail.  tests/jail asserts that a
- * host tool which is NOT on this list is still refused under strict.
+ * The exception list.  Short on purpose: every entry here is a hole in the
+ * jail.  tests/jail asserts that a host tool which is NOT on this list is
+ * still refused under strict.
+ *
+ * PLAN.md S1 sanctions as, ld, ar, strip and nm.  For a long time only clang
+ * was spelled here, on the reasoning that cc(1) reaches all of them THROUGH
+ * clang, so clang was the only path anything actually execed.  That was true
+ * of every recipe this port had run, and it stopped being true the moment an
+ * authentic makefile ran a build helper of its own: sh's `:fix' compiles to
+ * assembly, rewrites .data to .text with ed -- the VAX shared-text trick, so
+ * every shell process maps one copy of the message tables -- and then invokes
+ * `$AS' by name.  V8's make supplies AS=as from its built-in macros.
+ *
+ * So the entry is not a new exception; it is the documented one, finally
+ * reachable.  The same shape as v8s_mknod passing its path unresolved: an
+ * unexercised rule cannot be seen to be incomplete.
  */
-static const char *hosttools[] = { "/usr/bin/clang", 0 };
+static const char *hosttools[] = { "/usr/bin/clang", "/usr/bin/as", 0 };
 
 static int
 sanctioned(char *p)
