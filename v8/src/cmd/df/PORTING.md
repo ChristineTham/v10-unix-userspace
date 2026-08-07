@@ -226,9 +226,36 @@ opens the *device* and reads block 1:
 `struct filsys` off the raw disk. So an unmodified `df` needs a **real V8
 filesystem image** behind `/dev/<spec>` with a valid superblock in block 1 —
 which is PLAN.md §8a **step 4** (mkfs and a raw image), not step 3's `/proc`
-and not libkmemu at all. `df`'s rung 5 is therefore blocked on a step that is
-already planned, rather than being its own piece of work, and it will close as a
-side effect of that step rather than needing anything of its own.
+and not libkmemu at all.
+
+### That paragraph used to end "it will close as a side effect of step 4", and step 4 has landed and it did not
+
+Worth leaving the prediction visible, because it was reasoned rather than
+measured and it was wrong in a characteristic way — it named the one missing
+ingredient and assumed nothing else was in the path.
+
+`mkfs` now writes a correct superblock (`src/cmd/mkfs.PORTING.md`), and `df`'s
+rung 5 is exactly as blocked as it was. Two things are in the way and only one
+of them was foreseen:
+
+1. **The port's change is a replacement, not a supplement.** `dfree()` above
+   does not read a superblock and then override it; the `open`, the `fstat` and
+   the `bread` are all gone. Even handed a perfect image, this `df` would not
+   look at it. That is a fact about the diff, and re-reading the diff is what
+   settles it — the same move as running a makefile before recording a program
+   as blocked.
+2. **An image in a file is not a filesystem behind `/dev/<spec>`.** Upstream's
+   `df` reaches the superblock down one of two paths: an explicit `/dev/...`
+   argument, or a mount point whose `stat().st_dev` matches some
+   `stat("/dev/<spec>").st_rdev`. The first needs the image *named* in the
+   jail's `/dev`; the second needs it *mounted*, which is §8a **step 5**.
+
+So the honest revision: step 4 changed this from **blocked on data that has to
+be invented** to **contained**. The numbers a V8 `df` wants now exist somewhere
+real. What is left is naming and mounting, and the decision that goes with it —
+whether the installed `/bin/df` should answer about the Mac (as it does, which
+is what PLAN §7 sanctioned) or about a V8 image, because with upstream's source
+it cannot do both.
 
 Worth separating from `w`, which *is* the `/dev/kmem` question
 (`src/cmd/w/PORTING.md`). Two grovelers, two different data sources, and

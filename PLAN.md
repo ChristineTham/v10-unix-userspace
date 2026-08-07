@@ -1444,17 +1444,22 @@ Ordered so that value lands before risk, and so each step is testable alone.
      genuine conflict: a jailed program reading a mounted image gets 16-byte
      records and a passthrough directory gives it 256-byte ones.
 
-   **Still open here: `df`'s rung 5**, which is the cheapest confirmation
-   available that the image is right — upstream's `dfree()` does
-   `bread(1L, &sblock, sizeof sblock)` and prints what the superblock says, so
-   an unmodified `df` reading a correct free count off the image is a real check
-   on step 4 by a program that knows nothing about it. `df.c` still carries the
-   `kmemu_fsstat()` call this port added, which is what breaks its rung 5; the
-   superblock it would read now exists, so taking the call back out is a
-   contained change and not a blocked one. See `src/cmd/df/PORTING.md`.
-   `mklost+found` and `fsck`/`icheck`/`dcheck`/`clri` also wait here — the
-   checkers are the way to validate an image without trusting the program that
-   wrote it, and they are `l3tol`'s first real readers.
+   **`df`'s rung 5 did NOT close here, and this file predicted it would.** The
+   prediction was reasoned rather than measured: it named the missing ingredient
+   — a real superblock — and assumed nothing else was in the path. Two things
+   are, and only one was foreseen. The port's change to `df.c` is a
+   *replacement* rather than a supplement, so the `open`, `fstat` and `bread` are
+   gone and this `df` would not look at a perfect image; and an image in a file
+   is not a filesystem behind `/dev/<spec>`, which needs either the image named
+   in the jail's `/dev` or the mount of **step 5**. What step 4 changed is real
+   but smaller than claimed: from *blocked on data that has to be invented* to
+   *contained*. `src/cmd/df/PORTING.md` has it, prediction left visible.
+
+   **The cheap confirmation is `icheck` and `dcheck` instead**, and it is a
+   better one: they take the image as an argument, so they need no mount at all,
+   and they read every inode and every directory rather than one superblock.
+   They are also `l3tol`'s first real callers. `mklost+found`, `fsck` and `clri`
+   follow.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `fsck` and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
