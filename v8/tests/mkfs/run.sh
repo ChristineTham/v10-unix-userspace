@@ -346,5 +346,68 @@ check "an out-of-range address is named, with its inode" \
 check "and the real block is orphaned by it"	"missing 1" \
     "$(printf '%s\n' "$c3" | grep '^missing')"
 
+# ---------------------------------------------------------------------------
+# 6. The indirect block, which nothing above reaches.
+#
+# Every image before this one reports `i=0' -- two files, one data block, all
+# thirteen addresses fitting in the inode.  That leaves the riskiest structure
+# in the format untested, and it is the one where daddr_t's width is most
+# directly load-bearing: an inode's di_addr[] is THREE-byte packed and goes
+# through ltol3, but an indirect block is a raw daddr_t array, 1024 bytes of
+# them, and NINDIR(0) is BSIZE/sizeof(daddr_t).
+#
+# Note what would NOT have caught a wrong width here, because it is the shape
+# this whole suite is built against: mkfs writes that array with sizeof(daddr_t)
+# and icheck reads it with sizeof(daddr_t), so at eight bytes they would hold
+# 128 entries and agree with each other perfectly.  Only a VAX would disagree --
+# or the hardcoded NMASK(0) 0377 and NSHIFT(0) 8 in param.h, which is exactly
+# why section 1 asserts those against NINDIR rather than trusting either.
+#
+# So the case is read end to end: follow an address out of the indirect block
+# and check the block it names holds the bytes it should.
+# ---------------------------------------------------------------------------
+# 20 blocks of 1024, each stamped with its own index so a misread address names
+# itself.  LADDR is 10 (mkfs.c), so ten go in the inode and ten spill.
+awk 'BEGIN { pad = sprintf("%1015s", "")
+             for (i = 0; i < 20; i++) printf "block-%-2d%s\n", i, pad }' > "$TMP/big.dat"
+check "the test file is exactly 20 blocks" "20480" "$(wc -c < "$TMP/big.dat" | tr -d ' ')"
+printf '/dev/null\n2000 1280\nd--777 0 0\nbig\n---644 0 0 %s\n$\n' \
+    "$TMP/big.dat" > "$TMP/proto.big"
+BIMG=$TMP/big.img
+"$MKFS" "$BIMG" "$TMP/proto.big" >/dev/null 2>&1 ||
+	bad "mkfs refused the indirect-block prototype"
+
+bout=$(ic "$BIMG")
+# 21 data blocks (20 for the file, 1 for the root) and one indirect.
+check "icheck sees one indirect block"	"used 22 (i=1,ii=0,iii=0,d=21)" \
+    "$(printf '%s\n' "$bout" | grep '^used')"
+check "and still nothing missing"	"missing 0" \
+    "$(printf '%s\n' "$bout" | grep '^missing')"
+bfree=$(printf '%s\n' "$bout" | grep '^free' | cut -d' ' -f2)
+check "the bigger image balances too" "$(d4 "$BIMG" $((SB+4)))" \
+    "$(( 22 + bfree + $(u2 "$BIMG" $((SB+0))) ))"
+
+# di_addr[LADDR] is the indirect block: offset 12 into the dinode, three bytes
+# per address, so 12 + 10*3.
+IND=$(l3at "$BIMG" $((I3+12+30)))
+if [ "$IND" -ge 82 ] && [ "$IND" -lt 2000 ]; then pass=$((pass+1))
+else bad "the indirect block is $IND, outside the data area"; fi
+# and the two addresses past it are unused
+check "di_addr[11] and [12] are zero" "0 0" \
+    "$(l3at "$BIMG" $((I3+12+33))) $(l3at "$BIMG" $((I3+12+36)))"
+
+# THE END-TO-END CASE.  Entry k of the indirect block is block k+LADDR of the
+# file, and each block says which one it is.  A four-byte stride puts entry 5 at
+# byte 20; an eight-byte one would read byte 40 and land in entry 10's slot.
+for k in 0 5 9; do
+	blk=$(d4 "$BIMG" $(( IND * BSZ + k * 4 )))
+	check "indirect[$k] reaches the file's block $(( k + 10 ))" "block-$(( k + 10 ))" \
+	    "$(dd if="$BIMG" bs=1 skip=$(( blk * BSZ )) count=8 2>/dev/null | tr -d ' ')"
+done
+# mkfs shifts the tail down by LADDR and zeroes what it vacated, so only the
+# first ten entries are in use.  246 addresses of four bytes each.
+tail=$(bytes "$BIMG" $(( IND * BSZ + 40 )) 984 | tr -d ' 0')
+check "the rest of the indirect block is zero" "" "$tail"
+
 echo "mkfs: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

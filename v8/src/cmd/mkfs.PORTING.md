@@ -28,6 +28,33 @@ That is a V8 filesystem, made by Bell Labs' `mkfs`, compiled by Bell Labs'
 compiler, on a machine that postdates it by forty years. Every number above is
 asserted in `tests/mkfs`.
 
+### The indirect block, and why it needed a case of its own
+
+Every image above reports `i=0` — two files, one data block, all thirteen
+addresses fitting in the inode. That leaves the riskiest structure in the format
+untouched, so `tests/mkfs` builds a third image with a 20-block file:
+
+```
+used      22 (i=1,ii=0,iii=0,d=21)
+```
+
+An inode's `di_addr[]` is **three**-byte packed and goes through `ltol3`; an
+indirect block is a raw `daddr_t` array, and `NINDIR(0)` is
+`BSIZE/sizeof(daddr_t)`. So this is where the width is most directly
+load-bearing — and where it would have hidden best. `mkfs` writes that array
+with `sizeof(daddr_t)` and `icheck` reads it with `sizeof(daddr_t)`, so at eight
+bytes they would hold 128 entries and **agree with each other perfectly**. Only
+a VAX would disagree, or the hardcoded `NMASK(0) 0377` and `NSHIFT(0) 8` in
+`param.h`, which is why the suite asserts those against `NINDIR` rather than
+trusting either.
+
+The case therefore reads end to end rather than counting: each of the file's
+blocks is stamped with its own index, and entries 0, 5 and 9 of the indirect
+block are followed to blocks that must say `block-10`, `block-15`, `block-19`.
+A four-byte stride puts entry 5 at byte 20; an eight-byte one reads byte 40 and
+lands in entry 10's slot. Verified by mutation — `LADDR` 10 → 9 turns exactly
+these six cases red and moves nothing else.
+
 **The step this does not finish is `df`'s rung 5.** `df.c` carries a
 `kmemu_fsstat()` call this port added, which is what breaks its upstream
 makefile; upstream's `dfree()` instead does `bread(1L, &sblock, sizeof sblock)`
