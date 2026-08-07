@@ -212,7 +212,7 @@ SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -223,11 +223,11 @@ stage0: cpp v8ccom v8cc libv8sys libv8kern crt0 rootfs libv8c rootfs-libs sh nro
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
 # driver for free because the library install rules said `| rootfs`.  Naming
 # $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
-test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks
+test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-mkfs test-hooks
 	@mkdir -p $(BUILD) && : > $(BUILD)/.tests-passed
 # THE STAMP IS THE GREEN RUN, and it costs nothing to be sure of: make runs a
 # target's recipe only when every prerequisite has succeeded, so this line is
-# unreachable unless all sixteen suites passed.  Nothing in the build reads it
+# unreachable unless all seventeen suites passed.  Nothing in the build reads it
 # -- it is for .claude/hooks/ci-green.sh, which refuses `git push' when a source
 # file is newer than the stamp.  Deliberately NOT a real file target with
 # prerequisites: "have the tests been run since I last edited" is a question
@@ -281,6 +281,17 @@ test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
 # Apple's, and that is a fact about libv8c's symbol table.
 test-streams: libv8kern libv8c
 	@$(ROOT)tests/streams/run.sh
+# The on-disk formats, and the image mkfs writes from them.  It asserts widths
+# from the V8 side -- a _Static_assert in the shim would see only clang, and
+# these structures are read by v8cc, by clang, and in principle by a VAX.
+#
+# The prerequisite is the phony `mkfs' rather than $(BINDIR)/mkfs for the
+# reason check-makefile.sh gave when this said the latter: BINDIR is defined
+# 600 lines below here, so it expanded to nothing and the dependency silently
+# was not there.  test-jail and test-kmemu already name v8make and v8bin the
+# same way.
+test-mkfs: mkfs $(V8CC_DEPS) $(ROOTFS_LIBS)
+	@$(ROOT)tests/mkfs/run.sh
 # The .claude hooks.  No build prerequisites -- they are shell and python, and
 # the point is that they are code and rot like code.
 test-hooks:
@@ -1056,7 +1067,8 @@ v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
        $(BINDIR)/df $(ROOTFS)/bin/df \
        $(BINDIR)/load $(ROOTFS)/bin/load \
        $(BINDIR)/w $(ROOTFS)/bin/w $(ROOTFS)/bin/uptime \
-       $(BINDIR)/ps $(ROOTFS)/bin/ps
+       $(BINDIR)/ps $(ROOTFS)/bin/ps \
+       $(BINDIR)/mkfs $(ROOTFS)/etc/mkfs
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
 # it to the rootfs.  Two pattern rules chain here -- cat.c -> build/bin/cat ->
@@ -1173,6 +1185,51 @@ $(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(PS_OBJ) \
 	    $(KMEMU_LDADD) $(V8LIBS)
 	@echo "built $@"
+
+# ---------------------------------------------------------------------------
+# mkfs -- and the -D is the whole reason it has a rule rather than falling into
+# the $(BINDIR)/% pattern below.  PLAN.md section 8a step 4.
+#
+# mkfs writes a FILESYSTEM, which makes it the first program in this tree whose
+# output has to be byte-compatible with 1985 rather than merely correct on this
+# machine.  DIRSIZ is where those two part company.  This port raises it 14 ->
+# 254 in three headers because macOS filenames exceed fourteen characters, and
+# that is right for every directory the shim serves off the host; it is wrong
+# for every directory mkfs puts inside an image.
+#
+# The failure would not have looked like one.  A V8 kernel reading a 256-byte
+# record finds `.', then fifteen slots whose d_ino is 0 -- which is V7's own
+# encoding for a deleted entry, the same accident src/include/sys/dir.h already
+# documents -- so it reads the directory correctly and then ALLOCATES into
+# those slots, and the result parses on neither side.  Measured on a generated
+# image: a three-entry root has i_size 768 here against 48 on a VAX.
+#
+# So: 14, here and nowhere else.  A -D is exactly the kind of thing that gets
+# forgotten, so tests/mkfs asserts it from the far end -- on the bytes of an
+# image, where `.' is at offset 0 and `..' at 16 -- rather than on this command
+# line, which would only be reading the rule back to itself.
+#
+# It installs in /etc rather than /bin because it is mkfs(8) and V8 keeps
+# section 8 there; the man page's synopsis says /etc/mkfs.  Being an explicit
+# target is also what keeps it clear of the $(ROOTFS)/etc/% rule further down,
+# which copies data files out of src/v8/etc and has no source for a binary.
+# ---------------------------------------------------------------------------
+MKFS_DIRSIZ = 14
+
+$(BUILD)/mkfs/mkfs.o: $(SRC)/cmd/mkfs.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -DDIRSIZ=$(MKFS_DIRSIZ) -c -o $@ $<
+
+$(BINDIR)/mkfs: $(BUILD)/mkfs/mkfs.o $(V8DEPS)
+	@mkdir -p $(BINDIR)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/mkfs/mkfs.o \
+	    $(V8LIBS)
+	@echo "built $@"
+
+$(ROOTFS)/etc/mkfs: $(BINDIR)/mkfs
+	@mkdir -p $(@D) && cp $< $@
+
+mkfs: $(BINDIR)/mkfs $(ROOTFS)/etc/mkfs
 
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
 # them -- this port's chroot, implemented where its kernel lives.

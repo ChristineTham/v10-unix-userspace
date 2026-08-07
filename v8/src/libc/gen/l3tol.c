@@ -1,6 +1,7 @@
 /* @(#)l3tol.c	4.1 (Berkeley) 12/21/80 */
+#include <sys/types.h>
 l3tol(lp, cp, n)
-long	*lp;
+daddr_t	*lp;			/* PORT: upstream `long *' -- see below */
 char	*cp;
 int	n;
 {
@@ -30,10 +31,15 @@ int	n;
 #else
 #ifdef arm64
 		/*
-		 * PORT: like the VAX -- little-endian, low byte first -- but a
-		 * long is EIGHT bytes here, so five must be cleared, not one.
-		 * Copying the VAX arm verbatim would leave the top four bytes
-		 * of every block number holding whatever was in the buffer.
+		 * PORT: the VAX arm, restored -- three bytes then ONE zero.
+		 * It cleared five while daddr_t was eight bytes wide, which was
+		 * right at the time and stopped being right when
+		 * <sys/types.h> narrowed daddr_t to the four V8's own VAX
+		 * compiler gave it.  ltol3.c is the inverse and has the whole
+		 * argument; the two must agree, and nothing but a filesystem
+		 * checker will ever notice if they do not, because l3tol has no
+		 * caller in this port yet -- fsck and icheck are its customers
+		 * and neither is imported.
 		 *
 		 * Adding a machine to this list is what the file is built for:
 		 * the alternative arm is a bare `Unknown machine!`, which is a
@@ -42,10 +48,6 @@ int	n;
 		*a++ = *b++;
 		*a++ = *b++;
 		*a++ = *b++;
-		*a++ = 0;
-		*a++ = 0;
-		*a++ = 0;
-		*a++ = 0;
 		*a++ = 0;
 #else
 	Unknown machine!

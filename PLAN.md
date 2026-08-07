@@ -1402,16 +1402,59 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `pioctl.h` ioctl set. `PIOCGETPR` alone answers `ps`; the debugger half
    (`PIOCSTOP`/`PIOCWSTOP`/`PIOCRUN`/`PIOCSMASK`) is what `pi`/`adb` would want
    later and is not needed to close this step.
-4. **`mkfs` and the raw image.** V8's `mkfs`, free-list/1024 format only, run
-   under transparent mode to create the image that image mode will use. A new
-   bootstrap rung, and self-validating in a way the rootfs is not.
-   **It also closes `df`'s rung 5**, which is the cheapest confirmation
-   available that the image is right: upstream's `dfree()` does
+4. **`mkfs` and the raw image. DONE — mkfs runs and the image is authentic.**
+   V8's `mkfs`, free-list/1024 format only. `$V8ROOT/etc/mkfs image 2000` gives
+   `s_isize` 82, `s_fsize` 2000, `s_tinode` 1278, `s_tfree` 1917, an
+   *m*-interleaved free list starting 497/494/491, and a root inode 2 of mode
+   `040777` whose single data block holds `.` at offset 0 and `..` at offset 16.
+   `tests/mkfs` is 46 cases and `src/cmd/mkfs.PORTING.md` is the record.
+
+   **THE FORMATS WERE ALL BROKEN BEFORE THE PROGRAM WAS EVEN IMPORTED, and that
+   is the finding of this step.** Measured against the port's own headers:
+   `dinode` 80 where the VAX gives 64, `filsys` 7960 where it gives 4096, `fblk`
+   1432 for 716, `NINDIR(0)` 128 for 256. Every other struct in this port has
+   two ends and **both are ours** — v8cc reads the header, clang re-spells it in
+   the shim — so a widening is safe if the two agree. A disk image has an end
+   that is a VAX, and it cannot be asked to agree with anything.
+
+   V8's own compiler settles the width in one line: `# define NOLONG`, commented
+   "map longs to ints", at `cmd/ccom/vax/macdefs.h:19`. So `long` was 32 bits
+   there and `daddr_t`, `time_t` and `off_t` all silently doubled here.
+   `daddr_t` is narrowed globally — nothing hands one to macOS — and the other
+   two per field, in the two headers that describe disk records. **The tree had
+   already contradicted itself about this**: `param.h` hardcodes `NMASK(0) 0377`
+   and `INOPB(0) 16`, asserting NINDIR 256 and `sizeof(dinode)` 64, one line from
+   the `NINDIR` that computed 128. `src/include/PORTING.md`.
+
+   Three further things it cost, each recorded where it belongs:
+
+   - **A bug class this port had not met.** `gmode()` is `return((&m0)[i])` —
+     the address of a K&R parameter, indexed forward through the next three.
+     Exact on a VAX at four bytes a slot, wrong at v8cc's eight, and not fixable
+     in the compiler. It blocked *every* run: `'d'` is index 3, so the root
+     inode came out with file type 0. Swept; a singleton in the tree.
+   - **Two of this port's own patches disagreeing.** `libc/gen/ltol3.c` strode
+     eight bytes because `daddr_t` had been eight; narrowing the type without
+     the stride decimated every block list and read 35 bytes past the end of a
+     stack `struct inode`. `l3tol` has no caller here at all, so `tests/mkfs`
+     round-trips the pair.
+   - **`DIRSIZ` means two different things now.** 254 for host directories, 14
+     for what mkfs writes, and `param.h` needed the `#ifndef` its own comment
+     already claimed before `-DDIRSIZ=14` could take. §8a step 5 inherits the
+     genuine conflict: a jailed program reading a mounted image gets 16-byte
+     records and a passthrough directory gives it 256-byte ones.
+
+   **Still open here: `df`'s rung 5**, which is the cheapest confirmation
+   available that the image is right — upstream's `dfree()` does
    `bread(1L, &sblock, sizeof sblock)` and prints what the superblock says, so
-   an unmodified `df` reading a correct free count off the image is a real
-   check on step 4 by a program that knows nothing about it. Today `df.c`
-   carries a `kmemu_fsstat()` call this port added, which is what breaks its
-   rung 5; that call comes back out here. See `src/cmd/df/PORTING.md`.
+   an unmodified `df` reading a correct free count off the image is a real check
+   on step 4 by a program that knows nothing about it. `df.c` still carries the
+   `kmemu_fsstat()` call this port added, which is what breaks its rung 5; the
+   superblock it would read now exists, so taking the call back out is a
+   contained change and not a blocked one. See `src/cmd/df/PORTING.md`.
+   `mklost+found` and `fsck`/`icheck`/`dcheck`/`clri` also wait here — the
+   checkers are the way to validate an image without trusting the program that
+   wrote it, and they are `l3tol`'s first real readers.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `fsck` and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
@@ -1511,14 +1554,20 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 4 grovelers | **done** | `date`, `who`, `df`, `load`, `w`/`uptime` all run. `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` was the exception and is now done too, under S8a step 3 rather than here — V8's `ps` is a `/proc` client, not a kmem groveler, which was a plan revision forced by reading it. Only the full form of `w` remains, and it says `No mem` on purpose. See S7 |
 | 5 blitterm | not started | |
 | 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 62/62 |
+| 8a.1 streams | engine in | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c` surveyed and deferred — see S8a step 1 |
+| 8a.2 fs switch | done | `shim/v8sys/vfs.c`, one mount table, passthrough behind it |
+| 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
+| 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem; `mkfs` 46/46. It began by finding that **every on-disk struct in the tree was the wrong size** |
 
-`make test` runs everything.
+`make test` runs everything — seventeen suites, about 1004 cases.
 
 ### What actually works today
 
 V8's own preprocessor and compiler, with a new ARM64 back end, driven by V8's
 own `cc`, produce object code that assembles, links and runs correctly on Apple
 Silicon. Everything above the code generator is untouched 1985 Bell Labs source.
+As of S8a step 4 that includes a program whose *output* is a 1985 artifact
+rather than a 2026 one: `mkfs` writes a filesystem a VAX could mount.
 
 ### The lesson this port keeps teaching
 
@@ -1644,10 +1693,23 @@ surfacing somewhere different, and each was invisible until real code ran:
 | pointer difference with one operand in a register | `strspn` returned -2^32; `strtok` walked off the end |
 | `opbigsz` narrowing a pointer AND | `malloc` walked half a pointer |
 | `PTRTYPE` defaulting to `INT` | pointer arithmetic done at 32 bits |
+| `(&m0)[i]` over K&R parameters | argument slots are 8 bytes here and 4 there; `mkfs` could not make a filesystem |
+| `long` fields in an on-disk struct | `dinode` 80 not 64, `filsys` 7960 not 4096; every image would have been unreadable |
+| `ltol3`'s stride, after `daddr_t` narrowed | block lists decimated, six addresses read past a stack struct |
 
 None of them is a bug in what Bell Labs wrote. All of them are the port's to
 absorb, and the rule that has held is: **fix it where the width is decided —
 the target model, the seam, or the one conversion routine — never per program.**
+
+The last three, added at S8a step 4, extend the rule rather than restate it.
+The first two rows are the same mistake as the rest and were found the same way,
+by running real code. The third is different in kind and is the one to
+remember: **narrowing a type at the place where the width is decided is exactly
+the prescribed fix, and it still broke a caller** — `ltol3` had been patched for
+an eight-byte `daddr_t` and was right when written. So "fix it where the width
+is decided" carries an obligation with it: sweep for what already encodes the
+old width. `grep -rn '<type>' src shim` cost one command and would have found
+it, and did, once someone looked.
 
 ### Deliberate gaps in the back end
 

@@ -123,7 +123,7 @@ if [ ! -f "$stamp" ]; then
 
 CI runs the same suites on macos-14, so a red one here is a red one there --
 with the delay and the notification mail in between.  The stamp lives at
-build/stage0/.tests-passed and \`make test' writes it only when all sixteen
+build/stage0/.tests-passed and \`make test' writes it only when all seventeen
 suites pass.
 
   PUSH_ANYWAY=1 git push     to push regardless"
@@ -151,7 +151,7 @@ $(printf '%s\n' "$newer" | sed 's|^'"$root"'/|  |')
 
   make test
 
-CI runs the same sixteen suites, so this is the cheap half of the same answer.
+CI runs the same seventeen suites, so this is the cheap half of the same answer.
 
   PUSH_ANYWAY=1 git push     to push regardless"
 fi

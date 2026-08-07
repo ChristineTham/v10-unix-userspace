@@ -74,16 +74,29 @@
 #define	SUPERB	((daddr_t)1)	/* block number of the super block */
 /*
  * PORT: 254, not V7's 14.  src/include/dir.h has the reasoning; this is the
- * THIRD place V8 spells the number, and the one that decides.
+ * THIRD place V8 spells the number, and the one that decides.  Both w.c and
+ * ps.h reach <sys/param.h> before <sys/dir.h>, so patching the other two and
+ * not this one changed nothing for exactly the programs that read directories
+ * raw, while looking like it had.  The three must agree, and they now do;
+ * shim/v8sys/v8sys.h's V8_DIRSIZ and src/libc/gen/readdir.c's ODIRSIZ are the
+ * other two ends.
  *
- * All three use `#ifndef DIRSIZ', so whichever header a program reaches first
- * wins -- and both w.c and ps.h include <sys/param.h> before <sys/dir.h>.
- * Patching dir.h and sys/dir.h and not this one therefore changed nothing for
- * exactly the programs that read directories raw, while looking like it had.
- * The three must agree, and they now do; shim/v8sys/v8sys.h's V8_DIRSIZ and
- * src/libc/gen/readdir.c's ODIRSIZ are the other two ends.
+ * PORT: the #ifndef is ours, and the note that used to stand here said the
+ * opposite -- "all three use `#ifndef DIRSIZ', so whichever header a program
+ * reaches first wins".  Upstream guards dir.h and sys/dir.h and leaves THIS
+ * one bare, so on a real V8 param.h always won by redefinition.  The claim
+ * cost nothing while every spelling said 254 and was found the moment
+ * something wanted a different one: mkfs(8) is compiled -DDIRSIZ=14, because
+ * what it writes is an image rather than a host directory, and cpp answered
+ * `param.h: 86: DIRSIZ redefined' and gave it 254 anyway.  A silently
+ * 256-byte-per-record filesystem is precisely the wrong image to ship.
+ *
+ * The guard changes nothing for any program that does not define DIRSIZ
+ * itself, which is every program but that one.
  */
+#ifndef	DIRSIZ
 #define	DIRSIZ	254		/* max characters per directory */
+#endif
 
 /*
  * Clustering of hardware pages on machines with ridiculously small

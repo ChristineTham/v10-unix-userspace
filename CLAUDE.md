@@ -43,9 +43,9 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 16 suites (~942 tests)
+make test             # all 17 suites (~1004 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
-                      #            libv8c wavea waveb sh wavec kmemu streams hooks
+                      #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
 make clean            # remove v8/build and v8/rootfs
 ```
@@ -404,6 +404,46 @@ grep -n 'yylval\.p *=' src/cmd/*/*.l
 grep -nE '^%(union|type|token)[ \t]*<' src/cmd/*/*.y
 ```
 
+**A K&R PARAMETER'S ADDRESS IS NOT AN ARRAY, because the argument slot changed
+size.** `mkfs`'s `gmode()` is `return((&m0)[i])` over four undeclared
+parameters: take the address of the first and index forward through the rest.
+Exact on a VAX — `ARGINIT 32`, arguments four bytes apart, `&m0` an `int *` — and
+v8cc spills x0–x7 into **eight**-byte slots (`SZARG` is `SZLONG`), so `[1]` reads
+the top half of `m0` and `[2]` the bottom half of `m1`. It is not fixable in the
+compiler; the slot size is the ABI. mkfs could not create a filesystem at all:
+`'d'` is index 3, the root inode got file type 0, and `iput` printed
+`bad mode 777` on every run.
+
+The *forward* form of the idiom — V8's `printf(fmt, args)` walking `&args` — was
+handled long ago in `exec.c`, `doprnt.c`, `scanf.c`, `sprintf.c`, `printf.c`,
+`fprintf.c` and `troff/n1.c`, all of which walk with an eight-byte type. Only the
+indexed form was missed, and the sweep says it is a singleton:
+
+```bash
+grep -rnE '\(&[a-z_][a-z_0-9]*\)\s*\[' src shim compiler
+```
+
+**AN ON-DISK STRUCT HAS AN END THAT IS NOT OURS, and every one of them was
+wrong.** Until `mkfs` (§8a step 4) every struct in the port had two ends we
+control — v8cc reads the header, clang re-spells it in the shim — so a widening
+was safe if both agreed. A filesystem image has to agree with 1985. Measured
+before the fix: `dinode` 80 (VAX 64), `filsys` 7960 (4096), `fblk` 1432 (716),
+`NINDIR(0)` 128 (256). **V8's own compiler settles it in one line** —
+`# define NOLONG`, "map longs to ints", at `cmd/ccom/vax/macdefs.h:19` — so
+`long` was 32 bits there and `daddr_t`, `time_t` and `off_t` all silently
+doubled here. `daddr_t` is narrowed globally (nothing hands one to macOS);
+`time_t` and `off_t` are narrowed per *field* in `sys/ino.h` and `sys/filsys.h`,
+because they cross the shim seam everywhere else. `src/include/PORTING.md`.
+
+Two things generalise. **The tree already contradicted itself and no one had
+looked**: `param.h` hardcodes `NMASK(0) 0377` and `INOPB(0) 16`, which assert
+NINDIR 256 and `sizeof(dinode)` 64, one line from the `NINDIR` that computed 128.
+When a header has both a hardcoded constant and a `sizeof`-derived one, make the
+test compare *them*, not transcribed values. And **a global type change reaches
+past the headers**: narrowing `daddr_t` silently broke `libc/gen/ltol3.c`, whose
+arm64 arm strode eight bytes for exactly that type — two of this port's own
+patches, each right when written.
+
 **A SAME-REGISTER RETURN IS NOT A SAME-TYPE RETURN, and floating point is
 where the port had never looked.** Two bugs, both measured, and each hid the
 other so that fixing one alone changed nothing observable:
@@ -480,6 +520,18 @@ This port raises 14 → 254; patching two of the three changed nothing for
 exactly the programs that read directories raw, while looking like it had. All
 three now agree, plus `shim/v8sys/v8sys.h`'s `V8_DIRSIZ` and
 `src/libc/gen/readdir.c`'s `ODIRSIZ` — five spellings of one number.
+
+**And the sentence above was wrong about `param.h` for months.** Upstream guards
+`dir.h` and `sys/dir.h` and leaves `param.h` **bare**, so on a real V8 this one
+always won by *redefinition* rather than by being first. It cost nothing while
+every spelling said 254 and was found the instant something wanted a different
+one: `mkfs` is compiled `-DDIRSIZ=14`, because what it writes is a disk image
+and a V8 kernel reading a 256-byte record allocates into the fifteen
+zero-`d_ino` slots it finds. cpp said `DIRSIZ redefined` and handed mkfs 254
+anyway. `param.h` now carries the guard its own comment claimed. **A flag that
+sets an on-disk format can be forgotten, so `tests/mkfs` asserts it on the bytes
+of a generated image** — `..` at offset 16, root `i_size` 32 — never on the
+compiler line.
 
 **LP64 is not the only width problem: V8's 16-BIT RANGES are the other, and
 they fail later and quieter.** LP64 breaks a pointer immediately; a 16-bit field
@@ -707,7 +759,7 @@ happened here:
   that blocks when GitHub is unreachable is off within the hour. Override with
   `PUSH_ANYWAY=1 git push`, which is also how the fix for a red build goes out.
   The "tested" half reads `build/stage0/.tests-passed`, which `make test` writes
-  as its recipe and therefore only when all sixteen suites passed.
+  as its recipe and therefore only when all seventeen suites passed.
 - **`hooks/check-makefile.sh`** (PostToolUse) runs
   `make -n --warn-undefined-variables` after any Makefile edit, and flags
   multi-target rules that carry a recipe. ~60ms.

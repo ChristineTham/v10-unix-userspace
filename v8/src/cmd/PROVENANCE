@@ -55,3 +55,4 @@ d635c5066d782a9b7c743e6cc5e0390c757ff29e  v8/usr/src/cmd/ln.c
 5957c5cb78ea4e99f6ebe612c3562ec73abc3fb1  v8/usr/src/cmd/newer.c
 6950366ace78645f7eb433e4de398c656667b1e0  v8/usr/src/cmd/date.c
 4c51a5381f6c07aad3f7d3688d371daf33a6c37f  v8/usr/src/cmd/who.c
+3aebc4d720d2c7d61e9f14965bc8924019ed9f2a  v8/usr/src/cmd/mkfs.c

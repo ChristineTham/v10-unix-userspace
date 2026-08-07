@@ -388,6 +388,41 @@ dep 'procfs.c -> ps'           shim/libkmemu/procfs.c          $B/bin/ps
 # ...and the ioctl dispatch it arrives through.
 dep 'vfs.h -> ps'              shim/v8sys/vfs.h                $B/bin/ps
 
+# --- section 8a step 4: mkfs, and the on-disk headers behind it -------------
+# The graph is small; what makes it worth cases is that mkfs is the first
+# command here whose INSTALL target is not rootfs/bin, and that three newly
+# patched headers have to reach the binary rather than just the header view.
+dep 'mkfs source -> object'    src/cmd/mkfs.c                  $B/mkfs/mkfs.o
+dep 'mkfs object -> binary'    $B/mkfs/mkfs.o                  $B/bin/mkfs
+dep 'mkfs -> installed in etc' $B/bin/mkfs                     rootfs/etc/mkfs
+# The disk-format headers.  These carry the VAX widths -- dinode 64, filsys
+# 4096, daddr_t 4 -- and an edge that stops here means mkfs keeps writing an
+# image built from whatever it was compiled against last.  Both ends: the
+# generated rootfs view AND the binary, because the DIRSIZ mutation that
+# refused to fail (see the note above) did so by way of a stale rootfs copy.
+dep 'sys/types.h -> rootfs headers' src/include/sys/types.h \
+                                    rootfs/usr/include/.stamp
+dep 'sys/ino.h too'                 src/include/sys/ino.h \
+                                    rootfs/usr/include/.stamp
+dep 'sys/filsys.h too'              src/include/sys/filsys.h \
+                                    rootfs/usr/include/.stamp
+# ...and to the OBJECT, which is the edge that bites.  Asserted against
+# $B/bin/mkfs first, and a mutation dropping $(V8CC_DEPS) from the object rule
+# did not fail: the LINK rule names $(V8DEPS), so touching a header still
+# restamped the binary -- by relinking a stale object compiled against the old
+# header.  A rebuilt mtime on the thing you look at is not a rebuilt anything.
+dep 'sys/ino.h -> mkfs object'     src/include/sys/ino.h       $B/mkfs/mkfs.o
+dep 'sys/filsys.h -> mkfs object'  src/include/sys/filsys.h    $B/mkfs/mkfs.o
+dep 'sys/param.h -> mkfs object'   src/include/sys/param.h     $B/mkfs/mkfs.o
+# daddr_t's width reaches libc as well as the program, because ltol3 strides by
+# it -- two patches that once disagreed about exactly this.
+dep 'sys/types.h -> libc'      src/include/sys/types.h         $B/libc/libv8c.a
+dep 'ltol3.c -> libc'          src/libc/gen/ltol3.c            $B/libc/libv8c.a
+dep 'l3tol.c -> libc'          src/libc/gen/l3tol.c            $B/libc/libv8c.a
+# The negative control: mkfs links the standard list and nothing else.  It is
+# not a groveler -- it writes a filesystem rather than reading the host's.
+nodep 'mkfs does not reach libkmemu' shim/libkmemu/procfs.c    $B/bin/mkfs
+
 # --- section 8a step 2: the filesystem switch -------------------------------
 # vfs.c holds the mount table and the passthrough type; syscall.c dispatches
 # through it.  Both directions are edges, and the header is the contract.
@@ -477,7 +512,7 @@ for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
          rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
          rootfs/bin/cal rootfs/bin/who rootfs/bin/df rootfs/bin/load \
-         rootfs/bin/w rootfs/bin/uptime rootfs/bin/ps; do
+         rootfs/bin/w rootfs/bin/uptime rootfs/bin/ps rootfs/etc/mkfs; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then

@@ -7,3 +7,6 @@
 737a3a66b62bee95ecaf61f3b6ac14cccc0e8e49  v8/usr/include/sys/dir.h
 5409ff3980c6c4edb6d48503bdb301383475de3b  v8/usr/include/sys/param.h
 b66298ca751715cfe7aa644403e8f1ede330b567  v8/usr/include/sys/proc.h
+526a41872593300d669531605149b2cd75a0bb30  v8/usr/include/sys/types.h
+eb24be19260568a2335a920d48da1e5930b6432e  v8/usr/include/sys/ino.h
+22e15ab1621233c5447261e9bcc5f400189fec38  v8/usr/include/sys/filsys.h

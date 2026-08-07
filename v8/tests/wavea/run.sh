@@ -266,17 +266,35 @@ try pwd    'pwd'             "$(/bin/pwd -P)" "./pwd"
 #
 # `cc' is the one deliberate exception: the driver has its own rule because it
 # links against libv8c, which a driver has to compile first (the cc-seed cycle).
+#
+# /etc is checked as well as /bin, and only since mkfs.  V8 splits its commands
+# by manual section and keeps section 8 -- the ones that operate on a
+# filesystem or a machine rather than on files -- in /etc; mkfs(8)'s own
+# synopsis says `/etc/mkfs'.  Every single-file command imported before it
+# happened to be a /bin command, which is why this said `bin' alone.  It is a
+# widening of WHERE, not of WHETHER: the case below pins mkfs to /etc
+# specifically, so the pair still says something a plain `find' would not.
 missing=
 for src in "$ROOT"/src/cmd/*.c; do
 	name=$(basename "$src" .c)
 	[ "$name" = cc ] && continue
-	[ -x "$V8ROOT/bin/$name" ] || missing="$missing $name"
+	[ -x "$V8ROOT/bin/$name" ] || [ -x "$V8ROOT/etc/$name" ] ||
+		missing="$missing $name"
 done
 if [ -z "$missing" ]; then
 	pass=$((pass+1))
 else
 	fail=$((fail+1))
 	echo "FAIL these src/cmd commands are built but not installed:$missing"
+fi
+
+# ...and the section-8 ones are in /etc rather than /bin, which is the half of
+# the statement the widened check above can no longer make on its own.
+if [ -x "$V8ROOT/etc/mkfs" ] && [ ! -e "$V8ROOT/bin/mkfs" ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL mkfs(8) belongs in /etc and not /bin"
 fi
 
 # ...AND THE SAME QUESTION OF THE DIRECTORIES, which is where the glob above

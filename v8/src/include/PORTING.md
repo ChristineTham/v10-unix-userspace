@@ -15,11 +15,14 @@ deviations.
 |---|---|---|
 | `dir.h` | `DIRSIZ` 14 → 254 | host filenames exceed 14 characters |
 | `sys/dir.h` | `DIRSIZ` 14 → 254 | same, and it is a *different struct* |
-| `sys/param.h` | `DIRSIZ` 14 → 254 | same, and it is the one that decides |
+| `sys/param.h` | `DIRSIZ` 14 → 254, and an `#ifndef` around it | same, and it is the one that decides; the guard is for mkfs |
 | `setjmp.h` | `int[10]` → `long[24]` | AAPCS64 has 21 doublewords to save |
 | `sys/proc.h` | four pid fields `short` → `int` | macOS pids run to 99998 |
 | `fstab.h` | `FSNMLG` 32 → 1024, and `FSTABFMT` with it | host mount points exceed 31 characters |
 | `mtab.h` | two literal `32`s → `1024` | must agree with `FSNMLG`; nothing includes it |
+| `sys/types.h` | `daddr_t` `long` → `int` | a disk block address is four bytes on a V8 volume |
+| `sys/ino.h` | `di_size` and three times `long` → `int` | same, per field |
+| `sys/filsys.h` | `s_time` and `S_bfree[]` likewise | same |
 
 ## The two rules
 
@@ -38,6 +41,76 @@ tree; the shim is clang-compiled and re-spells any struct it has to produce
 drifting from itself and can say nothing about whether v8cc agrees, because it
 only ever sees one compiler. `tests/kmemu` measures the same offsets from the
 V8 side for that half. Change a struct here and both ends need updating.
+
+## The on-disk formats, and the third kind of "other end"
+
+Added with `mkfs`, PLAN.md §8a step 4. Every other struct in this tree has two
+ends and **both of them are ours** — v8cc reads the header, clang re-spells it
+in the shim, and a widening is safe as long as the two agree. `struct filsys`,
+`struct dinode` and `struct fblk` have an end that is a **1985 disk**, which
+cannot be asked to agree with anything.
+
+They were all wrong, and nothing had noticed because nothing had written one:
+
+| | VAX | here, before | after |
+|---|---|---|---|
+| `sizeof(struct dinode)` | 64 | **80** | 64 |
+| `sizeof(struct filsys)` | 4096 | **7960** | 4096 |
+| `sizeof(struct fblk)` | 716 | **1432** | 716 |
+| `NINDIR(0)` | 256 | **128** | 256 |
+
+**V8's own compiler settles the width in one line.**
+`third_party/.../cmd/ccom/vax/macdefs.h:19` reads `# define NOLONG`, commented
+"map longs to ints". So on the VAX `long` and `int` were the same 32-bit type,
+and every `long` field in a disk record is four bytes.
+`compiler/ccom-arm64/macdefs.h` deliberately does *not* define it — its own
+comment says leaving `NOLONG` undefined is what makes LP64 expressible at all —
+so `SZLONG` is 64 here and `daddr_t`, `time_t` and `off_t` all silently doubled.
+
+**The tree already contradicted itself, which is why this is not a preference.**
+`<sys/param.h>` hardcodes `NMASK(0) 0377` and `NSHIFT(0) 8`, both of which say
+an indirect block holds 256 addresses, while `NINDIR(dev)` —
+`BSIZE(dev)/sizeof(daddr_t)`, one line below them in the same file — computed
+128. And `INOPB(0)` is hardcoded 16 while `sizeof(struct dinode)` had become 80,
+so `itod()`/`itoo()` would have put inode 17 at byte 1280 of a 1024-byte block.
+The constants are upstream's; it is the types that drifted. `tests/mkfs` asserts
+those two agreements against each other rather than against transcribed numbers,
+so the next drift shows up without anyone remembering a value.
+
+**Why `daddr_t` globally and the other two per field.** A `daddr_t` never
+crosses the shim seam: it is a disk block number, it appears in exactly two
+programs outside these headers (`df`, which reads a real superblock and needs it
+narrow to do so, and `mkfs`), and nothing hands one to macOS. `time_t` and
+`off_t` are handed to macOS constantly and are 64 bits there, so narrowing them
+globally would break every syscall that carries one. They are narrowed in the
+two headers that describe disk records and nowhere else.
+
+**And a global type change reached further than the headers.**
+`src/libc/gen/ltol3.c` packs an inode's `i_addr[]` into three-byte disk
+addresses, and its arm64 arm strode **eight** bytes because `daddr_t` used to be
+that wide. Narrowing the type without narrowing the stride decimated every block
+list and read 35 bytes past the end of a stack `struct inode`. Both `ltol3` and
+`l3tol` are back to the VAX stride, and `tests/mkfs` round-trips them —
+necessary because `l3tol` has no caller in this port at all.
+
+## `sys/param.h`'s `#ifndef`, and a comment that described a guard that was not there
+
+The note in `param.h` used to say "all three use `#ifndef DIRSIZ`, so whichever
+header a program reaches first wins". Upstream guards `dir.h` and `sys/dir.h`
+and leaves `param.h` **bare** — so on a real V8 this file always won by
+redefinition, and the sentence was never true of the file it was in.
+
+It cost nothing while all three spellings said 254, and it was found the moment
+something wanted a different one. `mkfs` is compiled `-DDIRSIZ=14`, because what
+it writes is a disk image rather than a host directory, and cpp answered
+`param.h: 86: DIRSIZ redefined` and gave it 254 regardless. A silently
+256-byte-per-record filesystem is exactly the wrong thing to ship. The guard is
+now there, it changes nothing for any program that does not define `DIRSIZ`
+itself, and `src/cmd/mkfs.PORTING.md` has why the override is right.
+
+This is the same disease as the original `DIRSIZ` bug one level up: three
+headers, a belief about how they interact, and the belief checked in only two
+of them.
 
 ## `fstab.h`, and why a path is not a name
 
@@ -129,8 +202,16 @@ reads it, and widening it would be a change with no reader to justify it.
 
 ## Not changed, and deliberately
 
-`sys/types.h` is verbatim upstream. It says `typedef long size_t` and
-`typedef long time_t`, which happen to be right under LP64 — checked rather than
-assumed, since the natural guess is that a 1985 header would need patching here.
-On the VAX `int` and `long` were both 32 bits so either spelling worked, and V8
-happened to pick the one that survives.
+`sys/types.h` is patched in exactly one line — `daddr_t`, above — and the rest
+of it is upstream. It says `typedef long size_t` and `typedef long time_t`,
+which happen to be right under LP64: both are what macOS uses, so both cross the
+shim seam unchanged.
+
+That was recorded here as "checked rather than assumed" when the file was still
+untouched, and the check was sound as far as it went. What it missed is that
+being right at the *syscall* seam and being right at the *disk* seam are two
+different questions, and until §8a step 4 there was no disk to ask the second
+of. `long` is 64 bits here and was 32 on the VAX, so **every one of these
+typedefs is wrong for a disk record and right for everything else** — which is
+why the fix is one global narrowing plus four fields, and not a rewrite of this
+file.
