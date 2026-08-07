@@ -493,6 +493,7 @@ makefree()
 	register i, j;
 	daddr_t f, d;
 	int m, n;
+	time_t now;			/* PORT: see the time() call below */
 
 	n = sblock.s_n;
 	if(n <= 0 || n > MAXFN)
@@ -522,7 +523,26 @@ makefree()
 	sblock.s_fmod = 0;
 	sblock.s_ronly = 0;
 #ifndef STANDALONE
-	time(&sblock.s_time);
+	/*
+	 * PORT: upstream is `time(&sblock.s_time)'.  s_time is a DISK field and
+	 * <sys/filsys.h> narrows it to the four bytes a VAX gave it, while
+	 * time_t stays eight because it crosses the shim seam -- so time() would
+	 * write eight bytes into four.  Measured: the overflow lands on s_tfree,
+	 * at offset 220 against s_time's 216.
+	 *
+	 * It is harmless today and twice over, which is the reason to fix it
+	 * rather than to note it: the high half of a current time_t is zero, and
+	 * s_tfree is assigned zero two lines further down anyway.  Both
+	 * protections are accidents -- the first expires in 2106 and the second
+	 * the moment someone reorders these statements.
+	 *
+	 * Swept: `grep -rn "time(&" src shim' finds thirty-seven calls and this
+	 * is the only one whose argument is a field this port narrowed.  The
+	 * others take a time_t, a struct stat's st_mtime, or utmp's ut_time --
+	 * all eight bytes here, all with both ends inside this port.
+	 */
+	time(&now);
+	sblock.s_time = now;
 #endif
 
 	if (!BITFS(dev))

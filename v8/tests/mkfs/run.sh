@@ -276,6 +276,16 @@ done
 sq() { tr -s ' \t' ' ' | sed 's/^ *//;s/ *$//'; }
 ic() { "$ICHECK" "$1" 2>&1 | sq; }
 
+# dcheck runs UNDER A DEADLINE, and not as flake insurance.  Measured: on a
+# superblock claiming more than 65535 inodes it does not terminate -- `ino' is
+# 16-bit and `nfiles' is unsigned, so the loop's only exit condition can never
+# be true.  6.7 million lines of `read error' in twenty seconds, on a
+# 110,000-block filesystem.  That is upstream's, and faithful, and it is a HANG:
+# run inline it takes the suite down and prints nothing, which is the failure
+# mode tests/wavec's alarm exists for.  Every image this suite hands dcheck is
+# one it built, so nothing should ever reach the deadline; that is the point.
+dc() { perl -e 'alarm 20; exec @ARGV' "$DCHECK" "$1" 2>&1 | sq; }
+
 out=$(ic "$IMG")
 # inode 1 is bflist()'s bad-block holder (IFREG), inode 2 the root (IFDIR).
 check "icheck counts two files, one of each kind" "files 2 (r=1,d=1,b=0,c=0,l=0)" \
@@ -301,7 +311,7 @@ check "used + free + ilist is the whole volume" \
 
 # dcheck prints one row per inode whose link count disagrees with the number of
 # directory entries naming it.  A clean filesystem gets the filename and nothing.
-check "dcheck finds no link-count disagreement" "$IMG:" "$("$DCHECK" "$IMG" 2>&1 | sq)"
+check "dcheck finds no link-count disagreement" "$IMG:" "$(dc "$IMG")"
 
 # The proto image has one more file and one more block.
 pout=$(ic "$PIMG")
@@ -332,7 +342,7 @@ check "and is no longer counted as used" "used 0 (i=0,ii=0,iii=0,d=0)" \
 cp "$IMG" "$TMP/c2.img"
 printf '\003' | dd of="$TMP/c2.img" bs=1 seek=$((I2+2)) count=1 conv=notrunc 2>/dev/null
 check "dcheck reports 2 entries against 3 links" "2 2 3" \
-    "$("$DCHECK" "$TMP/c2.img" 2>&1 | sed -n 3p | sq)"
+    "$(dc "$TMP/c2.img" | sed -n 3p)"
 check "icheck is silent about a link count"	"missing 0" \
     "$(ic "$TMP/c2.img" | grep '^missing')"
 
@@ -345,6 +355,36 @@ check "an out-of-range address is named, with its inode" \
     "$(printf '%s\n' "$c3" | grep 'bad;')"
 check "and the real block is orphaned by it"	"missing 1" \
     "$(printf '%s\n' "$c3" | grep '^missing')"
+
+# --- icheck -s, the only thing here that WRITES an image --------------------
+# It rebuilds the free list from scratch, so the image has to still check clean
+# afterwards and the superblock has to still describe it.  Two reasons to have
+# this beyond exercising the write path.
+#
+# s_time is `int' here -- narrowed with the rest of the disk record -- while
+# time_t is eight bytes, so upstream's `time(&sblock.s_time)' wrote four bytes
+# past the field, onto s_tfree at offset 220.  It was invisible because the high
+# half of a current time_t is zero AND s_tfree is assigned zero two lines later;
+# both are accidents, one expiring in 2106 and the other on any reordering.
+# icheck.c takes a time_t and assigns down now, and this case is what notices if
+# the two statements ever swap.
+#
+# And -s is the reason the O_RDWR at icheck.c:124 matters: it opens for writing
+# before it knows the file is a filesystem, and a V7 superblock has no magic.
+cp "$IMG" "$TMP/s.img"
+"$ICHECK" -s "$TMP/s.img" >/dev/null 2>&1
+sout=$(ic "$TMP/s.img")
+check "after icheck -s the image still checks clean" "missing 0" \
+    "$(printf '%s\n' "$sout" | grep '^missing')"
+check "and the rebuilt free list still balances" "$(d4 "$IMG" $((SB+4)))" \
+    "$(( $(printf '%s\n' "$sout" | grep '^used' | cut -d' ' -f2) \
+       + $(printf '%s\n' "$sout" | grep '^free' | cut -d' ' -f2) \
+       + $(u2 "$TMP/s.img" $((SB+0))) ))"
+# s_tfree is written LAST by makefree(), so a stray eight-byte store onto it
+# from the s_time above would survive into the image.
+check "s_tfree survived the s_time write" \
+    "$(printf '%s\n' "$sout" | grep '^free' | cut -d' ' -f2)" \
+    "$(d4 "$TMP/s.img" $((SB+220)))"
 
 # ---------------------------------------------------------------------------
 # 6. The indirect block, which nothing above reaches.

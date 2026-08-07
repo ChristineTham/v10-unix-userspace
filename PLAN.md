@@ -1595,7 +1595,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem; `mkfs` 46/46. It began by finding that **every on-disk struct in the tree was the wrong size** |
 
-`make test` runs everything — seventeen suites, about 1028 cases.
+`make test` runs everything — seventeen suites, about 1031 cases.
 
 ### What actually works today
 

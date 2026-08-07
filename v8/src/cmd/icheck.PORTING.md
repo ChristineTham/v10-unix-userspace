@@ -105,12 +105,21 @@ The Makefile names the set — `IMGBIN = mkfs icheck dcheck` — and generates t
 rules from one template, so the fourth one cannot be compiled without it.
 
 What a forgotten flag would do here is worse than in `mkfs`, and is the argument
-for naming the group: `dcheck` would read a correct root directory as sixteen
-records, find `.` and `..` and fourteen entries whose `d_ino` is 0, skip those
-by V7's own deleted-entry rule — and report a **healthy filesystem as healthy**.
-It would only start lying once a directory had more than one real entry per
-256 bytes. It would not fail to build, it would not fail to run, and it would
-not be wrong on the first thing anyone tested it against.
+for naming the group. **Measured**: `dcheck` compiled without it reports a
+**correct filesystem as corrupt** — the root as having 1 entry against a link
+count of 2 — and exits 0 while doing so. `NDIR(dev)` becomes 4 instead of 64 and
+`doff` steps 256 instead of 16, so it sees `.` and never `..`.
+
+*This paragraph first said the opposite — that it would "report a healthy
+filesystem as healthy" and only start lying once a directory held more than one
+entry per 256 bytes. That was reasoned from the `d_ino == 0` skip rule and it is
+wrong: the skip rule explains why the entries it does read are not garbage, not
+why it would find them all. It under-counts from the first directory. Left
+visible because the wrong version is the more comfortable one to believe.*
+
+`icheck` is unaffected either way — measured, `icheck.o` is byte-identical with
+and without the flag, because it never names `struct direct`. It is in the group
+because it talks to an image, not because it needs the number.
 
 ## The corruption cases, which are the half that proves anything
 
@@ -127,17 +136,104 @@ The middle row is the one worth keeping both halves of. A link count is not a
 block, so `icheck` staying silent is the right answer — and a checker that
 answered everything would be the more suspicious result.
 
-**Neither program sets its exit status.** Both report on stdout and return 0
-whatever they find, which is upstream's behaviour; every case in `tests/mkfs`
-reads the output for that reason. A future change that started exiting nonzero
-would be a deviation and belongs in this file.
+**Do not gate anything on the exit status**, and the two programs are wrong in
+different ways:
+
+- **`icheck` returns 0 whatever it finds.** `nerror` is set only on an open or
+  fstat failure. Measured: an image with one duplicated block and two
+  out-of-range addresses exits 0.
+- **`dcheck` returns a raw count of bad entries**, through an 8-bit exit status.
+  Measured: 254 bad entries exits 254, **320 bad entries exits 64**, and exactly
+  256 exits **0**. So a suite gating on `rc != 0` passes on a thoroughly corrupt
+  filesystem, and the more corrupt it is the likelier that becomes.
+
+Both are upstream's behaviour. Every case in `tests/mkfs` reads the output for
+that reason. *This section first said "neither program sets its exit status",
+which is true of `icheck` and false of `dcheck`; the audit measured it.*
+
+**`dcheck` does not terminate on a superblock claiming more than 65535 inodes.**
+`ino` is `ino_t` (16-bit) and `nfiles` is `unsigned`, so the guard
+`if (ino >= nfiles)` never fires and the outer loop has no other exit. Measured
+on such an image with a 20-second deadline: 6.7 million lines of `read error`,
+block number past 106 million on a 110,000-block filesystem, killed by SIGALRM.
+Faithful to the VAX — both widths were the same there — but it is a hang rather
+than a wrong answer, so **anything that runs `dcheck` on an image it did not
+make needs a deadline**, the way `tests/wavec` uses `perl -e 'alarm'`. Nothing
+in the suite does today; every image it points `dcheck` at, it built.
+
+`icheck` has the same width in a quieter form: `mino` at `icheck.c:159` is
+`ino_t` and takes an `int` product, so a superblock claiming 79968 inodes gives
+14432 and the scan **silently stops there**. Measured: a bad address planted in
+inode 14000 is reported and an identical one in inode 15000 is not, with no
+diagnostic. Also faithful, and note what protects you — `mkfs` caps the i-list
+at `MAXISIZE/NIPB`, or 65520 inodes. **Sixteen inodes of margin**, and only for
+images this port made; a foreign or corrupt superblock is exactly what a checker
+is pointed at.
+
+**`icheck -s` opens the file O_RDWR before it knows anything about it**
+(`icheck.c:124`), and a V7 superblock has no magic number. Measured: 200 KB of
+`/dev/urandom` with a plausible `s_isize`/`s_fsize` planted at offset 1024 had
+blocks 1 and 17 rewritten. The interlock at `icheck.c:470` is real — a short
+read clears `sflg` and prints `No update` — but it only saves you when the bogus
+`s_fsize` reaches past end of file. Upstream, and unchanged; what changed is the
+shape of the exposure. On V8 the argument was `/dev/rrp0a`. Here it is an
+ordinary file in a directory of ordinary files.
+
+## The second patch: `time()` writes eight bytes into a field I narrowed to four
+
+`icheck.c:525` is upstream's `time(&sblock.s_time)`. `s_time` is a *disk* field,
+so `<sys/filsys.h>` narrows it to the four bytes a VAX gave it, while `time_t`
+stays eight because it crosses the shim seam. Measured: the overflow lands on
+`s_tfree`, at offset 220 against `s_time`'s 216.
+
+It is harmless today and **twice over**, which is exactly why it is fixed rather
+than noted: the high half of a current `time_t` is zero, and `s_tfree` is
+assigned zero two lines further down anyway. Both protections are accidents. The
+first expires in 2106; the second the moment someone reorders two statements.
+
+Swept, because a global narrowing is the kind of change that reaches past the
+file it was made in — this is the fourth thing it touched, after `ltol3`,
+`l3tol` and `icheck`'s `long *p`:
+
+```bash
+grep -rn 'time(&' src shim
+```
+
+Thirty-seven calls, and this is the only one whose argument is a field this port
+narrowed. The rest take a `time_t`, a `struct stat`'s `st_mtime`, or `utmp`'s
+`ut_time` — all eight bytes here, and all with both ends inside this port.
+
+**The general rule, now on its second confirmation:** when you narrow a type at
+the seam, sweep for what already encodes the old width — raw pointers first,
+because subscripting is self-correcting, and then anything that takes the
+*address* of the narrowed thing, because a callee's idea of the width is not
+visible at the call.
 
 ## Not changed
 
 - `icheck -s` rebuilds the free list and **writes to the image**. Nothing in
-  the suite uses it. On a plain file rather than a device that is a normal
-  write, so there is no new hazard, but a test that used it would need its own
-  copy of the image and does not exist yet.
+  the suite uses it; a test that did would need its own copy. See the O_RDWR
+  note above for what it will do to a file that is not a filesystem.
+- **`icheck.c:84` writes one past `daddr_t blist[500]`** when 500 or more `-b`
+  numbers are given, and **LP64 accidentally defused it**. Measured: `_blist`
+  ends at `0x1000127D4` and the next common symbol `_bmap` is at `0x1000127D8`,
+  so the write lands in four bytes of alignment padding that exist only because
+  a pointer is 8-aligned here. On the VAX both were four-byte and four-aligned
+  and this landed on `bmap` itself — a wild pointer on the first `duped()`.
+  Left alone: it is upstream's, it is unreachable below 500 arguments, and the
+  padding is not going anywhere.
+- **`dcheck.c:229` is an off-by-one** — `if(i > NINDIR(dev))` should be `>=` —
+  so at `i == 256` it returns uninitialised stack as a block number, which is
+  then read and parsed as directory entries. Needs a 267-block directory,
+  17,088 entries. Upstream, unreachable here, recorded so it is not rediscovered.
+- **`dev` is host noise for a device node.** `dev = makedev(0, bigflag)` is
+  applied only when the argument is a regular file; for a block or character
+  special, `dev` keeps macOS's `st_rdev` truncated to V8's 16-bit `dev_t`, and
+  `BITFS(dev)` is then *bit 6 of a macOS device number*. If set, `BSIZE` becomes
+  4096 and every offset in the program is wrong. On the VAX that bit **meant**
+  "bitmap filesystem"; here it is arbitrary. Not reachable from the suite, which
+  only ever passes a regular file, and both man pages' synopses say
+  `/dev/rrp0a`.
 - `icheck -b` takes up to `NB` 500 block numbers to report on, `MAXFN` 500 is
   unused, and `struct dinode itab[BIGINOPB*NI]` is 64×4 = 256 inodes = 16 KB.
   All fine at VAX widths and all of them fine here now that `sizeof(dinode)`
