@@ -1490,7 +1490,13 @@ Ordered so that value lands before risk, and so each step is testable alone.
    healthy, and only start lying once a directory held more than one entry per
    256 bytes.
 
-   `fsck`, `clri` and `mklost+found` follow.
+   `clri` is in too, and it needed **no change at all** — 82 lines, and everything
+   it computes is right the moment the on-disk headers are. It earns its case by
+   splitting one act between the two checkers: it zeroes an inode and leaves the
+   directory entry naming it, so `icheck` reports the orphaned block and `dcheck`
+   reports the dangling entry, and neither could report the other's half.
+
+   `fsck` and `mklost+found` follow.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `fsck` and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
@@ -1595,7 +1601,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem; `mkfs` 46/46. It began by finding that **every on-disk struct in the tree was the wrong size** |
 
-`make test` runs everything — seventeen suites, about 1031 cases.
+`make test` runs everything — seventeen suites, about 1040 cases.
 
 ### What actually works today
 

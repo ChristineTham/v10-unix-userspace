@@ -58,3 +58,4 @@ d635c5066d782a9b7c743e6cc5e0390c757ff29e  v8/usr/src/cmd/ln.c
 3aebc4d720d2c7d61e9f14965bc8924019ed9f2a  v8/usr/src/cmd/mkfs.c
 31e84d8b2366a16fc202c28aa96fa23b3dc5d7ab  v8/usr/src/cmd/icheck.c
 45ce5d3cc7f1b03b15b915e1daa59fe2af6a32be  v8/usr/src/cmd/dcheck.c
+26a202104bb669fb6ce41ad423b95111a1d9db92  v8/usr/src/cmd/clri.c

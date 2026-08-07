@@ -356,6 +356,38 @@ check "an out-of-range address is named, with its inode" \
 check "and the real block is orphaned by it"	"missing 1" \
     "$(printf '%s\n' "$c3" | grep '^missing')"
 
+# --- clri, which says the same thing in V8's own words ----------------------
+#
+# The three cases above patch bytes at computed offsets.  That is precise and it
+# ties them to the layout; clri(8) states the INTENT -- clear this inode -- and
+# it is a V8 program doing the damage rather than dd.  It is also the second
+# writer of images in this port, after mkfs.
+#
+# What makes it worth a case rather than a demonstration is that the two
+# checkers see DIFFERENT HALVES of one act.  clri zeroes the inode and does not
+# touch the directory entry naming it -- which is what clri(8) warns about, and
+# why the man page says to run fsck afterwards -- so:
+#
+#	icheck	the inode is gone and its data block is now orphaned
+#	dcheck	one directory entry still names an inode with zero links
+#
+# Neither could report the other's half, and a single checker would have made
+# the filesystem look half-repaired.
+CIMG=$TMP/clri.img
+cp "$PIMG" "$CIMG"
+cbefore=$(ic "$CIMG")
+check "before clri, three files and nothing missing" "files 3 (r=2,d=1,b=0,c=0,l=0) missing 0" \
+    "$(printf '%s\n' "$cbefore" | grep -E '^files|^missing' | tr '\n' ' ' | sq)"
+cout=$("$V8ROOT/etc/clri" "$CIMG" 3 2>&1 | sq)
+check "clri names the inode it clears"	"clearing 3"	"$cout"
+cafter=$(ic "$CIMG")
+check "icheck: the file is gone"	"files 2 (r=1,d=1,b=0,c=0,l=0)" \
+    "$(printf '%s\n' "$cafter" | grep '^files')"
+check "icheck: and its block is orphaned"	"missing 1" \
+    "$(printf '%s\n' "$cafter" | grep '^missing')"
+check "dcheck: one entry still names it, at zero links"	"3 1 0" \
+    "$(dc "$CIMG" | sed -n 3p)"
+
 # --- icheck -s, the only thing here that WRITES an image --------------------
 # It rebuilds the free list from scratch, so the image has to still check clean
 # afterwards and the superblock has to still describe it.  Two reasons to have

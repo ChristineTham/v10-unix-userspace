@@ -1280,7 +1280,7 @@ $(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
 # a binary.
 # ---------------------------------------------------------------------------
 IMGDIRSIZ = 14
-IMGBIN    = mkfs icheck dcheck
+IMGBIN    = mkfs icheck dcheck clri
 
 # Generated for the reason $(V8DIRBIN)'s rules are: a static pattern rule cannot
 # put the stem in two places, and .SECONDEXPANSION is too large a blast radius.
@@ -1844,6 +1844,12 @@ install:
 	@# incremental build here would relink nothing and install binaries still
 	@# carrying the build tree's path.  Exactly the staleness class this
 	@# repo has been bitten by four times; a clean -j8 build is 4 seconds.
+	@#
+	@# It has a second reason now, learned the hard way when $(call v8dest,..)
+	@# moved forty-one commands out of /bin: make INSTALLS files and never
+	@# removes them, so a change of destination leaves the old copy behind and
+	@# `cp -R $(ROOTFS)/.' would ship both.  A rootfs is a build output and the
+	@# only honest way to change its shape is to rebuild it.
 	@$(MAKE) clean
 	@$(MAKE) V8ROOT_DEFAULT=$(PREFIX) all
 	@mkdir -p $(PREFIX) $(BINDIR_HOST)

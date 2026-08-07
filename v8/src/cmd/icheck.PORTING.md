@@ -1,13 +1,18 @@
-# Porting notes: icheck(8) and dcheck(8)
+# Porting notes: icheck(8), dcheck(8) and clri(8)
 
-PLAN.md §8a step 4. `@(#)icheck.c 4.1 (Berkeley) 10/1/80` and `dcheck.c`,
-imported and patched in **one line between them**. They are V8's filesystem
-checkers, and they are here because `mkfs` needed a reader that was not us.
+PLAN.md §8a step 4. `@(#)icheck.c 4.1 (Berkeley) 10/1/80`, `dcheck.c` and
+`clri.c`, imported and patched in **two lines across the three**. They are V8's
+filesystem checkers, and they are here because `mkfs` needed a reader that was
+not us.
+
+`clri` needed **no change at all**. It is 82 lines, it takes the filesystem as an
+argument, and everything it computes — `itod`, `itoo`, `BSIZE(dev)`,
+`sizeof(struct dinode)` — is right the moment the on-disk headers are.
 
 *Named `icheck.PORTING.md` for the reason `mkfs.PORTING.md` is — upstream keeps
-both as bare files in `cmd/`, and `tools/import.sh` mirrors the upstream path.
-`dcheck` is covered here rather than separately; they were ported together and
-the interesting facts are about the pair.*
+all three as bare files in `cmd/`, and `tools/import.sh` mirrors the upstream
+path. One file rather than three because they were ported together and every
+interesting fact is about how they differ from each other.*
 
 ## Why they were worth doing before anything else in step 4
 
@@ -74,7 +79,7 @@ when written*, for a `long` that was eight bytes.
 
 Two things make this instance the useful one:
 
-- **The compiler said so.** `illegal pointer combination, op =` at `icheck.c:375`
+- **The compiler said so.** `illegal pointer combination, op =`
   — the only one of the three that produced a diagnostic, because the other two
   do their arithmetic through a `char *` and the type is inert there. A build
   that is otherwise warning-free is what made one line visible.
@@ -101,8 +106,10 @@ is a loss of signal even when the code behind it is unreachable.
 `dcheck` walks every directory in the image and counts references, so it parses
 the same 16-byte records `mkfs` wrote. When `mkfs` was alone the flag looked
 like a property of that program; it is a property of **talking to an image**.
-The Makefile names the set — `IMGBIN = mkfs icheck dcheck` — and generates their
-rules from one template, so the fourth one cannot be compiled without it.
+The Makefile names the set — `IMGBIN = mkfs icheck dcheck clri` — and generates
+their rules from one template, so the next one cannot be compiled without it.
+`clri` does not use `DIRSIZ` at all and is in the group anyway, because the
+group means *talks to an image* rather than *needs this number*.
 
 What a forgotten flag would do here is worse than in `mkfs`, and is the argument
 for naming the group. **Measured**: `dcheck` compiled without it reports a
@@ -135,6 +142,24 @@ are in `tests/mkfs`, each producing a different and correct diagnosis:
 The middle row is the one worth keeping both halves of. A link count is not a
 block, so `icheck` staying silent is the right answer — and a checker that
 answered everything would be the more suspicious result.
+
+### `clri` says the same thing in V8's own words, and splits it in two
+
+Those three patch bytes at computed offsets: precise, and tied to the layout.
+`clri image 3` states the intent, and it is a V8 program doing the damage.
+
+What makes it worth a case rather than a demonstration is that **the two
+checkers see different halves of one act**. `clri` zeroes the inode and leaves
+the directory entry naming it — which is exactly what `clri(8)` warns about, and
+why its man page says to run `fsck` afterwards:
+
+| | before | after `clri image 3` |
+|---|---|---|
+| `icheck` | `files 3`, `used 2`, `missing 0` | `files 2`, `used 1`, **`missing 1`** |
+| `dcheck` | silent | **`3  1  0`** — one entry, zero links |
+
+Neither could report the other's half. A single checker would have made a
+half-repaired filesystem look repaired.
 
 **Do not gate anything on the exit status**, and the two programs are wrong in
 different ways:
@@ -244,10 +269,8 @@ visible at the call.
 
 ## Still open
 
-- **`fsck`** — 1925 lines, and the one that repairs rather than reports.
-- **`clri`** — 82 lines, and the natural way to *make* a corrupt image on
-  purpose rather than with `dd`. The three cases above patch bytes by offset,
-  which is fine but ties them to the layout; `clri` would state the intent.
+- **`fsck`** — 1925 lines, and the one that repairs rather than reports. It is
+  what would put the directory entry `clri` leaves behind into `lost+found`.
 - **`mklost+found`**, which the `mkfs` man page says should run immediately
   after `mkfs`. It needs a mounted filesystem, so it waits for step 5.
 - Nothing here has been read by a real V8 kernel. That is step 6.
