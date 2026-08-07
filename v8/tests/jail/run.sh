@@ -44,11 +44,21 @@ ck() {
 # that has stopped asking. They are built now, so the exemption is gone and
 # `mv' in particular is load-bearing: four upstream makefiles in the rung-5
 # sweep below run `mv y.tab.c foo.c' and died on "Cannot load mv" without it.
+#
+# Asked of the jail's PATH rather than of /bin, and that is the right question
+# rather than a weakening: V8 make execs /bin/sh and it is SH that searches, so
+# what matters is that the name resolves the way a recipe would resolve it.  It
+# also has to be asked that way now -- `sed' is a /usr/bin command in V8 and
+# moved there when the install layout was taken from upstream's own tables.
 for t in sh make cc cat echo rm cp mv sed mkdir rmdir; do
-	if [ -x "$V8ROOT/bin/$t" ]; then
+	found=
+	for d in bin usr/bin; do
+		[ -x "$V8ROOT/$d/$t" ] && { found=$d; break; }
+	done
+	if [ -n "$found" ]; then
 		pass=$((pass+1))
 	else
-		fail=$((fail+1)); echo "FAIL /bin/$t missing from the rootfs"
+		fail=$((fail+1)); echo "FAIL $t is on neither /bin nor /usr/bin in the rootfs"
 	fi
 done
 
@@ -478,7 +488,7 @@ esac
 #
 # So this runs V8's make on V8's makefile with V8's cc and V8's yacc, in a
 # directory containing nothing but V8's sources, under strict.
-ck 'V8 yacc is in the jail' yes "$([ -x "$V8ROOT/bin/yacc" ] && echo yes || echo no)"
+ck 'V8 yacc is in the jail' yes "$([ -x "$V8ROOT/usr/bin/yacc" ] && echo yes || echo no)"
 
 mkdir -p r5 && cp "$ROOT"/src/cmd/lex/*.c "$ROOT"/src/cmd/lex/*.y \
     "$ROOT"/src/cmd/lex/[Mm]akefile r5/ 2>/dev/null
@@ -619,9 +629,9 @@ rm -f lm.c lm lmx lc.c lc
 # already happened (every binary links libv8sys), and dropping to uid 3 on a
 # Mac would break every file operation to imitate a multi-user system PLAN.md
 # S1 lists as a non-goal.
-ck 'the launcher is installed' yes "$([ -x "$V8ROOT/bin/v8" ] && echo yes || echo no)"
+ck 'the launcher is installed' yes "$([ -x "$V8ROOT/usr/bin/v8" ] && echo yes || echo no)"
 ck 'it lands you at the root of the V8 world' '/' \
-   "$(echo pwd | "$V8ROOT/bin/v8" 2>&1 | head -1)"
+   "$(echo pwd | "$V8ROOT/usr/bin/v8" 2>&1 | head -1)"
 
 # The directories THEMSELVES, not just their contents.  v8dirs entries carry a
 # trailing slash so "/binary" is not mistaken for "/bin/", and that also meant
@@ -640,8 +650,8 @@ ck 'it lands you at the root of the V8 world' '/' \
 # both sides, since the two listings come from two different ls implementations.
 ck 'ls /etc shows V8 s etc, not the host s' \
    "$(LC_ALL=C ls -1 "$V8ROOT/etc" | LC_ALL=C sort | tr '\n' ' ')" \
-   "$(echo 'ls /etc' | "$V8ROOT/bin/v8" 2>&1 | LC_ALL=C sort | tr '\n' ' ')"
-case "$(echo 'ls /bin' | "$V8ROOT/bin/v8" 2>&1)" in
+   "$(echo 'ls /etc' | "$V8ROOT/usr/bin/v8" 2>&1 | LC_ALL=C sort | tr '\n' ' ')"
+case "$(echo 'ls /bin' | "$V8ROOT/usr/bin/v8" 2>&1)" in
 *cc*) pass=$((pass+1)) ;;
 *) fail=$((fail+1)); echo "FAIL ls /bin does not show the V8 /bin" ;;
 esac
@@ -758,7 +768,7 @@ ck 'a #! script runs under V8 sh, so pwd is a V8 path' '/' \
    "$(cd "$V8ROOT" && "$V8ROOT/bin/sh" -c "$TMP/sb" 2>&1 | head -1)"
 
 # man through its OWN #! line -- the case that found this.
-case "$(echo 'man cat' | "$V8ROOT/bin/v8" 2>&1)" in
+case "$(echo 'man cat' | "$V8ROOT/usr/bin/v8" 2>&1)" in
 *"Eighth Edition"*) pass=$((pass+1)) ;;
 *) fail=$((fail+1)); echo "FAIL man via its shebang did not render" ;;
 esac

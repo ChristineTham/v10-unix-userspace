@@ -733,6 +733,32 @@ int v8s_execve(char *p, char **a, char **e)
 				if (j[0] != 's')
 					SAY("v8sys: sanctioned host toolchain: ",
 					    p, " (as/ld are the host's by design)\n");
+			} else if (rawsys2(SYS_access, (long)p, 0) != 0) {
+				/*
+				 * A MISS IS NOT AN ESCAPE, and the difference
+				 * only became visible when a command moved.
+				 *
+				 * V8's sh searches PATH by calling execve on
+				 * each directory in turn, so with
+				 * PATH=/bin:/usr/bin every /usr/bin command
+				 * probes /bin/<name> first.  Nothing is in that
+				 * rootfs directory, vpath() leaves the path
+				 * alone, and this arm reported an escape -- for
+				 * a file the Mac does not have either.  It was
+				 * invisible while every tool this port installs
+				 * lived in /bin and the first probe always hit.
+				 *
+				 * So: refuse, quietly, when the host has no such
+				 * file.  Nothing can run from a path that does
+				 * not exist, which is the only thing V8JAIL is
+				 * there to prevent; sh takes the ENOENT and
+				 * tries the next directory, exactly as it would
+				 * on a real machine.  The loud arms below still
+				 * fire for a host binary that IS there, which is
+				 * what tests/jail's negative cases use.
+				 */
+				v8_errno = V8_ENOENT;
+				return (-1);
 			} else if (j[0] == 's') {
 				SAY("v8sys: exec leaves the jail: ", p,
 				    " (refused: V8JAIL=strict)\n");

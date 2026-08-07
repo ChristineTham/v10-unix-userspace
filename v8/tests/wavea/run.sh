@@ -5,7 +5,8 @@
 # bug found so far has lived in combinations of features that real code uses and
 # synthetic tests do not, so this suite leads with real programs by design.
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)	# the release tree, v8/
+REPO=$(cd "$ROOT/.." && pwd)			# the repository above it
 CC=$ROOT/rootfs/bin/cc
 V8ROOT=$ROOT/rootfs
 export V8ROOT
@@ -37,9 +38,21 @@ pass=0 fail=0
 # round-trip written by this script, which has no installed counterpart.  If a
 # real command ever falls through to it that is a missing install rule, and the
 # `every imported command is installed' case at the foot of this file says so.
+# v8which NAME -- where the rootfs installed a command.  /bin and /usr/bin are
+# both real answers and which one is upstream's decision, not ours: V8's /bin is
+# a 56-entry root-filesystem set and wc, tr, sort, sed and most of Wave A live in
+# /usr/bin.  See the Makefile's v8dest, and the case at the foot of this file
+# that asserts each one landed where the shipped tree has it.
+v8which() {
+	for d in bin usr/bin etc; do
+		[ -x "$V8ROOT/$d/$1" ] && { echo "$V8ROOT/$d/$1"; return 0; }
+	done
+	return 1
+}
+
 build() {
-	if [ -x "$V8ROOT/bin/$1" ]; then
-		cp "$V8ROOT/bin/$1" "$TMP/$1" || return 1
+	if src=$(v8which "$1"); then
+		cp "$src" "$TMP/$1" || return 1
 		return 0
 	fi
 	if [ $# -lt 2 ]; then
@@ -267,19 +280,17 @@ try pwd    'pwd'             "$(/bin/pwd -P)" "./pwd"
 # `cc' is the one deliberate exception: the driver has its own rule because it
 # links against libv8c, which a driver has to compile first (the cc-seed cycle).
 #
-# /etc is checked as well as /bin, and only since mkfs.  V8 splits its commands
-# by manual section and keeps section 8 -- the ones that operate on a
-# filesystem or a machine rather than on files -- in /etc; mkfs(8)'s own
-# synopsis says `/etc/mkfs'.  Every single-file command imported before it
-# happened to be a /bin command, which is why this said `bin' alone.  It is a
-# widening of WHERE, not of WHETHER: the case below pins mkfs to /etc
-# specifically, so the pair still says something a plain `find' would not.
+# This asked only about /bin, because /bin was the only directory this port
+# installed into.  V8 has four -- /bin is a 56-entry root-filesystem set from
+# when / had to fit on one pack, /usr/bin holds most of the world, /etc the
+# section-8 tools and /lib cpp -- so the question is WHETHER, and the case
+# below is WHERE.  Splitting them that way is what stops this one from being
+# weakened by the layout change that made it necessary.
 missing=
 for src in "$ROOT"/src/cmd/*.c; do
 	name=$(basename "$src" .c)
 	[ "$name" = cc ] && continue
-	[ -x "$V8ROOT/bin/$name" ] || [ -x "$V8ROOT/etc/$name" ] ||
-		missing="$missing $name"
+	v8which "$name" >/dev/null || missing="$missing $name"
 done
 if [ -z "$missing" ]; then
 	pass=$((pass+1))
@@ -288,18 +299,44 @@ else
 	echo "FAIL these src/cmd commands are built but not installed:$missing"
 fi
 
-# ...and the section-8 ones are in /etc rather than /bin, which is the half of
-# the statement the widened check above can no longer make on its own.
-etcwrong=
-for s8 in mkfs icheck dcheck; do
-	[ -x "$V8ROOT/etc/$s8" ] && [ ! -e "$V8ROOT/bin/$s8" ] ||
-		etcwrong="$etcwrong $s8"
+# ...AND IN THE DIRECTORY V8 PUT IT IN, which is the half the check above cannot
+# make on its own and which this port got wrong for forty-one commands.
+#
+# The Makefile derives the destination from third_party/.../cmd/Admin's tables,
+# which is Bell Labs' BUILD description.  This case deliberately asks a
+# DIFFERENT source -- the shipped /bin, /usr/bin, /lib and /etc directories of
+# the distribution itself -- so the two check each other rather than one being
+# read back twice.  They agree on every command this port installs; the five
+# that upstream shipped source for and never installed (bcd, head, morse,
+# unexpand, yes) have no shipped answer, so only Admin/dest has an opinion and
+# they are excused by name.
+SHIPPED=$REPO/third_party/Research-Unix-v8/v8
+shipdir() {
+	for d in bin usr/bin lib etc usr/lib; do
+		[ -e "$SHIPPED/$d/$1" ] && { echo "$d"; return 0; }
+	done
+	return 1
+}
+misplaced=
+for src in "$ROOT"/src/cmd/*.c "$ROOT"/src/cmd/*/; do
+	name=$(basename "${src%/}" .c)
+	case $name in
+	cc|ccom) continue ;;			# built into the toolchain
+	bcd|head|morse|unexpand|yes) continue ;;	# never shipped; see above
+	esac
+	want=$(shipdir "$name") || continue	# not a program V8 shipped
+	got=
+	for d in bin usr/bin lib etc usr/lib; do
+		[ -x "$V8ROOT/$d/$name" ] && { got=$d; break; }
+	done
+	[ -z "$got" ] && continue		# the completeness cases above own this
+	[ "$want" = "$got" ] || misplaced="$misplaced $name(/$got,want /$want)"
 done
-if [ -z "$etcwrong" ]; then
+if [ -z "$misplaced" ]; then
 	pass=$((pass+1))
 else
 	fail=$((fail+1))
-	echo "FAIL these section-8 commands belong in /etc and not /bin:$etcwrong"
+	echo "FAIL installed where V8 did not put them:$misplaced"
 fi
 
 # ...AND THE SAME QUESTION OF THE DIRECTORIES, which is where the glob above
@@ -338,21 +375,21 @@ fi
 # that dies on startup still satisfies the check above -- which is exactly what
 # units and ptx did until their data files were installed too.
 check 'installed cal runs'   'February 1985' \
-    "$("$V8ROOT/bin/cal" 2 1985 | head -1 | sed 's/^ *//;s/ *$//')"
-check 'installed vis runs'   'a\001' "$(printf 'a\001\n' | "$V8ROOT/bin/vis")"
-check 'installed ascii runs' '1'     "$("$V8ROOT/bin/ascii" | grep -c 'nul')"
+    "$("$V8ROOT/usr/bin/cal" 2 1985 | head -1 | sed 's/^ *//;s/ *$//')"
+check 'installed vis runs'   'a\001' "$(printf 'a\001\n' | "$V8ROOT/usr/bin/vis")"
+check 'installed ascii runs' '1'     "$("$V8ROOT/usr/bin/ascii" | grep -c 'nul')"
 # bcd and morse read STDIN, not argv.
 check 'installed bcd punches a card' '1' \
-    "$(echo AB | "$V8ROOT/bin/bcd" | grep -c '^/AB')"
-check 'installed morse runs' '1' "$(echo e | "$V8ROOT/bin/morse" | grep -c 'dit')"
+    "$(echo AB | "$V8ROOT/usr/bin/bcd" | grep -c '^/AB')"
+check 'installed morse runs' '1' "$(echo e | "$V8ROOT/usr/bin/morse" | grep -c 'dit')"
 # units reads /usr/lib/units, and answers "no table" without it.  1 inch is
 # 2.54 cm, so this checks the table was actually consulted rather than opened.
 check 'installed units converts' '1' \
-    "$(printf 'inch\ncm\n' | "$V8ROOT/bin/units" 2>&1 | grep -c '2\.54')"
+    "$(printf 'inch\ncm\n' | "$V8ROOT/usr/bin/units" 2>&1 | grep -c '2\.54')"
 # ptx reads /usr/lib/eign (the "ignore" word list) and emits one .xx line per
 # rotation.  Without the file it exits with "Cannot open  file /usr/lib/eign".
 check 'installed ptx permutes' '3' \
-    "$(printf 'alpha beta gamma\n' | "$V8ROOT/bin/ptx" | grep -c '^\.xx')"
+    "$(printf 'alpha beta gamma\n' | "$V8ROOT/usr/bin/ptx" | grep -c '^\.xx')"
 
 # --- the eleven that were imported into their own directories and never built
 # Same rule as above: existing is not running. These are the ones the glob
@@ -441,9 +478,9 @@ rc=$?
 # sed is the one whose absence would have been felt hardest, and -n with a line
 # address exercises the address parser rather than just the copy loop.
 check 'installed sed selects a line' 'b' \
-    "$(printf 'a\nb\nc\n' | "$V8ROOT/bin/sed" -n '2p')"
+    "$(printf 'a\nb\nc\n' | "$V8ROOT/usr/bin/sed" -n '2p')"
 check 'installed sed substitutes'    'xbc' \
-    "$(printf 'abc\n' | "$V8ROOT/bin/sed" 's/a/x/')"
+    "$(printf 'abc\n' | "$V8ROOT/usr/bin/sed" 's/a/x/')"
 
 # `sed -n l' ON A HIGH BYTE, which crashed. char is signed, so a byte >= 0200 is
 # negative, `if(*p1 >= 040)' sent it down the control-character arm, and
@@ -452,15 +489,15 @@ check 'installed sed substitutes'    'xbc' \
 # nothing there, so the VAX printed nonsense and this faulted. Newly reachable
 # too -- the byte that does it is any UTF-8 continuation. src/cmd/sed/PORTING.md.
 check 'sed -n l survives a UTF-8 byte' 'éx' \
-    "$(printf '\303\251x\n' | "$V8ROOT/bin/sed" -n l)"
-utf8rc=$(printf '\303\251x\n' | "$V8ROOT/bin/sed" -n l >/dev/null 2>&1; echo $?)
+    "$(printf '\303\251x\n' | "$V8ROOT/usr/bin/sed" -n l)"
+utf8rc=$(printf '\303\251x\n' | "$V8ROOT/usr/bin/sed" -n l >/dev/null 2>&1; echo $?)
 check '...and exits cleanly rather than crashing' '0' "$utf8rc"
 # ...while the control characters it DOES have escapes for still get them: the
 # fix must not have sent 0..037 down the printable arm as well. Asserted as a
 # property rather than a literal, because trans[011] is ">\\t" -- a prefix
 # character and then the escape -- and hard-coding that spelling tests the table
 # rather than the branch. What matters is that no raw tab reaches the output.
-tabout=$(printf 'a\tb\n' | "$V8ROOT/bin/sed" -n l)
+tabout=$(printf 'a\tb\n' | "$V8ROOT/usr/bin/sed" -n l)
 case "$tabout" in
 *'\t'*) pass=$((pass+1)) ;;
 *) fail=$((fail+1)); echo "FAIL sed -n l did not escape a tab: [$tabout]" ;;
@@ -469,28 +506,28 @@ esac
 # characters \t, while the escape sed emits is a backslash and a t with od's
 # column padding between them -- so a match here means the byte came through
 # unescaped, which is the opposite of what the first case asks.
-if printf 'a\tb\n' | "$V8ROOT/bin/sed" -n l | od -An -c | grep -q '\\t'; then
+if printf 'a\tb\n' | "$V8ROOT/usr/bin/sed" -n l | od -An -c | grep -q '\\t'; then
 	fail=$((fail+1)); echo "FAIL sed -n l let a raw tab through"
 else
 	pass=$((pass+1))
 fi
 # tsort is a real algorithm, so a cycle-free order is a real answer.
 check 'installed tsort orders'  'a b c' \
-    "$(printf 'a b\nb c\n' | "$V8ROOT/bin/tsort" | tr '\n' ' ' | sed 's/ $//')"
+    "$(printf 'a b\nb c\n' | "$V8ROOT/usr/bin/tsort" | tr '\n' ' ' | sed 's/ $//')"
 # factor echoes the number, then each factor on its own indented line, then a
 # blank one -- so the factors are lines 2..n-1 with the indentation stripped.
 check 'installed factor factors' '7 13' \
-    "$("$V8ROOT/bin/factor" 91 | tail -n +2 | tr -d ' \t' | grep -v '^$' |
+    "$("$V8ROOT/usr/bin/factor" 91 | tail -n +2 | tr -d ' \t' | grep -v '^$' |
        tr '\n' ' ' | sed 's/ $//')"
-check 'installed dc computes'   '42'   "$(echo '6 7 * p' | "$V8ROOT/bin/dc")"
+check 'installed dc computes'   '42'   "$(echo '6 7 * p' | "$V8ROOT/usr/bin/dc")"
 check 'installed fmt reflows'   'one two three' \
-    "$(printf 'one\ntwo\nthree\n' | "$V8ROOT/bin/fmt" | head -1)"
+    "$(printf 'one\ntwo\nthree\n' | "$V8ROOT/usr/bin/fmt" | head -1)"
 # ed is a line editor driven entirely by stdin; append, write, quit.
 printf 'a\nhello ed\n.\nw %s/e.txt\nq\n' "$W" | "$V8ROOT/bin/ed" >/dev/null 2>&1
 check 'installed ed writes a file' 'hello ed' "$(cat "$W/e.txt" 2>/dev/null)"
 # primes takes a starting value and counts up.
 check 'installed primes generates' '11 13 17' \
-    "$(echo 11 | "$V8ROOT/bin/primes" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    "$(echo 11 | "$V8ROOT/usr/bin/primes" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
 rm -rf "$W"
 
 # date(1) -- the first piece of Phase 4, and the only groveler that needs no

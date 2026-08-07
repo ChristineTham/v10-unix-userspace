@@ -230,7 +230,7 @@ check "who imports libkmemu's whole surface and no more" \
 check "df imports the same set, being the same library" \
 	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/bin/df")"
 check "and so does load" \
-	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/bin/load")"
+	"$KMEMU_IMPORTS" "$(libcimports "$V8ROOT/usr/bin/load")"
 # ps is the reason proc_pidinfo is on the list at all, and the interesting one:
 # it is the first program here that reads a FILESYSTEM this port implements
 # rather than a file it manufactures. Same set, because it is the same library.
@@ -456,7 +456,7 @@ fi
 # seeks to that address in /dev/kmem and reads three doubles. So the shim
 # manufactures a kernel, and one table in kmem.c drives both files -- get them
 # out of step and load reads the wrong bytes and prints them without complaint.
-LOAD=$V8ROOT/bin/load
+LOAD=$V8ROOT/usr/bin/load
 rm -rf "$V8ROOT/unix" "$V8ROOT/dev"
 "$LOAD" > "$TMP/load.out" 2>"$TMP/load.err"
 [ -f "$V8ROOT/unix" ]     && ok || bad "load creates /unix"
@@ -594,8 +594,8 @@ check "and the groveler still gets its header" \
 # /usr/bin/w and w branches on argv[0]. Only the uptime half can run here --
 # w's full path is 1981 Berkeley code that walks VAX page tables to find each
 # process's u-area, and there is nothing here to walk.
-W=$V8ROOT/bin/w
-UP=$V8ROOT/bin/uptime
+W=$V8ROOT/usr/bin/w
+UP=$V8ROOT/usr/bin/uptime
 
 # One binary, two names, and `ln' rather than `cp' is what makes that true
 # rather than merely described. Same inode, or the two can drift.

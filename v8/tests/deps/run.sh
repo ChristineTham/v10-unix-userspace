@@ -226,8 +226,8 @@ dep 'sh -> rootfs /bin/sh'     $B/sh/sh                        rootfs/bin/sh
 # runs `yacc parser.y`.  Until they were installed the jail refused it outright,
 # which is the guard working: they had been built and used by this Makefile for
 # months without ever being reachable inside the world they belong to.
-dep 'yacc -> rootfs /bin/yacc' $B/yacc/yacc                    rootfs/bin/yacc
-dep 'lex -> rootfs /bin/lex'   $B/lex/lex                      rootfs/bin/lex
+dep 'yacc -> rootfs /bin/yacc' $B/yacc/yacc                    rootfs/usr/bin/yacc
+dep 'lex -> rootfs /bin/lex'   $B/lex/lex                      rootfs/usr/bin/lex
 dep 'make -> rootfs /bin/make' $B/make/make                    rootfs/bin/make
 # make's `defs` is a header under a name that is not .h -- the fourth file of
 # that shape in this tree, after lex's once.c, tbl's t..c and refer's refer..c.
@@ -260,7 +260,7 @@ fi
 
 # --- Wave A: installed commands and the data two of them read ----------------
 dep 'wave A command source'   src/cmd/cal.c   $B/bin/cal
-dep 'wave A command install'  $B/bin/cal      rootfs/bin/cal
+dep 'wave A command install'  $B/bin/cal      rootfs/usr/bin/cal
 # units and ptx open /usr/lib/units and /usr/lib/eign by absolute path at RUN
 # time, so a missing install shows up as "no table" or "Cannot open  file
 # /usr/lib/eign" rather than as a build failure.  Their rules are asserted by
@@ -299,10 +299,10 @@ dep 'df -> installed df'       $B/bin/df                       rootfs/bin/df
 dep 'fstab -> libc'            src/libc/stdio/fstab.c          $B/libc/libv8c.a
 dep 'load source -> load'      src/cmd/load/load.c             $B/bin/load
 dep 'kmem.c -> load'           shim/libkmemu/kmem.c            $B/bin/load
-dep 'load -> installed load'   $B/bin/load                     rootfs/bin/load
+dep 'load -> installed load'   $B/bin/load                     rootfs/usr/bin/load
 dep 'w source -> w'            src/cmd/w/w.c                   $B/bin/w
 dep 'kmem.c -> w'              shim/libkmemu/kmem.c            $B/bin/w
-dep 'w -> installed w'         $B/bin/w                        rootfs/bin/w
+dep 'w -> installed w'         $B/bin/w                        rootfs/usr/bin/w
 # uptime is a HARD LINK to w, and dep() cannot express it: touching w touches
 # the SHARED INODE, so uptime's mtime moves with it and make correctly sees
 # nothing to do.  That is the link working, not a missing edge -- two names on
@@ -521,8 +521,8 @@ nodep 'grap does not reach pic'   src/cmd/grap/grap.h    $B/pic/main.o
 for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
          rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
-         rootfs/bin/cal rootfs/bin/who rootfs/bin/df rootfs/bin/load \
-         rootfs/bin/w rootfs/bin/uptime rootfs/bin/ps \
+         rootfs/usr/bin/cal rootfs/bin/who rootfs/bin/df rootfs/usr/bin/load \
+         rootfs/usr/bin/w rootfs/usr/bin/uptime rootfs/bin/ps \
          rootfs/etc/mkfs rootfs/etc/icheck rootfs/etc/dcheck; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
@@ -560,11 +560,11 @@ $MAKE >/dev/null 2>&1
 # -- passing the loop above -- while quietly being separate binaries that the
 # next rebuild could leave at different vintages.  Restoration is not the
 # invariant here; identity is.
-for victim in rootfs/bin/w rootfs/bin/uptime; do
+for victim in rootfs/usr/bin/w rootfs/usr/bin/uptime; do
 	rm -f "$ROOT/$victim"
 	$MAKE >/dev/null 2>&1
-	wi=$(stat -f %i "$ROOT/rootfs/bin/w" 2>/dev/null)
-	ui=$(stat -f %i "$ROOT/rootfs/bin/uptime" 2>/dev/null)
+	wi=$(stat -f %i "$ROOT/rootfs/usr/bin/w" 2>/dev/null)
+	ui=$(stat -f %i "$ROOT/rootfs/usr/bin/uptime" 2>/dev/null)
 	if [ -n "$wi" ] && [ "$wi" = "$ui" ]; then
 		pass=$((pass+1))
 	else

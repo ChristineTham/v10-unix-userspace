@@ -217,7 +217,7 @@ all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys libv8kern crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
+stage0: cpp v8ccom v8cc libv8sys libv8kern crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
@@ -242,7 +242,7 @@ test-deps:
 	@MAKE="$(MAKE)" $(ROOT)tests/deps/run.sh
 # The chroot: that a build driven by V8 make runs entirely on V8 binaries.
 # Depends on the whole jail, since that is what it tests.
-test-jail: v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/bin/yacc $(ROOTFS)/bin/lex
+test-jail: v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex
 	@$(ROOT)tests/jail/run.sh
 # The self-host boundary: every translation unit of cpp and ccom compiles under
 # v8cc and links freestanding.  Needs the driver, its passes, the headers, the
@@ -942,6 +942,65 @@ $(YACC_OBJ): $(YACCSRC)/dextern $(YACCSRC)/files
 # ---------------------------------------------------------------------------
 BINDIR = $(BUILD)/bin
 
+# ---------------------------------------------------------------------------
+# WHERE A COMMAND IS INSTALLED IS UPSTREAM'S DECISION, and upstream wrote it
+# down -- twice, in two places that agree.
+#
+# This port put everything in /bin for as long as /bin was the only directory
+# it had, and that was wrong for FORTY-ONE commands.  V8's /bin is a 56-entry
+# root-filesystem set from the era when / had to fit on one pack; wc, tr, sort,
+# sed, yacc, lex, dc and the rest live in /usr/bin.  So `ls /bin' inside the
+# jail listed a machine that never existed.
+#
+# The two sources:
+#
+#	third_party/.../cmd/Admin/dest		the build description.  A shell
+#		script that looks a name up in binfiles, etcfiles, libfiles and
+#		falls through to /usr/bin.  It is what Admin/Mk calls to decide
+#		where to put each of the bare cmd/*.c programs, and it is the
+#		makefile-equivalent for the half of cmd/ that has no makefile.
+#	third_party/.../v8/{bin,usr/bin,lib,etc}	the shipped tree itself.
+#
+# They agree on 41 of the 46 commands this port installs and the other five
+# (bcd, head, morse, unexpand, yes) were never shipped at all, so only the
+# first has an opinion -- /usr/bin, by fall-through.  Where they DO differ is
+# outside this port: `login', `pstat', `rsh' and `track' are listed and not
+# shipped, `[', `oops' and `tp' shipped and not listed.
+#
+# DERIVED RATHER THAN RETYPED, which is the whole point.  A list of 46
+# destinations copied into this file would be right today and would not survive
+# the next import; reading Bell Labs' own tables means a newly imported command
+# lands where V8 put it without anyone deciding.  tests/wavea asserts the
+# agreement from the far end, against the shipped directories rather than
+# against these tables, so the two sources still check each other.
+#
+# Note the hole in Admin/dest, since it explains why this is not simply a
+# transcription of that script: it greps a `ulibfiles' that is not in the
+# directory, so anything belonging in /usr/lib falls through to /usr/bin.
+# Nothing this port installs is affected -- checked -- and the shipped tree is
+# the source that would catch it.
+# ---------------------------------------------------------------------------
+ADMIN    := $(REPO)third_party/Research-Unix-v8/v8/usr/src/cmd/Admin
+ADMINBIN := $(shell cat $(ADMIN)/binfiles)
+ADMINETC := $(shell cat $(ADMIN)/etcfiles)
+ADMINLIB := $(shell cat $(ADMIN)/libfiles)
+
+# $(call v8dest,NAME) -> the directory under $(ROOTFS), without a leading slash.
+#
+# $(strip) is load-bearing and is not tidiness.  A backslash-newline inside a
+# variable's VALUE becomes a single space and the next line's indentation is
+# kept, so without it this returns "          etc" -- and make then splits
+# $(ROOTFS)/          etc/mkfs into TWO targets, $(ROOTFS)/ and etc/mkfs.  Seen:
+# "warning: overriding commands for target .../rootfs/" followed by
+# "No rule to make target `usr/bin/touch'", neither of which names the cause.
+v8dest = $(strip \
+         $(if $(filter $(1),$(ADMINBIN)),bin,\
+         $(if $(filter $(1),$(ADMINETC)),etc,\
+         $(if $(filter $(1),$(ADMINLIB)),lib,usr/bin))))
+
+# $(call v8install,NAMES) -> the installed paths for a list of commands.
+v8install = $(foreach p,$(1),$(ROOTFS)/$(call v8dest,$(p))/$(p))
+
 # Single-source commands.  rm, touch, ln, test and chmod were imported for the
 # bootstrap: the authentic makefiles cannot run without them and none of them
 # had been ported.
@@ -960,7 +1019,7 @@ V8BIN = cat echo cmp rm touch ln test chmod pwd wc head tail tee tr \
 # should differ from $(V8BIN) by `cc' alone.  tests/wavea asserts it.
 
 V8BIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8BIN))
-V8BIN_INSTALL = $(patsubst %,$(ROOTFS)/bin/%,$(V8BIN))
+V8BIN_INSTALL = $(call v8install,$(V8BIN))
 
 # Data files two of those commands read by absolute path at RUN time, the same
 # shape as troff's tmac and grap.defines.  Without them `units' answers "no
@@ -1055,7 +1114,7 @@ $(foreach p,$(V8DIRBIN),\
   $(eval $(call dirprog_rule,$(p),$(call dirsrcs,$(p)))))
 
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN))
-V8DIRBIN_INSTALL = $(patsubst %,$(ROOTFS)/bin/%,$(V8DIRBIN))
+V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN))
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
@@ -1064,10 +1123,8 @@ V8DIRBIN_INSTALL = $(patsubst %,$(ROOTFS)/bin/%,$(V8DIRBIN))
 
 v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
        $(V8DIRBIN_BUILT) $(V8DIRBIN_INSTALL) \
-       $(BINDIR)/df $(ROOTFS)/bin/df \
-       $(BINDIR)/load $(ROOTFS)/bin/load \
-       $(BINDIR)/w $(ROOTFS)/bin/w $(ROOTFS)/bin/uptime \
-       $(BINDIR)/ps $(ROOTFS)/bin/ps \
+       $(BINDIR)/df $(BINDIR)/load $(BINDIR)/w $(BINDIR)/ps \
+       $(call v8install,df load w ps) $(ROOTFS)/usr/bin/uptime \
        imgbin
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
@@ -1136,7 +1193,7 @@ $(BINDIR)/w: $(SRC)/cmd/w/w.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
 # otherwise match, so that the recipe can delete uptime.
 #
 # THAT DELETION IS THE WHOLE POINT, and it is not tidiness.  Deleting
-# rootfs/bin/w breaks the link, so the next build must remake it -- but make
+# rootfs/usr/bin/w breaks the link, so the next build must remake it -- but make
 # decides that by comparing mtimes, and macOS make compares them at WHOLE-SECOND
 # granularity.  The cp below and the ln beneath it land in the same second, so
 # uptime is never *older* than w, so it is never remade, and the two names stay
@@ -1147,10 +1204,10 @@ $(BINDIR)/w: $(SRC)/cmd/w/w.c $(V8CC_DEPS) $(V8DEPS) $(KMEMU_LIB)
 # which has no granularity.  cp(1) writes through a live hard link, so in the
 # ordinary case uptime was already correct and this just relinks it; in the
 # broken case it is the repair.
-$(ROOTFS)/bin/w: $(BINDIR)/w
+$(ROOTFS)/usr/bin/w: $(BINDIR)/w
 	@mkdir -p $(@D) && cp $< $@ && rm -f $(@D)/uptime
 
-$(ROOTFS)/bin/uptime: $(ROOTFS)/bin/w
+$(ROOTFS)/usr/bin/uptime: $(ROOTFS)/usr/bin/w
 	@mkdir -p $(@D) && rm -f $@ && ln $< $@
 
 
@@ -1242,14 +1299,14 @@ $(BINDIR)/$(1): $(BUILD)/$(1)/$(1).o $$(V8DEPS)
 	    $(BUILD)/$(1)/$(1).o $$(V8LIBS)
 	@echo "built $$@"
 
-$(ROOTFS)/etc/$(1): $(BINDIR)/$(1)
+$(ROOTFS)/$$(call v8dest,$(1))/$(1): $(BINDIR)/$(1)
 	@mkdir -p $$(@D) && cp $$< $$@
 endef
 
 $(foreach p,$(IMGBIN),$(eval $(call imgprog_rule,$(p))))
 
 IMGBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(IMGBIN))
-IMGBIN_INSTALL = $(patsubst %,$(ROOTFS)/etc/%,$(IMGBIN))
+IMGBIN_INSTALL = $(call v8install,$(IMGBIN))
 
 # Same reason as $(V8BIN_BUILT): without this make treats each as an
 # intermediate of the install copy and deletes it, leaving a working rootfs and
@@ -1262,6 +1319,16 @@ mkfs: imgbin
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
 # them -- this port's chroot, implemented where its kernel lives.
 $(ROOTFS)/bin/%: $(BINDIR)/%
+	@mkdir -p $(@D) && cp $< $@
+
+# ...and the same for /usr/bin, which is where $(call v8dest,...) sends most of
+# them.  Two pattern rules rather than one parameterised by directory, because
+# a target either begins with $(ROOTFS)/bin/ or it does not and make picks
+# without ambiguity.  The Wave C tools have EXPLICIT rules for their own
+# $(ROOTFS)/usr/bin targets, sourced from $(BUILD)/<prog>/<prog> rather than
+# from $(BINDIR), and an explicit rule beats a pattern -- so nroff, troff, tbl,
+# eqn, pic, refer, grap, spell and man are untouched by this.
+$(ROOTFS)/usr/bin/%: $(BINDIR)/%
 	@mkdir -p $(@D) && cp $< $@
 
 # sh is built from a directory, not a single file, so it gets its own install
@@ -1287,9 +1354,16 @@ $(ROOTFS)/bin/sh: $(BUILD)/sh/sh
 $(ROOTFS)/bin/[: $(BINDIR)/test
 	@mkdir -p $(@D) && cp $< $@
 
-$(ROOTFS)/bin/yacc: $(YACC)
+# yacc and lex are /usr/bin commands, on both of upstream's sources -- the
+# shipped tree has them there and Admin/binfiles does not list them.  They stay
+# reachable from inside the jail because tests/jail exports PATH=/bin:/usr/bin
+# and both halves resolve through rootpath(); V8's make execs /bin/sh, and it is
+# sh that searches.  These two are named explicitly rather than going through
+# $(call v8dest,...) because their source is $(YACC)/$(LEX) in the build tree
+# rather than $(BINDIR)/<name>.
+$(ROOTFS)/usr/bin/yacc: $(YACC)
 	@mkdir -p $(@D) && cp $< $@
-$(ROOTFS)/bin/lex: $(LEX)
+$(ROOTFS)/usr/bin/lex: $(LEX)
 	@mkdir -p $(@D) && cp $< $@
 $(ROOTFS)/bin/make: $(BUILD)/make/make
 	@mkdir -p $(@D) && cp $< $@
@@ -1756,7 +1830,7 @@ $(LIBC_OBJ): $(wildcard $(LIBCSRC)/stdio/*.h)
 # distrust most: silently, somewhere else.  So install rebuilds with the prefix
 # stamped in.
 #
-# The launcher is a THIN SHELL SCRIPT, not a copy of $(ROOTFS)/bin/v8.  The V8
+# The launcher is a THIN SHELL SCRIPT, not a copy of $(ROOTFS)/usr/bin/v8.  The V8
 # binary is what runs once you are inside; the script is what a Mac user types,
 # and it exists to set PATH so the shell finds V8's tools before the host's.
 PREFIX      ?= /usr/local/v8
@@ -1784,7 +1858,7 @@ install:
 	   echo '# the real macOS with no special casing.'; \
 	   echo 'V8ROOT=$(PREFIX); export V8ROOT'; \
 	   echo 'PATH=$$V8ROOT/bin:$$V8ROOT/usr/bin:$$PATH; export PATH'; \
-	   echo 'exec "$$V8ROOT/bin/v8" "$$@"'; \
+	   echo 'exec "$$V8ROOT/usr/bin/v8" "$$@"'; \
 	 } > $(BINDIR_HOST)/v8
 	@chmod 755 $(BINDIR_HOST)/v8
 	@echo "installed.  run: $(BINDIR_HOST)/v8"

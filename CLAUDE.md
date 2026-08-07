@@ -160,6 +160,46 @@ standing in for the VAX kernel.
 `src/`: `tools/import.sh v8/usr/src/cmd/cpp`, which records the upstream blob
 hash in a `PROVENANCE` file so the diff against pristine V8 stays reconstructible.
 
+### Where a command is INSTALLED is upstream's decision, and upstream wrote it down
+
+This port put everything in `/bin` for as long as `/bin` was the only directory
+it had, and that was wrong for **forty-one commands**. V8's `/bin` is a 56-entry
+root-filesystem set from when `/` had to fit on one pack; `wc`, `tr`, `sort`,
+`sed`, `yacc`, `lex`, `dc` and most of Wave A live in `/usr/bin`. So `ls /bin`
+inside the jail listed a machine that never existed.
+
+Two upstream sources say so and they agree:
+`third_party/.../cmd/Admin/dest` — a shell script that looks a name up in
+`binfiles`, `etcfiles`, `libfiles` and falls through to `/usr/bin`, and which
+`Admin/Mk` calls for each of the bare `cmd/*.c` programs — and the **shipped
+tree itself**, `third_party/.../v8/{bin,usr/bin,lib,etc}`.
+
+`Admin/Mk` is worth knowing about for its own sake: it is the build description
+for the half of `cmd/` that has no makefile, and for a *directory* it runs
+`make clean && make && make install`, which is exactly the rung-5 mechanism.
+
+The Makefile **derives** the destination — `$(call v8dest,NAME)` reads Bell
+Labs' tables at build time — so a newly imported command lands where V8 put it
+without anyone deciding. `tests/wavea` asserts the result against the *other*
+source, the shipped directories, so the two check each other rather than one
+being read back twice.
+
+Two traps came out of doing it:
+
+- **`$(strip)` in `v8dest` is load-bearing.** A backslash-newline inside a
+  variable's *value* becomes a space and the next line's indentation is kept, so
+  without it the function returns `"          etc"` and make splits
+  `$(ROOTFS)/          etc/mkfs` into two targets. It presents as
+  `warning: overriding commands for target .../rootfs/` and
+  `No rule to make target 'usr/bin/touch'`, neither of which names the cause.
+- **A MISS IS NOT AN ESCAPE**, and `V8JAIL=strict` treated it as one. V8's `sh`
+  searches PATH by calling `execve` on each directory in turn, so with
+  `PATH=/bin:/usr/bin` every `/usr/bin` command probes `/bin/<name>` first — and
+  the shim reported an escape for a file the Mac does not have either. Invisible
+  while every tool lived in `/bin` and the first probe always hit. `v8s_execve`
+  now refuses quietly when the host has no such file and loudly when it does,
+  which is the only distinction `V8JAIL` was ever making.
+
 ### The deliberate exception list
 
 `as`, `ld`, `ar`, `strip`, `nm` are the **host's**, because the object format is

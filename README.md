@@ -33,7 +33,13 @@ Inside a release:
 | `compiler/` | Only *new* compiler code: the ARM64 backend for `ccom`, `crt0`, `setjmp`. |
 | `tests/` | Golden-output fixtures, compiler bootstrap checks, and the build-graph and jail suites. |
 | `build/` | Intermediate build output. Not checked in. |
-| `rootfs/` | Build output: the V8-shaped tree `$V8ROOT` points at — `bin`, `lib`, `usr/include`, `usr/lib`. Nothing runs without it. |
+| `rootfs/` | Build output: the V8-shaped tree `$V8ROOT` points at — `bin`, `etc`, `lib`, `usr/bin`, `usr/include`, `usr/lib`. Nothing runs without it. |
+
+Which of those a command lands in is not this project's choice. V8's `/bin` is a
+56-entry root-filesystem set and most of the world is in `/usr/bin`, so the
+Makefile reads the destination out of upstream's own
+`usr/src/cmd/Admin/{binfiles,etcfiles,libfiles}` at build time and `tests/wavea`
+checks the result against the distribution's shipped directories.
 
 Note what is **not** per-release even though it sits inside one.
 `compiler/ccom-arm64/` is about arm64, Mach-O and AAPCS64; `shim/kern/` and
