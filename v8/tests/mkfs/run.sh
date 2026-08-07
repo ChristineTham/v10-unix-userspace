@@ -253,5 +253,98 @@ HDB=$(( $(l3at "$PIMG" $((I3+12))) * BSZ ))
 check "hello's data block holds the file" "hello from a deeply buried file" \
     "$(dd if="$PIMG" bs=1 skip=$HDB count=31 2>/dev/null)"
 
+# ---------------------------------------------------------------------------
+# 5. The checkers, which is the point of having them.
+#
+# Everything above asks whether the image matches what THIS PORT believes a V8
+# filesystem is -- and the belief and the bytes come from the same place, so a
+# shared misunderstanding would satisfy both.  icheck and dcheck are 1985 code
+# that reads the image without knowing anything about mkfs: icheck walks the
+# free list block by block and the ilist inode by inode, dcheck walks every
+# directory and counts the references.  They are also l3tol's first callers in
+# this port -- ltol3 writes those 3-byte addresses and until now nothing read
+# one back.
+#
+# THE CORRUPTION CASES ARE THE IMPORTANT HALF.  A checker that approves of a
+# good image proves very little; the three below prove it can tell.
+# ---------------------------------------------------------------------------
+ICHECK=$V8ROOT/etc/icheck
+DCHECK=$V8ROOT/etc/dcheck
+for f in "$ICHECK" "$DCHECK"; do
+	[ -x "$f" ] || { echo "missing $f -- run make"; exit 1; }
+done
+sq() { tr -s ' \t' ' ' | sed 's/^ *//;s/ *$//'; }
+ic() { "$ICHECK" "$1" 2>&1 | sq; }
+
+out=$(ic "$IMG")
+# inode 1 is bflist()'s bad-block holder (IFREG), inode 2 the root (IFDIR).
+check "icheck counts two files, one of each kind" "files 2 (r=1,d=1,b=0,c=0,l=0)" \
+    "$(printf '%s\n' "$out" | grep '^files')"
+check "icheck finds one used block, none indirect" "used 1 (i=0,ii=0,iii=0,d=1)" \
+    "$(printf '%s\n' "$out" | grep '^used')"
+check "and nothing unaccounted for"		"missing 0" \
+    "$(printf '%s\n' "$out" | grep '^missing')"
+
+# THE RELATION, and it is the one worth having.  icheck's `free' is walked out
+# of the free list; the superblock's s_tfree is a counter mkfs maintained while
+# writing.  Two independent computations, and they have to agree -- and used +
+# free + the ilist has to be the whole volume.  If NICFREE, the fblk layout or
+# daddr_t's width were wrong by one, the walk would end early and this would not
+# balance.  Asserted as arithmetic rather than as 1917, so it still means
+# something at another size.
+icfree=$(printf '%s\n' "$out" | grep '^free' | cut -d' ' -f2)
+icused=$(printf '%s\n' "$out" | grep '^used' | cut -d' ' -f2)
+check "icheck's walked free count matches s_tfree" \
+    "$(d4 "$IMG" $((SB+220)))" "$icfree"
+check "used + free + ilist is the whole volume" \
+    "$(d4 "$IMG" $((SB+4)))" "$(( icused + icfree + $(u2 "$IMG" $((SB+0))) ))"
+
+# dcheck prints one row per inode whose link count disagrees with the number of
+# directory entries naming it.  A clean filesystem gets the filename and nothing.
+check "dcheck finds no link-count disagreement" "$IMG:" "$("$DCHECK" "$IMG" 2>&1 | sq)"
+
+# The proto image has one more file and one more block.
+pout=$(ic "$PIMG")
+check "icheck counts hello too"		"files 3 (r=2,d=1,b=0,c=0,l=0)" \
+    "$(printf '%s\n' "$pout" | grep '^files')"
+check "and its data block"		"used 2 (i=0,ii=0,iii=0,d=2)" \
+    "$(printf '%s\n' "$pout" | grep '^used')"
+
+# --- and now the three corruptions ------------------------------------------
+# Note what is NOT asserted: the exit status.  V8's checkers report on stdout
+# and return 0 whatever they find, which is upstream's behaviour and is why
+# every case here reads the output.  A future change that started exiting
+# nonzero would be a deviation and should be recorded as one.
+
+# A. zero the root's only block address.  di_addr[0] is three bytes at I2+12.
+# The block is then referenced by nothing and is not in the free list either.
+cp "$IMG" "$TMP/c1.img"
+printf '\0\0\0' | dd of="$TMP/c1.img" bs=1 seek=$((I2+12)) count=3 conv=notrunc 2>/dev/null
+c1=$(ic "$TMP/c1.img")
+check "an orphaned block is missing"	"missing 1" \
+    "$(printf '%s\n' "$c1" | grep '^missing')"
+check "and is no longer counted as used" "used 0 (i=0,ii=0,iii=0,d=0)" \
+    "$(printf '%s\n' "$c1" | grep '^used')"
+
+# B. root nlink 2 -> 3, at I2+2.  THE PAIR: dcheck sees it and icheck does not,
+# because a link count is not a block.  Both halves are asserted, since a
+# checker that answered everything would be the more suspicious result.
+cp "$IMG" "$TMP/c2.img"
+printf '\003' | dd of="$TMP/c2.img" bs=1 seek=$((I2+2)) count=1 conv=notrunc 2>/dev/null
+check "dcheck reports 2 entries against 3 links" "2 2 3" \
+    "$("$DCHECK" "$TMP/c2.img" 2>&1 | sed -n 3p | sq)"
+check "icheck is silent about a link count"	"missing 0" \
+    "$(ic "$TMP/c2.img" | grep '^missing')"
+
+# C. point the root at block 0x7fffff, past the end of a 2000-block volume.
+cp "$IMG" "$TMP/c3.img"
+printf '\377\377\177' | dd of="$TMP/c3.img" bs=1 seek=$((I2+12)) count=3 conv=notrunc 2>/dev/null
+c3=$(ic "$TMP/c3.img")
+check "an out-of-range address is named, with its inode" \
+    "8388607 bad; inode=2, class=data (small)" \
+    "$(printf '%s\n' "$c3" | grep 'bad;')"
+check "and the real block is orphaned by it"	"missing 1" \
+    "$(printf '%s\n' "$c3" | grep '^missing')"
+
 echo "mkfs: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

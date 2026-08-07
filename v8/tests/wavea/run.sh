@@ -290,11 +290,16 @@ fi
 
 # ...and the section-8 ones are in /etc rather than /bin, which is the half of
 # the statement the widened check above can no longer make on its own.
-if [ -x "$V8ROOT/etc/mkfs" ] && [ ! -e "$V8ROOT/bin/mkfs" ]; then
+etcwrong=
+for s8 in mkfs icheck dcheck; do
+	[ -x "$V8ROOT/etc/$s8" ] && [ ! -e "$V8ROOT/bin/$s8" ] ||
+		etcwrong="$etcwrong $s8"
+done
+if [ -z "$etcwrong" ]; then
 	pass=$((pass+1))
 else
 	fail=$((fail+1))
-	echo "FAIL mkfs(8) belongs in /etc and not /bin"
+	echo "FAIL these section-8 commands belong in /etc and not /bin:$etcwrong"
 fi
 
 # ...AND THE SAME QUESTION OF THE DIRECTORIES, which is where the glob above

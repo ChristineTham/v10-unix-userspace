@@ -627,8 +627,20 @@ ck 'it lands you at the root of the V8 world' '/' \
 # trailing slash so "/binary" is not mistaken for "/bin/", and that also meant
 # `ls /etc` listed the Mac's while `cat /etc/group` read V8's -- one path naming
 # two different worlds depending on a trailing character.
-ck 'ls /etc shows V8 s etc, not the host s' 'fstab' \
-   "$(echo 'ls /etc' | "$V8ROOT/bin/v8" 2>&1 | head -1)"
+# This asked whether the first line was `fstab', and that was a VALUE where a
+# relation was meant -- true only for as long as nothing installed into /etc
+# sorted before it.  Adding mkfs, icheck and dcheck (section 8a step 4) put
+# `dcheck' at the top and turned it red, which is the right outcome from the
+# wrong test: nothing about the jail had changed.
+#
+# The relation the case exists to state is that `ls /etc' inside the jail lists
+# the ROOTFS's /etc and not the Mac's, so it is asserted against the rootfs
+# itself.  It cannot drift as things are installed, and it says strictly more:
+# not merely that one V8 file shows up, but that nothing else does.  LC_ALL=C on
+# both sides, since the two listings come from two different ls implementations.
+ck 'ls /etc shows V8 s etc, not the host s' \
+   "$(LC_ALL=C ls -1 "$V8ROOT/etc" | LC_ALL=C sort | tr '\n' ' ')" \
+   "$(echo 'ls /etc' | "$V8ROOT/bin/v8" 2>&1 | LC_ALL=C sort | tr '\n' ' ')"
 case "$(echo 'ls /bin' | "$V8ROOT/bin/v8" 2>&1)" in
 *cc*) pass=$((pass+1)) ;;
 *) fail=$((fail+1)); echo "FAIL ls /bin does not show the V8 /bin" ;;

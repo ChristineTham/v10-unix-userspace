@@ -1455,11 +1455,42 @@ Ordered so that value lands before risk, and so each step is testable alone.
    but smaller than claimed: from *blocked on data that has to be invented* to
    *contained*. `src/cmd/df/PORTING.md` has it, prediction left visible.
 
-   **The cheap confirmation is `icheck` and `dcheck` instead**, and it is a
-   better one: they take the image as an argument, so they need no mount at all,
-   and they read every inode and every directory rather than one superblock.
-   They are also `l3tol`'s first real callers. `mklost+found`, `fsck` and `clri`
-   follow.
+   **`icheck` and `dcheck` are the confirmation instead, and they are in.** They
+   take the image as an argument, so they need no mount; they read every inode
+   and every directory rather than one superblock; and they are 1985 code that
+   knows nothing about `mkfs`, which is the property that matters — everything
+   else in `tests/mkfs` asks whether the image matches *this port's* idea of a
+   V8 filesystem, and the idea and the bytes come from the same place.
+
+   ```
+   files      2 (r=1,d=1,b=0,c=0,l=0)
+   used       1 (i=0,ii=0,iii=0,d=1)
+   free    1917
+   missing    0
+   ```
+
+   `free` is walked out of the free list block by block; `s_tfree` is a counter
+   `mkfs` kept while writing. Two independent computations, and
+   `used + free + s_isize` is exactly `s_fsize` with nothing missing. They also
+   gave `l3tol` its first caller in this port — `ltol3` writes those 3-byte
+   addresses and nothing had ever read one back. **One patched line between the
+   two programs**, and it was the third instance of narrowing a type at the seam
+   and meeting something that already encoded the old width; it is the only one
+   of the three the compiler diagnosed, because the other two do their
+   arithmetic through a `char *`. `src/cmd/icheck.PORTING.md`.
+
+   Three corruption cases are in the suite, because a checker that approves of a
+   good image proves very little: an orphaned block reads as `missing 1`, an
+   out-of-range address is named with its inode, and a wrong link count is seen
+   by `dcheck` while `icheck` correctly stays silent.
+
+   `-DDIRSIZ=14` became a property of the **group** rather than a flag on
+   `mkfs`, and `dcheck` is why: it parses the records `mkfs` writes. A forgotten
+   flag there is worse than in `mkfs` — it would report a healthy filesystem as
+   healthy, and only start lying once a directory held more than one entry per
+   256 bytes.
+
+   `fsck`, `clri` and `mklost+found` follow.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `fsck` and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
@@ -1564,7 +1595,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem; `mkfs` 46/46. It began by finding that **every on-disk struct in the tree was the wrong size** |
 
-`make test` runs everything — seventeen suites, about 1004 cases.
+`make test` runs everything — seventeen suites, about 1018 cases.
 
 ### What actually works today
 

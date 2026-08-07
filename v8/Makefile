@@ -212,7 +212,7 @@ SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -285,12 +285,12 @@ test-streams: libv8kern libv8c
 # from the V8 side -- a _Static_assert in the shim would see only clang, and
 # these structures are read by v8cc, by clang, and in principle by a VAX.
 #
-# The prerequisite is the phony `mkfs' rather than $(BINDIR)/mkfs for the
+# The prerequisite is the phony `imgbin' rather than $(BINDIR)/mkfs for the
 # reason check-makefile.sh gave when this said the latter: BINDIR is defined
 # 600 lines below here, so it expanded to nothing and the dependency silently
 # was not there.  test-jail and test-kmemu already name v8make and v8bin the
 # same way.
-test-mkfs: mkfs $(V8CC_DEPS) $(ROOTFS_LIBS)
+test-mkfs: imgbin $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/mkfs/run.sh
 # The .claude hooks.  No build prerequisites -- they are shell and python, and
 # the point is that they are code and rot like code.
@@ -1068,7 +1068,7 @@ v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
        $(BINDIR)/load $(ROOTFS)/bin/load \
        $(BINDIR)/w $(ROOTFS)/bin/w $(ROOTFS)/bin/uptime \
        $(BINDIR)/ps $(ROOTFS)/bin/ps \
-       $(BINDIR)/mkfs $(ROOTFS)/etc/mkfs
+       imgbin
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
 # it to the rootfs.  Two pattern rules chain here -- cat.c -> build/bin/cat ->
@@ -1187,49 +1187,77 @@ $(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
 	@echo "built $@"
 
 # ---------------------------------------------------------------------------
-# mkfs -- and the -D is the whole reason it has a rule rather than falling into
-# the $(BINDIR)/% pattern below.  PLAN.md section 8a step 4.
+# THE IMAGE TOOLS -- mkfs, icheck, dcheck.  PLAN.md section 8a step 4.
 #
-# mkfs writes a FILESYSTEM, which makes it the first program in this tree whose
-# output has to be byte-compatible with 1985 rather than merely correct on this
-# machine.  DIRSIZ is where those two part company.  This port raises it 14 ->
-# 254 in three headers because macOS filenames exceed fourteen characters, and
-# that is right for every directory the shim serves off the host; it is wrong
-# for every directory mkfs puts inside an image.
+# They are a group rather than three programs that happen to sit together, and
+# the -D is what makes them one: each of them reads or writes a FILESYSTEM
+# IMAGE, so each has to agree with 1985 rather than merely be correct on this
+# machine, and DIRSIZ is where those two part company.
 #
-# The failure would not have looked like one.  A V8 kernel reading a 256-byte
-# record finds `.', then fifteen slots whose d_ino is 0 -- which is V7's own
-# encoding for a deleted entry, the same accident src/include/sys/dir.h already
-# documents -- so it reads the directory correctly and then ALLOCATES into
-# those slots, and the result parses on neither side.  Measured on a generated
-# image: a three-entry root has i_size 768 here against 48 on a VAX.
+# This port raises DIRSIZ 14 -> 254 in three headers because macOS filenames
+# exceed fourteen characters.  That is right for every directory the shim
+# serves off the host and wrong for every directory inside an image.  The
+# failure would not have looked like one: a V8 kernel reading a 256-byte record
+# finds `.', then fifteen slots whose d_ino is 0 -- V7's own encoding for a
+# deleted entry, the accident src/include/sys/dir.h already documents -- so it
+# reads the directory correctly and then ALLOCATES into them, and the result
+# parses on neither side.  Measured: a three-entry root has i_size 768 at 254
+# and 48 at 14.
 #
-# So: 14, here and nowhere else.  A -D is exactly the kind of thing that gets
-# forgotten, so tests/mkfs asserts it from the far end -- on the bytes of an
-# image, where `.' is at offset 0 and `..' at 16 -- rather than on this command
-# line, which would only be reading the rule back to itself.
+# A -D is exactly the kind of thing that gets forgotten, so tests/mkfs asserts
+# it from the far end -- on the bytes of a generated image, where `.' is at
+# offset 0 and `..' at 16 -- rather than on this command line, which would only
+# be reading the rule back to itself.
 #
-# It installs in /etc rather than /bin because it is mkfs(8) and V8 keeps
-# section 8 there; the man page's synopsis says /etc/mkfs.  Being an explicit
-# target is also what keeps it clear of the $(ROOTFS)/etc/% rule further down,
-# which copies data files out of src/v8/etc and has no source for a binary.
+# WHY A GROUP AND NOT A FLAG ON MKFS.  When mkfs was alone the flag looked like
+# a property of that program.  dcheck reads the directories mkfs writes and
+# needs exactly the same 14, so it is a property of TALKING TO AN IMAGE.  Naming
+# the set is what stops the fourth one being compiled without it -- which would
+# not fail to build, and would not fail to run, and would report a healthy
+# filesystem as corrupt.
+#
+# They install in /etc rather than /bin because all three are section 8 and V8
+# keeps section 8 there; each man page's synopsis says /etc/<name>.  Being
+# explicit targets is also what keeps them clear of the $(ROOTFS)/etc/% rule
+# further down, which copies data files out of src/v8/etc and has no source for
+# a binary.
 # ---------------------------------------------------------------------------
-MKFS_DIRSIZ = 14
+IMGDIRSIZ = 14
+IMGBIN    = mkfs icheck dcheck
 
-$(BUILD)/mkfs/mkfs.o: $(SRC)/cmd/mkfs.c $(V8CC_DEPS)
-	@mkdir -p $(@D)
-	@$(V8CCRUN) -DDIRSIZ=$(MKFS_DIRSIZ) -c -o $@ $<
+# Generated for the reason $(V8DIRBIN)'s rules are: a static pattern rule cannot
+# put the stem in two places, and .SECONDEXPANSION is too large a blast radius.
+# Objects go in $(BUILD)/<prog>/ and NOT $(BINDIR)/<prog>/, because the binary
+# is $(BINDIR)/<prog> and a directory of that name makes the path a file and a
+# directory at once -- ld says "Is a directory", which reads as a linker problem
+# and is a layout one.
+define imgprog_rule
+$(BUILD)/$(1)/$(1).o: $$(SRC)/cmd/$(1).c $$(V8CC_DEPS)
+	@mkdir -p $$(@D)
+	@$$(V8CCRUN) -DDIRSIZ=$$(IMGDIRSIZ) -c -o $$@ $$<
 
-$(BINDIR)/mkfs: $(BUILD)/mkfs/mkfs.o $(V8DEPS)
-	@mkdir -p $(BINDIR)
-	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/mkfs/mkfs.o \
-	    $(V8LIBS)
-	@echo "built $@"
+$(BINDIR)/$(1): $(BUILD)/$(1)/$(1).o $$(V8DEPS)
+	@mkdir -p $$(BINDIR)
+	@$$(HOSTCC) $$(V8LDFLAGS) -o $$@ $$(BUILD)/crt0.o \
+	    $(BUILD)/$(1)/$(1).o $$(V8LIBS)
+	@echo "built $$@"
 
-$(ROOTFS)/etc/mkfs: $(BINDIR)/mkfs
-	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/etc/$(1): $(BINDIR)/$(1)
+	@mkdir -p $$(@D) && cp $$< $$@
+endef
 
-mkfs: $(BINDIR)/mkfs $(ROOTFS)/etc/mkfs
+$(foreach p,$(IMGBIN),$(eval $(call imgprog_rule,$(p))))
+
+IMGBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(IMGBIN))
+IMGBIN_INSTALL = $(patsubst %,$(ROOTFS)/etc/%,$(IMGBIN))
+
+# Same reason as $(V8BIN_BUILT): without this make treats each as an
+# intermediate of the install copy and deletes it, leaving a working rootfs and
+# nothing in the build tree to compare it against.
+.SECONDARY: $(IMGBIN_BUILT)
+
+imgbin: $(IMGBIN_BUILT) $(IMGBIN_INSTALL)
+mkfs: imgbin
 
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
 # them -- this port's chroot, implemented where its kernel lives.

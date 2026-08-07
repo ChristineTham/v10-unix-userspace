@@ -368,7 +368,23 @@ alloc()
 		struct	fblk fb;
 	} buf;
 	register int i, j;
-	register long *p;
+	/*
+	 * PORT: upstream `register long *p'.  It walks sblock.s_bfree, the
+	 * BITFS free-block bitmap, which <sys/filsys.h> now declares `int'
+	 * because a disk record's fields are the widths a VAX gave them and
+	 * NOLONG made `long' 32 bits there.  Upstream's own comment eleven
+	 * lines down says "BITS PER LONG" beside a loop to 32, so the type this
+	 * wants is whatever is 32 bits wide, and here that is int.
+	 *
+	 * THIRD INSTANCE of narrowing a type at the seam and finding something
+	 * that had already encoded the old width -- ltol3.c and l3tol.c were
+	 * the other two, and this is the only one the compiler said anything
+	 * about.  The others index by subscript, which follows the element type
+	 * on its own; a raw pointer does not.  Swept: `grep -rnE "long[ \t]*\*"'
+	 * against every reader of s_free, s_bfree, i_addr and di_addr finds
+	 * this line and nothing else.
+	 */
+	register int *p;
 
 	sblock.s_tfree--;
 	if (BITFS(dev)) {
