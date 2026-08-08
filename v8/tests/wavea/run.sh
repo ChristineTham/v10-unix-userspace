@@ -267,25 +267,33 @@ try ls     'ls -l marks the directory' 'd' "./ls -l lsdir | awk '\$NF==\"sub\"{p
 # directory layer end to end: getwd(3) walks to the root matching each entry
 # against stat("."), which is what caught the APFS firmlink problem.
 #
-# THIS CASE FAILED ONCE, and the observation is recorded here because the next
-# occurrence should not start from nothing.  One failure in a full `make test',
-# clean on the immediate re-run and on every run since.  Two things about it:
+# THIS CASE FAILED ONCE, AND THE CAUSE IS NOW KNOWN AND REPRODUCED -- but not
+# fixed, so the case stays as written and stays occasionally red.
 #
-#   * The walk climbs through $TMPDIR, which on this host is
-#     /var/folders/<...>/T and holds ~3950 entries shared with every process on
-#     the machine.  The port owns a candidate mechanism rather than inheriting
-#     a host quirk -- v8sys_pt_fstat sizes a directory with v8sys_dirsize(), a
-#     full getdirentries pass, and the reader then makes a SECOND pass for the
-#     data.  Two passes over a directory that changes in between can disagree,
-#     and a reader promised st_size bytes that gets fewer cannot say so.
-#   * NOT REPRODUCED.  400 walks through a parent being churned (60 entries
-#     created and removed continuously) and 400 through a quiet one: zero
-#     mismatches either way.  So the hypothesis above is unconfirmed, and a
-#     60-entry churn may simply be too narrow a window against 3950.
+# getwd()'s same-device arm finds the entry in `..' whose d_ino equals
+# stat(".")'s st_ino, and stops there.  Both sides are folded from a 64-bit
+# host inode into V7's 16-bit ino_t by v8sys_fold_ino (shim/v8sys/dir.c:125),
+# so two entries in one directory can share a d_ino and the walk names
+# whichever readdir yields first.  Measured on this host: $TMPDIR holds 5452
+# entries collapsing to 5250 folds, 199 of them shared; entering the ten
+# collision pairs whose later member is a directory, V8's pwd was wrong 10
+# times out of 10 -- four printing another entry's name and exiting 0, six
+# dying with `getwd: can't change back to .'.  src/libc/gen/PORTING.md has the
+# whole account, including why a stat() confirmation does NOT fix it.
 #
-# What is certain is the shape: this compares against a HOST value computed by
-# /bin/pwd -P, so it is in the class CLAUDE.md warns about, and if it fires
-# again the want/got lines are the whole diagnosis -- do not filter them.
+# THE HYPOTHESIS THIS REPLACES WAS WRONG, and the experiment that cleared it
+# was wrong in an instructive way.  It blamed v8sys_dirsize's two passes over a
+# changing directory, and tested that with 400 walks against a parent being
+# churned -- which could not have found the real cause, because the churn
+# created its own entries and APFS hands out CONSECUTIVE inodes, which this
+# fold separates perfectly.  A collision needs inodes spread over time.  The
+# same blind spot is why this case fires roughly never: the test's own
+# directory is always freshly made.
+#
+# So the failure rate is a property of how cluttered $TMPDIR is, and the case
+# also compares against a HOST value from /bin/pwd -P, which is the class
+# CLAUDE.md warns about.  If it fires, the want/got lines are the whole
+# diagnosis -- do not filter them.
 try pwd    'pwd'             "$(/bin/pwd -P)" "./pwd"
 
 # ---------------------------------------------------------------------------
