@@ -143,6 +143,33 @@ oput(i)
 oputs(i)
 register char	*i;
 {
+	/*
+	 * PORT: a null string outputs nothing.
+	 *
+	 * Every caller but the seven literals above passes a field of `t', the
+	 * terminal table -- t.twrest, t.twnl, t.itoff, t.bdoff -- and those
+	 * are null until ptinit() reads the table.  The unknown-option arm of
+	 * the argument loop reaches here before that ever happens:
+	 *
+	 *	n1.c:147  errprint("unknown option %s", argv[0]);
+	 *	n1.c:148  done(02);
+	 *	  n2.c    done() -> done3(0) -> twdone() -> oputs(t.twrest)
+	 *
+	 * done() is the NORMAL shutdown path, and calling it from an argument
+	 * error runs it before init1() -- the same shape as `yacc -o', where
+	 * error() runs cleantmp() over temp names setup() had not assigned.
+	 * Two instances now; see PLAN.md S4j.
+	 *
+	 * On the VAX oputs(0) read address 0, which held the a.out header, and
+	 * stopped at its first zero byte -- so a couple of stray characters
+	 * came out and the program exited.  Emitting nothing is that answer
+	 * without the garbage, and it is the one guard the four fields share:
+	 * 38 of nroff's 53 probe invocations died here, one per option the
+	 * switch does not know.  n1.o is in TROFF_NAMES too, but troff has no
+	 * twdone() -- the call is inside #ifdef NROFF.
+	 */
+	if (i == 0)
+		return;
 	while (*i != 0)
 		oput(*i++);
 }

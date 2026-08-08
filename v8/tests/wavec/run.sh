@@ -415,6 +415,29 @@ for prog in "$NROFF" "$TROFF"; do
 	    "$("$prog" -F /nonexistent/tab </dev/null 2>&1 | grep -c '/nonexistent/tab')"
 done
 
+# AN UNRECOGNISED OPTION, which is 38 of nroff's 53 probe invocations and one
+# root cause.  The default: arm calls done(02) -- nroff's NORMAL shutdown --
+# and that reaches twdone() -> oputs(t.twrest) before ptinit() has read the
+# terminal table, so the field is still null.  On the VAX oputs(0) read the
+# a.out header and stopped at its first zero byte; emitting nothing is the same
+# answer without the garbage.  Same shape as `yacc -o' in tests/wavea, where
+# error() runs cleantmp() over temp names setup() had not assigned.
+for o in -Z -a -j -Q; do
+	perl -e 'alarm 10; exec @ARGV' "$NROFF" "$o" </dev/null >/dev/null 2>&1
+	rc=$?
+	if [ "$rc" -ge 129 ] && [ "$rc" -le 159 ] && [ "$rc" -ne 142 ]; then
+		fail=$((fail+1)); echo "FAIL nroff $o died on signal $((rc-128))"
+	else
+		pass=$((pass+1))
+	fi
+done
+# ...and it still SAYS so, so the guard is not silence:
+check 'nroff names the option it did not know' '1' \
+    "$("$NROFF" -Z </dev/null 2>&1 | grep -c 'unknown option -Z')"
+# The other half -- that oputs still OUTPUTS -- is `nroff formats text' at the
+# top of this file, which is exactly what a bare `return' in oputs would break.
+# Deliberately not repeated here.
+
 # bare `hunt' -- argc is 1, so the option loop's own condition read argv[1].
 # It is reached directly rather than through lookbib, which always appends an
 # index path.  Upstream's answer is an unopenable index name and the error
