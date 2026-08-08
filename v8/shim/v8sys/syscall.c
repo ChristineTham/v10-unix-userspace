@@ -550,8 +550,51 @@ int v8s_rmdir(char *p)                   { RET(rawsys1(SYS_rmdir, (long)vpath(p)
  * machine's rootfs path into a symlink the jail is supposed to interpret for
  * itself.  Only the new name is resolved. */
 int v8s_symlink(char *a, char *b)        { RET(rawsys2(SYS_symlink, (long)a, (long)mkpath(b))); }
-int v8s_dup(int f)                       { RET(rawsys1(SYS_dup, f)); }
-int v8s_dup2(int a, int b)               { RET(rawsys2(SYS_dup2, a, b)); }
+/*
+ * dup and dup2 -- and BOTH DROPPED THE DESCRIPTOR'S TYPE, which was invisible
+ * while the only non-passthrough type was /proc and nothing dup'd one.
+ *
+ * v8fs_fdtype() is how every read, write, seek, close and ioctl finds its
+ * filesystem, and a bare rawsys dup left the new descriptor unbound -- which
+ * v8fs_fdtype reads as passthrough.  So dup(fd) on an open /proc file returned
+ * a descriptor whose reads went to the host instead of to procfs, silently and
+ * with the right-looking fd number.  /dev/fd is what makes it live: its whole
+ * implementation is a dup, and its customers are exactly the programs that
+ * pass descriptors around.
+ *
+ * dup2 overwrites the target's row rather than leaving whatever was there --
+ * the host closes b when it is open, and a stale row would describe a
+ * descriptor that no longer exists.  ONE call does that, because v8fs_bind
+ * stores null for the passthrough type, and a v8fs_unbind() in front of it was
+ * DEAD: the mutation that removed it changed no test, which is the only reason
+ * anyone found out.  The comment that used to sit here acknowledged the two
+ * calls collapse and then kept both.
+ */
+int v8s_dup(int f)
+{
+	long r = rawsys1(SYS_dup, f);
+
+	if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
+	v8fs_bind((int)r, v8fs_fdtype(f));
+	return ((int)r);
+}
+
+int v8s_dup2(int a, int b)
+{
+	long r;
+
+	/*
+	 * A dirfd being dup2'd OVER is closed by the host and must lose its V7
+	 * snapshot too, or dir.c keeps serving records for a descriptor that is
+	 * now something else entirely.  v8s_close does this through t_close; a
+	 * raw dup2 never went near it.
+	 */
+	if (a != b && v8sys_isdirfd(b)) v8sys_dirclose(b);
+	r = rawsys2(SYS_dup2, a, b);
+	if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
+	v8fs_bind((int)r, v8fs_fdtype(a));
+	return ((int)r);
+}
 int v8s_getpid(void)                     { return ((int)rawsys0(SYS_getpid)); }
 int v8s_getppid(void)                    { return ((int)rawsys0(SYS_getppid)); }
 int v8s_getuid(void)                     { return ((int)rawsys0(SYS_getuid)); }
@@ -1030,8 +1073,23 @@ v8s_open(char *path, int flags, int mode)
 int
 v8s_creat(char *path, int mode)
 {
-	RET(rawsys3(SYS_open, (long)mkpath(path),
-	    0x0001 /*O_WRONLY*/ | 0x0200 /*O_CREAT*/ | 0x0400 /*O_TRUNC*/, mode));
+	/*
+	 * AND IT WENT STRAIGHT TO THE HOST SYSCALL UNTIL /dev/fd ARRIVED.  The
+	 * line below used to be `RET(rawsys3(SYS_open, (long)mkpath(path), ...))'
+	 * -- correct for passthrough, and structurally unable to reach a second
+	 * type, because mkpath() resolves a path while FSFOR() chooses who
+	 * answers for it and only the first half was here.  Nothing noticed,
+	 * because /proc is read-only and passthrough was every other row.
+	 *
+	 * fd.4 is what makes it live: "Creat(2) is equivalent to open, and mode
+	 * is ignored", so creat("/dev/tty", 0666) must dup fd 3 rather than
+	 * truncate the node.  The same shape as v8s_mknod passing its path
+	 * unresolved -- an unexercised rule cannot be seen to be incomplete.
+	 */
+	struct v8fstyp *t = FSFOR(path);
+
+	return t->t_open(t->t_path(path, V8P_MAKE),
+	    0x0001 /*O_WRONLY*/ | 0x0200 /*O_CREAT*/ | 0x0400 /*O_TRUNC*/, mode);
 }
 
 long

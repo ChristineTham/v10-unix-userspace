@@ -89,4 +89,11 @@ void            v8fs_unbind(int fd);
 
 extern struct v8fstyp v8fs_pass;
 
+/*
+ * /dev/fd -- the third type, and the one that answers for /dev/tty.  V8's
+ * controlling terminal is not a device: open("/dev/fd/n") is dup(n), and
+ * /dev/tty is the hard link at n = 3.  vfs.c has the four citations.
+ */
+extern struct v8fstyp v8fs_fdfs;
+
 #endif /* V8SYS_VFS_H */

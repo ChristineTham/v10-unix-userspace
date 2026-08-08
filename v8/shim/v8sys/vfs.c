@@ -64,12 +64,40 @@ static struct v8mount {
 	 */
 	{ "/usr/src/",	 0, &v8fs_pass },
 	/*
+	 * /dev/fd -- THE THIRD TYPE, and the five rows below it are one device.
+	 *
+	 * The DIRECTORY is an ordinary directory and stays passthrough: V8's
+	 * /dev/fd holds 128 real nodes and `ls /dev/fd' reads them out of the
+	 * filesystem like any other name.  Its ENTRIES are not files at all.
+	 * Spelling that as an exact row before the prefix row is the mechanism
+	 * doing what it was built for -- v8fs_typefor returns the first match,
+	 * and without it the "directory itself" rule at the bottom of the prefix
+	 * arm would hand /dev/fd to the descriptor type.
+	 */
+	{ "/dev/fd",	 1, &v8fs_pass },
+	{ "/dev/fd/",	 0, &v8fs_fdfs },
+	/*
+	 * ...and the four names V8 hard-links into it, minors 0-3.  proto-dev
+	 * shows the link count: /dev/stdin, /dev/stdout, /dev/stderr and
+	 * /dev/tty are `2', and so are /dev/fd/0, 1, 2 and 3; every other fd
+	 * node is `1'.  See v8fs_fdfs below for why /dev/tty is here rather
+	 * than under a stream driver.
+	 */
+	{ "/dev/tty",	 1, &v8fs_fdfs },
+	{ "/dev/stdin",	 1, &v8fs_fdfs },
+	{ "/dev/stdout", 1, &v8fs_fdfs },
+	{ "/dev/stderr", 1, &v8fs_fdfs },
+	/*
 	 * /dev/ is here for the grovelers: load(1) opens /dev/kmem, which
-	 * libkmemu manufactures.  It does NOT capture /dev/null or /dev/tty,
-	 * by the same mechanism that protects every other entry -- a path whose
-	 * rootfs copy does not exist falls through to the host, and the rootfs
-	 * has neither.  Worth knowing rather than assuming: create
-	 * rootfs/dev/tty and the V8 world would stop seeing the real terminal.
+	 * libkmemu manufactures.  It does NOT capture /dev/null, which has no
+	 * rootfs copy and therefore falls through to the host's.
+	 *
+	 * IT USED TO SAY THAT ABOUT /dev/tty TOO, and warned that creating
+	 * rootfs/dev/tty "would stop the V8 world seeing the real terminal".
+	 * The warning was right and the conclusion was backwards: the real
+	 * terminal is not what V8 puts there.  The five rows above are what it
+	 * puts there, and rootfs/dev/tty now exists so that the NAME is real --
+	 * it is never opened, because the row above claims the path first.
 	 */
 	{ "/dev/",	 0, &v8fs_pass },
 	/* /unix is the kernel namelist libkmemu writes -- see kmem.c. */
@@ -271,5 +299,189 @@ struct v8fstyp v8fs_pass = {
 	pt_open, pt_close,
 	pt_read, pt_write, pt_seek,
 	v8sys_pt_stat, v8sys_pt_fstat,
+	v8sys_pt_ioctl
+};
+
+/* ---------------------------------------------------------------- /dev/fd */
+
+/*
+ * THE THIRD TYPE, and it is the one this port went looking for in the wrong
+ * place.  PLAN.md section 8a step 1b costed a host-fd driver to put underneath
+ * /dev/tty, on the reading that V8's controlling terminal was a stream.  It is
+ * not.  It is not a stream, and it is not a device: /dev/tty is a hard link to
+ * /dev/fd/3, and opening anything in /dev/fd is dup(2).
+ *
+ * Bell Labs say so in their own man page, usr/man/man4/fd.4:
+ *
+ *	If file descriptor n is open, these two system calls have the same
+ *	effect:   fd = open("/dev/fd/n", mode);   fd = dup(n);
+ *	Creat(2) is equivalent to open, and mode is ignored.  As with dup,
+ *	subsequent IO on fd fails unless the original file descriptor allows
+ *	the read or write operation.
+ *	...
+ *	Open returns -1 if the related file descriptor is not open.
+ *
+ * and the kernel agrees, four times over:
+ *
+ *   proto-dev:91	tty is major 40 minor 3, link count 2 -- and fd/3 is
+ *			the other link.  stdin/stdout/stderr are 40,0-2.
+ *   conf/devices:55	`device 40  std', with `int stdio_no = 40' on the next
+ *			line.  No driver name, no `stream-device' keyword.
+ *   dev/conf.c:565	major 40's cdevsw row is nodev, nodev, nodev, nodev,
+ *			nodev, nulldev, NULL.  Every entry, and a null
+ *			streamtab.  There is nothing to call.
+ *   sys/sys2.c:174	open1() special-cases it BEFORE the permission check:
+ *			getf(minor), ufalloc(), u_ofile[i] = fp, fp->f_count++
+ *			-- which is the body of dup(2), written out.
+ *
+ * V7's /dev/tty was a real driver (syopen, redirecting through u.u_ttyp).  That
+ * file is still in the V8 tree as sys/sys/sys.c and is DEAD: it is absent from
+ * conf/files, nothing in conf.c points at it, and it could not compile anyway
+ * because u_ttyp and u_ttyd are not in V8's struct user.  Killian replaced the
+ * driver with a filesystem convention.
+ *
+ * WHY fd 3.  Because init put the terminal there.  cmd/init.c:368-382:
+ *
+ *	while (open(tty, 2) != 0) sleep(10);
+ *	ioctl(0, TIOCSPGRP, (char *)0);
+ *	while (ioctl(0, FIOPOPLD, (char *)0) >= 0) ;
+ *	ioctl(0, FIOPUSHLD, &tty_ld);
+ *	dup(0); dup(0); dup(0);
+ *
+ * -- three dups, to 1, 2 and 3.  "Controlling terminal" is not a kernel fact in
+ * V8; it is the userspace convention that fd 3 is one.  The v8 launcher is this
+ * port's init and does the same thing, for the same reason, at $(BINDIR_HOST)/v8.
+ *
+ * WHAT THIS TYPE IMPLEMENTS, AND WHAT IT DELIBERATELY DOES NOT.  Three
+ * operations are its own -- t_path, t_open and t_stat.  Everything after open
+ * is the passthrough type's, unchanged and not merely equivalent, because after
+ * the dup there is nothing left that is special: a dup'd descriptor IS an
+ * ordinary host descriptor, and binding it to a type of its own would be
+ * inventing a difference the kernel does not have.  That is also why fd_open
+ * never calls v8fs_bind().
+ */
+
+/*
+ * 128 because NOFILE is 128 (h/param.h:19), which is not a coincidence: the
+ * node set IS the file table.  A name outside it -- /dev/fd/999, /dev/fd/x --
+ * is a name V8's /dev does not contain, so it is ENOENT from namei and not
+ * EBADF from getf.  Keeping the two apart is the difference between "no such
+ * device" and fd.4's "the related file descriptor is not open".
+ */
+#define V8FS_NDEVFD	128
+
+/* No libc here -- see rawsys.h.  strcmp is the only piece we would borrow. */
+static int
+streq_(const char *a, const char *b)
+{
+	while (*a && *a == *b) { a++; b++; }
+	return (*a == '\0' && *b == '\0');
+}
+
+static int
+fd_minor(char *p)
+{
+	int n, i;
+
+	if (p == 0) return (-1);
+	/* The four hard links, by name.  proto-dev's minors, in its order. */
+	if (streq_(p, "/dev/stdin"))  return (0);
+	if (streq_(p, "/dev/stdout")) return (1);
+	if (streq_(p, "/dev/stderr")) return (2);
+	if (streq_(p, "/dev/tty"))    return (3);
+
+	for (i = 0; "/dev/fd/"[i]; i++)
+		if (p[i] != "/dev/fd/"[i]) return (-1);
+	if (p[i] == '\0') return (-1);		/* "/dev/fd/" itself */
+	/*
+	 * Strictly decimal and strictly the whole component.  "01" is not a
+	 * node V8 shipped and neither is "3/x", so both are ENOENT rather than
+	 * a lenient reading of a name that does not exist.
+	 */
+	if (p[i] == '0' && p[i + 1] != '\0') return (-1);
+	for (n = 0; p[i]; i++) {
+		if (p[i] < '0' || p[i] > '9') return (-1);
+		n = n * 10 + (p[i] - '0');
+		if (n >= V8FS_NDEVFD) return (-1);
+	}
+	return (n);
+}
+
+/*
+ * t_path: identity.  There is no host path -- the answer is a descriptor, and
+ * running the name through rootpath() would resolve it to the empty rootfs node
+ * that exists only so `ls /dev' tells the truth about the namespace.
+ */
+static char *
+fd_path(char *p, int mode)
+{
+	(void)mode;
+	return (p);
+}
+
+static int
+fd_open(char *p, int flags, int mode)
+{
+	int n = fd_minor(p);
+
+	/*
+	 * flags and mode are DISCARDED, and that is fd.4's sentence rather than
+	 * an omission: "Creat(2) is equivalent to open, and mode is ignored.
+	 * As with dup, subsequent IO on fd fails unless the original file
+	 * descriptor allows the read or write operation."  So open("/dev/fd/0",
+	 * 1) on a read-only stdin SUCCEEDS here and fails at the first write.
+	 *
+	 * MEASURED against the host rather than assumed, because macOS has a
+	 * /dev/fd of its own and the first draft of this comment was wrong
+	 * about it.  Darwin's is a dup too, so the shared offset -- the classic
+	 * fdescfs difference -- is NOT one here: both continue where the other
+	 * left off.  Three things do differ, and they are why this is
+	 * implemented rather than delegated:
+	 *
+	 *	open("/dev/fd/3", 1) on a read-only fd   V8 ok, later EIO/EBADF
+	 *						 macOS EACCES at open
+	 *	open("/dev/fd/999")			 V8 ENOENT (no node)
+	 *						 macOS EBADF
+	 *	stat("/dev/fd/1")			 V8 crw-rw-rw- 40,1
+	 *						 macOS the real object
+	 *
+	 * and, the one that matters most, macOS's /dev/tty is the controlling
+	 * terminal while V8's is fd 3.  Delegating would have imported all four.
+	 */
+	(void)flags; (void)mode;
+	if (n < 0) { v8_errno = V8_ENOENT; return (-1); }
+	RET(rawsys1(SYS_dup, n));
+}
+
+/*
+ * t_stat.  The NODE is a character device whatever the descriptor turns out to
+ * point at, because on V8 the thing being stat'd is an inode in /dev and not
+ * the open file: `test -c /dev/tty' is true with a pipe on fd 3.  fstat on the
+ * descriptor this type hands out is the passthrough one and reports the real
+ * object, which is the same asymmetry V8 has and worth having a case for.
+ */
+static int
+fd_stat(char *p, struct v8_stat *st, int follow)
+{
+	int n = fd_minor(p), i;
+	char *q = (char *)st;
+
+	(void)follow;
+	if (n < 0) { v8_errno = V8_ENOENT; return (-1); }
+	for (i = 0; i < (int)sizeof *st; i++) q[i] = 0;
+	st->st_dev   = 0;
+	st->st_ino   = (v8_ino_t)(n + 1);	/* never 0: dir.c:125's rule */
+	st->st_mode  = V8_S_IFCHR | 0666;	/* crw-rw-rw-, proto-dev:91 */
+	st->st_nlink = (short)(n <= 3 ? 2 : 1);	/* the four hard links */
+	st->st_rdev  = (v8_dev_t)((40 << 8) | n);	/* makedev(40, n) */
+	return (0);
+}
+
+struct v8fstyp v8fs_fdfs = {
+	"fd",
+	fd_path,
+	fd_open, pt_close,
+	pt_read, pt_write, pt_seek,
+	fd_stat, v8sys_pt_fstat,
 	v8sys_pt_ioctl
 };

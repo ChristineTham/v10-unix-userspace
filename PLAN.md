@@ -1605,7 +1605,54 @@ Ordered so that value lands before risk, and so each step is testable alone.
    |---|---|---|---|---|
    | `dev/spipe.c` (83 lines) | 19 | 2 (`minor()`, `NSP`) | 5, **2 new** | **impossible** |
    | `dev/ttyld.c` (596 lines) | 28 | 3 (`max()`, `partab[]`, `NTTY`) | 6, **3 already in**, 1 new | cheap, but has no bottom |
-   | host-fd driver (new, layer 2) | **0** | **0** | **0** | **do this first** |
+   | host-fd driver (new, layer 2) | **0** | **0** | **0** | ~~do this first~~ **there is nothing for it to be under** |
+
+   **AND THE THIRD ROW WAS ANSWERING A QUESTION V8 DOES NOT ASK.** The host-fd
+   driver was costed as the bottom end for `/dev/tty`. **V8's `/dev/tty` is not
+   a stream, not a device, and has no code behind it**: it is a hard link to
+   `/dev/fd/3`, and opening anything in `/dev/fd` is `dup(2)`. Four independent
+   confirmations, each read in `third_party/` rather than recalled --
+   `proto-dev:91` (major 40 minor 3, link count 2), `conf/devices:55` (`device
+   40 std`, no driver name), `dev/conf.c:565` (every `cdevsw` slot `nodev`, null
+   `streamtab`), and `sys/sys2.c:174`, where `open1()` special-cases it *before*
+   the permission check with `getf(minor)` / `ufalloc()` / `u_ofile[i] = fp` --
+   the body of `dup(2)`. `man4/fd.4` says the same in prose. V7's `syopen`
+   driver is still in the tree at `sys/sys/sys.c` and is dead code: not in
+   `conf/files`, and it could not compile, since `u_ttyp` is not in V8's
+   `struct user`.
+
+   **This is the third time the plan has been wrong about what a program talks
+   to** -- after `ps` (`libproc` vs `/proc`) and `w` (a 1981 Berkeley groveler
+   in a 1985 tree). The shape is identical each time: a plausible mechanism
+   assumed, and the actual one written down in the source.
+
+   Two smaller corrections in the same block. **`conf/devices:82` is `bf`, not
+   `ttyld`; `ttyld` is `:75`.** And the ordering argument -- "`ttyld` has no
+   bottom end, so it cannot be exercised until something is under it" -- is
+   false *at the open path*: `ttyopen` (`ttyld.c:41-63`) never dereferences
+   `q->next`, ignores its `dev` argument, sends nothing downstream, and needs
+   only a free slot in its own static `tty[NTTY]`; `qattach` has already spliced
+   the module in before `qopen` runs (`streamio.c:809-836`, then `:111`/`:643`).
+   So `ttyld` can be pushed onto the probe's existing loopback stream today.
+   What genuinely needs a bottom end is *traffic* -- `QFULL` back-pressure,
+   `QDELIM` propagation, and `M_IOCACK`/`M_IOCNAK` for its ioctls.
+
+   **What landed instead is `/dev/fd`, as the third filesystem type** --
+   `v8fs_fdfs` in `shim/v8sys/vfs.c`, PLAN §8a step 2's switch doing the job it
+   was built for. Zero kernel code, zero bss, no `libv8kern.a`, and it is what
+   V8 has. `shim/NOTES.md` has the whole account: the `stat`/`fstat`
+   asymmetry, the four measured differences from macOS's own `/dev/fd` (the
+   shared offset is **not** one of them -- Darwin dups too), the `v8` launcher
+   as this world's init (`init.c:379-381` dups the terminal to fd 3, which is
+   the only reason fd 3 means anything), and the two gaps it made live:
+   `v8s_creat` bypassing the switch entirely, and `v8s_dup`/`v8s_dup2` dropping
+   the descriptor's filesystem.
+
+   Among V8's `dev/` stream drivers, `spipe` is the **only** hardware-free one
+   with a major number; every other binds real hardware, and the remaining
+   hardware-free modules are all line disciplines. So a shipped stream *device*
+   here would have to be a layer-2 invention, which is a weaker claim than a
+   line discipline exercised over the bottom `tests/streams` already has.
 
    **`spipe` is structurally impossible, and not by a small margin.** It is the
    64 `/dev/pt/pt00`-`pt63` nodes -- odd minor master, even slave -- and its two
@@ -1622,10 +1669,14 @@ Ordered so that value lands before risk, and so each step is testable alone.
    with `streamio.c` and is **unused today** -- all twelve stream primitives it
    calls exist, and the three missing names are an 8-line `max()` from
    `rdwri.c:236` beside the `min()` already in `subr.c`, a 51-line pure-data
-   `partab.c` that imports whole, and one `#define NTTY 64`. But `conf/devices:82`
-   makes it **line-discipline 0, not a device** -- it has no bottom end, so it
-   cannot be exercised until something is under it. Hence the order: host-fd
-   driver, then `ttyld` pushed as ld 0, then `stty`.
+   `partab.c` that imports whole, and one `#define NTTY 64`. `conf/devices:75`
+   -- `standard line-discipline 0	tty	tty	info` -- makes it
+   **line-discipline 0, not a device**, and `init.c:377` is what pushes it:
+   `ioctl(0, FIOPUSHLD, &tty_ld)` on the terminal, immediately before the three
+   dups. (This line cited `:82`, which is `bf`/`bufld`, and concluded from the
+   missing bottom end that `ttyld` "cannot be exercised until something is under
+   it". Both corrected above: the open path needs nothing below, only the
+   traffic does.)
 
    Three things the survey settled that were not asked:
 

@@ -78,7 +78,23 @@ ROOTFS_ETC     := $(patsubst $(SRC)/v8/etc/%,$(ROOTFS)/etc/%, \
 # and `..', so fstat reports 512 bytes and getdir's malloc gets a count of 2
 # rather than 0.  Measured, because getdir would return null on malloc(0) and ps
 # would call error() -- the failure this list exists to prevent.
-ROOTFS_DEV     := $(ROOTFS)/dev/dk $(ROOTFS)/dev/pt $(ROOTFS)/dev/drum
+#
+# /dev/fd is the fourth thing in /dev and it is NOT empty, which is the whole
+# difference from the three above.  V8 shipped one node per file-table slot --
+# proto-dev:199-329 lists 0 through 127, and NOFILE is 128 (h/param.h:19), so
+# the node set IS the file table -- plus stdin, stdout, stderr and tty hard
+# linked onto minors 0-3 (link count 2 on exactly those eight names).
+#
+# They are EMPTY REGULAR FILES standing in for character devices, the way
+# /dev/drum above stands in for the swap device, and NOTHING EVER OPENS ONE:
+# shim/v8sys/vfs.c claims all five paths for the /dev/fd type before the
+# passthrough /dev/ row is reached, so an open is a dup and a stat is
+# synthesized.  What these files provide is the NAME, because `ls /dev/fd' has
+# to read a real directory.
+ROOTFS_DEVFD   := $(addprefix $(ROOTFS)/dev/fd/,$(shell seq 0 127))
+ROOTFS_DEVSTD  := $(addprefix $(ROOTFS)/dev/,tty stdin stdout stderr)
+ROOTFS_DEV     := $(ROOTFS)/dev/dk $(ROOTFS)/dev/pt $(ROOTFS)/dev/drum \
+                  $(ROOTFS_DEVFD) $(ROOTFS_DEVSTD)
 
 # One target per installed file, NOT a directory stamp.  A stamp records "the
 # install ran", which is not the question make needs answered -- deleting
@@ -1934,6 +1950,16 @@ $(ROOTFS)/dev/pt:
 $(ROOTFS)/dev/drum:
 	@mkdir -p $(@D) && : > $@
 
+# The 132 /dev/fd nodes, as STATIC PATTERN rules rather than one multi-target
+# rule.  The distinction is the one check-makefile.sh is about: a static pattern
+# expands to one independent rule per target, each recipe creating exactly its
+# own $@, where `a b c:' with a recipe is three rules make may run concurrently
+# for reasons it cannot see.  Delete any one node and make puts back that node.
+$(ROOTFS_DEVFD): $(ROOTFS)/dev/fd/%:
+	@mkdir -p $(@D) && : > $@
+$(ROOTFS_DEVSTD): $(ROOTFS)/dev/%:
+	@mkdir -p $(@D) && : > $@
+
 # The three passes v8cc execs, each tracking its build-tree original.
 $(ROOTFS_CPP): $(BUILD)/cpp/cpp
 	@mkdir -p $(@D) && cp $< $@
@@ -2151,6 +2177,26 @@ install:
 	   echo '# the real macOS with no special casing.'; \
 	   echo 'V8ROOT=$(PREFIX); export V8ROOT'; \
 	   echo 'PATH=$$V8ROOT/bin:$$V8ROOT/usr/bin:$$PATH; export PATH'; \
+	   echo '#'; \
+	   echo '# THIS SCRIPT IS THE INIT OF THIS WORLD, and fd 3 is the one'; \
+	   echo '# thing an init has to leave behind.  V8 has no /dev/tty driver:'; \
+	   echo '# /dev/tty is a hard link to /dev/fd/3 and opening it is dup(3)'; \
+	   echo '# (man4/fd.4, sys/sys2.c:174).  What makes fd 3 the terminal is'; \
+	   echo '# cmd/init.c:368-382, which opens the tty as fd 0 and then dups'; \
+	   echo '# it THREE times -- to 1, 2 and 3.  So pr -p, dump and troff -a'; \
+	   echo '# can only find a terminal if something does this first.'; \
+	   echo '#'; \
+	   echo '# If there is no controlling terminal -- a pipeline, cron, CI --'; \
+	   echo '# fd 3 is left closed, which is the honest answer rather than a'; \
+	   echo '# fallback: fd.4 says open returns -1 then.'; \
+	   echo '#'; \
+	   echo '# PROBE IN A SUBSHELL, THEN COMMIT.  Two shorter spellings are'; \
+	   echo '# both wrong, measured: `exec 3<>/dev/tty 2>/dev/null` applies'; \
+	   echo '# its redirections left to right, so the diagnostic escapes'; \
+	   echo '# before 2>/dev/null is in place; and a failed redirect on exec'; \
+	   echo '# terminates a non-interactive POSIX shell outright.  Probing'; \
+	   echo '# first means the exec only ever runs when it will succeed.'; \
+	   echo '( : <>/dev/tty ) 2>/dev/null && exec 3<>/dev/tty'; \
 	   echo 'exec "$$V8ROOT/usr/bin/v8" "$$@"'; \
 	 } > $(BINDIR_HOST)/v8
 	@chmod 755 $(BINDIR_HOST)/v8

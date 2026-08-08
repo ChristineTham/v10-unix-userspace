@@ -272,3 +272,116 @@ call *is* the assertion, since a regression takes the whole suite down on
 SIGSEGV — and `tests/wavea` keeps the program that found it.
 
 Part of the whole-tree address-0 sweep; PLAN.md §4i.
+
+## /dev/tty is not a device, and this port spent a survey looking for its driver
+
+`PLAN.md` §8a step 1b costed three candidates for "the first stream driver",
+and picked a host-fd driver to put underneath `/dev/tty`. The premise was
+wrong. **V8's controlling terminal is not a stream, is not a driver, and has no
+code behind it at all.** `/dev/tty` is a hard link to `/dev/fd/3`, and opening
+anything in `/dev/fd` is `dup(2)`.
+
+Bell Labs wrote it down, in `usr/man/man4/fd.4`:
+
+> If file descriptor *n* is open, these two system calls have the same effect:
+> `fd = open("/dev/fd/n", mode);` `fd = dup(n);` *Creat(2)* is equivalent to
+> *open,* and *mode* is ignored. As with *dup,* subsequent IO on *fd* fails
+> unless the original file descriptor allows the read or write operation.
+> … Entry `/dev/fd/3` is conventionally the `control terminal' … *Open*
+> returns −1 if the related file descriptor is not open.
+
+and the kernel agrees four times over, each checked in `third_party/`:
+
+| | |
+|---|---|
+| `proto-dev:91` | `tty` is major 40 minor 3, **link count 2** — the other link is `fd/3`. `stdin`/`stdout`/`stderr` are 40,0–2, also 2. Every other fd node is 1. |
+| `conf/devices:55` | `device 40  std`, and `int stdio_no = 40` on the next line. No driver name, no `stream-device` keyword. |
+| `dev/conf.c:565` | major 40's `cdevsw` row is `nodev, nodev, nodev, nodev, nodev, nulldev, NULL`. Every slot, and a null `streamtab`. There is nothing to call. |
+| `sys/sys2.c:174` | `open1()` special-cases it **before the permission check**: `getf(minor)`, `ufalloc()`, `u_ofile[i] = fp`, `fp->f_count++` — the body of `dup(2)`, written out. |
+
+V7's answer *was* a driver — `syopen`, redirecting through `u.u_ttyp`. That file
+is still in the V8 tree, as `sys/sys/sys.c`, and it is **dead**: absent from
+`conf/files`, pointed at by nothing in `conf.c`, and unable to compile anyway
+because `u_ttyp` and `u_ttyd` are not in V8's `struct user`. Killian replaced a
+driver with a filesystem convention, and the vestige outlived it.
+
+**And `conf/devices:82` — cited in the survey as `ttyld` — is `bf`.** `ttyld` is
+`:75`. Both errors are the same shape as the ones this repo keeps recording:
+something read once, written down, and then built on. Re-measured here.
+
+### Why fd 3, and who has to arrange it
+
+`cmd/init.c:368-382`:
+
+```c
+	while (open(tty, 2) != 0) sleep(10);	/* the terminal, as fd 0 */
+	ioctl(0, TIOCSPGRP, (char *)0);
+	while (ioctl(0, FIOPOPLD, (char *)0) >= 0) ;
+	ioctl(0, FIOPUSHLD, &tty_ld);		/* ttyld, line discipline 0 */
+	dup(0); dup(0); dup(0);			/* -> 1, 2 and 3 */
+```
+
+Three dups. "Controlling terminal" is not a kernel fact in V8; it is the
+userspace convention that fd 3 is one, and `init` is what establishes it. So the
+`v8` launcher is this world's init and does `exec 3<>/dev/tty` for the same
+reason — with no fallback, because when there is no controlling terminal (a
+pipeline, cron, CI) `fd.4`'s answer is that open returns −1.
+
+### What the type implements, and what it deliberately does not
+
+`v8fs_fdfs` in `vfs.c` owns three operations — `t_path` (identity: there is no
+host path), `t_open` (parse the minor, `dup`) and `t_stat`. Everything after
+open is the passthrough type's, *unchanged rather than merely equivalent*,
+because a dup'd descriptor **is** an ordinary host descriptor; giving it a type
+of its own would invent a difference the kernel does not have. That is also why
+`fd_open` never calls `v8fs_bind()`.
+
+`stat` and `fstat` therefore disagree, and that is V8 rather than a defect:
+`stat` reads an inode in `/dev`, which is a character device whatever the
+descriptor turns out to point at, while `fstat` follows the open file to the
+real object. `test -c /dev/tty` is true with a plain file on fd 3.
+
+### macOS has a /dev/fd too, and the first draft of the comment was wrong about it
+
+Measured, not reasoned. Darwin's is a **dup as well**, so the shared file offset
+— the classic `fdescfs` difference, and the thing I wrote down first — is *not*
+a difference here: both continue where the other left off. Four real ones:
+
+| | V8 (this type) | macOS |
+|---|---|---|
+| `open("/dev/fd/3", O_WRONLY)` on a read-only fd | succeeds; the **write** fails | `EACCES` **at open** |
+| `open("/dev/fd/999")` | `ENOENT` — no such node | `EBADF` |
+| `stat("/dev/fd/1")` | `crw-rw-rw-`, rdev `makedev(40,1)` | the underlying object |
+| `/dev/tty` | fd 3 | the controlling terminal |
+
+Delegating to the host would have imported all four. The `ENOENT`/`EBADF` split
+is the subtle one: V8 shipped nodes `0`–`127` and `NOFILE` is 128, so the node
+set **is** the file table — a name past the end never reaches `open1`, so it is
+`namei`'s error and not `getf`'s.
+
+### Two gaps it made live
+
+Neither was reachable before, and that is the whole reason neither was found.
+
+- **`v8s_creat` bypassed the filesystem switch.** It was
+  `RET(rawsys3(SYS_open, (long)mkpath(path), ...))` — path resolution without
+  dispatch, correct for passthrough and structurally unable to reach a second
+  type. `/proc` is read-only, so nothing noticed. `fd.4`'s "creat is equivalent
+  to open" is what makes it matter: `creat("/dev/tty")` must dup fd 3, and
+  before the fix it truncated `rootfs/dev/tty` and returned a descriptor on an
+  empty file. The `v8s_mknod` lesson again.
+- **`v8s_dup` and `v8s_dup2` dropped the descriptor's type.** `v8fs_fdtype()` is
+  how every read, write and ioctl finds its filesystem, and an unbound
+  descriptor reads as passthrough — so `dup()` of an open `/proc` file returned
+  one whose reads went to the host, silently, with the right-looking number.
+  Nothing in the tree dup'd one. `/dev/fd` is nothing *but* dup.
+
+### A guard I wrote was vacuous, and only the mutation said so
+
+`v8s_dup2` had a `v8fs_unbind()` in front of its `v8fs_bind()`, with a test
+named for it. `v8fs_bind` already stores null for the passthrough type, so the
+unbind was **dead code** — and the mutation that deleted it changed no test.
+Worse, the comment beside it *acknowledged* the two calls collapse and kept
+both. The call is gone; the case now names the property that is actually
+load-bearing, and the mutation that proves it is a `v8fs_bind` that skips the
+passthrough case instead.

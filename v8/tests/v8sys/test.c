@@ -25,6 +25,9 @@ extern long v8s_write(int, char *, long);
 extern int v8s_close(int);
 extern long v8s_lseek(int, long, int);
 extern int v8s_stat(char *, struct v8_stat *);
+extern int v8s_fstat(int, struct v8_stat *);
+extern int v8s_dup(int);
+extern int v8s_dup2(int, int);
 extern int v8s_creat(char *, int);
 extern int v8s_unlink(char *);
 extern int v8s_link(char *, char *);
@@ -494,6 +497,194 @@ main(void)
 		ok(1, "unlink(0) returns instead of faulting in the shim");
 		v8s_link((char *)0, (char *)0);
 		ok(1, "and so does link(0, 0)");
+	}
+
+	/*
+	 * ---------------------------------------------------------------
+	 * /dev/fd -- V8's controlling terminal, which is not a device.
+	 *
+	 * open("/dev/fd/n") is dup(n) and /dev/tty is the hard link at n = 3.
+	 * usr/man/man4/fd.4 is the specification; sys/sys2.c:174 is the code;
+	 * cmd/init.c:379-381 is why fd 3 is the terminal.  shim/v8sys/vfs.c has
+	 * the argument.
+	 *
+	 * fd 3 IS ARRANGED HERE rather than inherited.  Whether the harness
+	 * leaves one open is a property of the machine, and this suite has been
+	 * bitten by that class three times; every case below asserts a relation
+	 * between two things this port controls.
+	 */
+	{
+		int t3, a, b, hostfd;
+		struct v8_stat s2;
+		char c;
+
+		snprintf(sub, sizeof sub, "%s/fdfile", tmpl);
+		fd = v8s_creat(sub, 0644);
+		v8s_write(fd, "ABCDEFGHIJKLMNOPQRST", 20);
+		v8s_close(fd);
+
+		t3 = v8s_open(sub, 0, 0);
+		ok(t3 >= 0, "/dev/fd: a file to stand in for the terminal");
+		/* Put it on 3, which is where init.c's third dup(0) puts it. */
+		ok(v8s_dup2(t3, 3) == 3, "/dev/fd: dup2 onto fd 3, as init does");
+		if (t3 != 3) v8s_close(t3);
+
+		/* The four hard links, by minor.  proto-dev:76-78,91. */
+		ok(v8s_read(3, buf, 5) == 5 && memcmp(buf, "ABCDE", 5) == 0,
+		    "/dev/fd: fd 3 reads the file");
+		a = v8s_open("/dev/tty", 0, 0);
+		ok(a >= 0, "/dev/tty opens when fd 3 is open");
+		/*
+		 * THE PROPERTY THAT MAKES IT A dup AND NOT A RE-OPEN: one file
+		 * offset behind two descriptors.  A re-open would restart at
+		 * byte 0 and print ABCDE here.
+		 */
+		ok(v8s_read(a, buf, 5) == 5 && memcmp(buf, "FGHIJ", 5) == 0,
+		    "/dev/tty shares fd 3's offset -- it is a dup, not a re-open");
+		ok(v8s_read(3, buf, 5) == 5 && memcmp(buf, "KLMNO", 5) == 0,
+		    "...and the sharing runs both ways");
+		v8s_close(a);
+
+		/*
+		 * Mode is ignored: "Creat(2) is equivalent to open, and mode is
+		 * ignored.  As with dup, subsequent IO on fd fails unless the
+		 * original file descriptor allows the read or write operation."
+		 * macOS's own /dev/fd refuses this at open with EACCES, which is
+		 * why the type is implemented here rather than delegated.
+		 */
+		a = v8s_open("/dev/tty", 1 /*write*/, 0);
+		ok(a >= 0, "/dev/tty ignores the mode and opens (fd.4)");
+		ok(v8s_write(a, "x", 1) < 0, "...and the WRITE is what fails");
+		v8s_close(a);
+
+		/*
+		 * creat.  This case is the one that proves v8s_creat goes
+		 * through the filesystem switch: before it did, this truncated
+		 * rootfs/dev/tty and returned a descriptor on an empty file, so
+		 * the read below would return 0.
+		 */
+		v8s_lseek(3, 0, 0);
+		a = v8s_creat("/dev/tty", 0666);
+		ok(a >= 0, "creat(\"/dev/tty\") is open, not a truncation");
+		ok(v8s_read(a, buf, 5) == 5 && memcmp(buf, "ABCDE", 5) == 0,
+		    "...and the file behind fd 3 still has its bytes");
+		v8s_close(a);
+
+		/* The other three names, and the numeric spelling of each. */
+		ok(v8s_open("/dev/stdin", 0, 0) >= 0, "/dev/stdin is minor 0");
+		ok(v8s_open("/dev/fd/0", 0, 0) >= 0, "/dev/fd/0 is the same node");
+		v8s_lseek(3, 5, 0);
+		a = v8s_open("/dev/fd/3", 0, 0);
+		ok(a >= 0 && v8s_read(a, &c, 1) == 1 && c == 'F',
+		    "/dev/fd/3 and /dev/tty are one node");
+		v8s_close(a);
+
+		/*
+		 * fd.4: "Open returns -1 if the related file descriptor is not
+		 * open."  EBADF from getf, and NOT the empty rootfs/dev/tty
+		 * node -- which exists, so a row-ordering mistake would read 0
+		 * bytes and pass every case above.
+		 */
+		v8s_close(3);
+		a = v8s_open("/dev/tty", 0, 0);
+		ok(a < 0 && v8_errno == V8_EBADF,
+		    "/dev/tty with fd 3 closed is EBADF, not the empty node");
+		ok(v8s_open("/dev/fd/3", 0, 0) < 0, "...and so is /dev/fd/3");
+
+		/*
+		 * A NAME THE /dev/fd DIRECTORY DOES NOT CONTAIN IS ENOENT, not
+		 * EBADF -- namei never reaches open1.  V8 shipped 0..127 and
+		 * NOFILE is 128, so 128 is past the end of the node set.  macOS
+		 * answers EBADF here, which is the host's rule and not V8's.
+		 */
+		ok(v8s_open("/dev/fd/128", 0, 0) < 0 && v8_errno == V8_ENOENT,
+		    "/dev/fd/128 is ENOENT: V8 shipped 128 nodes, 0 through 127");
+		ok(v8s_open("/dev/fd/999", 0, 0) < 0 && v8_errno == V8_ENOENT,
+		    "/dev/fd/999 is ENOENT, where macOS says EBADF");
+		ok(v8s_open("/dev/fd/x", 0, 0) < 0 && v8_errno == V8_ENOENT,
+		    "/dev/fd/x is ENOENT");
+		ok(v8s_open("/dev/fd/01", 0, 0) < 0 && v8_errno == V8_ENOENT,
+		    "/dev/fd/01 is ENOENT: the node is named 1, not 01");
+		ok(v8s_open("/dev/fd/", 0, 0) < 0 && v8_errno == V8_ENOENT,
+		    "/dev/fd/ with no component is ENOENT");
+
+		/*
+		 * THE ROW ORDER, ASSERTED DIRECTLY.  /dev/fd the DIRECTORY is an
+		 * ordinary directory and must stay passthrough, or `ls /dev/fd'
+		 * asks the descriptor type to open a name with no minor in it.
+		 * The exact row before the prefix row is what arranges that, and
+		 * nothing else in the suite would notice it being dropped.
+		 */
+		ok(v8fs_typefor("/dev/fd") == &v8fs_pass,
+		    "the /dev/fd DIRECTORY is passthrough");
+		ok(v8fs_typefor("/dev/fd/3") == &v8fs_fdfs,
+		    "...and its entries are not");
+		ok(v8fs_typefor("/dev/tty") == &v8fs_fdfs, "/dev/tty is claimed");
+		ok(v8fs_typefor("/dev/kmem") == &v8fs_pass,
+		    "...and /dev/kmem is still the groveler's");
+
+		/*
+		 * stat and fstat DISAGREE, and that is V8 rather than a defect:
+		 * stat reads an inode in /dev, which is a character device
+		 * whatever the descriptor points at, while fstat follows the
+		 * open file to the real object.  `test -c /dev/tty' is true with
+		 * a plain file on fd 3.
+		 */
+		ok(v8s_stat("/dev/fd/1", &s2) == 0, "stat(/dev/fd/1)");
+		ok((s2.st_mode & V8_S_IFMT) == V8_S_IFCHR,
+		    "...says character device, whatever fd 1 is");
+		ok(s2.st_rdev == (v8_dev_t)((40 << 8) | 1),
+		    "...with rdev makedev(40, 1) -- conf/devices:55");
+		ok(s2.st_nlink == 2, "...and nlink 2, the /dev/stdout link");
+		ok(v8s_stat("/dev/fd/50", &s2) == 0 && s2.st_nlink == 1,
+		    "an unlinked minor has nlink 1");
+		ok(v8s_stat("/dev/fd/999", &s2) < 0, "stat of a missing node fails");
+
+		t3 = v8s_open(sub, 0, 0);
+		v8s_dup2(t3, 3);
+		if (t3 != 3) v8s_close(t3);
+		a = v8s_open("/dev/tty", 0, 0);
+		ok(v8s_fstat(a, &s2) == 0 &&
+		    (s2.st_mode & V8_S_IFMT) == V8_S_IFREG,
+		    "fstat on the descriptor reports the REAL object");
+		v8s_close(a);
+
+		/*
+		 * dup and dup2 carry the descriptor's filesystem.  Both dropped
+		 * it until /dev/fd made dup the point: v8fs_fdtype() is how
+		 * every read and ioctl finds its type, and an unbound descriptor
+		 * reads as passthrough -- so dup() of a /proc file quietly
+		 * returned one whose reads went to the host.  Nothing in the
+		 * tree dup'd one, which is why nothing said so.
+		 *
+		 * Bound by hand here because this binary has no libkmemu and so
+		 * no /proc: the mechanism is what is under test, not procfs.
+		 */
+		hostfd = v8s_open(sub, 0, 0);
+		v8fs_bind(hostfd, &v8fs_fdfs);
+		b = v8s_dup(hostfd);
+		ok(v8fs_fdtype(b) == &v8fs_fdfs, "dup carries the fd's type");
+		v8s_close(b);
+		b = v8s_open(sub, 0, 0);
+		ok(v8fs_fdtype(b) == &v8fs_pass, "a fresh open is passthrough");
+		ok(v8s_dup2(hostfd, b) == b && v8fs_fdtype(b) == &v8fs_fdfs,
+		    "dup2 replaces the target's type as well as the target");
+		/*
+		 * ...and it OVERWRITES rather than merges, which is a property
+		 * of v8fs_bind storing null for the passthrough type.  This case
+		 * had a different name and was VACUOUS: it claimed to guard a
+		 * v8fs_unbind() call standing in front of the bind, and the
+		 * mutation that deleted that call changed nothing, because bind
+		 * already clears the row.  The call is gone; what is left here
+		 * is the property that was actually load-bearing.
+		 */
+		v8fs_unbind(hostfd);
+		ok(v8s_dup2(hostfd, b) == b && v8fs_fdtype(b) == &v8fs_pass,
+		    "dup2 of a passthrough fd CLEARS the target's stale type");
+		v8s_close(b);
+		v8s_close(hostfd);
+		v8s_close(3);
+		v8s_unlink(sub);
 	}
 
 	/* ------------------------------------------------------- cleanup */

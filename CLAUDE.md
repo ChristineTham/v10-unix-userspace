@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1388 cases)
+make test             # all 17 suites (1428 cases).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -181,10 +181,30 @@ the reasoning.
 
 **2. New code (`compiler/`, `shim/`)** — written for this port, modern C.
 `shim/v8sys/vfs.c` is the **filesystem switch** (PLAN §8a step 2): one mount
-table, two types behind it — passthrough, and `/proc` in `shim/libkmemu/`. The
+table, **three** types behind it — passthrough, `/proc` in `shim/libkmemu/`,
+and `/dev/fd`. The
 table is the old `v8dirs[]` with a type column — do not add a second prefix list
 beside it. `struct v8fstyp` answers to V8's own `struct fstypsw`; where it
 departs (descriptors, not inodes) the header says why.
+
+**`/dev/fd` is the cheap type and the instructive one: it implements THREE
+operations and inherits the rest.** `t_path` is the identity (there is no host
+path), `t_open` is `dup(minor)`, `t_stat` synthesizes a character device
+`makedev(40, minor)` — and everything after open is passthrough's *unchanged*,
+because a dup'd descriptor **is** an ordinary host descriptor. Giving it a type
+of its own would invent a difference the kernel does not have, which is why
+`fd_open` never calls `v8fs_bind()`. Row order is load-bearing and asserted:
+exact `/dev/fd` → passthrough (the directory is a real directory) *before*
+prefix `/dev/fd/` → fdfs, or `ls /dev/fd` asks the descriptor type to open a
+name with no minor in it.
+
+**A third type made two rules live that had never been exercised, and both were
+incomplete.** `v8s_creat` went straight to `rawsys3(SYS_open, mkpath(path))` —
+path resolution without dispatch, so **no second type could ever see a creat**;
+`/proc` is read-only, so nothing noticed. And `v8s_dup`/`v8s_dup2` dropped the
+descriptor's type, so `dup()` of an open `/proc` file returned one whose reads
+went to the host. Both are the `v8s_mknod` shape: an unexercised rule cannot be
+seen to be incomplete. Expect a fourth type to find a third.
 
 Dispatch is **by descriptor, not by operation**, and `ioctl` is where that stops
 being a detail: `v8s_ioctl` routes on `v8fs_fdtype(fd)`, so `PIOCGETPR` on an
@@ -904,8 +924,35 @@ One wrong digit reads as an off-by-one in a buffer, and is not. When a value is
 wrong in exactly one place, stop reasoning about the source and read what was
 emitted: `cc -S`, then look for an `sdiv` or `asr` where the C says unsigned.
 
-**Read the program before deciding how to port it — twice now the plan was
-wrong about what a program talks to.** PLAN.md said `ps` would be ported "on
+**Read the program before deciding how to port it — THREE times now the plan
+was wrong about what a program talks to, and the third was wrong about a
+*device node*.** PLAN.md §8a step 1b costed a host-fd stream driver to sit
+under `/dev/tty`. **V8's `/dev/tty` is not a stream, not a device, and has no
+code behind it**: it is a hard link to `/dev/fd/3`, and opening anything in
+`/dev/fd` is `dup(2)`. Four confirmations, all read rather than recalled —
+`proto-dev:91` (major 40 minor 3, link count 2), `conf/devices:55` (`device 40
+std`, no driver name), `dev/conf.c:565` (every `cdevsw` slot `nodev`, null
+`streamtab`), and `sys/sys2.c:174`, where `open1()` special-cases it *before*
+the permission check with `getf(minor)`/`ufalloc()`/`u_ofile[i] = fp` — `dup`'s
+body, written out. `man4/fd.4` says it in prose too. V7's `syopen` driver is
+still in the tree at `sys/sys/sys.c` and is **dead**: not in `conf/files`, and
+unable to compile, since `u_ttyp` is not in V8's `struct user`. A vestigial
+file that answers the question you are asking is the worst kind of evidence.
+
+What makes fd 3 the terminal is `init.c:368-382` — `open(tty,2)` as fd 0,
+`FIOPUSHLD` the tty discipline, then `dup(0)` **three** times. "Controlling
+terminal" is a userspace convention in V8, not a kernel fact, so the `v8`
+launcher is this world's init and has to arrange it. `shim/NOTES.md`.
+
+Two things generalise past this instance. **A survey's citations decay
+independently of its conclusions** — the same block cited `conf/devices:82` for
+`ttyld`, and `:82` is `bf`; `ttyld` is `:75`. And its ordering argument
+("`ttyld` has no bottom end so it cannot be exercised") was false at the open
+path: `ttyopen` never dereferences `q->next` and sends nothing downstream. Only
+*traffic* needs a device below. **Re-read the source a survey cites before
+building on the survey**, not just its summary.
+
+PLAN.md said `ps` would be ported "on
 top of `libproc`". V8's `ps` is a **`/proc` client**: `getdir("/proc")`,
 `open("/proc/<pid>")`, `ioctl(PIOCGETPR)` for the `struct proc`, and the u-area
 read at virtual address `UBASE`. That is Killian's process filesystem, V8's own
@@ -1547,6 +1594,30 @@ not testable until it is installed.
   full suite afterwards, which is the reason to do that rather than trust the
   one suite the mutation targeted. `touch` the source after restoring, or diff
   the built binary — and never end a mutation run without a full `make test`.
+
+  **AND THE MUTATION THAT DOES NOT FIRE IS THE INFORMATIVE ONE — it says the
+  guard is VACUOUS, which no green run ever will.** Seven mutations were run
+  against the `/dev/fd` cases and six went red. The seventh deleted a
+  `v8fs_unbind()` standing in front of a `v8fs_bind()` in `v8s_dup2` and changed
+  nothing, because `v8fs_bind` already stores null for the passthrough type — so
+  the call was dead code *and* the case named for it asserted nothing. The
+  comment beside it had even said the two calls collapse, and kept both. Do not
+  read a non-firing mutation as "the mutation was too weak"; check first whether
+  the code it targeted does anything. Then delete the dead call, re-aim the case
+  at the property that is load-bearing (here: `v8fs_bind` clearing the row
+  rather than merging into it), and re-mutate to prove the new one fires.
+- **`make -j8 test` IS NOT `make -j8` FOLLOWED BY `make test`, AND IT FAILS IN
+  THE SHAPE OF A CODE BUG.** The two commands at the top of this file are two
+  commands on purpose. Under `-j`, make runs the seventeen suites concurrently
+  with each other's prerequisite *builds*, so a suite reads objects another
+  suite's build is midway through writing. Measured: 42 failures across
+  `libv8c`, `deps`, `wavea` and `mkfs`, four suites never ran at all, and every
+  message read like a real defect — `libv8c`'s were all "(compile)", `deps`'
+  were all "was already stale before the touch". Serially, the same tree was
+  **1428 passed, 0 failed**. The tell is the *shape*: whole suites failing on
+  build steps rather than on assertions. This is the same root cause as the rule
+  below — something modifying the tree while a suite reads it — arriving from
+  make rather than from an editor.
 - **NEVER EDIT SOURCE WHILE A SUITE IS RUNNING, and a filtered log cannot
   testify about what it filtered.** `make test` builds each suite's
   prerequisites when it reaches that suite, so an edit landing mid-run can

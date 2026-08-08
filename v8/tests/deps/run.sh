@@ -672,6 +672,12 @@ nodep 'grap does not reach pic'   src/cmd/grap/grap.h    $B/pic/main.o
 # --- deleted rootfs data files must come back -------------------------------
 # A directory stamp recorded "the install ran", which is not the question:
 # deleting one installed table left the stamp alone, so make did not restore it.
+#
+# The five /dev entries at the end are the same question asked of a STATIC
+# PATTERN rule.  $(ROOTFS_DEVFD) is 128 targets from one rule, and the easy
+# spellings of that -- a directory target, or `$(ROOTFS_DEVFD):' with a recipe
+# -- would either restore nothing (the stamp problem again) or be a multi-target
+# rule racing under -j.  Deleting one node has to put back that node.
 for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/lib/font/dev202/R.out rootfs/lib/libv8c.a \
          rootfs/usr/lib/grap.defines rootfs/usr/lib/units rootfs/usr/lib/eign \
@@ -680,7 +686,9 @@ for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/etc/mkfs rootfs/etc/icheck rootfs/etc/dcheck \
          rootfs/etc/clri rootfs/etc/fsck rootfs/etc/ncheck rootfs/etc/quot \
          rootfs/etc/dump rootfs/etc/restor rootfs/etc/dumpdir \
-         rootfs/usr/src/cmd/Admin/Mk rootfs/usr/src/cmd/cat.c; do
+         rootfs/usr/src/cmd/Admin/Mk rootfs/usr/src/cmd/cat.c \
+         rootfs/dev/fd/0 rootfs/dev/fd/3 rootfs/dev/fd/127 \
+         rootfs/dev/tty rootfs/dev/stdin; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then
