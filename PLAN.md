@@ -1247,6 +1247,14 @@ Three documented lies, all currently recorded as losses:
 And ten programs currently written off as "raw VAX disks": `fsck mkfs icheck
 dcheck ncheck clri quot dump restor dumpdir`.
 
+**SEVEN OF THE TEN ARE IN, AND THEY DID NOT NEED THIS STEP.** `mkfs`, `icheck`,
+`dcheck`, `clri`, `fsck`, `ncheck` and `quot` all take the filesystem as an
+*argument*, so a mount was never the obstacle -- what they needed was step 4a's
+on-disk widths and nothing else. Only `dump`, `restor` and `dumpdir` are left,
+and those are a different problem: a dump is a tape format, not a filesystem
+one. What step 5 still buys the seven is `df`'s numbers, `mklost+found`, and
+`quot`'s own default argument `/dev/usr`.
+
 ### Sequence
 
 Ordered so that value lands before risk, and so each step is testable alone.
@@ -1612,7 +1620,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
    (icheck: `missing 0`, 1917 -> 1918), the link count is adjusted (dcheck
    silent), the out-of-range address is named with the same inode, and clri's
    two halves -- which no single checker could describe -- are both fixed in one
-   pass, after which a second pass reports nothing. `tests/mkfs` is 97 cases;
+   pass, after which a second pass reports nothing. `tests/mkfs` is 126 cases;
    `src/cmd/fsck.PORTING.md` is the record.
 
    **ONE COMPILE ERROR IN 1925 LINES, and that is the measurement worth keeping
@@ -1636,7 +1644,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `scrfile[80]`, filled by an unbounded copy from `-t`, which with a 2000-char
    argument made fsck **modify a filesystem that was well**.
 
-   `-DDIRSIZ=14` changed kind here too. For the four readers a wrong DIRSIZ is a
+   `-DDIRSIZ=14` changed kind here too. For the plain readers a wrong DIRSIZ is a
    wrong answer; `pass2()` copies DIRSIZ bytes per component into
    `pathname[200]`, so at the host's 254 a single component overruns it. The
    Makefile's `$(IMGBIN)` group is now a memory-safety property as well.
@@ -1649,6 +1657,57 @@ Ordered so that value lands before risk, and so each step is testable alone.
    waits for step 5. Run against a passthrough directory it would prove the
    shell works and nothing about the filesystem. `tests/mkfs` asserts the `SORRY`
    line, so the case goes red the day step 5 lands.
+
+   **4e: `ncheck` and `quot`, which take the ten-program list to seven.** Both
+   read the image as an argument, so neither waited for step 5, and the reason
+   to have them is that each computes something the other five do not.
+   `icheck` walks `di_addr[]`; `quot` computes `ceil(di_size/BSIZE)` -- different
+   *fields* of the same inodes, so the two can be made to disagree, and the
+   disagreement is exactly the metadata:
+
+   ```
+   quot's block total + icheck's indirect count == icheck's `used'
+   quot's file total                            == icheck's `files'
+   ```
+
+   Section 6's indirect-block image is where that stops being a tautology: 21
+   blocks of file against 22 allocated. `ncheck`'s contribution is different in
+   kind -- every checker here reports in inode *numbers*, and `ncheck` is the
+   only program that turns one into a path. So the corruption cases now end by
+   handing icheck's own output to `ncheck -i`. The manual's own composition
+   runs verbatim too: `ncheck fs | sort +0n | quot -n fs`, three V8 programs.
+
+   **THE TWO BUGS WERE BOTH "V8 ASSUMES ADDRESS 0 IS READABLE", AND ONE WAS ON
+   THE DEFAULT COMMAND LINE.** `quot`'s `qcmp` reaches `strcmp(0,0)` because
+   2046 of its 2048 `du[]` entries have no passwd name and `qsort` compares
+   those against each other -- so plain `quot image` SIGSEGV'd before printing a
+   line. `ncheck -i 5` faulted in `atol` on the vector's NULL terminator. The
+   VAX had its text segment at address 0 and both quietly worked; this is
+   `refer5.c`'s class, and finding two more of it in one 600-line pair says the
+   sweep for it is not done. Fixed with the empty string and a null test
+   respectively -- both chosen to reproduce the VAX's *answer* rather than
+   merely to remove the fault, since `quot`'s ordering is visible in its output.
+
+   **And a third bug that is OURS.** `%.Ns` in `src/libc/stdio/doprnt.c` read
+   `s[prec]`: the loop condition ran before the precision test. That file is
+   this port's C rewrite of `doprnt.S`, and `%.Ns` exists precisely for a
+   fixed-width field that need not be terminated -- `ncheck` prints `d_name`
+   that way, so the byte read is the next entry's `d_ino`, and at the end of a
+   mapped page it is a fault. Nothing in the tree had reached it before, which
+   is why 32 `printf` cases had not.
+
+   `ncheck` and `quot` are the group's two extremes on `-DDIRSIZ=14` and having
+   both is what makes membership mean something. Built at 254, `ncheck` reads a
+   *correct* image and prints **nothing at all, exit 0**. `quot`'s object is
+   **byte-identical** either way -- and that measured no-op is why **`quot` is
+   the first image tool to close rung 5**: its own makefile passes no `-D`, so
+   Bell Labs' build description produces the same program, and `tests/jail`
+   hands the rung-5 binary and the installed one the same image and requires the
+   same answer. The corollary is a trap, and it now has a structural guard:
+   `ncheck` must never join `$(V8BIN)`, because that is what `$(SRCTREE)` stages
+   for `Admin/Mk` and Mk passes no `-D` either. `tests/jail` asserts `$(V8BIN)`
+   and `$(IMGBIN)` are disjoint -- measured, `make` emits no warning of any kind
+   when a name is in both.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `mklost+found`, and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
@@ -1751,9 +1810,9 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.1 streams | engine in | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c` surveyed and deferred — see S8a step 1 |
 | 8a.2 fs switch | done | `shim/v8sys/vfs.c`, one mount table, passthrough behind it |
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
-| 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem; `mkfs` 46/46. It began by finding that **every on-disk struct in the tree was the wrong size** |
+| 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **seven of the ten "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot`, none of which needed a mount, because each takes the image as an argument. `mkfs` 126/126. It began by finding that **every on-disk struct in the tree was the wrong size**, and it has since produced two of this port's own bugs (the `time_t` seam in both directions), three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-`make test` runs everything — seventeen suites, about 1040 cases.
+`make test` runs everything — seventeen suites, about 1150 cases.
 
 ### What actually works today
 

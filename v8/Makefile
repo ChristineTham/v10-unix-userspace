@@ -1323,7 +1323,41 @@ $(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
 # out of src/v8/etc and has no source for a binary.
 # ---------------------------------------------------------------------------
 IMGDIRSIZ = 14
-IMGBIN    = mkfs icheck dcheck clri fsck
+IMGBIN    = mkfs icheck dcheck clri fsck ncheck quot
+
+# Where each one's source sits under $(SRC)/cmd.  Six are bare cmd/<name>.c;
+# quot is cmd/quot/quot.c, because upstream gave it a makefile of its own and
+# import.sh brings a directory in as a directory.  Spelled out for all seven
+# rather than defaulted for the six, for $(dirsrcs)' reason: the short form
+# $(if $(imgsrc_$(1)),...) READS an undefined variable, and this Makefile is
+# checked with --warn-undefined-variables precisely because a variable used
+# above its definition expands to nothing in a prerequisite.
+imgsrc_mkfs   = mkfs
+imgsrc_icheck = icheck
+imgsrc_dcheck = dcheck
+imgsrc_clri   = clri
+imgsrc_fsck   = fsck
+imgsrc_ncheck = ncheck
+imgsrc_quot   = quot/quot
+imgsrcs       = $(imgsrc_$(1))
+
+# quot IS in the group and does NOT need the -D, which is the distinction worth
+# keeping rather than smoothing over.  It reads inodes and never a directory --
+# no <sys/dir.h>, no struct direct, no DIRSIZ -- so its object is BYTE-IDENTICAL
+# with and without the flag; tests/mkfs asserts that rather than this sentence.
+# It is here because the group is "programs that talk to a 1985 image", and
+# membership is what stops the next import being compiled without the flag.
+# The measured no-op has a payoff: quot is the one image tool whose own
+# upstream makefile (CFLAGS = -O, no -D) therefore builds the SAME program, so
+# it is the only one of the seven that is not blocked from rung 5.
+#
+# ncheck is the opposite and is the reason the flag is asserted twice now.
+# Built at the host's 254 it prints NOTHING AT ALL and exits 0: NDIR(dev) comes
+# out 4 instead of 64 and each step is 256 bytes rather than 16, so a root whose
+# di_size is 48 is exhausted by its own `.' entry, which dotname() then filters.
+# So it must never join $(V8BIN) -- that list is what $(SRCTREE) stages for
+# Admin/Mk, and Mk compiles a bare cmd/*.c with `cc $CFLAGS -o $B $B.c' and no
+# -D of any kind.  tests/jail builds it both ways and asserts the pair.
 
 # Generated for the reason $(V8DIRBIN)'s rules are: a static pattern rule cannot
 # put the stem in two places, and .SECONDEXPANSION is too large a blast radius.
@@ -1332,7 +1366,7 @@ IMGBIN    = mkfs icheck dcheck clri fsck
 # directory at once -- ld says "Is a directory", which reads as a linker problem
 # and is a layout one.
 define imgprog_rule
-$(BUILD)/$(1)/$(1).o: $$(SRC)/cmd/$(1).c $$(V8CC_DEPS)
+$(BUILD)/$(1)/$(1).o: $$(SRC)/cmd/$(call imgsrcs,$(1)).c $$(V8CC_DEPS)
 	@mkdir -p $$(@D)
 	@$$(V8CCRUN) -DDIRSIZ=$$(IMGDIRSIZ) -c -o $$@ $$<
 

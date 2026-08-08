@@ -265,8 +265,25 @@ _doprnt(fmt, argp, iop)
 		case 's':
 			s = NEXTPTR(argp);
 			if (s == 0) s = "(null)";
-			for (len = 0; s[len]; len++)
-				if (haveprec && len >= prec) break;
+			/*
+			 * The precision has to be in the loop CONDITION, not
+			 * in its body.  Written as
+			 *
+			 *	for (len = 0; s[len]; len++)
+			 *		if (haveprec && len >= prec) break;
+			 *
+			 * it reads s[prec] before deciding to stop -- exactly
+			 * one byte past the field -- and %.Ns exists for a
+			 * fixed-width field that need NOT be terminated.  V8's
+			 * own ncheck prints directory entries with "%.14s"
+			 * over a 14-byte d_name that fills its record, so the
+			 * byte read is the next entry's d_ino; against a
+			 * DIRSIZ field at the end of a mapped page it is a
+			 * fault.  Ours to fix: this file is a C rewrite of
+			 * doprnt.S, so the bug is the port's, not V8's.
+			 */
+			for (len = 0; (!haveprec || len < prec) && s[len]; len++)
+				;
 			if (!leftjust) total += pad(iop, ' ', width - len);
 			total += emit(iop, s, len);
 			if (leftjust) total += pad(iop, ' ', width - len);

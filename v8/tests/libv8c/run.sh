@@ -634,6 +634,47 @@ else
 	fail=$((fail+1)); echo "FAIL sleep (build)"; head -2 e.log
 fi
 
+# ---------------------------------------------------------------------------
+# %.Ns MUST NOT READ s[N], and this file is where that bug lived.
+#
+# doprnt.c is OUR C rewrite of doprnt.S, so this one is the port's rather than
+# V8's.  It was written
+#
+#	for (len = 0; s[len]; len++)
+#		if (haveprec && len >= prec) break;
+#
+# -- the loop CONDITION runs before the body, so the byte at s[prec] is read
+# and then discarded.  Harmless for a NUL-terminated string and not harmless
+# for the case %.Ns exists to serve: a FIXED-WIDTH FIELD THAT NEED NOT BE
+# TERMINATED.  V8's ncheck prints directory entries with "%.14s" over a d_name
+# that fills its record, so the byte read is the next entry's d_ino, and at the
+# end of a mapped page it is a fault.  Found by auditing ncheck before building
+# it; nothing in the tree had reached it before, which is why 32 cases of
+# printf did not.
+#
+# The diagnostic is prec = 0, where the pointer can be made unmapped without
+# any page arrangement: page 0 is unmapped on macOS, so the old loop faults on
+# *(char *)1 and the fixed one never dereferences at all.  Same defect, same
+# line, and deterministic on every host rather than dependent on where the
+# linker put a buffer.
+run 'printf %.0s does not dereference' 'ok' <<'EOF'
+#include <stdio.h>
+main() { printf("%.0s", (char *)1); printf("ok\n"); fflush(stdout); return 0; }
+EOF
+
+# And the behaviour it must keep while not reading that byte.  `field' is 14
+# bytes with NO terminator, followed by a sentinel the format must not reach.
+run 'printf %.Ns over an unterminated field' '[abcdefghijklmn] [abc] [xy] [] 14' <<'EOF'
+#include <stdio.h>
+struct { char field[14]; char sentinel[4]; } b = { {
+	'a','b','c','d','e','f','g','h','i','j','k','l','m','n' }, "ZZZ" };
+main() {
+	printf("[%.14s] [%.3s] [%.9s] [%.0s] %d\n",
+	    b.field, "abcdef", "xy", "abc", 14);
+	fflush(stdout); return 0;
+}
+EOF
+
 echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

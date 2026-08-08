@@ -48,7 +48,23 @@ They also gave `l3tol` its first caller. `ltol3` packs an inode's block list int
 3-byte disk addresses and `l3tol` unpacks it; the pair had been patched, then
 re-patched when `daddr_t` narrowed, and **nothing in the port had ever read one
 back**. Both checkers do, at `icheck.c:278` and `dcheck.c:152`, and they find
-block 83 where `mkfs` put it.
+block 83 where `mkfs` put it. (`ncheck` is the third caller, added in step 4e.)
+
+**And step 4e added a second, sharper relation from a different direction.**
+`quot` computes a file's size in blocks as `ceil(di_size/BSIZE)` where `icheck`
+walks `di_addr[]` — **different fields of the same inodes**, so unlike `s_tfree`
+versus the free-list walk these two do not merely re-derive one number, they can
+be made to disagree. On a healthy image the disagreement is exactly the
+metadata:
+
+```
+quot's block total + icheck's indirect count == icheck's `used'
+quot's file total                            == icheck's `files'
+```
+
+The indirect-block image is what stops that being a tautology: 21 blocks of file
+against 22 allocated, the extra one holding no file data and therefore invisible
+to `di_size`. Every other image in the suite reports `i=0`. `src/cmd/quot/PORTING.md`.
 
 ## They need no mount, which is why they come before `df`
 

@@ -693,5 +693,190 @@ check "dcheck does not either: the gaps read as deleted entries" \
 check "nor does fsck, in any of its five phases"	"" \
     "$(fs "$TMP/nd.img" | grep 'FILE SYSTEM WAS MODIFIED')"
 
+# ---------------------------------------------------------------------------
+# 9. ncheck and quot, and the two RELATIONS they add.
+#
+# Five readers is not five times one reader.  What a sixth and seventh are
+# worth is whether they compute something the others do not, and these two do:
+#
+#   icheck	walks di_addr[] -- the blocks an inode actually OWNS
+#   quot	computes ceil(di_size/BSIZE) -- the blocks its LENGTH implies
+#   ncheck	walks the directory tree and builds a path for every inode
+#
+# So quot and icheck read different FIELDS of the same inodes and can be made
+# to disagree, and the size of the disagreement is exactly the metadata:
+#
+#	quot's block total + icheck's indirect count == icheck's `used'
+#	quot's file total                            == icheck's `files'
+#
+# Both are asserted as arithmetic against the other program's output, never
+# against a transcribed number, so they still mean something at another size --
+# and section 6's indirect-block image is included precisely because it is the
+# one where the two computations DIFFER.
+#
+# ncheck's contribution is different in kind and is the 1985 workflow: every
+# corruption case above ends in "inode=2", which is a number.  ncheck is what
+# turns that into a filename, and it is the only program here that can.
+# ---------------------------------------------------------------------------
+NCHECK=$V8ROOT/etc/ncheck
+QUOT=$V8ROOT/etc/quot
+for f in "$NCHECK" "$QUOT"; do
+	[ -x "$f" ] || { echo "missing $f -- run make"; exit 1; }
+done
+
+# A uid with no passwd entry, DERIVED rather than assumed.  rootfs/etc/passwd
+# is generated from whoever ran the build (see the Makefile rule), so a
+# hardcoded 3 is a claim about the tester's machine; this is a claim about the
+# file.  uid 0 is safe to name because root is always written.
+NOUID=3
+while grep -q "^[^:]*:[^:]*:$NOUID:" "$V8ROOT/etc/passwd" 2>/dev/null; do
+	NOUID=$((NOUID+1))
+done
+
+# An image with a subdirectory, so ncheck's pname() has to recurse, and with a
+# file owned by that uid, so quot has to print the numeric form.  PIMG's flat
+# root would exercise neither.
+echo 'hello from v8' > "$TMP/n1"
+echo 'aaa'           > "$TMP/n2"
+{ printf '/dev/null\n2000 1280\nd--777 0 0\n'
+  printf 'hello\n---644 0 0 %s\n' "$TMP/n1"
+  printf 'sub\nd--755 0 0\n'
+  printf   'deeper\n---600 %s 4 %s\n' "$NOUID" "$TMP/n2"
+  printf '$\n$\n'
+} > "$TMP/proto.n"
+NIMG=$TMP/n.img
+"$MKFS" "$NIMG" "$TMP/proto.n" >/dev/null 2>&1 ||
+	bad "mkfs refused the subdirectory prototype"
+nic=$(ic "$NIMG")
+check "the ncheck image checks clean first"	"missing 0" \
+    "$(printf '%s\n' "$nic" | grep '^missing')"
+
+# --- ncheck ----------------------------------------------------------------
+nc() { "$NCHECK" $2 "$1" 2>&1 | sed 1d | sq; }
+
+# A directory gets `/.' appended by upstream, which is how ncheck marks one.
+check "ncheck names every file, path built by recursion" \
+    "3 /hello 4 /sub/. 5 /sub/deeper" "$(nc "$NIMG" | tr '\n' ' ' | sq)"
+check "ncheck -a adds the dot entries"	"7" \
+    "$("$NCHECK" -a "$NIMG" 2>&1 | sed 1d | wc -l | tr -d ' ')"
+check "ncheck -i names one inode"	"5 /sub/deeper" "$(nc "$NIMG" '-i 5')"
+check "and takes a list"	"3 /hello 5 /sub/deeper" \
+    "$(nc "$NIMG" '-i 3 5' | tr '\n' ' ' | sq)"
+
+# THE PAIRING WITH A CORRUPTION, which is what ncheck is for.  Section 5's
+# case C reports `inode=2'; here the damage goes to a file two levels down so
+# the answer is a path rather than the root, and the inode number is taken from
+# icheck's own output rather than written here twice.
+cp "$NIMG" "$TMP/nc3.img"
+# inode 5, /sub/deeper -- itod/itoo as at I2 above, not I2 + 3*DINODE, because
+# an inode three slots along could be in the next block.
+I5=$(( ((5 + 2*INOPB - 1) / INOPB) * BSZ + ((5 + 2*INOPB - 1) % INOPB) * DINODE ))
+printf '\377\377\177' | dd of="$TMP/nc3.img" bs=1 seek=$((I5+12)) count=3 \
+    conv=notrunc 2>/dev/null
+badino=$(ic "$TMP/nc3.img" | sed -n 's/.*inode=\([0-9]*\).*/\1/p')
+check "icheck names the inode of the bad address"	"5"	"$badino"
+check "and ncheck turns that number into a path" "$badino /sub/deeper" \
+    "$(nc "$TMP/nc3.img" "-i $badino")"
+
+# --- quot ------------------------------------------------------------------
+# Two columns, one row per uid, sorted by blocks descending.  The `#N' row is
+# the one that used to take the whole program down: 2046 of quot's 2048 du[]
+# entries have a null name, qsort compares those against each other, and V8's
+# qcmp reaches strcmp(0,0).  A row printed at all is the regression case.
+# Columns are tab-separated, so awk on $1..$3 rather than sq-then-cut: sq turns
+# the tabs into single spaces and cut -f then sees one field.
+qf() { "$QUOT" -f "$1" 2>&1 | sed 1d | awk "$2" | sq; }
+check "quot names uid 0 and the unowned uid numerically" \
+    "root #$NOUID" "$(qf "$NIMG" '{printf "%s ", $3}')"
+check "quot -f gives blocks and files per uid"	"3 4 1 1" \
+    "$(qf "$NIMG" '{printf "%s %s ", $1, $2}')"
+
+# THE RELATIONS.  Summed with awk rather than transcribed, on both images.
+qsum() { "$QUOT" -f "$1" 2>&1 | sed 1d | awk -v c="$2" '{t+=$c} END {print t+0}'; }
+icf() { printf '%s\n' "$1" | grep "^$2" | cut -d' ' -f2; }
+# `used 22 (i=1,ii=0,iii=0,d=21)' -> 1
+icind() { printf '%s\n' "$1" | sed -n 's/.*(i=\([0-9]*\),.*/\1/p'; }
+
+check "quot's file total is icheck's file count"	"$(icf "$nic" files)" \
+    "$(qsum "$NIMG" 2)"
+check "quot's blocks plus icheck's indirect is icheck's used" \
+    "$(icf "$nic" used)" "$(( $(qsum "$NIMG" 1) + $(icind "$nic") ))"
+
+# The same two on section 6's image, where the indirect block makes the two
+# computations differ -- 21 blocks of file against 22 blocks allocated.  Without
+# this the relation above could be satisfied by both programs counting the same
+# thing, since every other image here has i=0.
+if [ "$(icind "$bout")" = 1 ]; then pass=$((pass+1))
+else bad "the indirect-block image reports i=$(icind "$bout"), so the case below is vacuous"; fi
+check "on the indirect image quot is one block short of icheck" \
+    "$(icf "$bout" used)" "$(( $(qsum "$BIMG" 1) + $(icind "$bout") ))"
+check "and that one block is the indirect block itself" "1" \
+    "$(( $(icf "$bout" used) - $(qsum "$BIMG" 1) ))"
+
+# THE COMPOSITION, WHICH IS UPSTREAM'S OWN AND NOT OURS.  quot(8)'s manual page
+# says: "Cause the pipeline `ncheck filesystem | sort +0n | quot -n filesystem'
+# to produce a list of all files and their owners."  Both new programs plus V8's
+# sort, run verbatim.  A program that works alone and not in the composition its
+# own documentation specifies is exactly the shape `grap | pic | troff' caught
+# in Wave C, where each stage was fine and the seam was not.
+# (`3' rather than `#3' is upstream: the -n arm prints %d where report() prints
+# #%d.)
+check "the manual's own ncheck | sort +0n | quot -n pipeline" \
+    "root /hello root /sub/. $NOUID /sub/deeper" \
+    "$("$NCHECK" "$NIMG" 2>/dev/null | sed 1d | "$V8ROOT/usr/bin/sort" +0n \
+       | "$QUOT" -n "$NIMG" 2>&1 | sed 1d | tr '\n\t' '  ' | sq)"
+
+# --- the two crashes, which are regression cases and nothing else -----------
+# Both are the "V8 assumes address 0 is readable" class that refer5.c already
+# records, and both are on ordinary command lines rather than exotic ones.
+"$NCHECK" -i 5 >/dev/null 2>&1; nrc=$?
+check "ncheck -i with no image exits, rather than faulting on atol(0)" "0" "$nrc"
+# -s IS NOT IN THE SAME CATEGORY AND THIS CASE SAYS SO RATHER THAN PRETENDING.
+# pass3() reaches `pr:' from both sides of the -i test but sets k only on one,
+# so with -s and no -i list ilist[k] indexes by an uninitialised int -- ldrsw'd
+# and shifted, a +-4 GB signed offset from ilist, which the VAX could read and
+# macOS mostly cannot.  ncheck.c initialises k, and the disassembly says the
+# read is real; MUTATION DOES NOT REPRODUCE THE FAULT.  Measured: with the
+# initialiser removed, ten runs exit 0, because the slot holds a small stale
+# value left by the same frame.  So this is not a guard on that fix and must
+# not be read as one -- it asserts the CONTRACT, that -s adds a mode column
+# only for inodes named by -i and therefore changes nothing without one, which
+# is deterministic and true either way the fault lands.
+check "ncheck -s with no -i list prints what a plain run prints" \
+    "$(nc "$NIMG")" "$(nc "$NIMG" -s)"
+"$QUOT" "$NIMG" >/dev/null 2>&1; qrc=$?
+check "quot's default invocation exits, rather than faulting in qcmp" "0" "$qrc"
+
+# --- section 8's question, asked of the reader that fails silently ----------
+# mkfs built without the flag writes a wrong image that every reader accepts.
+# ncheck is the mirror: built without the flag it reads a RIGHT image and
+# prints nothing at all, exit status 0.  NDIR(dev) comes out 4 instead of 64
+# and the step is 256 bytes rather than 16, so a root whose di_size is 64 is
+# exhausted by its own `.', which dotname() then filters.
+#
+# This is why $(IMGBIN) is a group and why ncheck must never join $(V8BIN):
+# that list is what $(SRCTREE) stages for Admin/Mk, and Mk compiles a bare
+# cmd/*.c with `cc $CFLAGS -o $B $B.c' and no -D.
+if "$CC" -Od2 -o "$TMP/ncheck-nodirsiz" "$ROOT/src/cmd/ncheck.c" \
+   > "$TMP/nn.log" 2>&1; then
+	pass=$((pass+1))
+else
+	bad "ncheck would not build the way Admin/Mk builds it" "$(head -3 "$TMP/nn.log")"
+fi
+check "without the flag ncheck prints nothing on a good image" "" \
+    "$("$TMP/ncheck-nodirsiz" "$NIMG" 2>&1 | sed 1d)"
+"$TMP/ncheck-nodirsiz" "$NIMG" >/dev/null 2>&1
+check "and says so with exit status 0, which is the whole problem" "0" "$?"
+
+# quot is in the same group and does NOT need the flag, which the Makefile
+# claims and this measures: it reads inodes only, names no struct direct, and
+# its object is byte-identical either way.  That is what leaves quot the one
+# image tool whose own upstream makefile builds the same program -- see
+# tests/jail for the rung-5 half.
+"$CC" -Od2 -DDIRSIZ=14 -c -o "$TMP/q14.o" "$ROOT/src/cmd/quot/quot.c" 2>/dev/null
+"$CC" -Od2            -c -o "$TMP/q0.o"  "$ROOT/src/cmd/quot/quot.c" 2>/dev/null
+if cmp -s "$TMP/q14.o" "$TMP/q0.o"; then pass=$((pass+1))
+else bad "quot.o differs with and without -DDIRSIZ=14 -- it reads directories now"; fi
+
 echo "mkfs: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1,0 +1,8 @@
+# Provenance for v8/src/cmd/quot
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+12c053c340e59a51c82be16b04873502c79dfda1  v8/usr/src/cmd/quot/makefile
+a82d206f76b1db98849dc1ec0853a9e1b556819c  v8/usr/src/cmd/quot/quot.c

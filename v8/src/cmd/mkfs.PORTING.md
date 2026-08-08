@@ -155,11 +155,22 @@ token.
 ## `DIRSIZ` is 14 for this program and 254 for everything else
 
 `mkfs` is compiled `-DDIRSIZ=14`. It was the only thing in the tree that was;
-it is now the Makefile's `$(IMGBIN)` group of five — `mkfs`, `icheck`, `dcheck`,
-`clri`, `fsck` — because the flag turned out to be a property of *talking to an
-image* rather than of writing one. `src/cmd/icheck.PORTING.md` has why `dcheck`
-joined, and `src/cmd/fsck.PORTING.md` why for `fsck` it is a memory-safety
-property as well as a format one.
+it is now the Makefile's `$(IMGBIN)` group of seven — `mkfs`, `icheck`,
+`dcheck`, `clri`, `fsck`, `ncheck`, `quot` — because the flag turned out to be a
+property of *talking to an image* rather than of writing one.
+`src/cmd/icheck.PORTING.md` has why `dcheck` joined, and
+`src/cmd/fsck.PORTING.md` why for `fsck` it is a memory-safety property as well
+as a format one.
+
+The two newest members are the group's extremes, and having both is what makes
+membership mean something. `ncheck` is the most flag-dependent program here:
+built at 254 it reads a *correct* image and prints nothing at all, exit status 0
+— `src/cmd/ncheck.PORTING.md`. `quot` does not need the flag at all; its object
+is byte-identical either way, measured by `tests/mkfs` compiling it twice, and
+it is in the group on the group's rule rather than on need. That measured no-op
+is also why **`quot` is the only one of the seven not blocked from rung 5**:
+upstream's own makefile passes no `-D`, so Bell Labs' build description produces
+the same program — `src/cmd/quot/PORTING.md`.
 
 This port raises `DIRSIZ` 14 → 254 in three headers because macOS filenames
 exceed fourteen characters. That is right for every directory the shim serves

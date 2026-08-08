@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (~1040 tests)
+make test             # all 17 suites (~1150 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -291,7 +291,7 @@ the documented as/ld exception. The makefile is plain 1985 make — no pattern
 rules, no automatic variables past `$@`. The result compiles real source, the
 build settles, and a second build from clean generates identical code.
 
-**Rung 5 is demonstrated on seventeen programs, chosen for their makefile idioms
+**Rung 5 is demonstrated on eighteen programs, chosen for their makefile idioms
 rather than their size**: `lex` (dependency line on `#include`d non-headers),
 `sed` (target, prerequisites and recipe on one line; `*.o` glob), `fmt` (macro
 expansion), `tsort` (`.SUFFIXES` and a `.c.o` suffix rule, no explicit object
@@ -303,8 +303,10 @@ regenerates the word lists), `man` (the minimal case, one rule), `troff`
 and an `#include`d non-header), `ps` (V8 make's `&`, which nothing else here
 uses), `load` and `w` (two lines each, and grovelers — see below), `make`
 (**V8's make building V8's make from V8's makefile** — the only entry that
-closes a loop), `eqn` (whose target is `a.out`, not its own name), and `pic` and
-`grap` (`-lm`). V8's make handled every one unchanged.
+closes a loop), `eqn` (whose target is `a.out`, not its own name), `pic` and
+`grap` (`-lm`), and `quot` — **the first image tool to get here**, and it is
+here by a measured no-op rather than an exemption: see the `$(IMGBIN)` note
+below. V8's make handled every one unchanged.
 
 **AND ON FIFTY MORE THAT HAVE NO MAKEFILE AT ALL, through `Admin/Mk`.** That is
 the other half of `cmd/`, and its build description is not a makefile but a
@@ -669,7 +671,7 @@ group's own checkers cannot be one. `tests/mkfs` section 8; **this note used to
 say the opposite**, that forgetting the flag reports a healthy filesystem as
 corrupt, which is the harmless direction and the one that does not happen here.
 
-**And with `fsck` the cost of forgetting it changed KIND.** For the four readers
+**And with `fsck` the cost of forgetting it changed KIND.** For the plain readers
 in `$(IMGBIN)` a wrong `DIRSIZ` is a wrong answer. `fsck`'s `pass2()` copies
 `DIRSIZ` bytes per path component into `pathname[200]` with no bound, so at 254
 a **single** component overruns it by 54 bytes — in the one program here that
@@ -677,6 +679,33 @@ writes to filesystems. 200 is upstream's sentence about 14, the same shape as
 `mv`'s `MAXN-DIRSIZ-2`, so `pathname[]` is correct arithmetic and stays at 200;
 what has to hold is the flag, and `tests/deps` asserts
 `sys/param.h -> fsck object` so the edge cannot be lost.
+
+**`ncheck` and `quot` are the group's two extremes, and having both is what
+makes membership mean something.** `$(IMGBIN)` is seven now. `ncheck` is the most
+flag-dependent program here: built at 254 it reads a **correct** image and prints
+*nothing at all, exit status 0* — `NDIR(dev)` comes out 4 instead of 64 and the
+step is 256 bytes rather than 16, so a root whose `di_size` is 64 is exhausted by
+its own `.`, which `dotname()` filters. `quot` does not need the flag at all: no
+`<sys/dir.h>`, no `struct direct`, and its object is **byte-identical** either
+way, which `tests/mkfs` asserts by compiling it twice and `cmp`ing rather than by
+this sentence. It is in the group on the group's rule, not on need.
+
+That measured no-op has a payoff and a trap. **The payoff: `quot` is the first
+image tool to close rung 5**, because its own makefile passes no `-D`, so Bell
+Labs' build description produces the same program — `tests/jail` hands the
+rung-5 binary and the installed one the same image and requires the same answer.
+**The trap: an `$(IMGBIN)` program must never join `$(V8BIN)`**, because that is
+the list `$(SRCTREE)` stages for `Admin/Mk`, and Mk compiles a bare `cmd/*.c`
+with no `-D` either. `tests/jail` asserts the two lists are disjoint, because
+measured, `make` emits **no warning of any kind** when a name is in both.
+
+And that case turned out to catch a second thing, which is worth knowing before
+you delete a name from `$(V8BIN)`: **`$(SRCTREE)` staging is additive.** make
+copies a source into `rootfs/usr/src/cmd` when the name is listed and never
+removes it when the name leaves, so a tree that once staged `ncheck.c` keeps
+serving it to Mk. Found by that assertion firing on a run *after* a mutation had
+been reverted — the third shape of the host-property trap again, a property of
+what ran before rather than of the machine.
 
 **LP64 is not the only width problem: V8's 16-BIT RANGES are the other, and
 they fail later and quieter.** LP64 breaks a pointer immediately; a 16-bit field
@@ -749,12 +778,40 @@ fine. The wavec suite now runs `grap | pic | troff` and asserts drawing commands
 come out the far end. Pipe a new Wave C program into what consumes it before
 believing it works.
 
-**V8 assumes address 0 is readable.** The VAX put the text segment at 0, so
-`*(char *)0` returned a byte of the program rather than trapping. macOS keeps
-page 0 unmapped. `refer` depends on it: `prefix(".[", lookat())` in `refer5.c`
-gets a NULL from `lookat()` at end of input, and on the VAX that quietly failed
-the comparison. Symptom is a segfault on the *last* item of a file, so a test
-with one citation will not find it.
+**V8 assumes address 0 is readable, and this is the class that keeps coming
+back.** The VAX put the text segment at 0, so `*(char *)0` returned a byte of the
+program rather than trapping. macOS keeps page 0 unmapped. Three instances, and
+the third pair says the sweep is not done:
+
+| program | the call | when it fires |
+|---|---|---|
+| `refer` | `prefix(".[", lookat())` — `lookat()` returns NULL at end of input | the **last** citation in a file, so a one-citation test misses it |
+| `quot` | `strcmp(p1->name, p2->name)` in `qcmp` | **the default invocation**, before a line is printed |
+| `ncheck` | `atol(argv[1])` past the last `-i` number | `ncheck -i 5`, i.e. `-i` at the end of the command line |
+
+`quot`'s is the one to remember, because nothing about it is an edge case: `du[]`
+is indexed by uid, only the uids in `/etc/passwd` get a `name`, so **2046 of 2048
+entries are null** and `qsort` compares them against each other. It was found by
+auditing before building, not by running.
+
+**Fix to the VAX's ANSWER, not just to the absence of the fault.** Address 0 held
+`0207`, the low byte of the a.out magic — below every character a name can hold
+— so an unnamed uid sorted *before* a named one and two unnamed ones compared
+equal. `strcmp(p1->name? p1->name: "", ...)` reproduces both; a null guard
+returning 0 would not, and `quot`'s ordering is visible in its output. Same for
+`ncheck`: `atol` on a text byte returned 0 and broke the loop, so the patch is
+`argv[1] == 0? 0L: atol(argv[1])` rather than a `break`.
+
+**And the same audit found the mirror of it in OUR code.** `%.Ns` in
+`src/libc/stdio/doprnt.c` was `for (len = 0; s[len]; len++) if (haveprec && len
+>= prec) break;` — the condition runs before the body, so `s[prec]` is read and
+discarded. `%.Ns` exists precisely for a fixed-width field that need **not** be
+terminated; `ncheck` prints `d_name` with `%.14s`, so the byte read is the next
+entry's `d_ino`, and against a field at the end of a mapped page it is a fault.
+That file is this port's C rewrite of `doprnt.S`, so the bug is ours. Nothing had
+reached it in 32 `printf` cases. The diagnostic that makes it testable without
+arranging a guard page is `prec = 0`: `printf("%.0s", (char *)1)` faults on the
+old loop and dereferences nothing on the new one.
 
 **A missing libc function does not fail the link — it resolves from `-lSystem`.**
 For a non-variadic function that silently works and hides the gap. For a

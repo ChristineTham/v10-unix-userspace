@@ -723,10 +723,20 @@ esac
 #	        driver used to hand -lm to clang, which answered with the SDK's
 #	        libm -- a libSystem re-export ahead of libv8c on the link line
 #	        -- and _errno resolved to an indirect symbol with no address.
+#	quot    THE FIRST IMAGE TOOL TO GET HERE, and it is here by a measured
+#	        no-op rather than an exemption.  The other six in $(IMGBIN) are
+#	        compiled -DDIRSIZ=14 and their own build descriptions pass no
+#	        -D, so rung 5 would build a different program; quot reads
+#	        inodes and never a directory, so its object is byte-identical
+#	        either way.  tests/mkfs proves the identity by cmp'ing two
+#	        compiles; the case below proves the consequence, by asking the
+#	        rung-5 binary and the installed one the same question about a
+#	        real filesystem.  `quot: quot.o' with no rule for the object,
+#	        so V8 make's built-in .c.o is doing the work, as in tsort.
 for spec in "sed sed" "fmt fmt" "tsort tsort" "tbl tbl" "yacc yacc" \
             "spell spellprog" "man man" "troff troff" "refer refer" \
             "ps ps" "load load" "w w" \
-            "make make" "eqn a.out" "pic pic" "grap grap"; do
+            "make make" "eqn a.out" "pic pic" "grap grap" "quot quot"; do
 	set -- $spec
 	prog=$1 target=$2
 	d=r5_$prog
@@ -753,6 +763,26 @@ for spec in "sed sed" "fmt fmt" "tsort tsort" "tbl tbl" "yacc yacc" \
 	*) pass=$((pass+1)) ;;
 	esac
 done
+
+# AND THE ONE ABOVE THAT CAN BE ASKED A QUESTION.  For the other sixteen, rung 5
+# ends at "it built"; load and w go further and say `No mem', because upstream's
+# makefile knows nothing of libkmemu.  quot is the opposite case and the first
+# of its kind here: the build description is complete, the program needs no
+# invented library, and the flag its group carries is a measured no-op for it.
+# So the rung-5 binary and the one our Makefile installed can be handed the same
+# image and must agree -- which is the positive counterpart to the `who' pair
+# further down, where the difference IS the point.
+if [ -x r5_quot/quot ]; then
+	printf '/dev/null\n200 32\nd--777 0 0\n$\n' > r5q.proto
+	"$V8ROOT/etc/mkfs" r5q.img r5q.proto >/dev/null 2>&1
+	a=$("$V8ROOT/etc/quot" -f r5q.img 2>&1)
+	b=$(./r5_quot/quot   -f r5q.img 2>&1)
+	if [ -n "$a" ] && [ "$a" = "$b" ]; then pass=$((pass+1))
+	else fail=$((fail+1)); echo "FAIL the rung-5 quot answers differently"
+	     echo "  ours [$a]"; echo "  r5   [$b]"; fi
+else
+	fail=$((fail+1)); echo "FAIL rung 5: no quot to run"
+fi
 
 # --- #! scripts are interpreted INSIDE the jail ------------------------------
 # The kernel resolves a shebang against the real filesystem before the shim sees
@@ -806,6 +836,36 @@ MKCOUNT=$(echo $MKNAMES | wc -w | tr -d ' ')
 # on an empty list.  That is the failure tests/cpp already had once.
 if [ "$MKCOUNT" -ge 40 ]; then pass=$((pass+1))
 else fail=$((fail+1)); echo "FAIL only $MKCOUNT sources staged at /usr/src/cmd -- run make srctree"; fi
+
+# AND NO IMAGE TOOL MAY BE ON THAT LIST, which is a structural guard rather than
+# a preference.  Mk compiles a bare cmd/*.c with `cc $CFLAGS -o $B $B.c' and no
+# -D of any kind -- correct on a machine whose param.h says DIRSIZ 14, and wrong
+# here, where it says 254.  What that costs is measured in tests/mkfs section 9
+# and it is silent in BOTH directions: an Mk-built mkfs writes 256-byte records
+# that every checker pronounces clean, and an Mk-built ncheck reads a good image
+# and prints nothing at all, exit status 0.  $(V8BIN) and $(IMGBIN) are two
+# lists in one Makefile and nothing else would notice a name moving between
+# them, so the disjointness is asserted here where the consequence lands.
+#
+# AND IT CATCHES A STALE ROOTFS AS WELL AS A WRONG LIST, which is not a
+# weakness: $(SRCTREE) staging is ADDITIVE.  make copies a source in when the
+# name is in $(V8BIN) and never removes it when the name leaves, so a tree that
+# once had ncheck there keeps serving it to Mk.  Found by this very case, on a
+# run after a mutation had put ncheck in $(V8BIN) and taken it out again --
+# CLAUDE.md's third shape, a property of what ran before rather than of the
+# machine.  The fix is to delete the file (or `make clean'), not to relax this.
+overlap=
+for n in mkfs icheck dcheck clri fsck ncheck quot; do
+	case " $(echo $MKNAMES) " in *" $n.c "*) overlap="$overlap $n" ;; esac
+done
+if [ -z "$overlap" ]; then pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL \$(IMGBIN) program staged for Admin/Mk:$overlap"
+	echo "  Mk passes no -D, so it would build these at the host's DIRSIZ 254."
+	echo "  Either the name is in \$(V8BIN), or rootfs/usr/src/cmd holds a"
+	echo "  stale copy from when it was -- staging never unstages.  rm it."
+fi
 
 # Where our Makefile put each one, before anything is deleted.
 for n in $(echo "$MKNAMES" | sed 's|\.c$||'); do
