@@ -1395,5 +1395,41 @@ nz=$(echo "$psout" | tail -n +2 |
      wc -l | tr -d ' ')
 [ "$nz" -gt 0 ] && ok || bad "some process has non-zero cpu time from the u-area"
 
+# -T, THE START COLUMN, and the only ps option that had no case at all.  It
+# SIGSEGV'd, and the cause was neither ps nor the u-area: printp.c:24 is
+# `strcpy(sstr+4,ctime(&up->u_start)+4)' and ps.h was the one file in the tree
+# that called ctime() without declaring it, so K&R gave it an implicit int
+# return.  gencode.c deliberately does not narrow a signed-int CALL return --
+# that is what makes undeclared malloc work -- so the pointer reached x0
+# intact, and arm64_trunc() then sign-extended the `+4', which is correct for
+# an int and fatal for a pointer.  Mach-O loads at 0x100000000, so the top half
+# is never zero and the truncated address is always inside __PAGEZERO.
+tout=$("$PS" haxT 2>/dev/null)
+check "ps -T exits 0" "0" "$?"
+
+# A RELATION, not a machine property: V8's START and the host's lstart are two
+# views of one fact, so they must agree whatever the host's uptime or clock.
+# $$ for the same reason the selection case uses it -- it is the only pid
+# guaranteed alive at both samples.
+selp=$$
+v8start=$(echo "$tout" | awk -v p="$selp" '$1 == p' |
+          grep -oE '[A-Z][a-z][a-z] +[0-9]+ +[0-9][0-9]:[0-9][0-9]' | tr -s ' ')
+hoststart=$(ps -o lstart= -p "$selp" 2>/dev/null |
+            awk '{printf "%s %s %s", $2, $3, substr($4,1,5)}')
+if [ -n "$v8start" ] && [ -n "$hoststart" ]; then
+	check "ps -T start time agrees with the host's lstart" \
+	    "$hoststart" "$v8start"
+else
+	bad "ps -T prints a start time for the running shell" \
+	    "v8 [$v8start] host [$hoststart]"
+fi
+
+# ...and -T must not disturb the rest of the line.  A truncated ctime would
+# still have produced SOME string, so the case above could have passed on a
+# wrong-but-parseable date; this one says the columns either side survived.
+check "ps -T lists the same processes as ps" \
+    "$(echo "$psout" | tail -n +2 | awk '{print $1}' | sort | head -20 | md5)" \
+    "$(echo "$tout"  | tail -n +2 | awk '{print $1}' | sort | head -20 | md5)"
+
 echo "kmemu: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

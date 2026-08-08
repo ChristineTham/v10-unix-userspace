@@ -60,13 +60,18 @@ upstream defect as `tcat`.
 }
 ```
 
-With `-F` last, `argv[0]` is the NULL at `argv[argc]`. The VAX copied bytes of
-its own a.out header out of address 0 until it met a zero, so `termtab` became
-garbage and troff died later failing to open it; here `strcpy` faults at once.
+With `-F` last, `argv[0]` is the NULL at `argv[argc]`. On the VAX `strcpy` read
+address 0 — the first byte of **crt0**, since V8 binaries are ZMAGIC and the
+a.out header is never mapped — and that byte is `0x00`. So the copy stopped
+immediately and `termtab` became the **empty string**, which troff then died
+failing to open. Here `strcpy` faults at once instead.
 
-Patched to `argv[0] == 0? "": argv[0]`, which reproduces the observable answer —
-a name that cannot be opened — rather than merely guarding. Same choice `quot`'s
-`qcmp` makes for the same reason.
+Patched to `argv[0] == 0? "": argv[0]`, which is therefore **exactly** what the
+VAX produced, not an approximation of it. This paragraph used to say the VAX
+"copied bytes of its own a.out header out of address 0 until it met a zero" and
+called `""` a reproduction of the observable answer; the answer was right and
+the reason was not. PLAN.md §4i has the measurement. Same choice `quot`'s
+`qcmp` makes, for the same reason.
 
 **`n1.o` is in `NROFF_NAMES` as well as `TROFF_NAMES`**, so one upstream line was
 two crashing binaries. `tests/wavec` runs both, and asserts each still names the

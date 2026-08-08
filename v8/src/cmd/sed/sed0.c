@@ -795,9 +795,11 @@ char	*lbuf;
 			 * `sed -e a -e b file' with 5 then 3, so neither is
 			 * affected.  exit(2) is what the -f arm below already
 			 * does for its own missing argument -- the VAX read
-			 * the a.out header at address 0 into the script
-			 * buffer and failed to compile whatever that made,
-			 * which is a worse way to reach the same refusal.
+			 * address 0 into the script buffer, which is crt0's
+			 * first byte and is 0x00 (V8 binaries are ZMAGIC, so
+			 * the header is not mapped; PLAN.md S4i), so it
+			 * compiled an EMPTY script and refused it.  A worse
+			 * way to reach the same refusal.
 			 */
 			if(eargc-- <= 1)
 				exit(2);

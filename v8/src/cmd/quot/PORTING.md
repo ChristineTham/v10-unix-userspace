@@ -27,8 +27,9 @@ qcmp(p1, p2) register struct du *p1, *p2;
 `name == 0`**, and `qsort(du, NUID, ...)` compares those against each other:
 `strcmp(0, 0)`, before a single line is printed.
 
-On the VAX address 0 was the first byte of the a.out header in the text segment,
-so that compared a byte with itself and returned 0. macOS leaves page 0
+On the VAX address 0 was readable — the first byte of **crt0**, since V8's
+binaries are ZMAGIC and the a.out header is never mapped — so that compared a
+byte with itself and returned 0. macOS leaves page 0
 unmapped: `quot image` exits 139 in `strcmp`. Measured on the linked binary —
 2046 of 2047 comparisons have a null name, the first at comparison #2 — and
 confirmed from the other side, by giving every uid 0..2048 a passwd entry, which
@@ -40,9 +41,14 @@ The fix is the empty string, not a null guard:
 	return(strcmp(p1->name? p1->name: "", p2->name? p2->name: ""));
 ```
 
-The VAX's byte at address 0 was `0207` — below every character a name can hold —
-so an unnamed uid sorted before a named one at equal block counts, and two
-unnamed ones compared equal. `""` reproduces both. **That preserves the observed
+The VAX's byte at address 0 is `0x00`, so `strcmp(name, 0)` compared against the
+**empty string** — below every name — and an unnamed uid sorted before a named
+one at equal block counts while two unnamed ones compared equal. `""` therefore
+reproduces the VAX **exactly**, not approximately.
+
+This paragraph used to say the byte was `0207`, "the low byte of the a.out
+magic". That was wrong and reached the same answer, which is why it survived;
+PLAN.md §4i has the measurement and the table of every fix built on it. **That preserves the observed
 ordering rather than only removing the fault**, which matters because the
 ordering is visible: `report()` prints a `#N` row for any uid that owns blocks
 and has no passwd entry, and stops at the first row with zero blocks.

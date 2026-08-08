@@ -291,7 +291,7 @@ char	*argv[];
 				 * dereferenced **++argv BEFORE asking whether
 				 * another argument existed -- and with -t last
 				 * ++argv lands on the vector's NULL.  The VAX
-				 * read 0207 there, which is not '-', so the
+				 * read 0x00 there, which is not '-', so the
 				 * first operand was false, the count test then
 				 * fired and errexit printed "Bad -t option".
 				 * Testing the count first reaches that same

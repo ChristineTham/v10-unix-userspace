@@ -328,7 +328,7 @@ struct	fstab	*fstabsearch(key)
 		/*
 		 * PORT: rawname() returns 0 for a spec with no '/' in it
 		 * (dumpmain.c:239), and strncmp then dereferences it.  On the
-		 * VAX that read the 0207 at address 0, which matched no key
+		 * VAX that read the 0x00 at address 0, which matched no key
 		 * byte, so the entry simply did not match -- which is what
 		 * skipping the test does.
 		 *

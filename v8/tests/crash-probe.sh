@@ -19,6 +19,16 @@
 #     unexpand crashes -- was never tried;
 #   - it had no per-invocation timeout, so one program that waits blocks the
 #     whole run and the sweep silently never finishes.
+#
+# A FOURTH THING, AND IT IS A LIMITATION RATHER THAN A BUG.  Every invocation
+# gets /dev/null on stdin, so for a program that REQUIRES input all 53 options
+# also reach the empty-input path -- and the probe cannot tell an option bug
+# from that.  lex is the worked example: its 53 are three separate faults, and
+# fixing the first (warning()'s fflush of a null fout, which killed
+# `lex -a spec.l' on a spec lex compiles fine) changed this script's count by
+# ZERO, because the 40 then died a little further along at the second.  When a
+# program crashes on EVERY option including bare, suspect one shared downstream
+# path and re-run it by hand with real input before believing a single cause.
 ROOT=$1; export V8ROOT=$ROOT
 WORK=$2; mkdir -p "$WORK/run" && cd "$WORK/run" || exit 1
 # Optional third argument: the per-invocation deadline in seconds (default 5).
@@ -27,6 +37,17 @@ WORK=$2; mkdir -p "$WORK/run" && cd "$WORK/run" || exit 1
 # trades run time for nothing.  The whole sweep is minutes either way.
 DEADLINE=${3:-5}
 
+# THE SKIP LIST IS A COVERAGE HOLE, AND IT HAS BEEN MEASURED RATHER THAN LEFT
+# OPEN.  These are excluded because they create, move, remove or format things
+# and a probe that damages the tree is worse than no probe -- which is why
+# `fsck -t' could only ever have been found by the static audit (PLAN.md S4i).
+# They CAN be probed safely, because the jail is per-binary: a V8 binary
+# resolves every path inside $V8ROOT, so a throwaway copy of the rootfs per
+# invocation contains anything it does, and `cp -ac' clones on APFS for ~0.3 s.
+# Done once against the seventeen that exist here as Mach-O -- rm rmdir mv cp
+# ln chmod mkdir mkfs clri fsck restor dump sh ed tee cc make -- for 901
+# invocations: ZERO signal deaths.  A negative result, and the reason this
+# stays a note rather than becoming a mode of this script.
 SKIP='rm rmdir mv cp ln chmod chown chgrp mkdir mkfs clri fsck dd restor dump
       cron su kill sh csh ed qed adb login passwd init mount umount sync
       halt reboot shutdown tee cc as ld ar make nohup at write mail v8'

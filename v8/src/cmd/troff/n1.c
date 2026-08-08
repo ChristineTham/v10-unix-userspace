@@ -65,14 +65,19 @@ char	**argv;
 				argv++; argc--;
 				/*
 				 * PORT: -F as the last argument advances onto
-				 * the vector's NULL and strcpy reads it.  The
-				 * VAX copied bytes of its own a.out header
-				 * from address 0 until it met a zero, so
-				 * termtab became garbage and troff later died
-				 * failing to open it.  "" reproduces that
-				 * observable answer -- a name that cannot be
-				 * opened -- which is the same choice quot's
-				 * qcmp makes.  Both binaries carry this:
+				 * the vector's NULL and strcpy reads it.  On
+				 * the VAX that read address 0, which is the
+				 * first byte of crt0 -- V8 binaries are
+				 * ZMAGIC, so the header is not mapped -- and
+				 * that byte is 0x00.  So the copy stopped at
+				 * once and termtab became the EMPTY STRING,
+				 * which troff then died failing to open.  ""
+				 * is therefore exactly what the VAX produced
+				 * rather than an approximation of it; this
+				 * comment used to say the header was copied
+				 * "until it met a zero", see PLAN.md S4i.
+				 * Same choice quot's qcmp makes.
+				 * Both binaries carry this:
 				 * n1.o is in NROFF_NAMES as well as TROFF.
 				 */
 				strcpy(termtab, argv[0] == 0? "": argv[0]);

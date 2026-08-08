@@ -1009,12 +1009,30 @@ the new one. **A behavioural test cannot see this class at all** — the answer
 was right the whole time.
 
 **Fix to the VAX's ANSWER, not just to the absence of the fault.** Address 0 held
-`0207`, the low byte of the a.out magic — below every character a name can hold
-— so an unnamed uid sorted *before* a named one and two unnamed ones compared
-equal. `strcmp(p1->name? p1->name: "", ...)` reproduces both; a null guard
-returning 0 would not, and `quot`'s ordering is visible in its output. Same for
-`ncheck`: `atol` on a text byte returned 0 and broke the loop, so the patch is
+`0x00`, so `strcmp(name, 0)` compared against the **empty string** — below every
+name — and an unnamed uid sorted *before* a named one while two unnamed ones
+compared equal. `strcmp(p1->name? p1->name: "", ...)` reproduces both; a null
+guard returning 0 would not, and `quot`'s ordering is visible in its output.
+Same for `ncheck`: `atol("")` returned 0 and broke the loop, so the patch is
 `argv[1] == 0? 0L: atol(argv[1])` rather than a `break`.
+
+**AND FOR MONTHS THAT BYTE WAS RECORDED HERE AS `0207`, "the low byte of the
+a.out magic".** It is wrong, it is repeated in a dozen `PORTING.md`s and source
+comments, and **every fix built on it is still correct** — which is exactly why
+nobody caught it. Measured: V8's shipped binaries are **ZMAGIC** (`od -An -tx1
+-N4` gives `0b 01 00 00` = 0413, not 0407) and `a.out.h` says
+`N_TXTOFF(x) = ((x).a_magic==ZMAGIC ? 1024 : sizeof (struct exec))`, with
+`sys/sys/text.c:132` reading from `BSIZE(0)` into `u_base` 0. So virtual 0 is
+the first byte of **crt0**; the header is never mapped. `0x00` and `0207` are
+both "not `'-'`", both non-digits, and both below any name character, so the
+guards agree — only `nroff`'s `oputs(0)` differs, and there the truth (nothing
+came out) matches the fix better than the guess did. PLAN.md §4i has the table.
+
+The payoff is that a VAX answer can now be computed for a *structure* and not
+just a byte: those 16 bytes are identical in every V8 binary, so reading them
+through the VAX `struct _iobuf` gives `_flag` `0xd050`, which is how `lex`'s
+`fflush(NULL)` was settled — `0xd050 & (_IONBF|_IOWRT)` is 0, so it returned 0
+having touched nothing, and `if(fout) fflush(fout)` restores exactly that.
 
 **And the same audit found the mirror of it in OUR code.** `%.Ns` in
 `src/libc/stdio/doprnt.c` was `for (len = 0; s[len]; len++) if (haveprec && len

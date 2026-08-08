@@ -282,7 +282,7 @@ users took it at face value:
 - `dumpmain.c:143` — `disk = rawname(dt->fs_spec)`, after which `msg("Dumping
   %s")` and `open(disk)` both read address 0.
 
-On the VAX that read the `0207` there, which matched no key byte, so the entry
+On the VAX that read the `0x00` there, which matched no key byte, so the entry
 simply did not match. The guards say that directly. Not reachable through the
 `/etc/fstab` this port installs — twelve `/dev/raNN` lines — but nothing in dump
 enforces it, and the shim's manufactured fstab does carry slash-less specs

@@ -1,7 +1,15 @@
 # lex
 
-Builds with V8's own yacc and V8's own compiler, and runs. Its output is
-truncated.
+Builds with V8's own yacc and V8's own compiler, and runs. **This line used to
+say "Its output is truncated", and it is no longer true**: measured today, a
+two-rule specification exits 0 and writes 6758 bytes, and a 62-rule one with a
+`%{ %}` block exits 0 and writes 9362. Whether that closes the malloc
+investigation at the end of this file is *not* established — it may simply mean
+nothing here reaches the arena growth that section describes — so the section
+stays open rather than being declared solved.
+
+Also not established, and separate: there is no `libl.a` in the rootfs, so the
+generated scanner cannot be linked without supplying `main` and `yywrap`.
 
 ## Build structure
 
@@ -164,3 +172,79 @@ Next: instrument `malloc` itself in a run of *lex* — not a reproduction — an
 print `allocb`, `allocp` and the returned pointer per call. The question to
 answer is how `allocp` comes to point at `alloca` again after the arena has
 grown, since `ialloc()` sets `allocb = allocp = ` the new low block.
+## The 53 crashes are THREE bugs, and only one of them is ours to fix
+
+`tests/crash-probe.sh` reported lex dying on all 53 invocations — bare and
+every single-letter option — and PLAN.md recorded that as "one root cause: an
+empty specification faults in `fprintf` on a null `fout`". Re-measured, it is
+three distinct faults, and the split matters because they have different
+answers:
+
+| n | invocations | fault | site |
+|---|---|---|---|
+| 40 | every letter outside `rRcCtTvVfFnN` | `fflush(fout)` | `sub1.c`, in `warning()` |
+| 11 | bare, and `-c -C -f -F -n -N -r -R -v -V` | `fprintf(fout, ...)` | `header.c:84` (`ctail`), `:93` (`rtail`) |
+| 2 | `-t -T` | `free(NULL)` | `lmain.c:158` → `free2core` |
+
+**The probe could not tell them apart, and that is a limitation of the probe
+rather than of the audit.** It feeds every program `/dev/null`, so for a
+program that requires input all 53 invocations also reach the empty-spec path.
+Fixing the first bug therefore changes the probe's count by *zero* — the 40 now
+die further along, at the second. What the fix actually buys is only visible
+with a real specification, which the probe never supplies.
+
+### The 40 are ours: address 0, with a measured VAX answer
+
+`warning()` ends `fflush(errorf); fflush(fout); fflush(stdout);`. `fout` is
+NULL until `lgate()` opens it (`sub1.c:99`), and `lgate()` runs only from the
+five section-one sites in `parser.y` that see `%%`, `%T`, `%{`, `%s` or an
+indented code line. The unknown-option arm runs long before any of them — so
+
+```
+lex -a spec.l
+```
+
+SIGSEGV'd on a specification `lex spec.l` compiles perfectly.
+
+The VAX answer is measured, not assumed, and it is **"do nothing"**. V8 binaries
+are ZMAGIC (0413), so `N_TXTOFF` is 1024 and virtual address 0 is the first
+byte of *crt0*, not the a.out header — `usr/sys/sys/text.c:132` reads from
+`BSIZE(0)` into `u_base` 0. Those 16 bytes are byte-identical in every V8
+binary; read through the VAX `struct _iobuf` (`_cnt` 0, `_ptr` 4, `_base` 8,
+`_flag` 12) they give `_flag` `0xd050`. `fflush` opens
+
+```c
+	if ((iop->_flag&(_IONBF|_IOWRT))==_IOWRT && (base=iop->_base)!=NULL && ...
+```
+
+with `_IOWRT` 02 and `_IONBF` 04. `0xd050 & 06` is 0, which is not `_IOWRT`, so
+the `&&` short-circuits before `_base` is ever read and `fflush` returns 0
+having touched nothing. `if(fout) fflush(fout)` restores exactly that.
+
+Guarded at the **caller**, as `quot`'s `strcmp` and `ncheck`'s `atol` were. A
+null check inside libc's `fflush` would reproduce the same answer for every
+caller — and would make the next bug of this shape invisible.
+
+### The 13 are upstream's, and are deliberately left alone
+
+With no `%%` anywhere, `ptail()` reaches `ctail()`'s `fprintf(fout, ...)` with
+`fout` still NULL. On a VAX that got past the `_IONBF` test and `_doprnt` wrote
+through `_ptr`, which those crt0 bytes make `0x08aed05e` — about 145 MB, far
+past a 56 KB lex's break, so `SEGFLT` and SIGSEGV. `free(NULL)` under `-t` is
+the same story: `allocp = --p` gives `0xFFFFFFF8`, VAX system space from user
+mode, PROTFLT and SIGBUS.
+
+So **a VAX crashed here too**, which puts this with `bcd` and `ls.c:259` rather
+than with `quot`: upstream's defect on upstream's hardware, and S1 says record
+it rather than patch it. The grammar already calls a missing `%%` a syntax
+error (`lexinput: defns delim prods end`, `delim: DELIM`), but the `| error`
+alternative recovers and `yyparse` returns 0, so `lmain.c:68`'s
+`if(yyparse(0)) exit(1)` never fires and `main` runs on over state that only
+the `%%` branch initialises. A one-line `if(sect == DEFSECTION) error(...)` at
+`parser.y:676` would close both — it is written down here so the option is
+known — but it restores no VAX behaviour, so taking it would be a departure
+from upstream justified only by the probe.
+
+`tests/wavea` asserts both halves: that an unknown option now warns and still
+produces byte-identical output, and that an empty specification writes no
+`lex.yy.c` — which is the part that is true on both machines.

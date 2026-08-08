@@ -62,7 +62,7 @@ char *argv[];
 				 * count, so an -o list running to the end of
 				 * the command line walks onto the vector's
 				 * terminating NULL.  On the VAX argv[2][0]
-				 * read the 0207 at address 0, matched none of
+				 * read address 0, which is 0x00, matched none of
 				 * the three arms below and took the `else
 				 * break', which is what this test does
 				 * without the read.  `join -o 1.1' SIGSEGVs

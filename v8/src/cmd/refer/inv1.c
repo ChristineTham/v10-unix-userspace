@@ -33,7 +33,7 @@ sortdir = (access("/crp/tmp", 06)==0) ? "/crp/tmp" : "/usr/tmp";
  * PORT: argc, and this is hunt1.c's bug in the same directory.
  *
  * Bare `inv' has argc == 1, so argv[1] is the vector's terminating NULL and
- * this test reads it before the program does anything.  The VAX read the 0207
+ * this test reads it before the program does anything.  The VAX read the 0x00
  * at address 0, which is not '-', so the loop was skipped -- and line 61 below
  * then says `argc >= 2 ? argv[1] : "Index"', so the author DID guard the later
  * use of the same pointer and not the loop.

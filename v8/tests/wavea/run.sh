@@ -690,10 +690,15 @@ check 'date prints a four-digit year' "$(/bin/date '+%Y')" \
 # THE ARGUMENT VECTOR RUNS OUT, AND V8 READS ONE MORE.
 #
 # argv[argc] is a NULL the kernel plants.  On the VAX reading through it landed
-# on address 0, which held 0207 -- the low byte of the a.out magic, inside the
-# read-only text segment -- so a program that consumed one argument too many
-# got a byte that was not '-' and not a digit, and carried on correctly.  macOS
-# leaves page 0 unmapped, so the same code SIGSEGVs.
+# on address 0, which is the first byte of crt0 -- V8 binaries are ZMAGIC, so
+# N_TXTOFF is 1024 and the a.out header is never mapped -- and that byte is
+# 0x00.  So a program that consumed one argument too many got a byte that was
+# not '-' and not a digit, and carried on correctly.  macOS leaves page 0
+# unmapped, so the same code SIGSEGVs.
+#
+# This block used to say the byte was 0207, the low byte of the magic.  Wrong,
+# and it reached the same answer for every case here, which is exactly why it
+# went unnoticed for months -- see PLAN.md S4i.
 #
 # ncheck was the first instance found and quot the second; sweeping the whole
 # tree for the shape turned up nine more, of which these are the ones whose
@@ -761,6 +766,74 @@ check 'ptx -g with no gap exits rather than faulting' '1' \
 # two rotations of a two-word line, which is ptx doing its job.
 check 'ptx -w 60 still sets the width and permutes' '2' \
     "$(printf 'alpha beta\n' | "$(v8which ptx)" -w 60 2>&1 | grep -c '^\.xx')"
+
+# pr -m is from the same probe and is deliberately in a DIFFERENT class, which
+# is why it sits apart from the block above: nothing here reads address 0.
+# `pr -m' with no file operands never opens anything -- main() opens the -m
+# files itself, and print()'s `Multi != 'm'' test is a proxy for "already
+# open" that keeps saying yes when the operand list was empty.  get() then
+# reads main()'s auto `fstr', which has never been written; measured, f_f was
+# 0x8, so getc((FILE *)8) faulted.  An uninitialised FILE * is arbitrary on any
+# machine, so there is no VAX answer -- pr.1 is the authority instead, and it
+# states the rule with no exception for -m: "For no file arguments ... pr
+# prints its standard input."
+printf 'from-stdin\n' > prm.txt
+check 'pr -m with no files reads stdin, as pr.1 says' 'from-stdin' \
+    "$("$(v8which pr)" -m -t < prm.txt 2>&1)"
+# -M is the second probe hit and not a second bug: TOLOWER folds the two.
+check 'pr -M is the same option and no longer faults' 'from-stdin' \
+    "$("$(v8which pr)" -M -t < prm.txt 2>&1)"
+check 'and exits 0 rather than faulting' '0' \
+    "$("$(v8which pr)" -m -t < prm.txt >/dev/null 2>&1; echo $?)"
+# THE CONTROL, and it is the whole reason the test reads Nfiles rather than
+# just calling mustopen unconditionally: doing that would reopen Files[0] over
+# the top of the first named file with stdin, and -m would silently print the
+# wrong column.  The crash goes away either way; only this case can tell them
+# apart.
+printf 'alpha\nbeta\n' > prm1.txt
+printf 'ONE\nTWO\n'    > prm2.txt
+check 'pr -m still merges two named files into columns' 'alpha ONE' \
+    "$("$(v8which pr)" -m -t prm1.txt prm2.txt < prm.txt | sed -n 1p | tr -s ' ' | sed 's/ *$//')"
+
+# lex's warning() is address-0's class and IS restorable, and it took a real
+# specification to see it -- which is a limitation of the crash probe rather
+# than of the audit.  The probe feeds every program /dev/null, so for a program
+# that needs input all 53 invocations collapse onto the empty-spec path and it
+# reported one bug 53 times with this one hidden behind it.
+#
+# warning() ends `fflush(errorf); fflush(fout); fflush(stdout);' and fout is
+# NULL until lgate() opens it, which only happens once section one sees %%.
+# The unknown-option arm runs long before that, so `lex -a spec.l' SIGSEGV'd on
+# a spec lex compiles perfectly without the flag.
+#
+# The VAX answer is measured rather than assumed, and it is "do nothing":
+# V8 binaries are ZMAGIC, so virtual 0 is crt0 rather than the a.out header,
+# and those bytes read through the VAX struct _iobuf give _flag 0xd050.
+# fflush opens `(iop->_flag&(_IONBF|_IOWRT))==_IOWRT' with _IOWRT 02 and
+# _IONBF 04; 0xd050 & 06 is 0, so the && short-circuits before _base is read.
+printf '%%%%\n[a-z]+\tprintf("word\\n");\n' > lx.l
+check 'lex with an unknown option still warns' '0: (Warning) Unknown option a' \
+    "$("$(v8which lex)" -a lx.l 2>&1 | head -1)"
+check 'and still compiles the spec, which is the VAX answer' '0' \
+    "$(rm -f lex.yy.c; "$(v8which lex)" -a lx.l >/dev/null 2>&1; echo $?)"
+# The control that says the warning path is not just being skipped: the flag
+# must change NOTHING about the output, so the two runs agree byte for byte.
+"$(v8which lex)" lx.l >/dev/null 2>&1; mv lex.yy.c lx.plain
+"$(v8which lex)" -a lx.l >/dev/null 2>&1
+check 'and produces the same output as without the option' 'same' \
+    "$(cmp -s lx.plain lex.yy.c && echo same || echo differs)"
+
+# ...AND THE EMPTY SPECIFICATION IS DELIBERATELY STILL BROKEN, because a VAX
+# broke too.  With no %% anywhere, ptail() reaches ctail()'s fprintf(fout,...)
+# with fout still NULL; on a VAX fprintf got past the _IONBF test and _doprnt
+# wrote through _ptr, which those same crt0 bytes make 0x08aed05e -- ~145 MB,
+# far past a 56 KB lex's break, so SEGFLT.  Upstream's defect on upstream's
+# hardware, so S1 says record it rather than patch it, as bcd and ls.c:259 are.
+# Asserted on the OUTPUT rather than on the signal, because that is the part
+# that is true on both machines and does not depend on how it dies.
+check 'lex on a spec with no %% writes no output' 'none' \
+    "$(rm -f lex.yy.c; "$(v8which lex)" < /dev/null >/dev/null 2>&1; \
+       [ -f lex.yy.c ] && echo wrote || echo none)"
 
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -901,6 +901,43 @@ tasm 'long <-> unsigned long stays free'  "$EXT" 0 <<'EOF'
 unsigned long ul(a) long a; { return ((unsigned long)a); }
 EOF
 
+# ---------------------------------------------------------------------------
+# WHERE arm64_trunc() CONTRADICTS THE CALL CASE, pinned so that changing either
+# side goes red.  gencode.c refuses to narrow a signed-int CALL return, because
+# in this tree `int' usually means "undeclared" and the value is really a
+# pointer -- opendir's undeclared malloc is why.  arm64_trunc() then truncates
+# at the next arithmetic node, which is correct C and destroys such a pointer.
+#
+# Both behaviours are wanted; what must not happen is one of them changing
+# silently.  Found by `ps -T': ctime() is undeclared in ps.h alone, and
+# printp.c:24 does ctime(&up->u_start)+4.  Under Mach-O the image loads at
+# 0x100000000, so a truncated pointer is in __PAGEZERO every time.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- the CALL/arithmetic seam that ps -T fell through"
+
+# Half one: the call itself keeps all 64 bits.  This is what makes undeclared
+# malloc work at all, and until now only opendir(3) exercised it.
+tasm 'a signed int CALL return is not narrowed' "$EXT" 0 <<'EOF'
+cg() { return (gg()); }
+EOF
+
+# Half two: arithmetic on it truncates.  Right for an int, fatal for a smuggled
+# pointer -- and the reason the fix is a DECLARATION in the caller, not a
+# change here.  If this ever reads 0, the dumpdir checksum bug is back.
+tasm 'but arithmetic on it truncates'           "$EXT" 1 <<'EOF'
+cp1() { return (gg() + 4); }
+EOF
+
+# ...and with the declaration the port actually applies, nothing is emitted:
+# the PLUS is pointer-typed, and arm64_widen() is a no-op above four bytes.
+# This is ps.h's fix in one line, and it is the case that would fail if
+# someone widened arm64_trunc() to fire on pointer types too.
+tasm 'a declared char * survives the same +4'   "$EXT" 0 <<'EOF'
+char *ct();
+char *cp2() { return (ct() + 4); }
+EOF
+
 echo
 echo "v8ccom: $pass passed, $fail failed"
 [ -n "$FAILED" ] && echo "failing:$FAILED"

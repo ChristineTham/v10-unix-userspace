@@ -692,8 +692,48 @@ are gone before pass 2 runs.
 
 ## 4i. The address-0 sweep — CLOSED, and it found nine crashes
 
-The VAX put the text segment at address 0, so `*(char *)0` returned `0207` (the
-low byte of the a.out magic) instead of trapping. macOS leaves page 0 unmapped.
+The VAX put the text segment at address 0, so `*(char *)0` returned a byte of
+the program instead of trapping. macOS leaves page 0 unmapped.
+
+**WHICH BYTE, THOUGH -- AND THE ANSWER RECORDED HERE FOR MONTHS WAS WRONG.**
+This section used to say `0207`, "the low byte of the a.out magic", and it is
+repeated in that form in CLAUDE.md and in a dozen `PORTING.md`s and source
+comments. Measured: V8's shipped binaries are **ZMAGIC** -- `od -An -tx1 -N4`
+on `usr/bin/lex`, `bin/cat` and `bin/ls` all give `0b 01 00 00`, which is 0413,
+not 0407. And `usr/include/a.out.h` says
+
+```c
+#define	N_TXTOFF(x)  ((x).a_magic==ZMAGIC ? 1024 : sizeof (struct exec))
+```
+
+with the kernel agreeing -- `usr/sys/sys/text.c:132` reads from `BSIZE(0)` into
+`u_base` 0. So **virtual address 0 is the first byte of crt0, not the header**,
+the header is not mapped at all, and the byte is `0x00`.
+
+Every fix built on the wrong premise is nonetheless still correct, which is why
+this went unnoticed:
+
+| what the code did | with `0207` | with `0x00` |
+|---|---|---|
+| `strcmp(name, 0)` (`quot`) | below every name character | the **empty string**, still first |
+| `atol(0)` (`ncheck`, `icheck`, `dcheck`) | non-digit, returns 0 | empty, returns 0 |
+| `**++argv == '-'` (`fsck`, `hunt`, `inv`, `join`) | not `'-'` | not `'-'` |
+| `oputs(0)` (`nroff`) | "a couple of stray characters" | **nothing at all** |
+
+The last row is the one that changes, and it changes in the fix's favour:
+`n2.c`'s note guessed that a few bytes came out before the first NUL, and in
+fact the very first byte *is* NUL, so emitting nothing is exactly right rather
+than approximately. The conclusions stand; the reasoning behind them did not.
+And the first 16 bytes at virtual 0 are byte-identical in `lex`, `cat` and
+`ls` -- they are crt0, so this is deterministic rather than a sample.
+
+It also *earns* something. Because the value is known exactly, a VAX answer
+can now be computed for a **structure** and not just for a single byte: read
+through the VAX `struct _iobuf` those bytes give `_flag` `0xd050`, which is how
+`lex`'s `fflush(NULL)` was settled in S4j below. Every source comment and
+`PORTING.md` carrying the old value has been corrected, each keeping a line
+saying what it used to claim -- deleting the error would lose the warning.
+
 Three instances had been found one at a time — `refer`'s `lookat()`, `quot`'s
 `qcmp`, `ncheck`'s `-i` loop — and CLAUDE.md said in so many words that the
 sweep was not done. Doing it properly, by *shape* rather than by program, found
@@ -2237,11 +2277,11 @@ from it, which is what the run against `lex`, `primes` and `echo` now does.
 
 | program | count | what it is |
 |---|---|---|
-| `lex` | 53 | every invocation including bare. Its option loop **is** guarded, so not S4i's class -- one root cause, and diagnosed: an empty specification faults in `fprintf` at offset 0x18 of a null `FILE *`. `fout` is NULL until `sub1.c:99` opens it, and for a spec with no rules the path that opens it is never reached. A valid spec exits 0, so it is specifically the empty case. Not a one-line guard -- the fix is control flow inside lex -- so it is left open rather than rushed |
+| `lex` | 53 | **partly fixed, and "one root cause" was wrong** -- it is three faults with three different answers, 40 + 11 + 2. The 40 are `warning()`'s unconditional `fflush(fout)` and ARE ours, with a measured VAX answer; the 11 and the 2 are the empty-spec path, which crashed a VAX too. See below |
 | `nroff` | 38 | **fixed** -- only *unrecognised* options, bare `nroff` fine. One root cause, and the mechanism is address-0 after all: the `default:` arm calls `done(02)`, nroff's NORMAL shutdown, which reaches `done3()` -> `twdone()` -> `oputs(t.twrest)` before `ptinit()` has read the terminal table, so the field is still null. Guarded in `oputs`, which is the single point the four table fields share |
-| `pr` | 2 | `-m`/`-M` consume no argument at all; `-m` sets `Ncols = eargc`, which is 0 |
+| `pr` | 2 | **fixed** -- and the diagnosis that stood here was wrong. It said "`-m` sets `Ncols = eargc`, which is 0"; `Ncols` is 0 for about four lines, and `findopt`'s own `switch (Ncols) { case 0: Ncols = 1; }` puts it back before returning. The real cause is an **uninitialised `FILE *`**, not a zero count, and it is a different class from every other row -- see below |
 | `sed` | 1 | **fixed** -- `-e` with no script. `eargc-- <= 0` where the loop's `--eargc` has already taken one off, so eargc 1 means the option and nothing after; rline()'s copy loop then walks the terminator. The `-f` arm had the identical off-by-one and did *not* crash, surviving only on `rootpath()` handing a NULL path to the kernel and `doprnt` printing "(null)" -- fixed with it, because a walk off the end that lands on a soft floor is still a walk off the end |
-| `ps` | 1 | `-T` consumes no argument; whatever `Tflag` enables |
+| `ps` | 1 | **fixed** -- and "a wild pointer (0x53c5c), so not the address-0 class" was right about the class and wrong about the pointer. `0x53c5c` is the *low half* of `0x100053c5c`, which is `ctime`'s static `cbuf` plus 4. `ps.h` is the one file in the tree that calls `ctime()` undeclared, so `+4` is int arithmetic and `arm64_trunc()` sign-extends it. Fixed by declaring it; see below |
 | `bcd` | 1 | bare. `while ((c=getchar())!='\0' && c!='\n')` never tests EOF, so redirected empty stdin spins and overruns a fixed buffer -- **a VAX would have overrun it too**, so upstream's defect and not automatically ours to patch under S1 |
 
 **`nroff`'s is worth carrying forward**, because it is `yacc -o`'s shape from
@@ -2268,22 +2308,148 @@ invocations died on it. **A static audit and an empirical probe find different
 things, and this is the case that proves it** -- no amount of re-reading
 `hunt1.c` would have turned up `inv1.c`.
 
+### `pr -m` is a third class, and the manual is what settles it
+
+Not address-0 and not an argv overrun: **an uninitialised `FILE *`**. `main`
+declares `FILS fstr[NFILES]` as an *auto* array and points the global `Files`
+at it. In `-m` mode main opens the operands itself, so `print()` guards with
+`Multi != 'm'` to avoid reopening `Files[0]` over the top of the first one.
+That test is a **proxy** for "our inputs are already open", and it is right
+whenever `-m` actually got files. With no operands main's loop never runs,
+nothing is opened, `nfdone` is 0, and the `/* no files named, use stdin */`
+line calls `print(nulls)` -- where the proxy still says "already open".
+
+Measured at the fault rather than reasoned about, and the numbers are the
+point: `Files[0].f_f` is **`0x8`** and `f_nextc` is `0x30`. So `get()` does not
+take its EOF arm at all; it falls to `q->f_nextc = getc(q->f_f)` and reads
+`_cnt` through a `FILE *` of 8.
+
+**The old note here said "offset 8 of a null `FILE *`", and that is the wrong
+split of the same number.** `_cnt` is the *first* member of `struct _iobuf`, so
+its offset is 0 and the pointer is 8 -- but a fault address of `0x8` is
+consistent with `NULL + 8` and with `8 + 0`, and **nothing in the backtrace
+distinguishes them**. Reading the struct definition is what does. Worth
+carrying: a faulting address is `base + offset` and the address alone never
+tells you which is which, so a "null pointer, big offset" reading is a
+*hypothesis* until the layout is checked.
+
+Fixed by spelling the intent directly -- `Nfiles == 0` -- which agrees with the
+proxy everywhere else, because `Nfiles` is incremented only in main's `-m` arm
+and is therefore 0 for every non-multi call.
+
+**There is no VAX answer to restore, and that is what makes this one
+different.** `quot` and `ncheck` had one: address 0 held a known byte (`0x00`,
+see S4i), so the VAX *computed* something and the fix reproduces it. An
+uninitialised `FILE *` is
+arbitrary on any hardware -- here it came from whatever ran before `main`,
+which under Mach-O includes dyld and under a V8 a.out was only `crt0`. So the
+authority is `pr.1`, which states the rule with no exception for `-m`:
+
+> For no file arguments, or for a file argument `-`, *pr* prints its standard
+> input.
+
+The defect is upstream's and the SIGSEGV is this target's. Where the VAX's
+behaviour is garbage rather than an answer, **the manual is the thing to
+restore**; `bcd` is the same question answered the other way, because there the
+manual does not help and the overrun happens on a VAX too.
+
+`tests/wavea` has four cases, and the fourth is the one that earns its keep.
+Mutating the fix back to upstream fails the three crash cases; mutating it to
+the *plausible* wrong fix -- calling `mustopen` unconditionally -- passes all
+three and fails only `pr -m still merges two named files into columns`, because
+that reopens `Files[0]` with stdin and silently prints the wrong column.
+
+### `ps -T`: the two compiler decisions contradict each other
+
+`0x53c5c` reads as a wild pointer and is not one. It is the **low half** of
+`0x100053c5c`, which is `ctime`'s static `cbuf` plus 4. `printp.c:24` is
+`strcpy(sstr+4, ctime(&up->u_start)+4)`, and `ps.h` was the only file in this
+tree calling `ctime()` undeclared -- V8's `<time.h>` declares no functions at
+all -- so K&R gave it an implicit `int` return.
+
+Two plausible causes were eliminated by measurement, and both would have been
+this port's fault rather than upstream's. `u_start` is **not** a narrowed time
+field: `sys/user.h` is unpatched and `time_t` is 8 bytes there. And the u-area
+**is** populated: the offset v8cc computed from the authentic header (2744)
+matches the shim's own `AT(u_start, 2744)` assertion, and the value at the
+fault was a real 2026 timestamp.
+
+The pointer is not lost at the call. `gencode.c` deliberately does not narrow a
+signed-`int` CALL return, because in this tree `int` usually means "undeclared"
+-- opendir's `malloc` is why. It is lost at the **arithmetic**: `+4` is a `PLUS`
+of type `int`, and `arm64_trunc()` -- added earlier the same day, S4i -- emits
+`sxtw` after it. Correct for an int, fatal for a pointer, and under Mach-O the
+image loads at `0x100000000` so a truncated pointer is in `__PAGEZERO` every
+time rather than occasionally.
+
+**So two decisions in one file contradict, and both are wanted.** They cannot
+both be satisfied there, because `int` from a declaration and `int` from a
+guess are the same node -- which the CALL note already said. C's answer is that
+int arithmetic wraps, so the caller must declare the function; that is the fix
+`malloc` got one level up.
+
+The blast radius was bounded by **measuring the emitted code** rather than
+grepping sources, because whether a declaration was in scope is not a textual
+property of a call site. All 97 installed binaries were disassembled and
+scanned for `bl` -> `mov xN,x0` -> arithmetic -> `sxtw`: **64 sites, 63 of them
+calling something that genuinely returns int** (`strlen`, `dysize`, `atoi`,
+yacc's `apack`, troff's `width`/`roman`/`decml`/`abc`). This was the only one.
+`tests/v8ccom` now pins both halves of the seam.
+
+### `lex` is THREE bugs, and the probe cannot tell them apart
+
+"One root cause" was wrong. Re-measured, the 53 split 40 + 11 + 2 across three
+faults, and only the first is ours:
+
+| n | invocations | fault | site |
+|---|---|---|---|
+| 40 | every letter outside `rRcCtTvVfFnN` | `fflush(fout)` | `sub1.c`, `warning()` |
+| 11 | bare, and `-c -C -f -F -n -N -r -R -v -V` | `fprintf(fout, ...)` | `header.c:84`, `:93` |
+| 2 | `-t -T` | `free(NULL)` | `lmain.c:158` -> `free2core` |
+
+**A FOURTH WAY THE PROBE MISLEADS, and it is a limitation rather than a bug.**
+It feeds every program `/dev/null`, so for a program that *requires* input all
+53 invocations also reach the empty-spec path. Fixing the first fault therefore
+changes the probe's count by **zero** -- the 40 now die further along, at the
+second -- and the real gain is invisible to it. What was actually fixed is
+`lex -a spec.l` on a specification `lex spec.l` compiles perfectly.
+
+The 40 have a **measured** VAX answer, and getting it needed the correction in
+S4i above: V8 binaries are ZMAGIC, so virtual 0 is crt0, and those bytes give
+`_flag` `0xd050`. `fflush` opens `(iop->_flag&(_IONBF|_IOWRT))==_IOWRT`;
+`0xd050 & 06` is 0, so the `&&` short-circuits before `_base` is read and
+`fflush(NULL)` returned 0 having touched nothing. `if(fout) fflush(fout)`
+restores exactly that, guarded at the caller as `quot` and `ncheck` were.
+
+The 13 are upstream's. `fprintf(NULL, ...)` on a VAX got past the `_IONBF` test
+and `_doprnt` wrote through `_ptr`, which those crt0 bytes make `0x08aed05e` --
+145 MB, far past a 56 KB lex's break, so SEGFLT; `free(NULL)` gives
+`0xFFFFFFF8`, VAX system space, PROTFLT. So they belong with `bcd` and
+`ls.c:259`, not with `quot`. A one-line `if(sect == DEFSECTION) error(...)` at
+`parser.y:676` would close both and is written down in `lex/PORTING.md` so the
+option is known, but it restores no VAX behaviour and S1 says leave it.
+
 ### What is left
 
-**Two programs and three invocations**: `lex` (53, diagnosed above, needs
-control-flow work rather than a guard) and `pr -m`/`-M` and `ps -T`. Both of
-the latter were backtraced and neither is S4i's class:
+`lex`'s 13, and `bcd`'s 1, and all fourteen are upstream defects that crashed on
+upstream's hardware. **96 -> 58 -> 57 -> 55 -> 54**, and the remaining number is
+not a to-do list.
 
-- `pr -m` faults in `get()` at offset 8 of a null `FILE *`, which is
-  `Files[colno].f_f` -- `-m` consumes no argument at all, it sets
-  `Ncols = eargc`, and with no files that is 0.
-- `ps -T` faults in `strcpy` on a wild pointer (0x53c5c, not null), so it is
-  not the address-0 class either -- `-T` consumes no argument and whatever
-  `Tflag` enables is reading something uninitialised.
+### The skip list is a coverage hole, and most of it can be closed
 
-`bcd` already has its answer, which is no, and is recorded above rather than
-patched. **96 -> 58 -> 57**, and what is left needs reading rather than
-sweeping.
+`SKIP` in `crash-probe.sh` names ~40 programs that create, move, remove or
+format things, and excluding them is why `fsck -t` could only ever have been
+found by the static audit. Seventeen of them exist as Mach-O here. They can be
+probed safely, because **the jail is per-binary**: a V8 binary resolves every
+path inside `$V8ROOT`, so giving each invocation a throwaway *copy* of the
+rootfs contains anything it does. `cp -ac` clones on APFS, so a fresh 15 MB
+root per invocation costs ~0.3 s.
+
+What stays excluded is a decision rather than an oversight: `halt reboot
+shutdown init sync mount umount` affect the **host** rather than the jail,
+`su login passwd cron at mail write` are interactive or touch system state, and
+`as ld ar` are the host's by S1. None of those exist as Mach-O in the rootfs
+today, so the list is defensive.
 
 ## 4k. Why the data model is LP64, settled by counting
 

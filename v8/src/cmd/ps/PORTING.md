@@ -152,3 +152,67 @@ mutations that matter wherever the interfaces agree.
   because a process that exists must not answer ENOENT.
 - **`WCHAN` is 0** under `-l`. macOS exposes no such value, and a fabricated one
   is the single thing that would make the output a lie.
+
+## `-T` was the one option with no test, and it found a compiler seam
+
+`ps -T` SIGSEGV'd. The fault is in `strcpy`, on `0x53c5c` — which reads as a
+wild pointer and is not one. It is the **low half of a correct pointer**:
+`ctime`'s static `cbuf` lives at `0x100053c58`, and `+4` makes `0x100053c5c`.
+
+`printp.c:24` is
+
+```c
+	strcpy(sstr+4, ctime(&up->u_start)+4);
+```
+
+and `ps.h` was the only file in this tree that calls `ctime()` without
+declaring it — `date.c`, `ls.c`, `pr.c`, `who.c`, `fsck.c`, `dumpdir.c` and
+`restor.c` all do. V8's `<time.h>` declares no functions at all, so K&R gave
+`ctime()` an implicit `int` return.
+
+**Two eliminated by measurement, and both were plausible.** `u_start` is *not*
+one of this port's narrowed time fields — `sys/user.h` is unpatched and
+`time_t` is 8 bytes, and that header is not among the eight in `src/include/sys`.
+And the u-area *is* populated: `shim/libkmemu/procfs.c:602` sets `u_start`, the
+offset v8cc computed from the authentic header (2744) matches the shim's
+`AT(u_start, 2744)` assertion, and the value at the fault was a real 2026
+timestamp. Neither the field width nor the shim was involved.
+
+### What actually loses the pointer, and it is not the call
+
+The back end deliberately does **not** narrow a signed-`int` CALL return — the
+long note at `mov %s, x0` in `ccom-arm64/gencode.c` says why, and it exists
+because `opendir` calls `malloc` undeclared. So the pointer arrives in `x0`
+with all 64 bits. It is the **arithmetic** that loses it: `+4` is a `PLUS` of
+type `int`, and `arm64_trunc()` emits `sxtw x9, w9` after it, which is correct
+for an int and fatal for a pointer.
+
+```
+	bl     _ctime
+	mov    x9, x0
+	add    x9, x9, #0x4
+	sxtw   x9, w9        <-- 0x100053c5c becomes 0x53c5c
+```
+
+On a VAX the omission cost nothing: `int` and `char *` were both four bytes, so
+the same expression computed the right address. Under Mach-O the image loads at
+`0x100000000`, so bit 32 is set in **every** static address and the truncated
+value is always inside `__PAGEZERO` — a certain SIGSEGV rather than an
+occasional one.
+
+Fixed by declaring it, in `ps.h` beside the other pointer-returning helpers,
+which is the same fix `malloc` got one level up. `arm64_trunc()` is right and
+stays.
+
+### The two decisions contradict, and the sweep bounds the damage
+
+Preserving 64 bits at the call and truncating at the next arithmetic node
+cannot both be satisfied in the back end, because `int` from a declaration and
+`int` from a guess are the same node. Measured rather than argued: all 97
+installed binaries were disassembled and scanned for
+`bl` → `mov xN,x0` → arithmetic → `sxtw`. **64 sites, and 63 call something
+that genuinely returns int** — `strlen`, `dysize`, `atoi`, yacc's `apack`,
+troff's `width`/`roman`/`decml`/`abc`. This was the only one. `tests/v8ccom`
+now pins both halves of the seam so that changing either goes red, and
+`tests/kmemu` asserts `-T`'s start time against the host's `lstart` for the
+same pid — a relation, not a clock reading.

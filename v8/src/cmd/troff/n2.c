@@ -160,10 +160,13 @@ register char	*i;
 	 * error() runs cleantmp() over temp names setup() had not assigned.
 	 * Two instances now; see PLAN.md S4j.
 	 *
-	 * On the VAX oputs(0) read address 0, which held the a.out header, and
-	 * stopped at its first zero byte -- so a couple of stray characters
-	 * came out and the program exited.  Emitting nothing is that answer
-	 * without the garbage, and it is the one guard the four fields share:
+	 * On the VAX oputs(0) read address 0 and stopped at the first zero
+	 * byte.  This comment used to guess that "a couple of stray characters
+	 * came out"; measured, the first byte IS zero -- V8 binaries are
+	 * ZMAGIC, so virtual 0 is crt0 rather than the a.out header, and crt0
+	 * opens 00 00 (PLAN.md S4i).  So the VAX emitted NOTHING and exited,
+	 * and this guard is exact rather than merely tidier.  It is the one
+	 * point the four table fields share:
 	 * 38 of nroff's 53 probe invocations died here, one per option the
 	 * switch does not know.  n1.o is in TROFF_NAMES too, but troff has no
 	 * twdone() -- the call is inside #ifdef NROFF.

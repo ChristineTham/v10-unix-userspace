@@ -317,7 +317,7 @@ Two things generalise, and the second is the one to carry.
 
 `icheck -b 5` and `dcheck -i 5` — the option's last number also being the last
 argument — SIGSEGV'd on `n = atol(argv[1])`, where `argv[1]` is the NULL the
-kernel plants at `argv[argc]`. On the VAX that read the `0207` at address 0,
+kernel plants at `argv[argc]`. On the VAX that read the `0x00` at address 0,
 found no digit, returned 0 and broke the loop.
 
 **The loop is byte for byte `ncheck.c`'s, and this file audited it without

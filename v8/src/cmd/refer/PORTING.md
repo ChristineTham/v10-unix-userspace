@@ -206,7 +206,7 @@ host to supply.
 
 `hunt1.c:40`'s option loop is `while (argv[1][0] == '-')` with no `argc` guard,
 so `hunt` with no arguments at all dereferences the NULL at `argv[1]`. The VAX
-read `0207`, which is not `'-'`, and skipped the loop. Guarded, and
+read `0x00`, which is not `'-'`, and skipped the loop. Guarded, and
 `todir(argv[1])` below it — the same argument on the same path — gets the `""`
 that reproduces an unopenable index name.
 

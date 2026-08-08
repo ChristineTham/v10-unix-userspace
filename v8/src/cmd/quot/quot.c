@@ -200,11 +200,15 @@ register struct du *p1, *p2;
 	/* PORT: name is 0 for every uid with no passwd entry -- 2046 of the
 	 * 2048 on a normal run -- and qsort compares those against each other,
 	 * so this is reached with two null pointers before quot prints a line.
-	 * On the VAX address 0 was the first byte of the a.out header in the
-	 * text segment, so strcmp(0,0) compared a byte with itself and gave 0,
-	 * and strcmp(name,0) compared against 0207, which is below every
-	 * character a name can hold.  The empty string reproduces both, so the
-	 * VAX's order is kept rather than merely the absence of the fault.
+	 * On the VAX address 0 was readable -- the first byte of crt0, since
+	 * V8 binaries are ZMAGIC and the a.out header is never mapped -- and
+	 * that byte is 0x00.  So strcmp(0,0) compared a byte with itself and
+	 * gave 0, and strcmp(name,0) compared against the EMPTY STRING, which
+	 * is below every name.  "" reproduces both EXACTLY rather than
+	 * approximately; this comment used to say the byte was 0207, the low
+	 * byte of the a.out magic, which was wrong and reached the same answer
+	 * (see PLAN.md S4i).  The VAX's ORDER is kept, not merely the absence
+	 * of the fault.
 	 * macOS leaves page 0 unmapped: `quot image' SIGSEGVs in strcmp. */
 	return(strcmp(p1->name? p1->name: "", p2->name? p2->name: ""));
 }

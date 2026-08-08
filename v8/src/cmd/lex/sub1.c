@@ -58,7 +58,35 @@ warning(s,p,d)
 	fprintf(errorf,s,p,d);
 	putc('\n',errorf);
 	fflush(errorf);
-	fflush(fout);
+	/*
+	 * PORT: upstream `fflush(fout)'.  fout is NULL until lgate() opens it
+	 * (sub1.c:99), and lgate() runs only from the five section-one sites in
+	 * parser.y that see %%, %T, %{, %s or an indented code line.  warning()
+	 * can run long before any of them -- the unknown-option arm does, so
+	 * `lex -a spec.l' on a spec that lex compiles perfectly without the flag
+	 * died here before reading a byte.  40 of lex's 53 probe invocations are
+	 * this one line, every letter outside rRcCtTvVfFnN.
+	 *
+	 * THE VAX ANSWER IS MEASURED, not assumed, and it is "do nothing".
+	 * V8 binaries are ZMAGIC (0413), so N_TXTOFF is 1024 and virtual 0 is
+	 * the first byte of crt0 -- text.c:132 reads from BSIZE(0) into
+	 * u_base 0.  Those 16 bytes are identical in every V8 binary; through
+	 * the VAX struct _iobuf (_cnt 0, _ptr 4, _base 8, _flag 12) they give
+	 * _flag 0xd050, and fflush opens
+	 *
+	 *	if ((iop->_flag&(_IONBF|_IOWRT))==_IOWRT && ...
+	 *
+	 * with _IOWRT 02 and _IONBF 04.  0xd050 & 06 is 0, which is not
+	 * _IOWRT, so the && short-circuits before _base or _ptr is read and
+	 * fflush returns 0 having touched nothing.  So on a VAX this printed
+	 * its warning and carried on, and the guard restores exactly that
+	 * rather than merely dodging the fault.
+	 *
+	 * Guarded at the CALLER, as quot's strcmp and ncheck's atol were: a
+	 * null check inside libc's fflush would reproduce the same answer for
+	 * every caller and would also make the next such bug invisible.
+	 */
+	if(fout) fflush(fout);
 	fflush(stdout);
 	}
 index(a,s)

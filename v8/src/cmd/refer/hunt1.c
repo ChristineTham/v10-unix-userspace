@@ -42,7 +42,7 @@ int falseflg, nhash, nitem, nfound, frtbl, kk;
  *
  * Bare `hunt' has argc == 1, so argv[1] is the vector's terminating NULL and
  * this test read it before the program did anything at all.  The VAX read the
- * 0207 at address 0, which is not '-', so the loop was skipped; the guard says
+ * 0x00 at address 0, which is not '-', so the loop was skipped; the guard says
  * that directly.  todir(argv[1]) below is the same argument on the same path
  * and gets the "" that reproduces an unopenable index name.
  *

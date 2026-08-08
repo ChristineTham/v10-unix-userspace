@@ -412,6 +412,30 @@ arm64_widen(t, r)
  * Both hid the same way the checksum did.  `~mask' is almost always consumed
  * by an AND against a zero-extended value, which discards the wrong top half
  * and restores the right answer; only a comparison or a divide reads it whole.
+ *
+ * THIS FUNCTION CONTRADICTS A DECISION MADE ELSEWHERE IN THIS FILE, AND THE
+ * CONTRADICTION IS DELIBERATE BUT MUST NOT BE FORGOTTEN.  The CALL case (see
+ * the long note at `mov %s, x0') refuses to narrow a signed-int return,
+ * because in this tree `int' usually means "nobody declared it" and the value
+ * is really a pointer -- opendir's undeclared malloc is why.  That preserves
+ * 64 bits at the call and arm64_trunc() throws them away at the very next
+ * arithmetic node: an undeclared `char *' function whose result is indexed or
+ * offset loses its top half.
+ *
+ * The two cannot both be satisfied here, because `int' from a declaration and
+ * `int' from a guess are the same node -- which is exactly what the CALL note
+ * says.  C's answer is that int arithmetic wraps at 32 bits, so this function
+ * is right and the CALLER must declare the function; that is the same fix
+ * malloc got, one level up.  Under Mach-O the failure is total rather than
+ * occasional: the image loads at 0x100000000, so bit 32 is set in every static
+ * address and a truncated pointer always lands in __PAGEZERO.
+ *
+ * Measured after this function landed, by scanning the emitted code of all 97
+ * installed binaries for `bl -> mov xN,x0 -> arithmetic -> sxtw': 64 sites, 63
+ * of them calling something that genuinely returns int.  The one that did not
+ * was ps's undeclared ctime(), fixed in src/cmd/ps/ps.h.  Re-run that sweep
+ * after adding an operator below -- a source grep cannot see it, because
+ * whether a declaration was in scope is not a textual property of the call.
  */
 static void
 arm64_trunc(op, t, r)

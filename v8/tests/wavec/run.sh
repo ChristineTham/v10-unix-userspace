@@ -385,7 +385,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # Wave C's share of the address-0 sweep: an option consumed past the end of
-# argv.  argv[argc] is the kernel's NULL; the VAX read the 0207 at address 0
+# argv.  argv[argc] is the kernel's NULL; the VAX read the 0x00 at address 0
 # through it and carried on, macOS leaves page 0 unmapped and the program dies.
 # tests/wavea has the class's full note and the rest of the programs.
 #
@@ -418,9 +418,10 @@ done
 # AN UNRECOGNISED OPTION, which is 38 of nroff's 53 probe invocations and one
 # root cause.  The default: arm calls done(02) -- nroff's NORMAL shutdown --
 # and that reaches twdone() -> oputs(t.twrest) before ptinit() has read the
-# terminal table, so the field is still null.  On the VAX oputs(0) read the
-# a.out header and stopped at its first zero byte; emitting nothing is the same
-# answer without the garbage.  Same shape as `yacc -o' in tests/wavea, where
+# terminal table, so the field is still null.  On the VAX oputs(0) read address
+# 0 and stopped at the first zero byte -- and that byte IS zero, because virtual
+# 0 is crt0 rather than the a.out header (ZMAGIC; PLAN.md S4i).  So the VAX
+# emitted nothing too, and this is its exact answer rather than a tidier one.  Same shape as `yacc -o' in tests/wavea, where
 # error() runs cleantmp() over temp names setup() had not assigned.
 for o in -Z -a -j -Q; do
 	perl -e 'alarm 10; exec @ARGV' "$NROFF" "$o" </dev/null >/dev/null 2>&1

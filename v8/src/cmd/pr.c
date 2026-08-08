@@ -218,7 +218,33 @@ print(name) char *name;
 	char *date = NULL, *head = NULL;
 	int c;
 
-	if (Multi != 'm' && mustopen(name, &Files[0]) == NULL) return (0);
+	/*
+	 * PORT: upstream `Multi != 'm''.  That test is a PROXY for "our inputs
+	 * are already open", and it is right whenever -m actually got files:
+	 * main() opens them itself in the -m arm of its loop, so print() must
+	 * not reopen Files[0] over the top.  With NO file operands the loop
+	 * never runs, nothing is opened, and the proxy still says "already
+	 * open" -- so get() reads Files[0], which is main()'s auto `fstr' and
+	 * has never been written.  Measured here: f_f 0x8, f_nextc 0x30, so
+	 * get() takes the non-EOF arm and does getc((FILE *)8) -- `ldrsw x11,
+	 * [x10]' with x10 8.  SIGSEGV, on the two invocations `pr -m' and
+	 * `pr -M' (TOLOWER folds them together).
+	 *
+	 * Nfiles == 0 is the direct spelling of the same intent and agrees
+	 * with the proxy everywhere else: Nfiles is incremented ONLY in that
+	 * -m arm, so it is 0 for every non-multi call and print() opens the
+	 * file exactly as before.
+	 *
+	 * There is no VAX ANSWER to restore, which is why the manual settles
+	 * it rather than the machine.  An uninitialised FILE * is arbitrary on
+	 * any hardware -- the VAX would have read some other stack residue and
+	 * limped rather than faulted, and reading your own a.out header as
+	 * input is not a behaviour anyone would want back.  pr.1 states the
+	 * rule with no exception for -m: "For no file arguments, or for a file
+	 * argument `-', pr prints its standard input."  So the defect is
+	 * upstream's and the SIGSEGV is this target's; see PLAN.md S4j.
+	 */
+	if (Nfiles == 0 && mustopen(name, &Files[0]) == NULL) return (0);
 	if (Buffer) ungetc(Files->f_nextc, Files->f_f);
 	if (Lnumb) Lnumb = 1;
 	for (Page = 0; ; putpage()) {

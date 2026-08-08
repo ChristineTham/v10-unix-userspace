@@ -55,7 +55,31 @@ typedef struct Psline {
 
 char *printp(), *fdprint(), *iprint();
 
-char *gettty(), *getfs(), *getuname(), *getargs(), *memcpy();
+/*
+ * PORT: *ctime() added.  Upstream's own omission, and ps is the outlier --
+ * date.c, ls.c, pr.c, who.c, fsck.c, dumpdir.c and restor.c all declare it.
+ * V8's <time.h> declares no functions at all, so without this K&R gives
+ * ctime() an implicit int return.
+ *
+ * On a VAX that fiction was free: int and char * were both four bytes, so
+ * printp.c:24's `ctime(&up->u_start)+4' computed the right address anyway.
+ * Under LP64 it is fatal, and specifically because of the `+4'.  The back end
+ * deliberately does NOT narrow a signed-int CALL return -- see the long note
+ * at the `mov %s, x0' in ccom-arm64/gencode.c, which exists because opendir
+ * calls malloc undeclared -- so the pointer arrives intact in x0.  It is the
+ * ARITHMETIC that loses it: `+4' is a PLUS of type int, and arm64_trunc()
+ * emits `sxtw x9, w9' after it, which is correct for an int and destroys a
+ * pointer.  Mach-O loads at 0x100000000, so bit 32 is set in every static
+ * address and the truncated value lands in __PAGEZERO every time -- SIGSEGV
+ * on `ps -T', not an intermittent one.
+ *
+ * Measured tree-wide by scanning the emitted code of all 97 installed
+ * binaries for the shape (bl -> mov xN,x0 -> arithmetic -> sxtw): 64 sites,
+ * of which 63 call a function that really does return int (strlen, dysize,
+ * atoi, yacc's apack, troff's width/roman/decml/abc...).  This was the only
+ * one.  PLAN.md S4j.
+ */
+char *gettty(), *getfs(), *getuname(), *getargs(), *memcpy(), *ctime();
 
 Dirnode *devlist, *prlist, *getdir();
 

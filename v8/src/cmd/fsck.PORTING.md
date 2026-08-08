@@ -295,7 +295,7 @@ if(**++argv == '-' || --argc <= 0)		/* upstream */
 
 `||` evaluates left to right, so with `-t` last the `++argv` lands on the NULL
 at `argv[argc]` and `**argv` reads it *before* the count test can fire. It reads
-as a guarded line and is not. On the VAX address 0 held `0207`, which is not
+as a guarded line and is not. On the VAX address 0 held `0x00`, which is not
 `'-'`, so the first operand was false, the second then fired, and `errexit`
 printed `Bad -t option` — the right behaviour, reached by luck.
 
