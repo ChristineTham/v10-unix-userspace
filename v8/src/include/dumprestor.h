@@ -42,10 +42,22 @@
  * which is the only thing that can see it -- the same rule the -DDIRSIZ=14
  * group already follows.
  *
- * struct idates below is deliberately NOT narrowed: /etc/ddate is a TEXT file
- * (see DUMPOUTFMT/DUMPINFMT), so id_ddate never leaves memory as bytes and
- * ctime(&itwalk->id_ddate) is correct at eight.  One struct here is a wire
- * format and one is not, and that is the whole difference.
+ * struct idates below is NOT narrowed, and the reason is narrower than it
+ * first looks.  /etc/dumpdates (NINCREM) is a TEXT file -- DUMPOUTFMT is
+ * "%-16s %c %s" and DUMPINFMT its inverse -- so on every path this port
+ * exercises, id_ddate stays in memory and ctime(&itwalk->id_ddate) is correct
+ * at eight bytes.
+ *
+ * THE FIRST VERSION OF THIS COMMENT SAID "never leaves memory as bytes", AND
+ * THAT IS FALSE.  /etc/ddate (OINCREM) is the OLD BINARY format, and
+ * dumpitime.c's `dump J' arm reads it with fread(&idate, sizeof(idate), 1, f).
+ * sizeof(struct idates) is 32 here and was 24 on the VAX (16 + 1 + 3 pad + 4),
+ * so that read is wrong -- measured: against a genuine 24-byte record fread
+ * returns 0, the loop breaks, and the conversion writes an EMPTY dumpdates over
+ * the existing one.  It is not narrowed anyway, because `dump J' cannot reach
+ * the read: line 193 fcloses an unconditionally-NULL `oldfile' when /etc/ddate
+ * is absent, which is always here, and SIGSEGVs first -- after truncating
+ * /etc/dumpdates.  src/cmd/dump/PORTING.md has both.
  */
 struct	spcl {
 	int	c_type;

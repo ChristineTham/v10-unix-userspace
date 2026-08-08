@@ -145,6 +145,129 @@ the exception list cannot quietly grow.
 - **libc gaps and the variadic ABI** — `nm -u` is empty on all three binaries
   after `getgrnam`.
 
+## The round trip closes, and it is the point of having all three
+
+```
+$ /etc/mkfs fs.img proto            # hello, sub/, sub/deeper
+$ /etc/dump 0f tape fs.img
+  DUMP: DUMP: 24 tape blocks on 1 tape(s)
+$ /etc/dumpdir f tape
+Dump   date: Sat Aug  8 14:01:50 2026
+Dumped from: Thu Jan  1 10:00:00 1970
+    2 /.   2 /..   3 /hello   4 /sub/.   2 /sub/..   5 /sub/deeper
+$ /etc/mkfs new.img 2000
+$ /etc/restor rf tape new.img
+Last chance before scribbling on new.img.
+```
+
+and the **restored** image, judged by the five readers that know nothing about
+tapes: `icheck` `files 5 (r=3,d=2) used 4 missing 0`, `dcheck` silent, `ncheck`
+`/hello /sub/. /sub/deeper`, `fsck` clean in all five phases.
+
+`restor` is therefore the port's **second filesystem writer** after `mkfs`, and
+unlike `mkfs` it is judged by programs that were already here.
+
+Note `restor r` reads a newline for `Last chance before scribbling on ...`, and
+`dump` exits **1** on success (`X_FINOK`). Neither is a bug; both will trip a
+test that assumes otherwise.
+
+## THE BUG THAT STOPPED ALL OF IT WAS IN THE COMPILER
+
+Neither reader could read a tape `dump` wrote, and the tapes were correct — an
+independent 32-bit sum over every record of a written tape gives exactly
+`CHECKSUM`. What failed was `checksum()` in both readers:
+
+```c
+	register i, j;
+	do  i += *b++;  while (--j);
+	if (i != CHECKSUM) { printf("Checksum error %o\n", i); return(0); }
+```
+
+v8cc kept `i` in a 64-bit register and never wrapped it at 32 bits, so the sum
+came to `84446 + 2·2³²`. It **printed** `Checksum error 244736` — which is 84446
+in octal, the number it was looking for. CLAUDE.md has the general rule and
+`tests/v8ccom` the cases; `arm64_trunc()` is the fix.
+
+Worth keeping: the writer was unaffected, because `spcl.c_checksum = CHECKSUM -
+s` is a **store** and `str w` re-narrows. So the port could write correct 1985
+tapes it could not itself read.
+
+## The narrowed-field seam, and a level-0 tape hides it
+
+Both readers do `ctime(&spcl.c_date)` and `ctime(&spcl.c_ddate)`, and both are
+the fsck bug. The two behave completely differently:
+
+| tape | what `ctime` reads | result |
+|---|---|---|
+| level 0 | `&c_date` → `{c_date, c_ddate=0}` | accidentally **correct** |
+| level 0 | `&c_ddate` → `{0, c_volume=1}` = 4294967296 | a date in 2006 where dump says `the epoch` |
+| incremental | `&c_date` → `{c_date, c_ddate}` ≈ year 2.4e11 | **live lock, empty stdout** |
+
+So **a test written against a level-0 tape passes**. Fixed with a `time_t`
+temporary in both, the same shape as `fsck.c`'s `pinode()`.
+
+`dumpmain.c:18`'s `time(&(spcl.c_date))` is the write direction — an 8-byte
+store into a 4-byte field, landing on `c_ddate`. Invisible today for **three**
+independent reasons (little-endian puts the zero half there, the high half stays
+zero until 2106, and `getitime()` reassigns `c_ddate` afterwards), and fixed
+anyway, because that is three accidents rather than a guarantee.
+
+## `-DDIRSIZ=14`, measured per object
+
+`restor.o`, `dumpdir.o` and `dump/dumptraverse.o` **differ** with and without the
+flag; `dumpmain.o`, `dumptape.o`, `dumpoptr.o`, `dumpitime.o` and `unctime.o` are
+identical. What it buys, measured rather than argued:
+
+- `dumpdir` at 254 on a good tape prints `2 /.` and exits 0 — six entries become
+  one, `ncheck`'s failure mode exactly.
+- `dump` at 254 loses **directories from an incremental**. `dsrch()`
+  (`dumptraverse.c:203`) is the only consumer and runs only in pass II of a
+  level >0 dump; at a 256-byte stride it sees `.` and three zero-`d_ino` slots
+  and reports nothing changed. Measured: inodes `[2, 4, 1, 3, 5]` at 14 against
+  `[1, 3, 5]` at 254. Same tape length, checksums fine, no diagnostic — and a
+  restore then produces files with no path to them.
+
+So **rung 5 is blocked for all three**, for `ncheck`'s reason: `dump`'s makefile
+is `CFLAGS = -O $(DFLAGS)` with `DFLAGS` empty, so upstream's own description
+builds the 254 program. None of the three may join `$(V8BIN)`, which
+`tests/jail` asserts.
+
 ## Still open
 
-Recorded when the runtime story is settled.
+- **`dump J` SIGSEGVs, after destroying data.** `dumpitime.c:193` `fclose`s an
+  `oldfile` that is NULL whenever `/etc/ddate` is absent — always, here — and
+  line 171 has already `fopen(NINCREM, "w")`, so `/etc/dumpdates` is truncated
+  before the crash. Upstream's, and only reachable because the VAX had readable
+  text at address 0. Left as upstream wrote it: `J` converts a format this port
+  has never had, and `tests/mkfs` does not run it.
+- **`id_name[16]` truncation is observable.** `dumpitime.c:112`'s
+  `strncpy(itwalk->id_name, fname, 16)` leaves no NUL for a filesystem name of
+  16 characters or more, so `recout`'s `%-16s` runs into `id_incno` and the next
+  read says `Unknown intermediate format in ./dumpdates` — after which the
+  incremental silently degrades to a full dump. `strncmp(fname, id_name, 16)` at
+  line 73 also makes any two images sharing a 16-character prefix one entry,
+  which is true of every image under a temp directory here. A 1985 field width
+  meeting 2026 paths, the `FSNMLG` class; left because it is the *format* of
+  `/etc/dumpdates`, not a buffer sized against it.
+- **`rawbuf[32]` is reached on EVERY run**, not only via an fstab argument:
+  `dumpmain.c:132` calls `fstabsearch` unconditionally and `dumpoptr.c:327`
+  calls `rawname()` on every fstab entry. It survives because the jail's
+  `/etc/fstab` is manufactured by `kmemu_fstab()`, which types anything not
+  beginning `/dev/` as `xx`, and `getfstab()` keeps only `rw`/`ro`. So the bound
+  holds two files away, in a shim not written with this caller in mind. The same
+  1985 constant fsck's `rawbuf[32]` was.
+- **`rewind` collides, and inside libc.** `dumptape.c:91` defines `rewind()`
+  taking no argument, while `libv8c.a(getgrent.o)` — linked into `dump` by
+  `getgrnam` — *references* `_rewind`. So `setgrent()`'s `rewind(grf)` would
+  reach dump's tape rewind, which closes the tape and blocks in
+  `while ((f = open(tape,0)) < 0) sleep(10)`. Unreachable only because
+  `getgrnam` brackets `setgrent`…`endgrent` and `endgrent` nulls `grf`. The
+  `fmin`/`fmax` tripwire in `fsck.PORTING.md` pointing the other way: not libc
+  replacing us, us replacing libc *inside* libc.
+- **`while (getchar() != '\n')` at EOF** (`dumpdir.c:255`, `restor.c:520`) turns
+  any premature end of tape into a silent spin rather than an error. It is what
+  made the compiler bug present as a hang. Upstream assumed an operator.
+- **`query()` opens `/dev/tty` and `abort()`s if it cannot.** The jail's
+  `/dev` has no `tty`, so `rootpath()` falls through to the Mac's; with no
+  controlling terminal `dump` aborts. Only reachable from the tape-error and
+  volume-change arms, which a file-as-tape never takes.

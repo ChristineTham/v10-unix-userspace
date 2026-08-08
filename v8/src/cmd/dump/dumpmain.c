@@ -14,8 +14,17 @@ main(argc, argv)
 	register	i;
 	float		fetapes;
 	register	struct	fstab	*dt;
+	time_t		now;		/* PORT: see below */
 
-	time(&(spcl.c_date));
+	/* PORT: c_date is four bytes -- struct spcl is the on-tape record and
+	 * a VAX time_t was four, see <dumprestor.h> -- and time(2) writes
+	 * eight, so this put the high half onto c_ddate at offset 8.  Harmless
+	 * today by two accidents: the high half of a 2026 time_t is zero, and
+	 * getitime() assigns c_ddate afterwards anyway.  Both expire -- one in
+	 * 2106 and one on any reordering -- and it is the same write icheck.c
+	 * met on s_time. */
+	time(&now);
+	spcl.c_date = now;
 
 	tsize = 2300L*12L*10L;
 	tape = TAPE;

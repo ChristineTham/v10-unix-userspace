@@ -55,6 +55,7 @@ char *argv[];
 {
 	extern char *ctime();
 	int interrupt();
+	time_t dumpdate;	/* PORT: see below */
 
 	mktemp(dirfile);
 	if (signal (SIGINT, SIG_IGN) != SIG_IGN)
@@ -76,8 +77,16 @@ char *argv[];
 		printf("Tape is not a dump tape\n");
 		quit();
 	}
-	printf("Dump   date: %s", ctime(&spcl.c_date));
-	printf("Dumped from: %s", ctime(&spcl.c_ddate));
+	/* PORT: c_date and c_ddate are four bytes, because struct spcl is the
+	 * on-tape record and a VAX time_t was four -- see <dumprestor.h>.
+	 * ctime() dereferences eight, so &spcl.c_ddate reads c_volume as its
+	 * high half and dated this dump to 2006 rather than the epoch.  The
+	 * same seam fsck met in pinode(), where it was a live lock instead of
+	 * a wrong answer; the fix is the same, a time_t of our own. */
+	dumpdate = spcl.c_date;
+	printf("Dump   date: %s", ctime(&dumpdate));
+	dumpdate = spcl.c_ddate;
+	printf("Dumped from: %s", ctime(&dumpdate));
 	if (checkvol(&spcl, 1) == 0) {
 		printf("Tape is not volume 1 of the dump\n");
 		quit();

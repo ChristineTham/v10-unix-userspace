@@ -315,7 +315,21 @@ t 'unsigned mod-assign through a signed conversion' '13' <<'EOF'
 f() { unsigned long v; v = 0xbf1a36e2eb1c432dL; return (long)(v %= 16); }
 EOF
 
+# `long f()', not `f()', AND THAT IS A CORRECTION RATHER THAN A TIDY-UP.  The
+# driver declares `long f();' but this definition had an implicit int return,
+# so `return a*1000000' converts a long to an int and the answer IS
+# 1215752192 -- clang -std=gnu89 agrees.  It read as 100000000000 only because
+# v8cc never truncated an int, which is the bug arm64_trunc() fixes below: THE
+# CASE WAS CALIBRATED AGAINST THE BROKEN COMPILER, so fixing the compiler broke
+# the test.  Same shape as tests/wavec counting drawing commands that only
+# matched while every coordinate was zero.  Declaring the return type is what
+# makes it test long arithmetic, which is what its name says.
 t 'long arithmetic' '100000000000' <<'EOF'
+long f() { long a; a = 100000; return a*1000000; }
+EOF
+
+# ...and the truncation it used to hide, asserted on purpose.
+t 'an int return truncates a long expression' '1215752192' <<'EOF'
 f() { long a; a = 100000; return a*1000000; }
 EOF
 
@@ -601,6 +615,123 @@ t 'undeclared pointer parameter is still widened' '5' <<'EOF'
 struct i3 { int a, b, c; };
 take(s, v) struct i3 v; { return strlen(s) + v.a; }
 f() { struct i3 v; v.a = 2; v.b = 0; v.c = 0; return take("abc", v); }
+EOF
+
+# ---------------------------------------------------------------------------
+# AN int MUST WRAP AT 32 BITS, and for four years it did not.
+#
+# Every integer here lives in an x register, properly extended -- an `int' is
+# loaded with `ldrsw' and is correct as a 64-bit quantity.  Arithmetic was then
+# emitted 64-bit: `add x9, x9, x10'.  Right for every result that FITS, and
+# wrong the moment one does not, because the register has no 32-bit edge to
+# wrap at.  The value then disagrees with itself -- printf("%d") reads the low
+# half and is RIGHT, while a comparison reads all 64 and is WRONG.
+#
+# It needs an int accumulator that actually overflows AND lives in a register:
+# an automatic is stored back through `str w' and re-narrowed by the store, so
+# `register' is what exposes it.  1187 cases had not reached that pair.
+#
+# Found in dumpdir's checksum(), which sums 256 arbitrary ints off a tape
+# record: it computed exactly CHECKSUM, printed exactly CHECKSUM, and took the
+# not-equal branch -- so every dump tape this port wrote was unreadable by the
+# two programs written to read it.  gencode.c's arm64_trunc() is the fix.
+#
+# The cases below are the four operators that can set bits above bit 31.  Each
+# is written so the true 64-bit answer and the true 32-bit answer differ, and
+# each asks a COMPARISON rather than printing -- printing was never wrong.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- int overflow must wrap in a register, not accumulate in x"
+
+# 2000000000*3 - 1704948258 = 4295051742; that is 84446 modulo 2^32.
+t 'register int addition wraps at 32 bits' '1' <<'EOF'
+f() {
+	register i, j;
+	int big[4];
+	big[0] = 2000000000; big[1] = 2000000000;
+	big[2] = 2000000000; big[3] = -1704948258;
+	i = 0;
+	for (j = 0; j < 4; j++)
+		i += big[j];
+	return (i == 84446);
+}
+EOF
+
+# ...and the plain binary form, not just the compound assignment.
+t 'and so does i = i + x' '1' <<'EOF'
+f() {
+	register i;
+	int a, b;
+	a = 2000000000; b = 2000000000;
+	i = a + b;
+	return (i < 0);		/* 4e9 wrapped is negative */
+}
+EOF
+
+t 'subtraction wraps too' '1' <<'EOF'
+f() {
+	register i;
+	int a, b;
+	a = -2000000000; b = 2000000000;
+	i = a - b;
+	return (i > 0);		/* -4e9 wrapped is positive */
+}
+EOF
+
+t 'multiplication wraps' '1' <<'EOF'
+f() {
+	register i;
+	int a, b;
+	a = 65536; b = 65536;
+	i = a * b;
+	return (i == 0);	/* 2^32 wrapped is 0 */
+}
+EOF
+
+t 'a left shift off the top wraps' '1' <<'EOF'
+f() {
+	register i;
+	int a, n;
+	a = 1; n = 32;
+	i = a << n;
+	return (i == 0);
+}
+EOF
+
+# The other half of the claim: an UNSIGNED int must wrap by zero-extension, so
+# the same sum has to compare equal against the unsigned value rather than the
+# sign-extended one.  arm64_widen emits `mov w,w' here and `sxtw' above, and
+# getting that backwards would pass every signed case.
+t 'unsigned int wraps by zero extension' '1' <<'EOF'
+f() {
+	register unsigned u;
+	unsigned a, b;
+	a = 4000000000; b = 1000000000;
+	u = a + b;
+	return (u == 705032704);	/* 5e9 - 2^32 */
+}
+EOF
+
+# AND, OR, ER and RS of correctly-extended operands are ALREADY correct, so
+# arm64_trunc deliberately leaves them alone.  This is the negative control for
+# that decision: it must still be right, and if someone "simplifies" the guard
+# to every operator these keep passing while the code gets slower -- the point
+# is that they pass WITHOUT the extra instruction.
+t 'a negative int survives and or xor and >>' '1' <<'EOF'
+f() {
+	register i;
+	int a;
+	a = -1000000000;
+	i = a & -1;
+	if (i != -1000000000) return (0);
+	i = a | 0;
+	if (i != -1000000000) return (0);
+	i = a ^ 0;
+	if (i != -1000000000) return (0);
+	i = a >> 1;
+	if (i != -500000000) return (0);
+	return (1);
+}
 EOF
 
 echo

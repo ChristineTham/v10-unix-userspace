@@ -365,6 +365,45 @@ arm64_widen(t, r)
 	}
 }
 
+/*
+ * ...AND THE OTHER DIRECTION, WHICH IS NOT THE SAME THING AND WAS MISSING.
+ *
+ * Every integer value in this back end lives in an x register, properly
+ * extended -- an `int' is loaded with `ldrsw' and is therefore correct as a
+ * 64-bit quantity.  Arithmetic is then emitted as a 64-bit instruction:
+ * `add x9, x9, x10'.  That is right for every result that FITS, and wrong the
+ * moment one does not, because an `int' must wrap at 32 bits and an x register
+ * does not.  The value then disagrees with itself:
+ *
+ *	printf("%d", i)		reads the low half	-- correct
+ *	if (i == 84446)		compares all 64 bits	-- wrong
+ *
+ * Found in dumpdir's checksum(), which sums 256 arbitrary ints and therefore
+ * overflows on essentially every tape record: it computed exactly CHECKSUM,
+ * printed exactly CHECKSUM, and took the not-equal branch.  1187 test cases had
+ * not reached it, because it needs an int accumulator that actually overflows
+ * -- and a REGISTER one, since an lvalue in memory is stored back through
+ * `str w' and re-narrowed by the store.
+ *
+ * Only the operators that can set bits above the type's width need this.  AND,
+ * OR, ER and RS of correctly-extended operands are correctly extended already,
+ * and so are DIV and MOD; PLUS, MINUS, MUL and LS are not.  arm64_widen() is
+ * the same helper the foreign-call seam uses and is a no-op for 8-byte types
+ * and for pointers, so the guard is on the operator alone.
+ */
+static void
+arm64_trunc(op, t, r)
+	int op;
+	TWORD t;
+	int r;
+{
+	switch (op) {
+	case PLUS: case MINUS: case MUL: case LS:
+		arm64_widen(t, r);
+		break;
+	}
+}
+
 /* ------------------------------------------------------------ addresses */
 
 static void
@@ -1239,12 +1278,14 @@ gen(p, want)
 		    (v = (long)p->in.right->tn.lval) >= 0 && v < 4096) {
 			printx("\t%s\t%s, %s, #%ld\n", op, xreg(l.reg),
 			    xreg(l.reg), v);
+			arm64_trunc(p->in.op, p->in.type, l.reg);
 			return (l);
 		}
 		r = gen(p->in.right, WVALUE);
 		printx("\t%s\t%s, %s, %s\n", op, xreg(l.reg), xreg(l.reg),
 		    xreg(r.reg));
 		regfree(r.reg);
+		arm64_trunc(p->in.op, p->in.type, l.reg);
 		return (l);
 
 	case MOD:
@@ -1365,6 +1406,7 @@ gen(p, want)
 			printx("\t%s\t%s, %s, %s\n", op, xreg(l.reg),
 			    xreg(l.reg), xreg(r.reg));
 			regfree(r.reg);
+			arm64_trunc(base, p->in.type, l.reg);
 		}
 		lvstore(&lv, l.reg);
 		lvfree(&lv);
@@ -1390,6 +1432,7 @@ gen(p, want)
 			    p->in.op == INCR ? "add" : "sub",
 			    xreg(l.reg), xreg(l.reg), xreg(r.reg));
 			regfree(r.reg);
+			arm64_widen(p->in.type, l.reg);	/* see arm64_trunc */
 			lvstore(&lv, l.reg);
 			lvfree(&lv);
 			regfree(l.reg);

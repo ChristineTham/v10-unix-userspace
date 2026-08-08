@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (~1150 tests)
+make test             # all 17 suites (~1215 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -620,6 +620,45 @@ that call neither `atof` nor the math library, and its end-to-end check counted
 `grep -c '^D'` on troff's output — a pattern that only matched because every
 coordinate was zero, so no motion preceded the draw. **The test had been
 calibrated against the broken output, and fixing the program broke the test.**
+
+**AN `int` MUST WRAP AT 32 BITS, AND FOR THIS PORT'S WHOLE LIFE IT DID NOT.**
+Every integer here lives in an x register, properly extended — an `int` is
+loaded with `ldrsw` and is correct as a 64-bit quantity. Arithmetic was then
+emitted 64-bit, `add x9, x9, x10`. That is right for every result that **fits**,
+and wrong the moment one does not, because a register has no 32-bit edge to wrap
+at. The value then **disagrees with itself**:
+
+```c
+printf("%d", i)     /* reads the low half   -- RIGHT */
+if (i == 84446)     /* compares all 64 bits -- WRONG */
+```
+
+Found in `dumpdir`'s `checksum()`, which sums 256 arbitrary ints off a tape
+record: it computed exactly `CHECKSUM`, **printed** exactly `CHECKSUM`, and took
+the not-equal branch — so every dump tape this port wrote was unreadable by the
+two programs written to read it. `arm64_trunc()` in
+`compiler/ccom-arm64/gencode.c` is the fix, at all four emission sites (binary
+op, its immediate form, compound assignment, `++`/`--`).
+
+Two things generalise:
+
+- **It needs an overflowing accumulator that lives in a REGISTER.** An automatic
+  is stored back through `str w` and re-narrowed by the store, so only
+  `register` exposes it — measured: `register i` wrong, auto/global/struct
+  member all right. That pair is why 1187 cases had not reached it.
+- **Only `+`, `-`, `*` and `<<` need it.** `&`, `|`, `^`, `>>`, `/` and `%` of
+  correctly-extended operands are correctly extended already, and
+  `tests/v8ccom` has a negative control asserting they still are *without* the
+  extra instruction. Same discipline as `SIGNCONVKEEP`.
+
+**And fixing it broke a test that had been calibrated against it.**
+`t 'long arithmetic'` expected `100000000000` from
+`f() { long a; a = 100000; return a*1000000; }` — but `f` has an implicit `int`
+return, so the answer is `1215752192` and **clang `-std=gnu89` agrees**. It only
+read as the full value because the truncation never happened. Third instance of
+this shape here, after `wavec` counting drawing commands that matched only while
+every coordinate was zero. When a compiler fix turns a test red, check which of
+the two was wrong before assuming it was the fix.
 
 **A same-size conversion is not always a no-op.** Widths are the common fault;
 signedness is the other one. A signed and an unsigned value of the same size

@@ -1244,16 +1244,15 @@ Three documented lies, all currently recorded as losses:
 - `df` carries this port's one sanctioned source deviation (S7), because there
   is no superblock to read.
 
-And ten programs currently written off as "raw VAX disks": `fsck mkfs icheck
-dcheck ncheck clri quot dump restor dumpdir`.
+And ten programs then written off as "raw VAX disks": `fsck mkfs icheck dcheck
+ncheck clri quot dump restor dumpdir`.
 
-**SEVEN OF THE TEN ARE IN, AND THEY DID NOT NEED THIS STEP.** `mkfs`, `icheck`,
-`dcheck`, `clri`, `fsck`, `ncheck` and `quot` all take the filesystem as an
-*argument*, so a mount was never the obstacle -- what they needed was step 4a's
-on-disk widths and nothing else. Only `dump`, `restor` and `dumpdir` are left,
-and those are a different problem: a dump is a tape format, not a filesystem
-one. What step 5 still buys the seven is `df`'s numbers, `mklost+found`, and
-`quot`'s own default argument `/dev/usr`.
+**ALL TEN ARE IN, AND NONE OF THEM NEEDED THIS STEP.** Every one takes its
+subject as an *argument* -- a filesystem image for the seven checkers, a tape
+file for the three dump tools -- so a mount was never the obstacle. What they
+needed was step 4a's on-disk widths, one wire format (`struct spcl`), and one
+compiler fix. What step 5 still buys them is `df`'s numbers, `mklost+found`,
+and `quot`'s own default argument `/dev/usr`.
 
 ### Sequence
 
@@ -1748,6 +1747,35 @@ Ordered so that value lands before risk, and so each step is testable alone.
    artefact whose name is the makefile's target, so a rung-5 case asking
    `[ -x dump ]` after copying the directory would pass on a binary that cannot
    run here.
+
+   **THE ROUND TRIP CLOSES, AND IT MAKES `restor` THIS PORT'S SECOND FILESYSTEM
+   WRITER.** `mkfs` builds an image, `dump 0f` writes a tape, `dumpdir f` lists
+   it, `restor rf` rebuilds a filesystem from it -- and the *restored* image is
+   judged by the five readers that know nothing about tapes: `icheck`
+   `files 5 (r=3,d=2) used 4 missing 0`, `dcheck` silent, `ncheck` naming the
+   same three paths, `fsck` clean in all five phases without modifying it. That
+   is a statement no single program here could make about itself.
+
+   **AND WHAT STOPPED IT WAS A BUG IN v8cc, NOT IN THE PROGRAMS.** Neither
+   reader could read a tape `dump` wrote, and the tapes were correct -- an
+   independent 32-bit sum over every record gives exactly `CHECKSUM`. The
+   failure was `checksum()`'s `register int` accumulator: **an `int` must wrap
+   at 32 bits and this back end never wrapped one**, because every integer
+   lives in an x register and arithmetic was emitted 64-bit. The value
+   disagreed with itself -- it *printed* `Checksum error 244736`, which is 84446
+   octal, the number it was looking for. `arm64_trunc()` in
+   `compiler/ccom-arm64/gencode.c` fixes it at all four emission sites; the
+   three-stage fixpoint still holds. CLAUDE.md has the general rule. Note the
+   writer was unaffected, because `spcl.c_checksum = CHECKSUM - s` is a store
+   and `str w` re-narrows: **the port could write correct 1985 tapes it could
+   not itself read.**
+
+   Both readers also carry the fsck seam -- `ctime(&spcl.c_date)` -- and it
+   behaves in two completely different ways: on a **level 0** tape `c_ddate` is
+   zero so the read is accidentally correct, and on an **incremental** it is the
+   live lock with empty stdout. A test written against a level-0 tape passes.
+   Fixed with `time_t` temporaries in both, plus the write direction at
+   `dumpmain.c:18`, which was invisible for three independent reasons at once.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `mklost+found`, and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
@@ -1850,9 +1878,9 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.1 streams | engine in | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c` surveyed and deferred — see S8a step 1 |
 | 8a.2 fs switch | done | `shim/v8sys/vfs.c`, one mount table, passthrough behind it |
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
-| 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **seven of the ten "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot`, none of which needed a mount, because each takes the image as an argument. `mkfs` 126/126. It began by finding that **every on-disk struct in the tree was the wrong size**, and it has since produced two of this port's own bugs (the `time_t` seam in both directions), three of upstream's address-0 assumptions, and one in our `doprnt` |
+| 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-`make test` runs everything — seventeen suites, about 1150 cases.
+`make test` runs everything — seventeen suites, about 1215 cases.
 
 ### What actually works today
 

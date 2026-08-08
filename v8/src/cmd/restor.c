@@ -150,6 +150,7 @@ char	*argv[];
 	extern char *ctime();
 	register i, k;
 	ino_t	d;
+	time_t	dumpdate;	/* PORT: see the 't' case */
 #ifndef STANDALONE
 	int	xtrfile(), skip(), null();
 #endif
@@ -176,8 +177,13 @@ char	*argv[];
 			printf("Tape is not a dump tape\n");
 			exit(1);
 		}
-		printf("Dump   date: %s", ctime(&spcl.c_date));
-		printf("Dumped from: %s", ctime(&spcl.c_ddate));
+		/* PORT: the same four-byte tape fields dumpdir.c records --
+		 * ctime() dereferences eight, so &spcl.c_ddate takes c_volume
+		 * as its high half. */
+		dumpdate = spcl.c_date;
+		printf("Dump   date: %s", ctime(&dumpdate));
+		dumpdate = spcl.c_ddate;
+		printf("Dumped from: %s", ctime(&dumpdate));
 		return;
 	case 'x':
 		if (readhdr(&spcl) == 0) {

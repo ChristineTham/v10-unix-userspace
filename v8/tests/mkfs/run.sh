@@ -906,5 +906,100 @@ check "and says so with exit status 0, which is the whole problem" "0" "$?"
 if cmp -s "$TMP/q14.o" "$TMP/q0.o"; then pass=$((pass+1))
 else bad "quot.o differs with and without -DDIRSIZ=14 -- it reads directories now"; fi
 
+# ---------------------------------------------------------------------------
+# 10. THE ROUND TRIP: mkfs -> dump -> tape -> restor -> a second filesystem.
+#
+# Section 1 asserts struct spcl's layout and section 9 the readers, and NEITHER
+# WOULD HAVE CAUGHT WHAT THIS CATCHES.  The tape format was correct -- an
+# independent sum over every record of a written tape gives exactly CHECKSUM --
+# and both readers rejected it anyway, because v8cc kept checksum()'s `register
+# int' accumulator in a 64-bit register and never wrapped it at 32.  It printed
+# the number it was looking for and took the not-equal branch.  So the format
+# being right and the programs working are two different claims, and only
+# running them asks the second.
+#
+# What makes the trip worth more than three separate cases: restor is the
+# port's SECOND filesystem writer, and the five readers that judge its output
+# know nothing about tapes.  A restored image that icheck, dcheck, ncheck and
+# fsck all accept, holding the same tree, is a statement no single program here
+# could make about itself.
+#
+# NOTE THE STDIN.  `restor r' reads a newline for "Last chance before
+# scribbling on ...", and both readers spin forever on EOF rather than erroring
+# -- upstream assumed an operator.  That is also why everything here runs under
+# a deadline: the failure mode is a hang with no output, not a wrong answer.
+# ---------------------------------------------------------------------------
+DUMP=$V8ROOT/etc/dump
+RESTOR=$V8ROOT/etc/restor
+DUMPDIR=$V8ROOT/etc/dumpdir
+for f in "$DUMP" "$RESTOR" "$DUMPDIR"; do
+	[ -x "$f" ] || { echo "missing $f -- run make"; exit 1; }
+done
+dl() { perl -e 'alarm 40; exec @ARGV' "$@"; }
+
+# dump exits 1 on success (X_FINOK), so the output is what is read.
+dout=$( cd "$TMP" && dl "$DUMP" 0f "$TMP/tape" "$NIMG" </dev/null 2>&1 )
+check "dump runs all four passes and finishes"	"DUMP IS DONE" \
+    "$(printf '%s\n' "$dout" | sed -n 's/.*DUMP: \(DUMP IS DONE\).*/\1/p')"
+if [ -s "$TMP/tape" ]; then pass=$((pass+1))
+else bad "dump wrote no tape"; fi
+# NTREC is 10 and each record is BSIZE(0), so a tape is a whole number of
+# 10240-byte groups -- a partial group is still in dump's buffer and lost, which
+# is why it writes NTREC copies of TS_END.
+check "the tape is a whole number of NTREC groups"	"0" \
+    "$(( $(wc -c < "$TMP/tape") % (10 * BSZ) ))"
+check "record 0 is TS_TAPE, with the magic"	"1 60011" \
+    "$(d4 "$TMP/tape" 0) $(d4 "$TMP/tape" 24)"
+# ...and the format assertion that matters, on the bytes: c_date is FOUR bytes
+# at offset 4 with c_ddate zero at 8.  At eight-byte times c_ddate would hold
+# the high half of the date and every later field would have slid.
+if [ "$(d4 "$TMP/tape" 4)" -gt 1700000000 ]; then pass=$((pass+1))
+else bad "c_date at offset 4 is $(d4 "$TMP/tape" 4), not a plausible time"; fi
+check "and c_ddate at offset 8 is zero for a level 0"	"0" \
+    "$(d4 "$TMP/tape" 8)"
+
+# dumpdir reads it back.  Flags are V7-style with no dash -- `dumpdir f tape' --
+# and `-f' is silently ignored, which opens /dev/rmt2 instead.
+ddout=$( cd "$TMP" && dl "$DUMPDIR" f "$TMP/tape" </dev/null 2>&1 )
+# Inode 2 is the root, and it is named by `/.', `/..' and `/sub/..' -- dropping
+# it leaves exactly what ncheck reports for the same image, which is the
+# comparison worth making.
+check "dumpdir lists the tree off the tape" \
+    "/hello /sub/. /sub/deeper" \
+    "$(printf '%s\n' "$ddout" | awk '$1 ~ /^[0-9]+$/ && $1 != 2 {printf "%s ", $2}' | sq)"
+# THE DATE PAIR, and it is the narrowed-field seam.  ctime(&spcl.c_ddate) read
+# c_volume as its high half and dated a level-0 dump to 2006; the fix is a
+# time_t temporary, as in fsck's pinode().  Asserted as the epoch YEAR rather
+# than a full date, because the epoch prints in local time.
+check "dumpdir dates the dump to now, not to 2.4e11"	"2026" \
+    "$(printf '%s\n' "$ddout" | sed -n 's/^Dump   date:.* \([0-9][0-9][0-9][0-9]\)$/\1/p')"
+check "and reads c_ddate as the epoch, not as c_volume"	"1970" \
+    "$(printf '%s\n' "$ddout" | sed -n 's/^Dumped from:.* \([0-9][0-9][0-9][0-9]\)$/\1/p')"
+
+# ...and restor writes a SECOND filesystem from it.
+"$MKFS" "$TMP/rest.img" 2000 >/dev/null 2>&1
+( cd "$TMP" && printf '\n' | dl "$RESTOR" rf "$TMP/tape" "$TMP/rest.img" ) \
+    >/dev/null 2>&1
+rout=$(ic "$TMP/rest.img")
+check "the restored image has the same five inodes" \
+    "files 5 (r=3,d=2,b=0,c=0,l=0)" "$(printf '%s\n' "$rout" | grep '^files')"
+check "and the same four blocks in use"	"used 4 (i=0,ii=0,iii=0,d=4)" \
+    "$(printf '%s\n' "$rout" | grep '^used')"
+check "with nothing unaccounted for"	"missing 0" \
+    "$(printf '%s\n' "$rout" | grep '^missing')"
+check "dcheck finds no link-count disagreement in it"	"$TMP/rest.img:" \
+    "$(dc "$TMP/rest.img")"
+check "ncheck finds the same tree by name" \
+    "3 /hello 4 /sub/. 5 /sub/deeper" \
+    "$(nc "$TMP/rest.img" | tr '\n' ' ' | sq)"
+# fsck is the judge that would REPAIR a difference, so a clean pass is the
+# strongest of the four -- and it must not modify anything.
+check "and fsck accepts it without modifying it"	"" \
+    "$(fs "$TMP/rest.img" | grep 'FILE SYSTEM WAS MODIFIED')"
+# Anchored at the start of the line: a greedy `.*' in front eats the count and
+# leaves " files 4 blocks", which reads as fsck having lost the number.
+check "fsck counts what icheck counts"	"5 files 4 blocks" \
+    "$(fs "$TMP/rest.img" | sed -n 's/^\([0-9]* files [0-9]* blocks\).*/\1/p' | tail -1)"
+
 echo "mkfs: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

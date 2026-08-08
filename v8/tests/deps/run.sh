@@ -483,6 +483,15 @@ dep 'dumprestor.h -> rootfs headers' src/include/dumprestor.h \
 # the MAC's /etc/group from inside the jail -- the getgrent/`ls -g' leak again,
 # caught by tests/kmemu's nm -u sweep.  V8 has the source; it is imported now.
 dep 'getgrnam.c -> libc'       src/libc/stdio/getgrnam.c       $B/libc/libv8c.a
+# ...and sys/param.h to the three tape objects that DIRSIZ actually changes,
+# measured per object rather than per program: restor.o, dumpdir.o and
+# dump/dumptraverse.o differ with and without the flag; dump's other five are
+# byte-identical.  dumptraverse is the one worth naming -- dsrch() is the only
+# consumer and it runs only in pass II of an INCREMENTAL, where a wrong DIRSIZ
+# silently drops every directory from the tape.
+dep 'sys/param.h -> restor object'   src/include/sys/param.h  $B/restor/restor.o
+dep 'sys/param.h -> dumpdir object'  src/include/sys/param.h  $B/dumpdir/dumpdir.o
+dep 'sys/param.h -> dumptraverse'    src/include/sys/param.h  $B/dump/dumptraverse.o
 # daddr_t's width reaches libc as well as the program, because ltol3 strides by
 # it -- two patches that once disagreed about exactly this.
 dep 'sys/types.h -> libc'      src/include/sys/types.h         $B/libc/libv8c.a
