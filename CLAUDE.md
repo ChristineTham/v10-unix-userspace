@@ -1212,12 +1212,31 @@ Three things generalise, and the first is the reason to run a sweep at all:
   mutation that proves those is a "fix" that makes the loop consume nothing:
   the crash goes away and the behaviour case goes red.
 
-**And two that were audited and deliberately NOT changed**, because the rule is
+**And FOUR that were audited and deliberately NOT changed**, because the rule is
 that a change to `src/` must be forced by the target. `make`'s `meter()`
 dereferences an unchecked `getpwuid()`, but it returns on `meteron == 0` and
 nothing in the tree ever sets it. `ls.c:285`'s `calloc` and `ls.c:257`'s `malloc` are
 unchecked where the other three sites check — and a write to page 0 faults on a VAX too, so there is no
 VAX answer to restore.
+
+**`pr.c:259` and `troff/hc.c:767` are the same verdict reached by a longer
+route, and `/dev/fd` is what made them reachable.** Both `fopen("/dev/tty")`
+unchecked — `pr` then `getc(Ttyin)`, `hc` then `setbuf(rcf, NULL)` — and with
+V8's `/dev/tty` meaning fd 3, that pointer is null whenever the launcher did
+not run. It looks like a regression and is not: **`getc(p)` is
+`(--(p)->_cnt >= 0 ? …)`, which WRITES to virtual 0**, and V8's binaries are
+ZMAGIC (`a.out.h:17`), whose text is read-only shared — so a VAX takes a
+protection fault too. What the port lost is an *accident*: `fopen` used to fall
+through to the **host's** `/dev/tty`, a different device entirely. `dump` is the
+one of the three that checks, and it `abort()`s by design.
+
+Two things to carry. **The address-0 rule needs the struct, not just the byte** —
+the sixteen crt0 bytes give `_cnt 0x08c20000`, `_ptr 0x08aed05e`,
+`_base 0x0cae9e6e`, `_flag 0xd050`, and the last two reproduce values PLAN.md
+already recorded, which is what says the layout is being read right. And
+**whether a page-0 access is a read or a write is the whole question**:
+`fflush(NULL)` reads `_flag` and returns harmlessly, `getc(NULL)` decrements
+`_cnt` and faults, one line apart in the same header.
 
 **THE SAME SWEEP FOUND THE PORT DISAGREEING WITH THE CODE V8 ACTUALLY RAN, and
 upstream shipped the answer.** `strncat` read `s2[n]` — one past its own bound —

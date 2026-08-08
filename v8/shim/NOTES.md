@@ -385,3 +385,48 @@ Worse, the comment beside it *acknowledged* the two calls collapse and kept
 both. The call is gone; the case now names the property that is actually
 load-bearing, and the mutation that proves it is a `v8fs_bind` that skips the
 passthrough case instead.
+
+### The three consumers, and an address-0 case that is faithful rather than fixable
+
+`/dev/tty` has exactly three readers in this tree, and making it mean what V8
+means changed what all three do when fd 3 is closed — which, outside the
+launcher, is most of the time.
+
+| | the call | with no fd 3 |
+|---|---|---|
+| `dump/dumpoptr.c:36` | `fopen`, **checked** | `msg("fopen on /dev/tty fails")` then `abort()` |
+| `troff/hc.c:766` | `fopen`, then `setbuf(rcf, NULL)` | writes through a null `FILE *` |
+| `pr.c:201` | `fopen`, then `getc(Ttyin)` at `:259` | reads through a null `FILE *` |
+
+The last two are the address-0 class, and **there is no VAX answer to restore**,
+which is the `ls.c:285` precedent and means §1 says leave them alone. Computed
+rather than assumed, from the sixteen crt0 bytes at virtual 0
+(`00 00 c2 08 5e d0 ae 08 6e 9e ae 0c 50 d0 50 ae`, identical in `cat`, `ls` and
+`lex`) read through the VAX `struct _iobuf`:
+
+```
+_cnt = 0x08c20000   _ptr = 0x08aed05e   _base = 0x0cae9e6e   _flag = 0xd050
+```
+
+`_ptr` and `_flag` reproduce the two values PLAN.md §4i and §4j already
+recorded, which is what says the layout is being read right. And then the
+decisive part: `getc(p)` is `(--(p)->_cnt >= 0 ? ... )`, so it **writes** to
+virtual address 0 — and V8's binaries are ZMAGIC (`0413`, `a.out.h:17`), whose
+text is read-only shared. A VAX takes a protection fault. `setbuf` writes
+`_base` and `_flag` at 0 and 12 for the same result.
+
+So `pr -p` and `troff`'s hyphenation prompt die here exactly as they died on a
+VAX with fd 3 closed, and the port has become *more* faithful rather than less:
+what used to happen was `fopen` falling through to the **host's** `/dev/tty`,
+which is a different device and succeeded whenever a controlling terminal
+existed. That accident is what the launcher's `exec 3<>/dev/tty` now replaces
+honestly.
+
+**The crash probe structurally cannot see this**, and that is worth knowing
+before treating its zero as coverage: the branch needs `Ttyout`, i.e. stdout a
+terminal, and the probe gives every invocation `/dev/null` on all three
+descriptors. Nor is it a mutation-testable property — "a VAX would also fault"
+has no runtime witness. What is testable is the shim's half, and
+`tests/libv8c` now pins it at the level the three programs actually call:
+`fopen("/dev/tty")` is NULL with fd 3 closed and a real stream with it open,
+with the program arranging its own fd 3 rather than inheriting the harness's.

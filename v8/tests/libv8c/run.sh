@@ -719,6 +719,70 @@ main() {
 }
 EOF
 
+# ---------------------------------------------------------------------------
+# fopen("/dev/tty") -- the call three programs in this tree actually make, and
+# the level the shim's own suite cannot reach.  tests/v8sys checks v8s_open;
+# pr.c:201, troff/hc.c:766 and dump/dumpoptr.c:36 all go through stdio.
+#
+# V8's /dev/tty is /dev/fd/3, so the answer depends on fd 3 and on nothing else.
+# THE PROGRAM ARRANGES ITS OWN fd 3 rather than inheriting one: whether this
+# harness leaves one open is a property of the machine, and every case here has
+# to be a relation the port controls.
+run 'fopen /dev/tty follows fd 3' 'closed 1 open 1 first A' <<'EOF'
+#include <stdio.h>
+main()
+{
+	FILE *f;
+	int fd;
+
+	close(3);
+	f = fopen("/dev/tty", "r");
+	printf("closed %d ", f == 0);		/* fd.4: open returns -1 */
+
+	fd = creat("ttyprobe", 0644);
+	write(fd, "ABC", 3);
+	close(fd);
+	fd = open("ttyprobe", 0);
+	dup2(fd, 3);				/* init.c:381's third dup */
+	if (fd != 3) close(fd);
+
+	f = fopen("/dev/tty", "r");
+	printf("open %d ", f != 0);
+	printf("first %c\n", getc(f));
+	fflush(stdout);
+	unlink("ttyprobe");
+	return 0;
+}
+EOF
+
+# ...and the same through the numeric spelling, which is the node /dev/tty is a
+# link to.  Two names, one descriptor: reading one advances the other.
+run '/dev/fd/3 is the same node' 'a=A b=B' <<'EOF'
+#include <stdio.h>
+main()
+{
+	FILE *x, *y;
+	int fd;
+
+	fd = creat("fdprobe", 0644);
+	write(fd, "AB", 2);
+	close(fd);
+	fd = open("fdprobe", 0);
+	dup2(fd, 3);
+	if (fd != 3) close(fd);
+
+	x = fopen("/dev/tty", "r");
+	y = fopen("/dev/fd/3", "r");
+	/* Unbuffered, or stdio's own 4096-byte read hides the sharing. */
+	setbuf(x, (char *)0);
+	setbuf(y, (char *)0);
+	printf("a=%c b=%c\n", getc(x), getc(y));
+	fflush(stdout);
+	unlink("fdprobe");
+	return 0;
+}
+EOF
+
 echo "libv8c: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

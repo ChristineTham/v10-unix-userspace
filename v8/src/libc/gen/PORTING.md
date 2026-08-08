@@ -95,24 +95,39 @@ and `st_ino` in `stat_translate` (`shim/v8sys/syscall.c:1086`). So two files in
 one directory can share a `d_ino`, and this loop stops on whichever `readdir`
 yields **first**.
 
-### Measured, and reproduced 10 times out of 10
+### Measured — and re-measured after `tests/wavea` finally caught it in the wild
 
-Not inferred from the code. `$TMPDIR` on this host holds **5452 entries whose
-folds collapse to 5250 distinct values -- 199 values shared by two or more
-entries, 401 entries involved**. Entering, in turn, the ten collision pairs
-whose later member is a directory and asking V8's `pwd` where it was:
+Not inferred from the code. The first measurement entered the ten collision
+pairs whose later member was a directory and got **10 wrong out of 10** — 4
+printing the colliding entry's name and **exiting 0**, 6 dying with
+`getwd: can't change back to .`.
 
-| | |
-|---|---|
-| tried | 10 |
-| **wrong** | **10** |
-| of those, printed the colliding entry's name and **exited 0** | 4 |
-| of those, died with `getwd: can't change back to .` | 6 |
+That was a sample of the reachable pairs reported as if it were the population,
+and when the suite went red on its own months later the re-measurement was
+better: classify **every** directory in `$TMPDIR`, then sample each class.
 
-The split is the whole hazard. Where the collider is another *directory*, `pwd`
-prints a real path that is not where you are, successfully. Where it is a
-regular file -- six of ten here were `*.finvestlens.audit.log` -- the `chdir`
-back fails and the error is at least loud.
+| | directories | right | named another dir | `can't change back` |
+|---|---|---|---|---|
+| in a fold-collision group | 121 of 1545 | 32/60 | 6 | 22 |
+| not in one | 1424 | **60/60** | 0 | 0 |
+
+A clean separation, and the 47% is structural rather than noisy: the walk stops
+at whichever colliding entry `readdir` yields **first**, so the first member of
+a group is right and every later one is wrong. Both failure shapes are that one
+stop — naming the wrong entry when it is a directory you can `chdir` into, and
+failing the final `chdir(pnptr)` at `getwd.c:79` when it is not.
+
+**Two instrument errors on the way, both flattering, both already named in
+CLAUDE.md.** Comparing against the *unresolved* path made all 12 samples read as
+failures, because `$TMPDIR` sits behind the `/private` firmlink — the fix is
+`/bin/pwd -P`. And a collision list truncated to the first 12 of 109 groups
+produced a "non-colliding control that failed", which would have falsified the
+whole diagnosis had it not been chased. **Classify the whole population before
+sampling it.**
+
+The population also grew between the two measurements — 5452 entries / 199
+shared folds, then 6031 / 215 — which is what a months-old `$TMPDIR` does and
+is the reason the rate is a property of the host rather than of the port.
 
 ### The two failed reproductions are worth more than the successful one
 

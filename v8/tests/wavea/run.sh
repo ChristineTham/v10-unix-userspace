@@ -274,12 +274,33 @@ try ls     'ls -l marks the directory' 'd' "./ls -l lsdir | awk '\$NF==\"sub\"{p
 # stat(".")'s st_ino, and stops there.  Both sides are folded from a 64-bit
 # host inode into V7's 16-bit ino_t by v8sys_fold_ino (shim/v8sys/dir.c:125),
 # so two entries in one directory can share a d_ino and the walk names
-# whichever readdir yields first.  Measured on this host: $TMPDIR holds 5452
-# entries collapsing to 5250 folds, 199 of them shared; entering the ten
-# collision pairs whose later member is a directory, V8's pwd was wrong 10
-# times out of 10 -- four printing another entry's name and exiting 0, six
-# dying with `getwd: can't change back to .'.  src/libc/gen/PORTING.md has the
-# whole account, including why a stat() confirmation does NOT fix it.
+# whichever readdir yields first.  src/libc/gen/PORTING.md has the whole
+# account, including why a stat() confirmation does NOT fix it.
+#
+# IT FIRED, AND THE RE-MEASUREMENT IS SHARPER THAN THE FIRST ONE -- which said
+# "$TMPDIR holds 5452 entries, 199 shared folds; ten collision pairs, wrong 10
+# times out of 10".  That was a sample of the reachable pairs presented as the
+# population.  Measured properly, by classifying EVERY directory in $TMPDIR and
+# sampling 60 from each class:
+#
+#   1545 directories, 121 of them in a fold-collision group
+#   colliding      60 sampled: 32 right, 6 named another directory, 22 said
+#                              `getwd: can't change back to .'  -- 47% wrong
+#   non-colliding  60 sampled: 60 right, 0 wrong
+#
+# A clean separation, and the 47% is explained rather than noisy: the walk stops
+# at whichever colliding entry readdir yields FIRST, so the first member of a
+# group is right and the later ones are not.  Both failure shapes come from the
+# same stop -- naming the wrong entry when it happens to be a directory you can
+# chdir into, and failing the final `chdir(pnptr)' at getwd.c:79 when it is not.
+#
+# Two instrument errors on the way, both in the flattering direction and both
+# the same shape as the ones CLAUDE.md already records.  Comparing V8's pwd
+# against the UNRESOLVED path made all 12 samples read as failures, because
+# $TMPDIR is behind the /private firmlink; and a collision list truncated to
+# the first 12 of 109 groups made a colliding directory look like a
+# non-colliding control that failed, which would have falsified the diagnosis.
+# Classify the whole population, then sample it.
 #
 # THE HYPOTHESIS THIS REPLACES WAS WRONG, and the experiment that cleared it
 # was wrong in an instructive way.  It blamed v8sys_dirsize's two passes over a
