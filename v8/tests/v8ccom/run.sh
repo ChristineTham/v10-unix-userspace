@@ -734,6 +734,173 @@ f() {
 }
 EOF
 
+# ---------------------------------------------------------------------------
+# ...AND THE SAME FAULT IN THE TWO UNARY OPERATORS.  Found by sweeping the list
+# above rather than by a program failing: the first arm64_trunc() considered
+# only the BINARY operators, because the checksum bug happened to be a `+'.
+#
+# `neg' is a subtract and `mvn' is a NOT, and both are emitted x-form:
+#
+#	-INT_MIN is 2^31, which does not fit -- so it came out POSITIVE.
+#	-u on an UNSIGNED is wrong for EVERY nonzero value, not just an edge
+#	   case: the operand is zero-extended and `neg' sets all 64 top bits.
+#	~u on an UNSIGNED is likewise wrong for every value.
+#	~i on a SIGNED int is already exactly right, and is the negative
+#	   control below -- bits 63..32 all equal bit 31, and flipping every
+#	   bit preserves that.
+#
+# Each case computes its expected value with an operator that WAS covered, so
+# the answer is derived by the port rather than transcribed.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- and the unary operators, which the first version of the list missed"
+
+t 'unary minus on unsigned equals 0 minus it' '1' <<'EOF'
+f() {
+	register unsigned u, v;
+	u = 1;
+	u = -u;
+	v = 0;
+	v = v - 1;		/* MINUS is covered; UNARY MINUS was not */
+	return (u == v);
+}
+EOF
+
+t 'negating INT_MIN gives INT_MIN back' '1' <<'EOF'
+f() {
+	register i, k;
+	int a;
+	a = 2147483647;
+	i = 0 - a - 1;		/* INT_MIN, by a covered operator */
+	k = i;
+	i = -i;
+	return (i == k);
+}
+EOF
+
+t 'complement on unsigned equals -1 minus it' '1' <<'EOF'
+f() {
+	register unsigned u, v;
+	u = 15;
+	v = 0;
+	v = v - 1 - 15;		/* ~x == -x-1 */
+	u = ~u;
+	return (u == v);
+}
+EOF
+
+# ---------------------------------------------------------------------------
+# A FOURTH ONE, AND IT IS NOT IN THE BACK END AT ALL.  optim.c's sconvert()
+# deleted a conversion that changes only signedness and painted the new type
+# onto the operand -- free on a VAX, where a register was exactly as wide as an
+# int.  Here the back end holds an int sign-extended and an unsigned int
+# zero-extended, so the paint left the register carrying the SOURCE type's
+# extension under the destination type's name, and an x-form `cmp' saw two
+# different 64-bit values.  An explicit cast did not help: the cast is what was
+# being deleted.  PATCHES.md has it; this is the third fault in those same
+# seven lines, which that file predicted.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- a signedness change is a conversion, not a repaint"
+
+t 'unsigned and int holding the same bits compare equal' '1' <<'EOF'
+f() {
+	register unsigned u;
+	register int i;
+	u = 0; u = u - 1;	/* 0xffffffff, zero-extended  */
+	i = 0; i = i - 1;	/* -1,         sign-extended  */
+	return (u == i);	/* C converts i to unsigned   */
+}
+EOF
+
+t 'an explicit cast between int and unsigned is not a no-op' '1' <<'EOF'
+f() {
+	register unsigned u;
+	register int i;
+	u = 0; u = u - 1;
+	i = 0; i = i - 1;
+	if (u != (unsigned)i) return (0);
+	if ((int)u != i) return (0);
+	return (1);
+}
+EOF
+
+# ---------------------------------------------------------------------------
+# The negative controls for both fixes, and they have to be read off the
+# ASSEMBLY rather than the answer: a redundant extension gives the right value,
+# so a behavioural test cannot tell "correct" from "correct and slower".  That
+# distinction is the whole reason COMPL is guarded on tyunsigned() instead of
+# being added to the operator list, and the reason `& | ^ >>' are left alone.
+#
+# Each function is small enough that the only extension it can contain is the
+# one under test.  A signed int extends with `sxtw' and an unsigned one with
+# `mov w,w', so the pattern has to match both -- matching only `mov w' scores a
+# signed `neg' as zero and passes while the bug is present.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- and no extension where none is needed (read off the assembly)"
+
+# tasm <name> <extended-regexp> <want-count> ; program text on stdin
+tasm() {
+	name=$1 pat=$2 want=$3
+	cat > "$TMP/a.c"
+	if ! "$V8CCOM" "$TMP/a.c" "$TMP/a.s" > "$TMP/cc.log" 2>&1; then
+		fail=$((fail+1)); FAILED="$FAILED $name(compile)"
+		echo "FAIL $name: v8ccom failed"
+		sed 's/^/    /' "$TMP/cc.log" | head -3
+		return
+	fi
+	got=$(grep -cE "$pat" "$TMP/a.s")
+	if [ "$got" = "$want" ]; then
+		pass=$((pass+1))
+	else
+		fail=$((fail+1)); FAILED="$FAILED $name(count)"
+		echo "FAIL $name: want $want line(s) matching [$pat], got $got"
+		sed 's/^/    /' "$TMP/a.s"
+	fi
+}
+
+EXT='sxtw|mov[[:space:]]+w'
+
+tasm 'signed ~ needs no extension'        "$EXT" 0 <<'EOF'
+sc(a) { return (~a); }
+EOF
+
+tasm 'unsigned ~ gets exactly one'        "$EXT" 1 <<'EOF'
+unsigned uc(a) unsigned a; { return (~a); }
+EOF
+
+tasm 'signed neg gets one'                "$EXT" 1 <<'EOF'
+sn(a) { return (-a); }
+EOF
+
+tasm 'unsigned neg gets one'              "$EXT" 1 <<'EOF'
+unsigned un(a) unsigned a; { return (-a); }
+EOF
+
+tasm 'and needs none'                     "$EXT" 0 <<'EOF'
+sa(a,b) { return (a & b); }
+EOF
+
+tasm 'right shift needs none'             "$EXT" 0 <<'EOF'
+sr(a,b) { return (a >> b); }
+EOF
+
+tasm 'int -> unsigned gets one'           "$EXT" 1 <<'EOF'
+unsigned ui(a) int a; { return ((unsigned)a); }
+EOF
+
+tasm 'unsigned -> int gets one'           "$EXT" 1 <<'EOF'
+iu(a) unsigned a; { return ((int)a); }
+EOF
+
+# The claim sconvert()'s comment makes about the cost of keeping the CONV: at
+# register width the two types have identical representation, arm64_widen()
+# emits nothing for 8 bytes, and so long <-> unsigned long must still be free.
+tasm 'long <-> unsigned long stays free'  "$EXT" 0 <<'EOF'
+unsigned long ul(a) long a; { return ((unsigned long)a); }
+EOF
+
 echo
 echo "v8ccom: $pass passed, $fail failed"
 [ -n "$FAILED" ] && echo "failing:$FAILED"

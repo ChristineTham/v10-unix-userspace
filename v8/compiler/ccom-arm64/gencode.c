@@ -390,6 +390,28 @@ arm64_widen(t, r)
  * and so are DIV and MOD; PLUS, MINUS, MUL and LS are not.  arm64_widen() is
  * the same helper the foreign-call seam uses and is a no-op for 8-byte types
  * and for pointers, so the guard is on the operator alone.
+ *
+ * THE FIRST VERSION OF THIS LIST CONSIDERED ONLY THE BINARY OPERATORS, and the
+ * two unary ones are the same fault:
+ *
+ *	UNARY MINUS emits `neg', which is `sub xzr, x'.  For a signed int the
+ *	only operand that overflows is INT_MIN, whose negation is 2^31 -- so
+ *	-INT_MIN came out POSITIVE.  For an UNSIGNED int it is worse than an
+ *	edge case: the operand is zero-extended, `neg' sets all 64 top bits,
+ *	and the result is wrong for EVERY nonzero value.
+ *
+ *	COMPL emits `mvn'.  On a sign-extended operand this is exactly right
+ *	and needs nothing -- bits 63..32 all equal bit 31, and flipping every
+ *	bit preserves that.  On a ZERO-extended one it sets the top half to
+ *	ones where zero is required, so unsigned is wrong for every value.
+ *
+ * That asymmetry is why COMPL is guarded on tyunsigned() rather than added to
+ * the list above: a signed `~' is already correct and an unconditional sxtw
+ * would be dead weight.  tests/v8ccom carries a negative control for it.
+ *
+ * Both hid the same way the checksum did.  `~mask' is almost always consumed
+ * by an AND against a zero-extended value, which discards the wrong top half
+ * and restores the right answer; only a comparison or a divide reads it whole.
  */
 static void
 arm64_trunc(op, t, r)
@@ -399,7 +421,13 @@ arm64_trunc(op, t, r)
 {
 	switch (op) {
 	case PLUS: case MINUS: case MUL: case LS:
+	case UNARY MINUS:
 		arm64_widen(t, r);
+		break;
+
+	case COMPL:
+		if (tyunsigned(t))
+			arm64_widen(t, r);
 		break;
 	}
 }
@@ -1182,11 +1210,13 @@ gen(p, want)
 			return (l);
 		}
 		printx("\tneg\t%s, %s\n", xreg(l.reg), xreg(l.reg));
+		arm64_trunc(p->in.op, p->in.type, l.reg);
 		return (l);
 
 	case COMPL:
 		l = gen(p->in.left, WVALUE);
 		printx("\tmvn\t%s, %s\n", xreg(l.reg), xreg(l.reg));
+		arm64_trunc(p->in.op, p->in.type, l.reg);
 		return (l);
 
 	case CONV: {

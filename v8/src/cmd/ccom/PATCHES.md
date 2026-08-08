@@ -8,11 +8,11 @@ source changes now, one unguarded and two behind target macros — everything fr
 
 ## Source changes
 
-### `common/optim.c`, in `sconvert()`: two guarded changes
+### `common/optim.c`, in `sconvert()`: three guarded changes
 
-Both are `# ifdef`-ed on macros that `compiler/ccom-arm64/macdefs.h` defines, so
+All are `# ifdef`-ed on macros that `compiler/ccom-arm64/macdefs.h` defines, so
 a target where the widths and the instruction set agree with the VAX is
-unaffected. The reasoning is in the code, at length, in both places.
+unaffected. The reasoning is in the code, at length, in all three places.
 
 - **`PTRCONVFULL`** — a pointer converted to `int` keeps all its bits. `SZPOINT`
   is 64 and `SZINT` is 32; on the VAX they were equal. Truncating broke
@@ -25,10 +25,33 @@ unaffected. The reasoning is in the code, at length, in both places.
   to pick `udiv`/`sdiv` and `lsr`/`asr`. Found through `printf("%lx")` of a
   negative long. PLAN.md §4g has the full account.
 
-Worth keeping in view: these are the same seven lines of `sconvert()`, and both
-faults have the same shape — a conversion that is a no-op **on the result** is
-not necessarily a no-op on what produces it. A third change here should be
-suspected of being a fourth.
+- **`SIGNCONVKEEP`, second site** — and it is the *value*, not the instruction.
+  The back end holds every sub-register type extended per its own signedness:
+  an `int` sign-extended, an `unsigned int` zero-extended, compared with an
+  x-form `cmp`. So `int → unsigned` is a real `mov w,w` and `unsigned → int` a
+  real `sxtw`, and deleting the CONV leaves the register carrying the *source*
+  type's extension under the destination type's name. Two values that are both
+  `0xffffffff` compared unequal, and **an explicit `(unsigned)` cast did not
+  help, because the cast is exactly what was being deleted.**
+
+  It sits at the `t == lt` jump rather than at the `paint:` label where the
+  other one is, and that placement is the whole of its correctness. The label
+  is also reached by the narrowing fall-through, where the destination type is
+  painted onto a memory reference and the *load* does the extension — already
+  right, and returning early there would stack a CONV on a tree `adjust()` may
+  have rewritten, converting twice. The representation fault exists only where
+  the widths already agree.
+
+**THE FILE SAID TO EXPECT THIS.** The paragraph below used to end "a third
+change here should be suspected of being a fourth", and the third change is the
+same shape a third time — a conversion that is a no-op **on the result** is not
+necessarily a no-op on what produces it, nor on how the result is *held*. The
+prediction was right and the count is now three; treat a fourth the same way.
+
+Worth keeping in view: these are the same seven lines of `sconvert()`. What
+makes them a repeat offender is that the routine's own header says "the
+unsigned-ness is ignored" — true on a machine where a register is exactly as
+wide as an `int`, and the single assumption all three faults inherit.
 
 ---
 

@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (~1215 tests)
+make test             # all 17 suites (~1230 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -646,10 +646,25 @@ Two things generalise:
   is stored back through `str w` and re-narrowed by the store, so only
   `register` exposes it — measured: `register i` wrong, auto/global/struct
   member all right. That pair is why 1187 cases had not reached it.
-- **Only `+`, `-`, `*` and `<<` need it.** `&`, `|`, `^`, `>>`, `/` and `%` of
-  correctly-extended operands are correctly extended already, and
-  `tests/v8ccom` has a negative control asserting they still are *without* the
-  extra instruction. Same discipline as `SIGNCONVKEEP`.
+- **Only `+`, `-`, `*` and `<<` need it** *among the binary operators*. `&`,
+  `|`, `^`, `>>`, `/` and `%` of correctly-extended operands are correctly
+  extended already, and `tests/v8ccom` has a negative control asserting they
+  still are *without* the extra instruction. Same discipline as `SIGNCONVKEEP`.
+
+**AND THAT LIST WAS THE BINARY OPERATORS ONLY, because the checksum happened to
+be a `+`.** Sweeping it — the rule for a repeating class — found the two unary
+ones, and for unsigned they are not edge cases at all:
+
+| | signed | unsigned |
+|---|---|---|
+| `-x` (`neg`) | wrong for `INT_MIN` only, which comes out **positive** | wrong for **every nonzero value** |
+| `~x` (`mvn`) | **already correct** — bits 63..32 all equal bit 31, and flipping every bit preserves that | wrong for **every value** |
+
+That asymmetry is why `COMPL` is guarded on `tyunsigned()` rather than added to
+the list: an unconditional `sxtw` on a signed `~` is dead weight. Both hid the
+way the checksum did — `~mask` is nearly always consumed by an `&` against a
+zero-extended value, which discards the wrong top half and restores the right
+answer. Only a comparison or a divide reads it whole.
 
 **And fixing it broke a test that had been calibrated against it.**
 `t 'long arithmetic'` expected `100000000000` from
@@ -671,7 +686,37 @@ the type is an *instruction selector*, not a description. Guarded under
 `SIGNCONVKEEP`; PLAN.md §4g has the account. Two rules follow: a back-end
 operator whose instruction depends on `tyunsigned()` must be added to that
 guard, and `sconvert()` must not be "simplified" — the same seven lines have
-now produced two faults of this shape, `PTRCONVFULL` being the other.
+now produced **three** faults of this shape, `PTRCONVFULL` being the second.
+
+**THE THIRD IS THE VALUE RATHER THAN THE INSTRUCTION, AND PATCHES.md PREDICTED
+IT IN SO MANY WORDS** — "a third change here should be suspected of being a
+fourth". The sentence above says a signedness change "changes nothing about the
+result", and that is true of the 32 bits and false of the register holding
+them: this back end keeps an `int` sign-extended and an `unsigned int`
+zero-extended, and compares with an x-form `cmp`. So the paint left the
+register carrying the *source* type's extension under the destination type's
+name, and two values that were both `0xffffffff` compared unequal. **An
+explicit `(unsigned)` cast did not help, because the cast is exactly what was
+being deleted** — which is the tell, and the reason it reads as a comparison
+bug rather than a conversion one.
+
+Three things to carry:
+
+- **Placement is the whole of the fix.** The new guard sits at the `t == lt`
+  jump, not at the `paint:` label where the instruction-selection one is. The
+  label is also reached by the narrowing fall-through, where the type is
+  painted onto a memory reference and the *load* does the extension — already
+  right, and returning early there would stack a CONV on a tree `adjust()` may
+  have rewritten, converting twice. The representation fault exists only where
+  the widths already agree.
+- **It costs nothing above four bytes**, because `arm64_widen()` emits no
+  instruction for an 8-byte type — `tests/v8ccom` asserts that rather than
+  asserting the comment.
+- **A redundant extension is invisible to a behavioural test**, since the
+  answer stays right. Nine of the new cases therefore count instructions in
+  `cc -S` output, and the mutation that proves them is the *inverse* one: make
+  `COMPL` widen unconditionally and watch the negative control go red while
+  every value-checking case stays green.
 
 The diagnostic is the reusable part, because the symptom is narrow enough to
 mislead. It needs an unsigned operand **with its top bit set**, so

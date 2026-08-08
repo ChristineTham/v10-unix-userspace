@@ -264,7 +264,59 @@ merge:
 		p->fn.csiz = PTRTYPE;
 	}
 # endif
-	if( t == lt ) goto paint;
+	if( t == lt )
+	{
+# ifdef SIGNCONVKEEP
+		/*
+		 * PORT: at sub-register width a signedness change is a real
+		 * conversion, not a paint.
+		 *
+		 * The guard further down keeps a signedness change because `/',
+		 * `%' and `>>' READ the type to pick an instruction.  This one
+		 * is the other reason, and it is about the VALUE: the back end
+		 * holds every type narrower than a register extended according
+		 * to its own signedness -- an int sign-extended, an unsigned
+		 * int zero-extended -- and compares with an x-form `cmp'.  So
+		 * int -> unsigned is `mov w,w' and unsigned -> int is `sxtw',
+		 * and deleting the CONV leaves the register holding the SOURCE
+		 * type's extension under the destination type's name.
+		 *
+		 *	register unsigned us;  us = 0; us = us - 1;
+		 *	register int      i;   i  = 0; i  = i  - 1;
+		 *	us == i			-- false
+		 *
+		 * Both are 0xffffffff and C says compare them as unsigned, but
+		 * one register held 0x00000000ffffffff and the other
+		 * 0xffffffffffffffff.  An explicit `(unsigned)i' did not help,
+		 * because the cast is precisely what was being deleted.
+		 *
+		 * On the VAX the paint was free: a register was exactly as wide
+		 * as an int, so the two spellings had identical bits.  That is
+		 * the same assumption NOLONG made, and it fails here for the
+		 * same reason.
+		 *
+		 * WHY HERE AND NOT AT `paint:' WITH THE OTHER GUARD.  The label
+		 * is reached two ways, and only this one is broken.  The
+		 * fall-through at the bottom is a NARROWING conversion, where
+		 * the destination type is painted onto a memory reference and
+		 * the load itself then does the extension -- already right, and
+		 * returning p there would put a CONV on top of a tree adjust()
+		 * may have already rewritten, converting twice.  The
+		 * representation fault exists only where the widths agree.
+		 *
+		 * ICON is excluded because a constant is converted by value,
+		 * through ccast() below and in trees.c, which mask correctly.
+		 *
+		 * Costs nothing above 4 bytes: arm64_widen() emits no
+		 * instruction for an 8-byte type, so long <-> unsigned long
+		 * generates what the paint did.
+		 */
+		if( l->tn.op != ICON
+		 && ISUNSIGNED(l->tn.type) != ISUNSIGNED(p->tn.type) )
+			return( p );
+# endif
+		goto paint;
+	}
 	if( ISPTR(lt) || ISARY(lt) ) return(p);
 
 	if( o == ICON )

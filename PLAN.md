@@ -615,6 +615,81 @@ undefined all eight fail, returning `-3`, `-4`, `-5` and `0` respectively. The
 `%ld` case is there so that a "fix" which merely forced the conversion unsigned
 would be caught — `-1L` must still print as `-1`.
 
+### And the same routine had a SECOND signedness fault, of a different kind
+
+Found by sweeping after §4h's `int`-truncation bug, not by a program failing.
+The section above says a signedness change "is a no-op **on the result**", and
+that is true of the 32 bits and false of the 64-bit register holding them. The
+back end keeps every sub-register type extended per its own signedness — an
+`int` sign-extended, an `unsigned int` zero-extended — and compares with an
+x-form `cmp`. So `int → unsigned` is a real `mov w,w` and `unsigned → int` a
+real `sxtw`, and the paint left the register carrying the source type's
+extension under the destination type's name:
+
+```c
+register unsigned u;  u = 0; u = u - 1;   /* 0x00000000ffffffff */
+register int      i;  i = 0; i = i - 1;   /* 0xffffffffffffffff */
+u == i                                    /* false; C says compare as unsigned */
+```
+
+**An explicit `(unsigned)i` did not fix it, because the cast is precisely what
+`sconvert()` was deleting.** That is the tell — it presents as a broken
+comparison rather than a broken conversion, and no amount of casting helps.
+
+Guarded under `SIGNCONVKEEP` too, but **at the `t == lt` jump, not at the
+`paint:` label** — and that placement is the whole of its correctness, inverting
+the note above. The label is also reached by the narrowing fall-through, and
+there the destination type is painted onto a memory reference and the *load*
+does the extension: already right, and returning early would stack a CONV on a
+tree `adjust()` may have rewritten, converting twice. The representation fault
+exists only where the widths already agree. `ICON` is excluded because a
+constant is converted by value through `ccast()`, which masks correctly.
+
+Free above four bytes, for the same reason as before: `arm64_widen()` has no
+case for an 8-byte type, so `long ↔ unsigned long` still emits nothing.
+
+This is the **third** fault in those seven lines after `PTRCONVFULL` and
+`SIGNCONVKEEP`'s first site, and `src/cmd/ccom/PATCHES.md` had written down that
+it should be expected — *"a third change here should be suspected of being a
+fourth"*. All three inherit one assumption from the routine's own header: that a
+register is exactly as wide as an `int`.
+
+## 4h. An `int` that never wrapped, and the two unary operators — CLOSED
+
+`arm64_trunc()` in `compiler/ccom-arm64/gencode.c`; the account of the original
+find (dumpdir's `checksum()`, and every dump tape unreadable by the two programs
+written to read it) is in CLAUDE.md. What belongs here is the **sweep**, because
+the first version of the operator list was the binary operators only:
+
+| | signed | unsigned |
+|---|---|---|
+| `-x` (`neg`) | wrong for `INT_MIN` alone, which comes out **positive** | wrong for **every nonzero value** — the operand is zero-extended and `neg` sets all 64 top bits |
+| `~x` (`mvn`) | **already correct**, and left alone: bits 63..32 all equal bit 31, and flipping every bit preserves that | wrong for **every value** |
+
+Both hid the way the checksum did: `~mask` is nearly always consumed by an `&`
+against a zero-extended value, which discards the wrong top half and restores
+the right answer. Only a comparison or a divide reads it whole.
+
+`tests/v8ccom` is 106 cases. Nine of the new ones **count instructions in
+`cc -S` output** rather than checking a value, because a redundant extension
+still gives the right answer — so the guard that `COMPL` is conditional on
+`tyunsigned()` cannot be asserted behaviourally at all. Four mutations, each
+firing on exactly its own cases: dropping `UNARY MINUS` (4 red), dropping the
+`COMPL` arm (2), disabling the pass-1 guard (4), and the inverse — making
+`COMPL` widen unconditionally (1 red, and it is the negative control).
+
+**Where the sweep stopped, and what it cleared.** The question is "every place a
+register's contents can disagree with the type painted on it", and the rest of
+that list was checked and is sound: loads pick `ldrsw`/`ldr w` by type; the
+foreign-call seam is handled at both ends by `arm64_widen`/`arm64_extendarg`;
+`INCR`/`DECR` and the compound-assignment path were already in; a narrow
+*automatic* is re-narrowed by its own `str w`; constants go through `ccast()`,
+which masks — measured, `(unsigned)-1` was already right. **Bitfields were the
+one real candidate left and they are correct**, at partial and full width in
+both signednesses (`unsigned:20`, `int:20`, `unsigned:32`, `int:32` all agree
+with clang). `QUEST`/`COLON` cannot be reached — gencode's own header notes they
+are gone before pass 2 runs.
+
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
 Every translation unit of `cpp` and `ccom` compiles with `v8cc` and links
@@ -1880,7 +1955,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-`make test` runs everything — seventeen suites, about 1215 cases.
+`make test` runs everything — seventeen suites, about 1230 cases.
 
 ### What actually works today
 
