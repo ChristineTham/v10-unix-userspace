@@ -868,7 +868,7 @@ ck 'Mk cleans up after itself' '' \
 printf 'delta\nalpha\ncharlie\n' > "$TMP/mkin"
 mkpath() { grep -E "/$1\$" "$TMP/mk.before" | head -1; }
 for c in "cat $TMP/mkin" "rev $TMP/mkin" "sort $TMP/mkin" "sum $TMP/mkin" \
-         "wc -l $TMP/mkin" "who"; do
+         "wc -l $TMP/mkin"; do
 	n=${c%% *}; args=${c#$n}
 	p=$(mkpath "$n")
 	if [ -z "$p" ]; then fail=$((fail+1)); echo "FAIL cannot locate $n"; continue; fi
@@ -877,6 +877,41 @@ for c in "cat $TMP/mkin" "rev $TMP/mkin" "sort $TMP/mkin" "sum $TMP/mkin" \
 	if [ "$a" = "$b" ] && [ -n "$a" ]; then pass=$((pass+1))
 	else fail=$((fail+1)); echo "FAIL Mk-built $p differs"; echo "  ours [$a]"; echo "  Mk   [$b]"; fi
 done
+
+# WHO IS THE GROVELER, AND IT MUST *NOT* AGREE.  This is the third instance of
+# the distinction PLAN.md draws for `load' and `w': upstream's build description
+# knows nothing about libkmemu, which this port invented, so what rung 5 builds
+# is a real program that cannot answer.  `w' says `No mem'; a Mk-built `who'
+# says `cannot open /etc/utmp'.
+#
+# The mechanism is worth naming because it is a decision rather than a gap.
+# libkmemu manufactures /etc/utmp when a reader opens it, and it reaches the
+# link through the Makefile's groveler rules -- NOT through the cc driver's
+# default library list, which is deliberate: putting it there would make every
+# V8 binary import libSystem for facts it never asks about.  `nm -u' on the
+# Mk-built who is empty where ours has _setutxent/_getutxent/_endutxent.
+#
+# AND THIS CASE STARTED LIFE ASSERTING THE OPPOSITE, passed here, and failed on
+# a GitHub runner -- correctly.  /etc/utmp is created lazily by the first who
+# that runs, so on a machine where any earlier run had made one, `cp -a' carried
+# it into the copy and the Mk-built who read a file libkmemu had left behind.
+# On a fresh runner there was none.  Green locally was an artifact of a stale
+# file, and the runner was right; hence the rm below, so the case does not
+# depend on what ran before it.
+rm -f "$RFS/etc/utmp"
+whop=$(mkpath who)
+ck 'a Mk-built groveler runs and reports that it cannot answer' \
+   'who: cannot open /etc/utmp' \
+   "$(V8ROOT="$RFS" "$RFS/$whop" </dev/null 2>&1)"
+# ...while the one our rules built does answer, on the same host, seconds apart.
+# The pair is the assertion: a difference in the BUILD DESCRIPTION, not in the
+# machine, and not in the compiler.
+ourwho=$(V8ROOT="$V8ROOT" "$V8ROOT/$whop" </dev/null 2>&1)
+case $ourwho in
+*"cannot open"*|"") fail=$((fail+1))
+	echo "FAIL our own who cannot answer either -- libkmemu is not linked" ;;
+*) pass=$((pass+1)) ;;
+esac
 
 # What it reaches, named rather than merely counted as zero above.  strip is on
 # this list because Mk's install() is `strip $1 && cp $1 $2': without it the &&

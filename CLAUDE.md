@@ -350,6 +350,17 @@ which this port invented, so what rung 5 builds is a real program that cannot
 answer — `w` says `No mem`. Rung 5 is a claim about the build *description*
 being Bell Labs', not about the binary being the installed one.
 
+**`who` through `Admin/Mk` is the third instance and the cleanest**, because
+nothing about the description is deficient: `cc -Od2 -o who who.c` is complete
+and correct, and the binary says `who: cannot open /etc/utmp`. `libkmemu`
+reaches the link through the Makefile's groveler rules and **deliberately not
+through the `cc` driver's default library list** — putting it there would make
+every V8 binary import `libSystem` for facts it never asks about, which is the
+same reasoning `noprocfs.c` records. `nm -u` on the Mk-built `who` is empty
+where ours has `_setutxent`/`_getutxent`/`_endutxent`. `tests/jail` asserts the
+pair — one binary answers and the other says it cannot, on the same host,
+seconds apart — so the difference is visibly in the build description.
+
 **FOUR OF THE SEVEN "BLOCKERS" WERE WRONG, AND TWO WERE BUGS IN THE SWEEP.**
 The table that stood here named a blocker per program; re-measured, most of it
 was false, and the errors have one shape — **something described as *generated*
@@ -979,6 +990,19 @@ not testable until it is installed.
   with a diff that reads like `who` printing the user twice. Do not treat "green
   in CI" as evidence the assumption is gone; a runner is a *machine*, with its
   own peculiarities, not a neutral referee.
+
+  **And a THIRD shape, which is not a property of the machine but of what ran
+  before it.** `libkmemu` manufactures `/etc/utmp` lazily, when the first reader
+  opens it — so after any earlier `who`, `rootfs/etc/utmp` is a real file that
+  `cp -a` carries into a copy. A new `tests/jail` case built `who` with
+  `Admin/Mk` and compared it against ours; it passed here and failed on a
+  runner, and **the runner was right**: the Mk-built `who` has no `libkmemu` at
+  all, and what it had been reading was a file an earlier run left behind. A
+  fresh runner is the only machine with no history, which makes it the only one
+  that can see this. The fix is not to relax the case but to *remove the
+  artefact* — the suite now deletes the file first, and asserts the honest
+  answer (`who: cannot open /etc/utmp`) instead of the flattering one. Ask of
+  any green suite: **would this still pass on a tree that has never been used?**
 
   **All sixteen suites were swept for this after the third instance, and the
   finding worth keeping is where the bugs were: three of five were in blocks

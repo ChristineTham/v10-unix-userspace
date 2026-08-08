@@ -314,6 +314,23 @@ Three things it took, each small and none guessable:
   PROVENANCE, so the tables the Makefile reads at build time and the ones `dest`
   reads at run time are one copy and cannot drift.
 
+**`who` is the fiftieth program and it does NOT match ours, which is correct.**
+Third instance of the `load`/`w` distinction and the cleanest: the build
+description is complete -- `cc -Od2 -o who who.c` -- and the binary it produces
+says `who: cannot open /etc/utmp`, because `libkmemu` reaches the link through
+this port's own groveler rules and deliberately not through the driver's default
+library list. `nm -u` on it is empty where ours has the three `utmpx` imports.
+`tests/jail` asserts the pair rather than papering over it.
+
+That case first asserted the opposite, passed locally, and failed on a GitHub
+runner -- **and the runner was right.** `/etc/utmp` is manufactured lazily by
+the first reader, so on a machine where any earlier run had made one, `cp -a`
+carried it into the copy and the Mk-built `who` read a file `libkmemu` had left
+behind. A fresh runner is the only machine with no history. It is a third shape
+of the host-property trap, recorded in CLAUDE.md: not a property of the machine
+but of what ran before it, and the question to ask of any green suite is
+*would this still pass on a tree that has never been used?*
+
 And it produced a cross-check nothing else could: `Admin/dest` and
 `$(call v8dest,...)` are **two independent derivations of the same answer**, in
 two languages at two times, and `tests/jail` compares them for all fifty. They
