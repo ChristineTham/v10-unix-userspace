@@ -271,3 +271,32 @@ builds the 254 program. None of the three may join `$(V8BIN)`, which
   `/dev` has no `tty`, so `rootpath()` falls through to the Mac's; with no
   controlling terminal `dump` aborts. Only reachable from the tape-error and
   volume-change arms, which a file-as-tape never takes.
+
+## `rawname()` returns 0, and neither caller checked
+
+`dumpmain.c:239` returns `0` for a special-file name containing no `/`, and both
+users took it at face value:
+
+- `dumpoptr.c:327` — `strncmp(rawname(dt->fs_spec), key, keylength)`, run for
+  every `/etc/fstab` entry on every invocation.
+- `dumpmain.c:143` — `disk = rawname(dt->fs_spec)`, after which `msg("Dumping
+  %s")` and `open(disk)` both read address 0.
+
+On the VAX that read the `0207` there, which matched no key byte, so the entry
+simply did not match. The guards say that directly. Not reachable through the
+`/etc/fstab` this port installs — twelve `/dev/raNN` lines — but nothing in dump
+enforces it, and the shim's manufactured fstab does carry slash-less specs
+(`devfs`, `map auto_home`) which survive only because `getfstab()` keeps `rw`/`ro`
+entries and `kmemu_fstab()` types those two `xx`. Two accidents, two files apart.
+
+**`fsck` has its own `rawname()` and it answers the question differently:**
+`fsck.c:466` returns `cp` unchanged when there is no `/` to rewrite around. That
+is the better answer and it is upstream's, in the same source tree — but only
+the null is guarded here, because changing dump's `rawname()` to match would
+alter what `dumpmain.c` stores in the ordinary case.
+
+One trap in doing it: `rawname()` **mutates its argument**, `*dp = 0` then
+`*dp = '/'`, so it is safe to call twice only by accident. `dumpmain.c` keeps
+the result in a local rather than calling it once per operand.
+
+Part of the whole-tree address-0 sweep; PLAN.md §4i.

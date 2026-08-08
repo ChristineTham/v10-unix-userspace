@@ -15,7 +15,22 @@ main(argc, argv)
 	register char *cp;
 
 	argc--, argv++;
-	if (argv[0][0] == '-') {
+	/*
+	 * PORT: argc, which Berkeley left out of this test.
+	 *
+	 * With no arguments at all -- `unexpand < file', the primary
+	 * documented use of the program -- argc is 0 and argv[0] is the NULL
+	 * that terminates the vector.  On the VAX that read the 0207 at
+	 * address 0, which is not '-', so control fell straight through to the
+	 * stdin path and the program worked.  macOS leaves page 0 unmapped, so
+	 * bare `unexpand' SIGSEGVs.
+	 *
+	 * expand.c:20, the file beside it, has the guard -- `while (argc > 0
+	 * && argv[0][0] == '-')' -- so this is Berkeley's omission in one of a
+	 * matched pair rather than anything about either machine.  The added
+	 * test reproduces the VAX's answer exactly: fall through to stdin.
+	 */
+	if (argc > 0 && argv[0][0] == '-') {
 		if (strcmp(argv[0], "-a") != 0) {
 			fprintf(stderr, "usage: unexpand [ -a ] file ...\n");
 			exit(1);

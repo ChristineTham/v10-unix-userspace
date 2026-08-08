@@ -63,8 +63,20 @@ char	**argv;
 				strcpy(fontfile, &argv[0][2]);
 			} else {
 				argv++; argc--;
-				strcpy(termtab, argv[0]);
-				strcpy(fontfile, argv[0]);
+				/*
+				 * PORT: -F as the last argument advances onto
+				 * the vector's NULL and strcpy reads it.  The
+				 * VAX copied bytes of its own a.out header
+				 * from address 0 until it met a zero, so
+				 * termtab became garbage and troff later died
+				 * failing to open it.  "" reproduces that
+				 * observable answer -- a name that cannot be
+				 * opened -- which is the same choice quot's
+				 * qcmp makes.  Both binaries carry this:
+				 * n1.o is in NROFF_NAMES as well as TROFF.
+				 */
+				strcpy(termtab, argv[0] == 0? "": argv[0]);
+				strcpy(fontfile, argv[0] == 0? "": argv[0]);
 			}
 			continue;
 		case 0:

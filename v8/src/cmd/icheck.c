@@ -82,7 +82,21 @@ char *argv[];
 
 		case 'b':
 			for(i=0; i<NB; i++) {
-				n = atol(argv[1]);
+				/* PORT: argv[1] is the NULL terminating the
+				 * vector once -b's last number has been
+				 * consumed, and atol() dereferences it at
+				 * once.  On the VAX address 0 held a byte of
+				 * the text segment, not a digit, so atol
+				 * returned 0 and this loop broke; here
+				 * `icheck -b 5' SIGSEGVs before opening
+				 * anything.
+				 *
+				 * THIS LOOP IS BYTE FOR BYTE ncheck.c's, AND
+				 * WAS MISSED WHEN THAT ONE WAS FIXED.  Three
+				 * copies exist -- ncheck -i, icheck -b,
+				 * dcheck -i -- and only the first was swept.
+				 * See ncheck.PORTING.md. */
+				n = argv[1] == 0? 0L: atol(argv[1]);
 				if(n == 0)
 					break;
 				blist[i] = n;

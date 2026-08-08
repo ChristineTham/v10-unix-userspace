@@ -222,7 +222,33 @@ formatd(name, title)
 		printf("total %ld\n", nkb);
 	formatf(dfp0, dfplast);
 	if (Rflg)
-		for (fp = dfplast; fp >= dfp0; fp--) {
+		/*
+		 * PORT: dfplast - 1, because dfplast is EXCLUSIVE.
+		 *
+		 * getdir() sets *pfplast to the first UNFILLED slot (ls.c:291,
+		 * after the loop), and every other use here agrees -- formatf()
+		 * takes the half-open range, and the free loop nine lines below
+		 * is `fp < dfplast'.  Only this one starts AT it, so the first
+		 * iteration reads one element past the end.
+		 *
+		 * Harmless while that slot is still the calloc'd zero at
+		 * ls.c:259 -- ftype is 0, not 'd', and the first || short
+		 * circuits.  A directory of 20 or more listed entries goes
+		 * through the realloc at ls.c:279 instead, which does not zero,
+		 * and then the slot is uninitialised heap: if its ftype byte
+		 * happens to be 'd' the strcmp on the next line runs on a
+		 * garbage fname.
+		 *
+		 * That is the sed trans[] argument, not a taste one.  On the
+		 * VAX fname was FOUR bytes, and a random 32-bit value in an
+		 * a.out process usually landed in mapped memory, so the strcmp
+		 * read rubbish and moved on.  Here it is eight bytes into a
+		 * 64-bit space, where a random value is almost never mapped.
+		 * Measured: ten `ls -R' runs over a 33-entry tree did not
+		 * fault, so this is a latent read rather than a reproduced
+		 * crash -- the byte was not 'd'.
+		 */
+		for (fp = dfplast - 1; fp >= dfp0; fp--) {
 			if (fp->ftype != 'd' ||
 			    (fp->flink=='L' && (fp->fflags&ISARG)==0) ||
 			    !strcmp(fp->fname, ".") ||

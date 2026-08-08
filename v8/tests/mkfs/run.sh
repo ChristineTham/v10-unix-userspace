@@ -875,6 +875,33 @@ check "ncheck -s with no -i list prints what a plain run prints" \
 "$QUOT" "$NIMG" >/dev/null 2>&1; qrc=$?
 check "quot's default invocation exits, rather than faulting in qcmp" "0" "$qrc"
 
+# AND THE TWO COPIES OF ncheck's LOOP THAT THE FIX ABOVE MISSED.  `n =
+# atol(argv[1])' inside an option's number loop appears THREE times in this
+# tree -- ncheck -i, icheck -b, dcheck -i -- byte for byte the same, and only
+# ncheck was swept when it was found.  Both siblings SIGSEGV'd on the same
+# shape of command line until the whole-tree sweep went looking.
+"$ICHECK" -b 5 >/dev/null 2>&1; ibrc=$?
+check "icheck -b with its number last exits, rather than faulting on atol(0)" \
+    "0" "$ibrc"
+"$DCHECK" -i 5 >/dev/null 2>&1; dirc=$?
+check "dcheck -i with its number last exits, rather than faulting on atol(0)" \
+    "0" "$dirc"
+# ...AND THE OPTIONS MUST STILL WORK, which is the half an exit-status case
+# cannot see: a bare `return' in front of the deref would stop the crash and
+# also stop the loop consuming its numbers, and the very next argument -- the
+# image itself -- would be eaten as one.  So assert the image was still read.
+check "icheck -b still consumes its list and then checks the image" "1" \
+    "$("$ICHECK" -b 5 "$NIMG" 2>&1 | grep -c '^files')"
+check "dcheck -i still consumes its list and then checks the image" "1" \
+    "$("$DCHECK" -i 2 "$NIMG" 2>&1 | grep -c 'n\.img:')"
+# and -i 2 genuinely uses the number: inode 2 is the root, so it is named by
+# its own `.' and `..' and once more by the `..' of /sub, which is inode 4.
+# Three entries, and the third is what says the walk is real rather than the
+# first two being echoed back.
+check "dcheck -i 2 reports every reference to the root" \
+    "2 arg; 2/. 2 arg; 2/.. 2 arg; 4/.." \
+    "$("$DCHECK" -i 2 "$NIMG" 2>&1 | sed 1d | tr '\n' ' ' | sq | sed 's/ *$//')"
+
 # --- section 8's question, asked of the reader that fails silently ----------
 # mkfs built without the flag writes a wrong image that every reader accepts.
 # ncheck is the mirror: built without the flag it reads a RIGHT image and

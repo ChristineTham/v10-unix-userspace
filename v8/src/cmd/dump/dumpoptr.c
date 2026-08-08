@@ -317,6 +317,7 @@ struct	fstab	*fstabsearch(key)
 			int	i;
 			int	keylength;
 			char	*rawname();
+			char	*rn;		/* PORT: see below */
 
 	keylength = min(strlen(key), sizeof (dt->fs_file));
 	for (i = 0, dt = fstab; i < nfstab; i++, dt++){
@@ -324,7 +325,29 @@ struct	fstab	*fstabsearch(key)
 			return(dt);
 		if (strncmp(dt->fs_spec, key, keylength) == 0)
 			return(dt);
-		if (strncmp(rawname(dt->fs_spec), key, keylength) == 0)
+		/*
+		 * PORT: rawname() returns 0 for a spec with no '/' in it
+		 * (dumpmain.c:239), and strncmp then dereferences it.  On the
+		 * VAX that read the 0207 at address 0, which matched no key
+		 * byte, so the entry simply did not match -- which is what
+		 * skipping the test does.
+		 *
+		 * UPSTREAM DISAGREES WITH ITSELF HERE AND fsck HAS THE BETTER
+		 * ANSWER.  fsck.c:466 has its own rawname() for the same job,
+		 * and its no-slash arm is `return(cp)' -- the name unchanged,
+		 * because there is nothing to rewrite.  dump's returns 0 and
+		 * leaves both of its callers to notice.  Only the null is
+		 * guarded here; changing dump's rawname() to match fsck's
+		 * would alter what the other caller stores.
+		 *
+		 * Not reachable through the fstab this port installs -- every
+		 * line is /dev/raNN -- but nothing in dump enforces that, and
+		 * the shim's manufactured fstab does carry slash-less specs
+		 * (devfs, map auto_home) which survive only because
+		 * getfstab() keeps rw/ro and kmemu_fstab types those "xx".
+		 */
+		rn = rawname(dt->fs_spec);
+		if (rn != 0 && strncmp(rn, key, keylength) == 0)
 			return(dt);
 
 		if (key[0] != '/'){

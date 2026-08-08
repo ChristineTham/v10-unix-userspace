@@ -283,7 +283,22 @@ char	*argv[];
 			case 't':
 			case 'T':
 				tflag++;
-				if(**++argv == '-' || --argc <= 0)
+				/*
+				 * PORT: the two tests are swapped, and only
+				 * the order changed.
+				 *
+				 * `||' evaluates left to right, so upstream
+				 * dereferenced **++argv BEFORE asking whether
+				 * another argument existed -- and with -t last
+				 * ++argv lands on the vector's NULL.  The VAX
+				 * read 0207 there, which is not '-', so the
+				 * first operand was false, the count test then
+				 * fired and errexit printed "Bad -t option".
+				 * Testing the count first reaches that same
+				 * errexit without the read.  `fsck -t'
+				 * SIGSEGVs otherwise.
+				 */
+				if(--argc <= 0 || **++argv == '-')
 					errexit("Bad -t option\n");
 				/*
 				 * PORT: bounded.  Upstream is

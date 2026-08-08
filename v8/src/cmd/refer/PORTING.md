@@ -201,3 +201,26 @@ control in this shell`, then `sh-3.2$`. `system()` was reaching the host's
 `src/libc/gen/exec.c`. See the comment there, and the guard in
 `tests/libv8c/run.sh` that now checks no variadic libc function is left for the
 host to supply.
+
+## bare `hunt` read `argv[1]` before doing anything
+
+`hunt1.c:40`'s option loop is `while (argv[1][0] == '-')` with no `argc` guard,
+so `hunt` with no arguments at all dereferences the NULL at `argv[1]`. The VAX
+read `0207`, which is not `'-'`, and skipped the loop. Guarded, and
+`todir(argv[1])` below it — the same argument on the same path — gets the `""`
+that reproduces an unopenable index name.
+
+Reached only by invoking `hunt` directly: `lookbib` always appends an index
+path, and the in-process `huntmain` gets `glue3.c`'s synthetic vector.
+
+**Not swept, and the comment in the source says so rather than implying
+otherwise:** the arms *inside* that loop each do `argc--; argv++` and then read
+`argv[1]`, so a dangling `-r`, `-i`, `-l` or `-t` can still advance past the
+terminator — where the guard cannot help, because what sits there is not a NULL.
+The bare invocation is the one that was measured to crash.
+
+This is the second address-0 fault in refer after `refer5.c`'s
+`prefix(".[", lookat())`. Note there are **four** `prefix()` functions in this
+tree — `deliv2.c`, `kaiser.c`, `thash.c`, `what2.c` — and only `deliv2.c`'s is
+built or guarded; the other three belong to `whatabout/`, which the Makefile
+does not compile. Checked, not assumed. PLAN.md §4i.

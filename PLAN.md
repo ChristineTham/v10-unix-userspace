@@ -690,6 +690,77 @@ both signednesses (`unsigned:20`, `int:20`, `unsigned:32`, `int:32` all agree
 with clang). `QUEST`/`COLON` cannot be reached — gencode's own header notes they
 are gone before pass 2 runs.
 
+## 4i. The address-0 sweep — CLOSED, and it found nine crashes
+
+The VAX put the text segment at address 0, so `*(char *)0` returned `0207` (the
+low byte of the a.out magic) instead of trapping. macOS leaves page 0 unmapped.
+Three instances had been found one at a time — `refer`'s `lookat()`, `quot`'s
+`qcmp`, `ncheck`'s `-i` loop — and CLAUDE.md said in so many words that the
+sweep was not done. Doing it properly, by *shape* rather than by program, found
+nine more, every one a measured SIGSEGV on the program's last argument:
+`unexpand` (**with no arguments at all**), `icheck -b`, `dcheck -i`, `fsck -t`,
+`join -o`, `join -j1`, `yacc -o`, bare `hunt`, and `-F` on `nroff` and `troff`.
+
+Three findings are worth more than the fixes.
+
+**The same loop existed three times and only one was swept.** `n =
+atol(argv[1])` inside an option's number loop is byte-for-byte identical in
+`ncheck`, `icheck` and `dcheck`. It was found in `ncheck`, fixed, and written up
+under `ncheck` — so the note was filed by program rather than by shape, and the
+two siblings kept crashing. `icheck.PORTING.md` had audited that very loop for a
+`blist[500]` overrun and stopped one line short of the null.
+
+**The crash is not always in the program.** `yacc -o` faulted in the *shim*:
+with the output file unopenable, `error()` runs `cleantmp()`, whose two
+`unlink()`s name temp files `setup()` had not yet assigned — and `dotlink()` in
+`shim/v8sys/syscall.c` inspects a path before the syscall can answer `EFAULT`,
+against the shim's own rule that a null path is the kernel's to reject
+(`rootpath()` returns one unchanged for exactly that reason). `v8s_link` had the
+same hole one function away, unreached by anything, which is the `v8s_mknod`
+lesson again.
+
+**Two were audited and deliberately left alone**, because a change to `src/` has
+to be forced by the target. `make`'s `meter()` dereferences an unchecked
+`getpwuid()` but returns on `meteron == 0`, which nothing sets; `ls.c:259`'s
+unchecked `calloc` would *write* to page 0, and that faults on a VAX too, so
+there is no answer to restore. `ls.c:225`'s `-R` loop **was** changed — it starts
+at `dfplast`, which is exclusive, and past twenty entries the slot is
+`realloc`'d rather than `calloc`'d — on the `sed trans[]` argument: a garbage
+four-byte `fname` usually landed in mapped memory on a VAX and a garbage
+eight-byte one essentially never does here. Measured honestly: ten `ls -R` runs
+over a 33-entry tree did **not** fault, so it is a latent read, not a
+reproduced crash.
+
+### The same sweep found the port disagreeing with what V8 ran
+
+`strncat` read `s2[n]`. The loop copies the byte and only then notices
+`--n < 0`, overwriting it with the NUL — so the output was always right and only
+the read went past, which is why nothing noticed in five callers that all pass a
+fixed-width unterminated field. Identical in shape to `%.Ns` in this port's
+`doprnt.c`.
+
+What settles it is that **`libc/gen/strncat.s` exists and does not do this**.
+The assembler a VAX actually executed opens `movl 12(ap),r8 / bleq L6` —
+returning without touching `s2` when `n <= 0` — and scans with `locc $0,r8,(r7)`,
+bounded to exactly `n`. The `.C` beside it is the portable reference, calls
+itself "the `standard' for the C-library" in its own header, and disagrees with
+the code shipped next to it. The overread is therefore an artefact of **this
+port substituting the reference for the assembler**, and removing it restores
+V8. `strcatn`, the V7-named twin, has the same body and no `.s`; its comment
+records a deviation rather than a restoration, and that difference in
+justification is the only difference between the two patches.
+
+Diagnostic, needing no guard page: `strncat(buf, (char *)1, 0)` faults on the
+old loop and reads nothing on the new one.
+
+### What the suites gained
+
+`wavea` 104 → 112, `mkfs` 146 → 151, `wavec` 59 → 64, `libv8c` 34 → 36,
+`v8sys` 69 → 71. Every crash case is paired with one asserting the option still
+*works*, because a guard that stops the fault by consuming nothing would pass
+the first and fail the second — mutation-verified in exactly that form, plus the
+four guards reverted individually.
+
 ## 4c. The self-host fixpoint (rung 3) — CLOSED
 
 Every translation unit of `cpp` and `ccom` compiles with `v8cc` and links
@@ -1955,7 +2026,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-`make test` runs everything — seventeen suites, about 1230 cases.
+`make test` runs everything — seventeen suites, about 1250 cases.
 
 ### What actually works today
 

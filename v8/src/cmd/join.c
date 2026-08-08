@@ -57,6 +57,19 @@ char *argv[];
 			break;
 		case 'o':
 			for (no = 0; no < 2*NFLD; no++) {
+				/*
+				 * PORT: the loop's only bound is the field
+				 * count, so an -o list running to the end of
+				 * the command line walks onto the vector's
+				 * terminating NULL.  On the VAX argv[2][0]
+				 * read the 0207 at address 0, matched none of
+				 * the three arms below and took the `else
+				 * break', which is what this test does
+				 * without the read.  `join -o 1.1' SIGSEGVs
+				 * otherwise.
+				 */
+				if (argv[2] == 0)
+					break;
 				if (argv[2][0] == '1' && argv[2][1] == '.') {
 					olistf[no] = F1;
 					olist[no] = atoi(&argv[2][2]);
@@ -72,12 +85,20 @@ char *argv[];
 			}
 			break;
 		case 'j':
+			/*
+			 * PORT: same walk off the end as -o above, reached by
+			 * `join -j1' or a bare `join -j' at the end of the
+			 * line.  atoi() of the VAX's address 0 found no digit
+			 * and returned 0, so each arm is guarded rather than
+			 * the case as a whole -- writing j1 = j2 = 0 up front
+			 * would also zero the field the option did not name.
+			 */
 			if (argv[1][2] == '1')
-				j1 = atoi(argv[2]);
+				j1 = argv[2] == 0? 0: atoi(argv[2]);
 			else if (argv[1][2] == '2')
-				j2 = atoi(argv[2]);
+				j2 = argv[2] == 0? 0: atoi(argv[2]);
 			else
-				j1 = j2 = atoi(argv[2]);
+				j1 = j2 = argv[2] == 0? 0: atoi(argv[2]);
 			argc--;
 			argv++;
 			break;

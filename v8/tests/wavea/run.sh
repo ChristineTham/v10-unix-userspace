@@ -686,6 +686,66 @@ check 'date agrees with the host to the minute' \
 check 'date prints a four-digit year' "$(/bin/date '+%Y')" \
     "$("$V8ROOT/bin/date" | awk '{print $NF}')"
 
+# ---------------------------------------------------------------------------
+# THE ARGUMENT VECTOR RUNS OUT, AND V8 READS ONE MORE.
+#
+# argv[argc] is a NULL the kernel plants.  On the VAX reading through it landed
+# on address 0, which held 0207 -- the low byte of the a.out magic, inside the
+# read-only text segment -- so a program that consumed one argument too many
+# got a byte that was not '-' and not a digit, and carried on correctly.  macOS
+# leaves page 0 unmapped, so the same code SIGSEGVs.
+#
+# ncheck was the first instance found and quot the second; sweeping the whole
+# tree for the shape turned up nine more, of which these are the ones whose
+# programs live in Wave A.  Every fix reproduces the VAX's ANSWER rather than
+# merely dodging the fault, so these cases assert the behaviour and not just
+# the exit status -- a `return' bolted in front of the deref would pass an
+# exit-status-only test while changing what the program does.
+#
+# Each is the LAST argument on the line, which is the whole trigger.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- reading past the end of argv (address 0 was readable on a VAX)"
+
+# THE WORST ONE, because it is not a dangling option at all: unexpand with no
+# arguments is the primary documented use of the program.  Berkeley left the
+# argc test out of one of a matched pair -- expand.c:20 has it.
+printf 'a\tb\n' > ux.txt
+check 'unexpand with no arguments reads stdin' "$(printf 'a\tb')" \
+    "$("$(v8which unexpand)" < ux.txt 2>&1)"
+check 'and exits 0 rather than faulting' '0' \
+    "$("$(v8which unexpand)" < ux.txt >/dev/null 2>&1; echo $?)"
+# The control: the sibling that always had the guard must not have changed.
+check 'expand with no arguments still reads stdin' 'a       b' \
+    "$(printf 'a\tb\n' | "$(v8which expand)" -8 2>&1)"
+
+# join: the -o field list and -j both walk to the end of the line.  Upstream's
+# answer for -o is the `else break' arm, after which argc is wrong and join
+# prints its usage; for -j it is atoi(0) == 0.
+check 'join -o running off the end prints usage' '1' \
+    "$("$(v8which join)" -o 1.1 >/dev/null 2>&1; echo $?)"
+check 'join -j1 with no number prints usage' '1' \
+    "$("$(v8which join)" -j1 >/dev/null 2>&1; echo $?)"
+# ...and join still joins, which is what says the guards did not break it.
+printf '1 a\n2 b\n' > j1.txt
+printf '1 x\n2 y\n' > j2.txt
+check 'join still joins two files' '1 a x 2 b y' \
+    "$("$(v8which join)" j1.txt j2.txt | tr '\n' ' ' | sed 's/ *$//')"
+
+# yacc -o took the NULL as its output file name.  Upstream's answer is the
+# fopen failure and the message that follows it; "" reaches the same one.
+check 'yacc -o with no file name reports it cannot open' \
+    'cannot open table file' \
+    "$("$(v8which yacc)" -o 2>&1 | sed -n 's/.*\(cannot open table file\).*/\1/p')"
+
+# AND THE CRASH THAT WAS NOT IN yacc.  With the output file unopenable, yacc's
+# error() runs cleantmp(), which unlinks two temp names setup() had not yet
+# assigned -- and unlink(0) faulted inside OUR shim, in dotlink(), which
+# inspects the path before the syscall can answer EFAULT.  tests/v8sys has the
+# syscall-level case; this one is the program that found it.
+check 'and exits rather than faulting in the shim' '1' \
+    "$("$(v8which yacc)" -o >/dev/null 2>&1; echo $?)"
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

@@ -27,6 +27,7 @@ extern long v8s_lseek(int, long, int);
 extern int v8s_stat(char *, struct v8_stat *);
 extern int v8s_creat(char *, int);
 extern int v8s_unlink(char *);
+extern int v8s_link(char *, char *);
 extern int v8s_mkdir(char *, int);
 extern int v8s_rmdir(char *);
 extern char *v8s_sbrk(long);
@@ -467,6 +468,32 @@ main(void)
 		ok(v8s_stat("", &es) == 0, "stat(\"\") succeeds, as V7 namei made it");
 		ok(v8s_stat(".", &ds) == 0, "and so does stat(\".\")");
 		ok(es.st_ino == ds.st_ino, "...naming the same directory");
+	}
+
+	/*
+	 * A NULL PATH IS THE KERNEL'S TO REJECT, AND THE SHIM MUST NOT LOOK
+	 * FIRST.
+	 *
+	 * rootpath() passes a null through unchanged for exactly that reason,
+	 * so unlink(0) is meant to come back EFAULT.  dotlink(), which decides
+	 * whether a name ends in "." or "..", inspected the string BEFORE the
+	 * syscall could answer, so it faulted in our own code instead.
+	 *
+	 * Found through yacc, not by writing this case: `yacc -o' with -o last
+	 * leaves the output name null, openup() cannot create it, and error()
+	 * runs cleantmp() -- two unlink()s of temp names setup() had not yet
+	 * assigned.  The crash looked like a crash in yacc.  tests/wavea has
+	 * the program end of it.
+	 *
+	 * Reaching the call at all is the assertion; the return value is the
+	 * host's business.  If dotlink() ever dereferences again this dies on
+	 * SIGSEGV and the suite prints nothing after it.
+	 */
+	{
+		v8s_unlink((char *)0);
+		ok(1, "unlink(0) returns instead of faulting in the shim");
+		v8s_link((char *)0, (char *)0);
+		ok(1, "and so does link(0, 0)");
 	}
 
 	/* ------------------------------------------------------- cleanup */

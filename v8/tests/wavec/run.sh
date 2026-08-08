@@ -383,5 +383,52 @@ else
 	fail=$((fail+6)); echo "FAIL refer not installed"
 fi
 
+# ---------------------------------------------------------------------------
+# Wave C's share of the address-0 sweep: an option consumed past the end of
+# argv.  argv[argc] is the kernel's NULL; the VAX read the 0207 at address 0
+# through it and carried on, macOS leaves page 0 unmapped and the program dies.
+# tests/wavea has the class's full note and the rest of the programs.
+#
+# Each fix reproduces upstream's ANSWER rather than just guarding, so these
+# ask what the program says and not only that it survived.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- an option that runs off the end of argv"
+
+# -F names a font-table directory and n1.o is in NROFF_NAMES as well as TROFF,
+# so one upstream line is two binaries.  The VAX copied bytes of its own a.out
+# header into termtab and then failed to open them; "" fails the same open.
+for prog in "$NROFF" "$TROFF"; do
+	b=$(basename "$prog")
+	"$prog" -F </dev/null >/dev/null 2>&1; rc=$?
+	if [ "$rc" -ge 129 ] && [ "$rc" -le 159 ]; then
+		fail=$((fail+1)); echo "FAIL $b -F died on signal $((rc-128))"
+	else
+		pass=$((pass+1))
+	fi
+	# ...and -F WITH a name must still be honoured, so the guard is not a
+	# bare return: an unopenable table is a diagnostic, not silence.
+	# Match on the PATH rather than the wording: nroff says "cannot open"
+	# and troff "can't open tables for", and what matters is that the name
+	# -F was given came back out.
+	check "$b -F with a bad table names the path it was given" '1' \
+	    "$("$prog" -F /nonexistent/tab </dev/null 2>&1 | grep -c '/nonexistent/tab')"
+done
+
+# bare `hunt' -- argc is 1, so the option loop's own condition read argv[1].
+# It is reached directly rather than through lookbib, which always appends an
+# index path.  Upstream's answer is an unopenable index name and the error
+# that follows, which is what "" produces.
+if [ -x "$REFD/hunt" ]; then
+	"$REFD/hunt" </dev/null >/dev/null 2>&1; rc=$?
+	if [ "$rc" -ge 129 ] && [ "$rc" -le 159 ]; then
+		fail=$((fail+1)); echo "FAIL bare hunt died on signal $((rc-128))"
+	else
+		pass=$((pass+1))
+	fi
+else
+	fail=$((fail+1)); echo "FAIL hunt not installed"
+fi
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

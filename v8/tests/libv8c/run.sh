@@ -134,6 +134,50 @@ run 'printf %f' 'f=3.141590' <<'EOF'
 main() { printf("f=%f\n", 3.14159); fflush(stdout); return 0; }
 EOF
 
+# THE COUNT ON strncat IS A BOUND ON THE READ, NOT ONLY ON THE WRITE.
+#
+# Upstream's strncat.C copied s2[n] and only then noticed --n < 0, overwriting
+# the byte it had just copied with the NUL -- so the OUTPUT was always right
+# and only the read went one past.  That is why nothing had ever noticed, and
+# why the case below has to hand it an unreadable pointer rather than compare
+# a string: a correct answer is not evidence.
+#
+# The authority is upstream's own assembler.  libc/gen/strncat.s -- the code a
+# VAX actually ran -- opens `movl 12(ap),r8 / bleq L6', returning without
+# touching s2 when n <= 0, and scans with a bounded `locc'.  The .C beside it
+# calls itself "the `standard' for the C-library" and disagrees.  strcatn is
+# the V7-named twin with the same body and no .s of its own.
+#
+# Address 1 is unmapped, so a program that reads s2 at all dies here; n == 0
+# means "append nothing", so a correct strncat never looks.
+run 'strncat with n==0 does not read s2' 'x|x' <<'EOF'
+#include <stdio.h>
+char b1[32], b2[32];
+main() {
+	strcpy(b1, "x");
+	strcpy(b2, "x");
+	strncat(b1, (char *)1, 0);
+	strcatn(b2, (char *)1, 0);
+	printf("%s|%s\n", b1, b2);
+	fflush(stdout); return 0;
+}
+EOF
+
+# ...and the bound must still be a bound: n shorter than s2 truncates, n longer
+# stops at the NUL, and the result is terminated either way.
+run 'strncat still truncates and terminates' 'abcdef|abcXYZ' <<'EOF'
+#include <stdio.h>
+char b1[32], b2[32];
+main() {
+	strcpy(b1, "abc");
+	strncat(b1, "defghi", 3);	/* n shorter than the source */
+	strcpy(b2, "abc");
+	strncat(b2, "XYZ", 10);		/* n longer -- stop at the NUL */
+	printf("%s|%s\n", b1, b2);
+	fflush(stdout); return 0;
+}
+EOF
+
 run 'string routines' 'len=5 cmp=0 cat=abcdef' <<'EOF'
 #include <stdio.h>
 main() {

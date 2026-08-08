@@ -54,7 +54,13 @@ char *argv[];
 
 		case 'i':
 			for(i=0; i<NB; i++) {
-				n = atol(argv[1]);
+				/* PORT: the third copy of the loop fixed in
+				 * ncheck.c -- argv[1] is the vector's NULL
+				 * once -i's last number is consumed, and
+				 * atol() dereferences it.  `dcheck -i 5'
+				 * SIGSEGVs.  See icheck.c's note and
+				 * ncheck.PORTING.md. */
+				n = argv[1] == 0? 0L: atol(argv[1]);
 				if(n == 0)
 					break;
 				ilist[i] = n;

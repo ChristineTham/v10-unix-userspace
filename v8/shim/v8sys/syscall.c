@@ -403,6 +403,23 @@ dotlink(const char *b)
 {
 	const char *p, *base;
 
+	/*
+	 * A null path is not a dot link -- it is a call that has to reach the
+	 * kernel and come back EFAULT.
+	 *
+	 * This shim's rule is that a null path is the kernel's to reject:
+	 * rootpath() returns it unchanged for exactly that reason.  dotlink()
+	 * broke the rule because it INSPECTS the string before the syscall
+	 * runs, so unlink(0) and link(a, 0) faulted in our own code instead.
+	 *
+	 * Reached from yacc, not from a synthetic case.  `yacc -o' with -o
+	 * last leaves the output name null, openup() fails to create it, and
+	 * error() runs cleantmp(), whose two ZAPFILEs are unlink() of temp
+	 * names that setup() had not yet assigned.  The crash was in the shim
+	 * and looked like a crash in yacc.
+	 */
+	if (b == 0)
+		return (0);
 	for (p = base = b; *p; p++)
 		if (*p == '/') base = p + 1;
 	return (base[0] == '.' &&
@@ -414,6 +431,16 @@ int v8s_link(char *a, char *b)
 	char old[1024];
 	char *q;
 	int i;
+
+	/*
+	 * Same rule as dotlink() below: a null path belongs to the kernel.
+	 * vpath() hands one straight back, and the copy loop further down then
+	 * dereferences it -- so this has to be settled before either name is
+	 * touched.  Handing both to the kernel gets the EFAULT the caller is
+	 * owed; the surviving name is never used, because the call fails.
+	 */
+	if (a == 0 || b == 0)
+		RET(rawsys2(SYS_link, (long)a, (long)b));
 
 	if (dotlink(b)) {
 		struct v8_stat st;

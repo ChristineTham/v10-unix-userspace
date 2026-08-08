@@ -14,6 +14,7 @@ main(argc, argv)
 	register	i;
 	float		fetapes;
 	register	struct	fstab	*dt;
+	char		*rn;		/* PORT: see below */
 	time_t		now;		/* PORT: see below */
 
 	/* PORT: c_date is four bytes -- struct spcl is the on-tape record and
@@ -139,8 +140,16 @@ main(argc, argv)
 	 *	the file system name with or without the leading '/'.
 	 */
 	dt = fstabsearch(disk);
-	if (dt != 0)
-		disk = rawname(dt->fs_spec);
+	/*
+	 * PORT: the second caller of rawname() that does not check for the 0
+	 * it returns on a spec with no '/'.  Storing it made `disk' null, and
+	 * the msg("Dumping %s") and open(disk) below both read address 0.
+	 * Keeping the name we already had is fsck's answer to the same
+	 * question -- its own rawname(), fsck.c:466, returns cp unchanged
+	 * when there is nothing to rewrite.  See dumpoptr.c's fstabsearch().
+	 */
+	if (dt != 0 && (rn = rawname(dt->fs_spec)) != 0)
+		disk = rn;
 	getitime();		/* /etc/dumpdates snarfed */
 
 	msg("Date of this level %c dump: %s\n", incno, prdate(spcl.c_date));

@@ -313,6 +313,30 @@ Two things generalise, and the second is the one to carry.
   this format. An image with more than 65535 inodes cannot be described, which
   is the format's limit and not the port's.
 
+## `-b` and `-i` read past the end of argv, and this file walked past it
+
+`icheck -b 5` and `dcheck -i 5` — the option's last number also being the last
+argument — SIGSEGV'd on `n = atol(argv[1])`, where `argv[1]` is the NULL the
+kernel plants at `argv[argc]`. On the VAX that read the `0207` at address 0,
+found no digit, returned 0 and broke the loop.
+
+**The loop is byte for byte `ncheck.c`'s, and this file audited it without
+seeing the null.** The section above examines that exact `for` for a
+`blist[500]` overrun and stops one line short. Three copies of it exist in the
+tree — `ncheck -i`, `icheck -b`, `dcheck -i` — and when the fault was found in
+the first, the note was filed under *that program* instead of under the shape,
+so the other two kept crashing for as long again.
+
+Patched the way `ncheck` was, `n = argv[1] == 0? 0L: atol(argv[1])`, which
+reproduces the VAX's answer rather than merely guarding: `atol` returned 0 and
+the loop ended, which is exactly what a `break` would look like from outside and
+is *not* the same thing from inside, because the byte was still consumed.
+
+`tests/mkfs` §9 carries both, each paired with a case asserting the option still
+works — `dcheck -i 2` must still name all three references to the root. A "fix"
+that stops the loop consuming anything passes the crash case and fails that one;
+mutation-verified in that form.
+
 ## Still open
 
 - **`fsck`** — 1925 lines, and the one that repairs rather than reports. It is

@@ -285,3 +285,28 @@ blocks, `hello`'s block comes back, 1916. A second pass reports nothing.
 - **`imax` is `ino_t`**, so 65535 inodes, and `dcheck`'s non-termination above
   that (recorded in `icheck.PORTING.md`) has no counterpart here — fsck's loops
   are bounded by `lastino`. Also authentic.
+
+## `fsck -t` dereferenced argv before it checked argc
+
+```c
+if(**++argv == '-' || --argc <= 0)		/* upstream */
+	errexit("Bad -t option\n");
+```
+
+`||` evaluates left to right, so with `-t` last the `++argv` lands on the NULL
+at `argv[argc]` and `**argv` reads it *before* the count test can fire. It reads
+as a guarded line and is not. On the VAX address 0 held `0207`, which is not
+`'-'`, so the first operand was false, the second then fired, and `errexit`
+printed `Bad -t option` — the right behaviour, reached by luck.
+
+Swapped to `--argc <= 0 || **++argv == '-'`. Only the order changed, and it
+reaches the same `errexit` without the read. Found in the whole-tree sweep of
+this class (PLAN.md §4i), which turned up nine crashes; `fsck -t` was one.
+
+**`rawname()` here is NOT the same function as `dump`'s, and this one is the
+safe one.** `fsck.c:466` returns `cp` unchanged when the name contains no `/`;
+`dump`'s (`dumpmain.c:239`) returns `0`, and two of its callers stored or
+compared that without checking. Upstream disagreeing with itself in one source
+tree — worth knowing before assuming a shared helper behaves the same way in
+both. An audit of this sweep initially reported fsck as having the null-return
+form; reading it settled that it does not.

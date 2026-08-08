@@ -47,3 +47,28 @@ links (23 files); `eqn` and `pic` need their yacc grammars generated first, whic
 is again a build step rather than a port. `refer` has six files that use the
 pre-C89 `int x 5;` initialiser, which V8's own grammar rejects — the same
 upstream defect as `tcat`.
+
+## `-F` with no argument, and it is two binaries
+
+`n1.c:64` advances past the option and copies unconditionally:
+
+```c
+} else {
+	argv++; argc--;
+	strcpy(termtab, argv[0]);	/* upstream */
+	strcpy(fontfile, argv[0]);
+}
+```
+
+With `-F` last, `argv[0]` is the NULL at `argv[argc]`. The VAX copied bytes of
+its own a.out header out of address 0 until it met a zero, so `termtab` became
+garbage and troff died later failing to open it; here `strcpy` faults at once.
+
+Patched to `argv[0] == 0? "": argv[0]`, which reproduces the observable answer —
+a name that cannot be opened — rather than merely guarding. Same choice `quot`'s
+`qcmp` makes for the same reason.
+
+**`n1.o` is in `NROFF_NAMES` as well as `TROFF_NAMES`**, so one upstream line was
+two crashing binaries. `tests/wavec` runs both, and asserts each still names the
+path when `-F` *is* given a bad one — an empty guard would pass a crash-only
+case. Part of the whole-tree address-0 sweep; PLAN.md §4i.

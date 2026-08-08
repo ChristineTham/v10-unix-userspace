@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (~1230 tests)
+make test             # all 17 suites (~1250 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -885,8 +885,7 @@ believing it works.
 
 **V8 assumes address 0 is readable, and this is the class that keeps coming
 back.** The VAX put the text segment at 0, so `*(char *)0` returned a byte of the
-program rather than trapping. macOS keeps page 0 unmapped. Three instances, and
-the third pair says the sweep is not done:
+program rather than trapping. macOS keeps page 0 unmapped. The first three:
 
 | program | the call | when it fires |
 |---|---|---|
@@ -898,6 +897,75 @@ the third pair says the sweep is not done:
 is indexed by uid, only the uids in `/etc/passwd` get a `name`, so **2046 of 2048
 entries are null** and `qsort` compares them against each other. It was found by
 auditing before building, not by running.
+
+**THE PARAGRAPH ABOVE USED TO SAY "the sweep is not done", AND IT WAS RIGHT:
+DOING IT FOUND NINE MORE, ALL MEASURED SIGSEGVs.** The tree was searched for
+each shape of the class rather than for the next instance. Every one is the
+program's *last* argument, which is the whole trigger:
+
+| program | the command | what it was |
+|---|---|---|
+| `unexpand` | **no arguments at all** | `argv[0][0]` with argc 0 — and `expand.c:20` beside it has the guard. Berkeley's omission in one of a matched pair, on the primary documented use of a filter |
+| `icheck` | `icheck -b 5` | `atol(argv[1])` — **byte for byte `ncheck`'s loop** |
+| `dcheck` | `dcheck -i 5` | the **third** copy of that same loop |
+| `fsck` | `fsck -t` | `**++argv == '-' \|\| --argc <= 0` — `\|\|` runs left to right, so the deref happens before the count is consulted |
+| `join` | `join -o 1.1`, `join -j1` | the `-o` field list and `-j` both walk to the end |
+| `yacc` | `yacc -o` | the output file name |
+| `hunt` | **bare `hunt`** | the option loop's own condition |
+| `nroff`/`troff` | `-F` | one upstream line, two binaries — `n1.o` is in `NROFF_NAMES` too |
+
+Three things generalise, and the first is the reason to run a sweep at all:
+
+- **The same loop existed three times and only one was fixed.** `n =
+  atol(argv[1])` inside an option's number loop is identical in `ncheck`,
+  `icheck` and `dcheck`. Fixing `ncheck` and writing it up did not find the
+  other two, because the note was filed under `ncheck` rather than under the
+  shape. `icheck.PORTING.md` had even audited that exact loop for a different
+  overrun and gone one line past the null.
+- **The crash is not always in the program.** `yacc -o` faulted in **our shim**:
+  the output file cannot be created, `error()` runs `cleantmp()`, and its two
+  `unlink()`s are of temp names `setup()` had not assigned yet — and
+  `dotlink()` in `shim/v8sys/syscall.c` inspected the path before the syscall
+  could answer `EFAULT`. The shim's own rule is that a null path belongs to the
+  kernel; `rootpath()` returns one unchanged for exactly that reason. `v8s_link`
+  had the same hole one function away and nothing had ever called it that way.
+- **A fix must not just stop the crash.** Every case is paired with one asserting
+  the option still *works* — `dcheck -i 2` still names all three references to
+  the root, `join` still joins, `-F` still reports the path it was given. The
+  mutation that proves those is a "fix" that makes the loop consume nothing:
+  the crash goes away and the behaviour case goes red.
+
+**And two that were audited and deliberately NOT changed**, because the rule is
+that a change to `src/` must be forced by the target. `make`'s `meter()`
+dereferences an unchecked `getpwuid()`, but it returns on `meteron == 0` and
+nothing in the tree ever sets it. `ls.c:259`'s `calloc` is unchecked where its
+two siblings check — and a write to page 0 faults on a VAX too, so there is no
+VAX answer to restore.
+
+**THE SAME SWEEP FOUND THE PORT DISAGREEING WITH THE CODE V8 ACTUALLY RAN, and
+upstream shipped the answer.** `strncat` read `s2[n]` — one past its own bound —
+because the loop copies the byte first and only then notices `--n < 0`, and
+overwrites it with the NUL. The *output* was therefore always correct and only
+the read was out of bounds, which is why nothing had ever noticed. That is the
+same shape as `%.Ns` in our `doprnt.c`, and for the same reason: a count
+argument exists precisely because the source need not be terminated. All five
+callers pass a fixed-width field (`d_name`, `utmp.ut_line`).
+
+The authority for changing it is `libc/gen/strncat.s`, **which is what a VAX
+executed**: it opens `movl 12(ap),r8 / bleq L6` — returning without touching
+`s2` when `n <= 0` — and scans with `locc $0,r8,(r7)`, bounded to exactly `n`.
+The `.C` beside it is the portable *reference*, its header calls itself "the
+`standard' for the C-library", and it disagrees with the assembler shipped next
+to it. So the overread came from **this port substituting the reference for the
+assembler**, and removing it restores V8 rather than departing from it. The V7
+twin `strcatn` has the identical body and *no* `.s`, so its note records a
+deviation instead — the distinction is in the two comments, because it is the
+justification and not the code that differs.
+
+The testable diagnostic, needing no guard page, is the one `%.Ns` used:
+`strncat(buf, (char *)1, 0)` faults on the old loop and never touches `s2` on
+the new one. **A behavioural test cannot see this class at all** — the answer
+was right the whole time.
 
 **Fix to the VAX's ANSWER, not just to the absence of the fault.** Address 0 held
 `0207`, the low byte of the a.out magic — below every character a name can hold

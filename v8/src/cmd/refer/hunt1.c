@@ -37,7 +37,21 @@ int falseflg, nhash, nitem, nfound, frtbl, kk;
 
 	/* special wart for refpart: default is tags only */
 
-while (argv[1][0] == '-')
+/*
+ * PORT: bare `hunt' has argc == 1, so argv[1] is the vector's terminating
+ * NULL and this test reads it before the program does anything at all.  The
+ * VAX read 0207, which is not '-', so the loop was skipped.  The guard says
+ * that directly.  todir(argv[1]) below is the same argument on the same path
+ * and gets the "" that reproduces an unopenable index name.
+ *
+ * NOT SWEPT, and saying so rather than implying otherwise: the arms inside
+ * this loop each do `argc--; argv++' and then read argv[1], so a dangling
+ * -r/-i/-l/-t can still advance PAST the terminator, where the guard below
+ * cannot help because the value there is not a NULL.  hunt is reached through
+ * lookbib, which always appends an index path, so the bare invocation is the
+ * one that was measured to crash.
+ */
+while (argv[1] != 0 && argv[1][0] == '-')
 	{
 	switch(argv[1][1])
 		{
@@ -91,7 +105,7 @@ fprintf(stderr, "colevel set to %d\n",colevel);
 		}
 	argc--; argv++;
 	}
-strcpy (nma, todir(argv[1]));
+strcpy (nma, todir(argv[1] == 0? "": argv[1]));	/* PORT: see the loop above */
 if (was == 0 || strcmp (oldname, nma) !=0)
 	{
 	strcpy (oldname,nma);

@@ -248,3 +248,27 @@ Two details worth keeping:
 than that the call succeeded -- both would pass on a host that let the write
 through, which is the outcome being ruled out. One case reads a path only the
 Mac has, which is what fails if the parent rule is ever applied to readers too.
+
+## A null path belongs to the kernel, and two places looked at it first
+
+`rootpath()` hands a null path straight back — deliberately, because `unlink(0)`
+is owed `EFAULT` from the kernel and not a decision from us. Two functions broke
+that rule by *inspecting* the string before the syscall could run:
+
+- **`dotlink()`**, which decides whether a name ends in `.` or `..`, opened
+  `for (p = base = b; *p; p++)`.
+- **`v8s_link()`**, whose `q = vpath(a)` copy loop dereferences the result, one
+  function away and reached by nothing at the time.
+
+**Found through `yacc`, not by writing a test.** `yacc -o` with `-o` last leaves
+the output file name null; `openup()` cannot create it, and `error()` runs
+`cleantmp()` — whose two `ZAPFILE`s are `unlink()` of temp names `setup()` had
+not yet assigned. So the crash was in the shim and read as a crash in yacc, which
+is the same misattribution `v8s_signal`'s trampoline produced.
+
+`v8s_link` is the `v8s_mknod` lesson again: a rule that nothing exercises cannot
+be seen to be incomplete. `tests/v8sys` now calls both with nulls — reaching the
+call *is* the assertion, since a regression takes the whole suite down on
+SIGSEGV — and `tests/wavea` keeps the program that found it.
+
+Part of the whole-tree address-0 sweep; PLAN.md §4i.

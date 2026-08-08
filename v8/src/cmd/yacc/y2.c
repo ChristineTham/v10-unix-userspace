@@ -98,7 +98,23 @@ setup(argc,argv) int argc; char *argv[];
 			case 'o':
 				ytab++;
 				argv++;
-				ytabc = argv[1];
+				/*
+				 * PORT: `yacc -o' with -o last takes the
+				 * vector's NULL, and openup() below does
+				 * strcpy(buf, ytabc).  The VAX copied bytes of
+				 * address 0 into buf and then reported
+				 * "cannot open table file <garbage>"; "" gets
+				 * to the same fopen failure and the same
+				 * message without the read.
+				 *
+				 * The -s arm three lines down takes NULL too
+				 * and is deliberately left alone: stemc only
+				 * ever reaches sprintf("%s"), which is not a
+				 * fault -- this port's doprnt.c:267 prints
+				 * "(null)" where the VAX printed its header
+				 * bytes.  Guarding it would be taste.
+				 */
+				ytabc = argv[1] == 0? "": argv[1];
 				goto beg;
 			case 's':
 				stem++;
