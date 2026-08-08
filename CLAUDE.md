@@ -178,11 +178,11 @@ tree itself**, `third_party/.../v8/{bin,usr/bin,lib,etc}`.
 for the half of `cmd/` that has no makefile, and for a *directory* it runs
 `make clean && make && make install`, which is exactly the rung-5 mechanism.
 
-**THERE IS A THIRD SOURCE, AND IT IS RIGHT WHERE `dest` FALLS THROUGH.** Eleven
-imported makefiles say where they install themselves — `mv lex
-$(DESTDIR)/usr/bin`, `cp ps /bin`, `D=/etc/quot`. They agree with the tables on
-nine, and the two they do not are both programs that appear in **no table at
-all**, so `Admin/dest` is answering by *fall-through* — which is "nobody said",
+**THERE IS A THIRD SOURCE, AND IT IS RIGHT WHERE `dest` FALLS THROUGH.**
+**Twenty** of the 22 imported makefiles say where they install themselves —
+`mv lex $(DESTDIR)/usr/bin`, `cp ps /bin`, `D=/etc/quot`. They agree with the
+tables on **eighteen**, and the two they do not are both programs that appear
+in **no table at all**, so `Admin/dest` is answering by *fall-through* — which is "nobody said",
 not "V8 said /usr/bin":
 
 | | its makefile | shipped tree | `Admin/dest` |
@@ -195,7 +195,7 @@ not "V8 said /usr/bin":
 and never goes through `$(call v8dest,...)`. `dump` had no such accident, so the
 Makefile's `$(MKFILEETC)` follows the makefile on purpose, which also puts it
 beside its two siblings `restor` and `dumpdir`. `tests/wavea` recomputes the
-whole set from all eleven makefiles — expanding `$(VAR)` and `$B`, because
+whole set from all twenty makefiles — expanding `$(VAR)` and `$B`, because
 `tsort`'s `B = /usr/bin` read literally looks like a third disagreement — and
 fails if it is anything but those two.
 
@@ -339,7 +339,8 @@ rules), `tbl` (`t?.o` glob, three flags at once, a 22-target dependency line on
 `t..c`), `yacc` (`$(CC)`, `y?.o`, dependencies on `dextern` and `files`), `spell`
 (four programs from one makefile — `spellprog` specifically, since `all`
 regenerates the word lists), `man` (the minimal case, one rule), `troff`
-(**22 objects**, the largest — scale is its own idiom), `refer` (four programs
+(**14 objects** out of a 22-file directory — the largest link here beside
+`eqn`'s 22, and scale is its own idiom), `refer` (four programs
 and an `#include`d non-header), `ps` (V8 make's `&`, which nothing else here
 uses), `load` and `w` (two lines each, and grovelers — see below), `make`
 (**V8's make building V8's make from V8's makefile** — the only entry that
@@ -359,7 +360,7 @@ single-file commands — exercising V8's `sh` (`set -p`, functions, backquotes,
 driving V8's `cpp` and `ccom`. Three host execs in total: `clang` twice per
 program and `strip` once.
 
-Two things it gives that the seventeen could not. **`Admin/dest` and the
+Two things it gives that the eighteen could not. **`Admin/dest` and the
 Makefile's `$(call v8dest,...)` are two independent derivations of the same
 answer**, one in V8's shell at run time and one in GNU make at build time, and
 `tests/jail` compares them for all fifty — the only thing that would notice the
@@ -535,7 +536,7 @@ on LP64 the address loses its top half. Found in `pic` (`TROFF`) and then, by
 sweeping, in `grap` (`PIC`) — neither had ever been reached by any input in the
 tree. The whole-tree table is in `src/cmd/grap/PORTING.md`; only grammars that
 declare types can have it, and the untyped ones are already covered globally by
-this port's change to `src/cmd/yacc/y2.c:302` (`#define YYSTYPE long`, not
+this port's change to `src/cmd/yacc/y2.c:318` (`#define YYSTYPE long`, not
 `int`). Re-run the sweep after importing any program with a grammar:
 
 ```bash
@@ -568,7 +569,7 @@ control — v8cc reads the header, clang re-spells it in the shim — so a widen
 was safe if both agreed. A filesystem image has to agree with 1985. Measured
 before the fix: `dinode` 80 (VAX 64), `filsys` 7960 (4096), `fblk` 1432 (716),
 `NINDIR(0)` 128 (256). **V8's own compiler settles it in one line** —
-`# define NOLONG`, "map longs to ints", at `cmd/ccom/vax/macdefs.h:19` — so
+`# define NOLONG`, "map longs to ints", at `cmd/ccom/vax/macdefs.h:20` — so
 `long` was 32 bits there and `daddr_t`, `time_t` and `off_t` all silently
 doubled here. `daddr_t` is narrowed globally (nothing hands one to macOS);
 `time_t` and `off_t` are narrowed per *field* in `sys/ino.h` and `sys/filsys.h`,
@@ -724,8 +725,12 @@ Found in `dumpdir`'s `checksum()`, which sums 256 arbitrary ints off a tape
 record: it computed exactly `CHECKSUM`, **printed** exactly `CHECKSUM`, and took
 the not-equal branch — so every dump tape this port wrote was unreadable by the
 two programs written to read it. `arm64_trunc()` in
-`compiler/ccom-arm64/gencode.c` is the fix, at all four emission sites (binary
-op, its immediate form, compound assignment, `++`/`--`).
+`compiler/ccom-arm64/gencode.c` is the fix, at **three** `arm64_trunc()` sites
+— binary op, its immediate form, compound assignment — plus an `arm64_widen()`
+at `++`/`--`, which re-extends rather than truncating and reaches the same
+answer. (This said "all four emission sites" and named `++`/`--` among them;
+`arm64_trunc()` has five call sites today, the other two being the unary
+`-` and `~` the sweep below added.)
 
 Two things generalise:
 
@@ -836,7 +841,8 @@ rather than a discovery. `src/cmd/w/PORTING.md`.
 This port raises 14 → 254; patching two of the three changed nothing for
 exactly the programs that read directories raw, while looking like it had. All
 three now agree, plus `shim/v8sys/v8sys.h`'s `V8_DIRSIZ` and
-`src/libc/gen/readdir.c`'s `ODIRSIZ` — five spellings of one number.
+`src/libc/gen/readdir.c`'s `ODIRSIZ` and `shim/libkmemu/procfs.c`'s
+`PR_DIRSIZ` — six spellings of one number.
 
 **And the sentence above was wrong about `param.h` for months.** Upstream guards
 `dir.h` and `sys/dir.h` and leaves `param.h` **bare**, so on a real V8 this one
@@ -873,7 +879,7 @@ what has to hold is the flag, and `tests/deps` asserts
 `sys/param.h -> fsck object` so the edge cannot be lost.
 
 **`ncheck` and `quot` are the group's two extremes, and having both is what
-makes membership mean something.** `$(IMGBIN)` is seven now. `ncheck` is the most
+makes membership mean something.** `$(IMGBIN)` is ten now. `ncheck` is the most
 flag-dependent program here: built at 254 it reads a **correct** image and prints
 *nothing at all, exit status 0* — `NDIR(dev)` comes out 4 instead of 64 and the
 step is 256 bytes rather than 16, so a root whose `di_size` is 64 is exhausted by
@@ -901,7 +907,7 @@ what ran before rather than of the machine.
 
 **LP64 is not the only width problem: V8's 16-BIT RANGES are the other, and
 they fail later and quieter.** LP64 breaks a pointer immediately; a 16-bit field
-holds a value the host has simply not reached yet. Three so far, and they are
+holds a value the host has simply not reached yet. Four so far, and they are
 one class:
 
 | field | V8's range | the host's | how it failed |
@@ -1025,8 +1031,8 @@ Three things generalise, and the first is the reason to run a sweep at all:
 **And two that were audited and deliberately NOT changed**, because the rule is
 that a change to `src/` must be forced by the target. `make`'s `meter()`
 dereferences an unchecked `getpwuid()`, but it returns on `meteron == 0` and
-nothing in the tree ever sets it. `ls.c:259`'s `calloc` is unchecked where its
-two siblings check — and a write to page 0 faults on a VAX too, so there is no
+nothing in the tree ever sets it. `ls.c:285`'s `calloc` and `ls.c:257`'s `malloc` are
+unchecked where the other three sites check — and a write to page 0 faults on a VAX too, so there is no
 VAX answer to restore.
 
 **THE SAME SWEEP FOUND THE PORT DISAGREEING WITH THE CODE V8 ACTUALLY RAN, and
@@ -1140,9 +1146,17 @@ Four debugging rounds went to correct source compiled from already-fixed files.
 `tests/deps` exists for this; see below.
 
 **Files `#include`d that are not headers** are invisible to every dependency
-scanner *and* to a `*.c` glob: `lex/ldefs.c`, `lex/once.c`, `tbl/t..c`,
-`refer/refer..c`, `make/defs`, `yacc/dextern`, `yacc/files`. All are declared
-explicitly in the Makefile.
+scanner *and* to a `*.c` glob. **Thirteen**, not the seven this used to list:
+`lex/ldefs.c`, `lex/once.c`, `tbl/t..c`, `refer/refer..c`, `refer/what..c`,
+`make/defs`, `yacc/dextern`, `yacc/files`, `yacc/y.debug`, `ccom/common`,
+`ccom/y.debug`, `cpp/yylex.c`, `eqn/e.def`. All are declared explicitly in the
+Makefile **except `refer/what..c`**, which feeds `whatabout` — not in
+`REFER_PROGS`, so this port does not build it and the gap is latent rather
+than live. Re-derive the list rather than trusting it; the `#`-then-space
+spelling is why it is easy to miss one:
+```bash
+grep -rnE '#[ \t]*include[ \t]*"[^"]*"' src/cmd | grep -v '\.h"'
+```
 
 **The compiler has no known unimplemented feature.** The last one was `STARG`,
 passing a struct by value, which went unnoticed through 156 Wave A programs and
@@ -1173,11 +1187,24 @@ of its caller**, and handed the corrupted value back on return.
 
 Two lessons, and the second is the reusable one:
 
-- **A sweep found exactly four functions in the whole tree with a >8-argument
-  call**: `printp` in `ps`, `dfree` and `main` in `df`, `ngs` in `ls`. That is
-  why 156 Wave A programs plus all of Wave B and C never saw it. When a
-  back-end bug depends on a code shape, count the shapes before assuming
-  coverage.
+- **"When a back-end bug depends on a code shape, count the shapes before
+  assuming coverage" — AND THEN THE COUNT ITSELF WAS WRONG.** This said "a
+  sweep found exactly four functions in the whole tree with a >8-argument
+  call: `printp` in `ps`, `dfree` and `main` in `df`, `ngs` in `ls`", and used
+  that to explain why Wave A, B and C never saw the bug. Re-measured with a
+  paren-matching scan of `src shim compiler`: **at least 25 (file, function)
+  pairs** make a call with nine or more arguments, and Wave C is full of them
+  — `eqn`'s `fromto`, `bshiftb`, `shift2`, `text`; all four of `pic`'s
+  `*gen.c`; `grap`'s `do_autoticks` (ten arguments); `lex`'s `statistics`;
+  `troff`'s `error` and `loadfont`. `dprintf` is `if(dbg)printf`
+  (`src/cmd/pic/pic.h:1`, `src/cmd/eqn/e.h:3`), a real call. Those programs
+  were all in `src/cmd` when the sweep ran, so it was wrong on the day.
+
+  The bug needs a function that uses **register variables** *and* makes the
+  wide call, so the four named are the ones that happened to have both — but
+  ">8 arguments" was never the rare half, and the sentence explained the
+  coverage gap with the wrong number. Count the shape that actually gates the
+  bug, and say which half you counted.
 - **A test that checks the callee RECEIVED its arguments cannot see the caller
   being destroyed.** `tests/v8ccom` already had two nine-argument cases and both
   passed throughout. The new ones need **three frames**, because the damage
@@ -1356,7 +1383,7 @@ not testable until it is installed.
   testify about what it filtered.** `make test` builds each suite's
   prerequisites when it reaches that suite, so an edit landing mid-run can
   rebuild binaries a later suite is about to test — an edit touching
-  `gencode.c` rebuilds all seven `$(IMGBIN)` tools from a half-written
+  `gencode.c` rebuilds all ten `$(IMGBIN)` tools from a half-written
   compiler, and what comes out is one wrong branch rather than a build error.
   That is the leading explanation for the single `mkfs` `dcheck` failure that
   stood open for a session while three innocent hypotheses were measured and
@@ -1366,6 +1393,22 @@ not testable until it is installed.
   which discards every compile line, and its lack of build output was read as
   evidence that nothing had been built.** It is evidence of nothing. Capture
   runs whole, or say out loud what the filter removed.
+
+  **AND IT RECURRED WITHIN HOURS OF BEING WRITTEN DOWN, WHICH IS THE POINT.**
+  `tests/wavea`'s `pwd` case then failed once, under the same filter, so the
+  `want`/`got` lines — the entire diagnosis — were thrown away again and the
+  run had to be repeated to learn anything. `tests/wavea/run.sh:266` records
+  what is known. Knowing the rule is not the same as having the habit: pipe to
+  `tee` and read the tail, rather than grepping and hoping.
+
+  The summariser in use was also wrong, in a way worth copying the fix for.
+  `awk -F'[ :]+' '{p+=$2; f+=$5}'` over `wavea: 123 passed, 4 failed` splits to
+  `$2=123 $3=passed, $4=4 $5=failed`, so **`f` accumulated the word `failed`
+  and every "0 failed" it printed was arithmetic on a string, not a
+  measurement.** Nothing was actually hidden — each suite prints its own `FAIL`
+  lines, and a failing suite exits nonzero so `make` stops and the missing
+  suites are conspicuous — but the number reported was not the number measured.
+  The failure count is `$4`.
 - **A test that asserts a property of the machine fails on some other machine,
   and mutation testing cannot see it.** Both CI breaks in this repo were this:
   `p_nice == NZERO` assumed the host's baseline nice is 0 (a GitHub runner
@@ -1397,7 +1440,9 @@ not testable until it is installed.
   answer (`who: cannot open /etc/utmp`) instead of the flattering one. Ask of
   any green suite: **would this still pass on a tree that has never been used?**
 
-  **All sixteen suites were swept for this after the third instance, and the
+  **All sixteen suites then existing were swept for this after the third
+  instance** — `tests/mkfs` was added afterwards and has never been covered by
+  it, which is worth knowing before treating the sweep as complete. **The
   finding worth keeping is where the bugs were: three of five were in blocks
   ALREADY corrected once for this class** — the fix landed on one line and the
   line beside it kept the assumption. `ut_name` compared against `id -un` while

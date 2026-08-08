@@ -692,7 +692,8 @@ esac
 #	man     the minimal case -- one .c, one rule -- kept because a sweep
 #	        that only covers elaborate makefiles proves nothing about plain
 #	        ones, and most of upstream's are plain.
-#	troff   TWENTY-TWO objects from one makefile, the largest here. Scale is
+#	troff   FOURTEEN objects from a twenty-two-file directory -- the largest
+#	        link here beside eqn's twenty-two.  Scale is
 #	        its own idiom: it is the case where a toolchain that is subtly
 #	        wrong about include paths or object naming stops getting lucky.
 #	refer   four programs and an #included non-header (refer..c), the same
@@ -724,7 +725,7 @@ esac
 #	        libm -- a libSystem re-export ahead of libv8c on the link line
 #	        -- and _errno resolved to an indirect symbol with no address.
 #	quot    THE FIRST IMAGE TOOL TO GET HERE, and it is here by a measured
-#	        no-op rather than an exemption.  The other six in $(IMGBIN) are
+#	        no-op rather than an exemption.  The other nine in $(IMGBIN) are
 #	        compiled -DDIRSIZ=14 and their own build descriptions pass no
 #	        -D, so rung 5 would build a different program; quot reads
 #	        inodes and never a directory, so its object is byte-identical
@@ -807,7 +808,7 @@ esac
 # RUNG 5 FOR THE HALF OF cmd/ THAT HAS NO MAKEFILE: Bell Labs' Admin/Mk.
 #
 # Everything above about rung 5 is "V8's make reads an upstream makefile", and
-# it is demonstrated on seventeen programs.  MORE THAN HALF OF cmd/ HAS NO
+# it is demonstrated on eighteen programs.  MORE THAN HALF OF cmd/ HAS NO
 # MAKEFILE -- those are bare *.c files, and their build description is
 # Admin/Mk, a shell script.  For each name it does
 #

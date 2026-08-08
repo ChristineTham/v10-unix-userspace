@@ -266,6 +266,26 @@ try ls     'ls -l marks the directory' 'd' "./ls -l lsdir | awk '\$NF==\"sub\"{p
 # pwd is here rather than with the filters because it exercises the shim's
 # directory layer end to end: getwd(3) walks to the root matching each entry
 # against stat("."), which is what caught the APFS firmlink problem.
+#
+# THIS CASE FAILED ONCE, and the observation is recorded here because the next
+# occurrence should not start from nothing.  One failure in a full `make test',
+# clean on the immediate re-run and on every run since.  Two things about it:
+#
+#   * The walk climbs through $TMPDIR, which on this host is
+#     /var/folders/<...>/T and holds ~3950 entries shared with every process on
+#     the machine.  The port owns a candidate mechanism rather than inheriting
+#     a host quirk -- v8sys_pt_fstat sizes a directory with v8sys_dirsize(), a
+#     full getdirentries pass, and the reader then makes a SECOND pass for the
+#     data.  Two passes over a directory that changes in between can disagree,
+#     and a reader promised st_size bytes that gets fewer cannot say so.
+#   * NOT REPRODUCED.  400 walks through a parent being churned (60 entries
+#     created and removed continuously) and 400 through a quiet one: zero
+#     mismatches either way.  So the hypothesis above is unconfirmed, and a
+#     60-entry churn may simply be too narrow a window against 3950.
+#
+# What is certain is the shape: this compares against a HOST value computed by
+# /bin/pwd -P, so it is in the class CLAUDE.md warns about, and if it fires
+# again the want/got lines are the whole diagnosis -- do not filter them.
 try pwd    'pwd'             "$(/bin/pwd -P)" "./pwd"
 
 # ---------------------------------------------------------------------------

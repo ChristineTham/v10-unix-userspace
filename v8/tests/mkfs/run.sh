@@ -344,7 +344,7 @@ ic() { "$ICHECK" "$1" 2>&1 | sq; }
 # host-property trap, which has already bitten tests/jail once.  Measured by
 # hashing every regular file under rootfs/ either side of a full `make test':
 # exactly ONE differs, /dev/kmem, which libkmemu regenerates and which no image
-# tool opens.  And all seven $(IMGBIN) binaries are byte-identical to their
+# tool opens.  And all ten $(IMGBIN) binaries are byte-identical to their
 # build objects, so Admin/Mk has never clobbered one -- the mechanism worth
 # fearing, since Mk compiles a bare cmd/*.c with no -DDIRSIZ=14 and a 254 dcheck
 # reports a link-count disagreement on a PERFECTLY GOOD image.  It cannot
@@ -363,7 +363,7 @@ ic() { "$ICHECK" "$1" 2>&1 | sq; }
 # So all three are closed, and what is left is not a property of this suite.
 # The one occurrence sits between two commits, 18:16 and 18:35, in a session
 # on record for editing source under a running `make test' TWICE -- and an edit
-# reaching gencode.c mid-run rebuilds all seven $(IMGBIN) tools from a
+# reaching gencode.c mid-run rebuilds all ten $(IMGBIN) tools from a
 # half-edited compiler before test-mkfs runs.  The captured log cannot rule
 # that out, because it was filtered through a grep for `passed', `failed' and
 # FAIL, which discards every compile line: THE ABSENCE OF BUILD OUTPUT IN A
