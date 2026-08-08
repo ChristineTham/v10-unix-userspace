@@ -555,7 +555,48 @@ doubled here. `daddr_t` is narrowed globally (nothing hands one to macOS);
 `time_t` and `off_t` are narrowed per *field* in `sys/ino.h` and `sys/filsys.h`,
 because they cross the shim seam everywhere else. `src/include/PORTING.md`.
 
-Two things generalise. **The tree already contradicted itself and no one had
+**AND THE WIDTHS ARE NOW SAID OUT LOUD, BECAUSE THE MODEL CANNOT MOVE.**
+`int di_size` did not mean "an int"; it meant "exactly four bytes, because a
+VAX wrote four bytes there" — true only by coincidence of LP64, with the
+declaration and the reason in different files. `<sys/types.h>` now declares
+`v8_i16 v8_u16 v8_i32 v8_u32` and every record field is spelled with one
+(`dinode`, `filsys` including both union arms, `fblk`, `spcl`); `char` stays
+`char`, since a char array in a record is bytes.
+
+**LP64 IS FORCED HERE, AND IT IS A COUNTING ARGUMENT** — worth knowing before
+anyone proposes a "native 64-bit" `int`. ccom has exactly four integer types
+(`CHAR SHORT INT LONG`, `manifest.h:224-227`, no `long long` in the front end)
+and the port needs exactly four widths: 8, 16, **32** (`daddr_t`, the on-disk
+times, `c_magic`, `c_checksum`) and 64 (a pointer). Four types, four widths, so
+`char/short/int/long` = `8/16/32/64`, which *is* LP64 — the only assignment
+that covers the set. With `int` at 64, **32 becomes unspellable** and every
+field above becomes `char[4]` with hand-packing, i.e. editing the authentic
+programs that read them. Measured, not argued: flipping `SZINT`/`ALINT` builds
+until `local.c`'s `sz_incode()` — which tests `inwd == SZINT` before `SZLONG`
+— emits a 64-bit initialiser as a 4-byte `.long`. PLAN.md §4k has what ILP64
+would have bought in exchange, which is not nothing.
+
+**Verifying a no-op refactor needs more than a green suite.** Three checks, and
+the middle one is the reusable trick: layout measured from the V8 side
+(`probe.c`); the generated image compared byte for byte against **a
+same-binary, 1.2-seconds-apart noise floor**, which came out the identical
+seven offsets, so nothing but the clock moved; and every differing tape byte
+classified by its position within the 1024-byte record — 14 in `c_date`, 14 in
+`c_checksum`, zero elsewhere. Compare artefacts against *what the clock alone
+does*, not against each other.
+
+**`sys/fblk.h` HAD NEVER BEEN IMPORTED**, and that generalises past this file.
+`rootfs/usr/include` is third_party's pristine headers with ours copied over
+the top (`Makefile:1867` then `:1873`), so **a header nobody imported silently
+stays 1985's**. `struct fblk` is an on-disk record sitting in the same image as
+`dinode` and `filsys`, both of which are patched copies in `src/include` — and
+it was reading upstream's declaration. It measured 716 anyway, because `int` is
+32 here as on the VAX and `daddr_t` came from our patched header: right by
+coincidence twice, and **invisible to an audit of "the port's headers"**,
+because it was not among them. `tests/deps` had the gap written down — its case
+read *"sys/fblk.h is upstream, so sys/filsys.h stands for it"*.
+
+Two more things generalise. **The tree already contradicted itself and no one had
 looked**: `param.h` hardcodes `NMASK(0) 0377` and `INOPB(0) 16`, which assert
 NINDIR 256 and `sizeof(dinode)` 64, one line from the `NINDIR` that computed 128.
 When a header has both a hardcoded constant and a `sizeof`-derived one, make the

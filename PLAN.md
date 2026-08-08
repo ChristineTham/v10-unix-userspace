@@ -114,7 +114,7 @@ self-hosts, the world builds with V8 `make` + `v8cc` (dogfooding is the point).
 
 | Item | V8/VAX | Our target | Why |
 |---|---|---|---|
-| int / long / ptr | 32/32/32 (`NOLONG`) | 32/**64**/**64** (LP64) | macOS has no ILP32 process model. LP64 is the well-trodden path; `NOLONG` assumptions become a known bug class, hunted with ported `lint`. |
+| int / long / ptr | 32/32/32 (`NOLONG`) | 32/**64**/**64** (LP64) | **Forced, not chosen** — see §4k. macOS has no ILP32 process model, and ILP64 is unavailable because ccom has exactly four integer types and the port needs exactly four widths. `NOLONG` assumptions become a known bug class, hunted with ported `lint`. |
 | char | signed | signed | Matches VAX; Apple ARM64 agrees natively; Linux needs `-fsigned-char` for stage-0 and explicit signedness in our backend. |
 | Floats | VAX F/D | IEEE 754 | Rewrite the 5 format-dependent routines; numeric output may differ in last digits — accepted divergence. |
 | Struct return | `STATSRET` (static area) | keep `STATSRET` | Authentic V8 semantics, simplest backend, and the shim boundary passes only scalars/pointers so host-ABI struct return never matters. |
@@ -2237,3 +2237,70 @@ the terminator through `atoi` and the other five only stored it. Measured, not
 reasoned. The loop guard became `argc > 1` rather than `argv[1] != 0`, since
 after a dangling option `argv[1]` is *past* the terminator, where a null check
 proves nothing.
+
+## 4k. Why the data model is LP64, settled by counting
+
+Raised as a direct question: should this be a native 64-bit port with a 64-bit
+`int`, rather than one that keeps emulating 32-bit `int` semantics? The
+instinct behind it is sound, and the answer turned out to be a counting
+argument rather than a preference.
+
+### What ILP64 would have bought, fairly stated
+
+V8 was written when `sizeof(int) == sizeof(long) == sizeof(char *)`. LP64 is
+the configuration that *breaks* that assumption, and this port's **dominant**
+bug class is the consequence: K&R code storing a pointer in an undeclared
+`int`. Under ILP64 a whole family disappears rather than being patched —
+`char *p = malloc(n)` with `malloc` undeclared, the `acctype()` widening in
+`gencode.c` and the `arm64_aggparam()` machinery that keeps it off aggregate
+members, `arm64_trunc()` in its entirety, and the §4g representation guard
+(with `int` and `unsigned` both at register width, the paint is a no-op again).
+`mkfs`'s `gmode()` — `return((&m0)[i])` over four undeclared parameters, which
+this plan records as *not fixable in the compiler because the slot size is the
+ABI* — simply works, because an 8-byte `int` and an 8-byte argument slot agree.
+
+That is a real prize and it is why the question deserved measuring rather than
+answering from the existing decision.
+
+### Why it is nevertheless unavailable
+
+V8's ccom has exactly four integer types — `CHAR SHORT INT LONG`,
+`common/manifest.h:224-227`, and there is no `long long` anywhere in the front
+end. The port has to express exactly four widths: 8 for `char`, 16 for `ino_t`
+and `di_mode`, **32** for `daddr_t` and every on-disk time and the tape's
+`c_magic`/`c_checksum`, and 64 for a pointer. Four types, four widths, so
+`char/short/int/long` must be `8/16/32/64` — which is LP64. It is the only
+assignment that covers the set.
+
+Move `int` to 64 and **32 becomes unspellable**. Every field of `struct
+dinode`, `struct filsys`, `struct fblk` and `struct spcl` that is four bytes
+because a VAX wrote four bytes would have to become `char[4]` with hand-packing
+— which means editing the authentic programs that read them, to preserve a
+format that exists to be authentic. Measured rather than reasoned: `SZINT` and
+`ALINT` were flipped to 64 and the tree built. It fails first in a much smaller
+place — `local.c`'s `sz_incode()` tests `inwd == SZINT` before `SZLONG`, so
+with the two equal a 64-bit initialiser is emitted as `.long` — but the disk
+formats are where it would end.
+
+### And the premise was worth checking too
+
+The question arose from a session that looked like sustained 32-bit trouble.
+Re-counted: of roughly seventeen findings, **three** were int-width — the
+`arm64_trunc` truncation and the §4g signedness conversion. The other fourteen
+were null-pointer dereferences (§4i), an out-of-bounds read in `strncat`, and
+an off-by-one in `ls -R`, none of which any data model affects. The compiler
+findings came first and were the most dramatic, which made the whole run read
+as width work.
+
+### What was done instead
+
+The adjacent move, and the one that actually retires the risk: **make the
+widths explicit rather than implicit**. `<sys/types.h>` now declares `v8_i16`,
+`v8_u16`, `v8_i32`, `v8_u32`, and every record field is spelled with one, so a
+struct says what the *format* requires instead of relying on the target
+happening to agree. `src/include/PORTING.md` has the full account, including
+the three-way verification (layout measured from the V8 side, both artefacts
+compared byte for byte against a same-binary clock noise floor, and a
+mutation-verified guard that fires ahead of its own symptoms) and the discovery
+that `sys/fblk.h` had never been imported at all — so an on-disk record had
+been compiling against 1985's own header, correct only by coincidence.

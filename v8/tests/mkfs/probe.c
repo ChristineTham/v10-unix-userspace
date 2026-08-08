@@ -37,6 +37,17 @@ main()
 	char packed[12];
 	int i;
 
+	/*
+	 * The fixed-width typedefs the record structs are now spelled with.
+	 * Asserting these is what makes the spelling worth anything: `v8_i32
+	 * di_size' is only a statement about the disk if v8_i32 really is four
+	 * bytes, and it is `int' underneath, so it is four bytes ONLY because
+	 * this port is LP64.  The point of the name is that the day that
+	 * changes, this line goes red and names every field that has to move.
+	 */
+	printf("fixed %d %d %d %d\n", (int)sizeof(v8_i16), (int)sizeof(v8_u16),
+	    (int)sizeof(v8_i32), (int)sizeof(v8_u32));
+
 	printf("daddr %d\n",	(int)sizeof(daddr_t));
 	printf("dinode %d\n",	(int)sizeof(struct dinode));
 	printf("filsys %d\n",	(int)sizeof(struct filsys));

@@ -60,16 +60,16 @@
  * /etc/dumpdates.  src/cmd/dump/PORTING.md has both.
  */
 struct	spcl {
-	int	c_type;
-	int	c_date;		/* upstream time_t -- see above */
-	int	c_ddate;	/* upstream time_t -- see above */
-	int	c_volume;
+	v8_i32	c_type;
+	v8_i32	c_date;		/* upstream time_t -- see above */
+	v8_i32	c_ddate;	/* upstream time_t -- see above */
+	v8_i32	c_volume;
 	daddr_t	c_tapea;
 	ino_t	c_inumber;
-	int	c_magic;
-	int	c_checksum;
+	v8_i32	c_magic;
+	v8_i32	c_checksum;
 	struct	dinode	c_dinode;
-	int	c_count;
+	v8_i32	c_count;
 	char	c_addr[BSIZE(0)];
 } spcl;
 

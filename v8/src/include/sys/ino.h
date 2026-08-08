@@ -23,15 +23,15 @@
  */
 struct dinode
 {
-	unsigned short di_mode;	/* mode and type of file */
-	short	di_nlink;	/* number of links to file */
-	short	di_uid;		/* owner's user id */
-	short	di_gid;		/* owner's group id */
-	int	di_size;	/* number of bytes in file  (upstream off_t) */
+	v8_u16	di_mode;	/* mode and type of file */
+	v8_i16	di_nlink;	/* number of links to file */
+	v8_i16	di_uid;		/* owner's user id */
+	v8_i16	di_gid;		/* owner's group id */
+	v8_i32	di_size;	/* number of bytes in file  (upstream off_t) */
 	char	di_addr[40];	/* disk block addresses */
-	int	di_atime;	/* time last accessed	    (upstream time_t) */
-	int	di_mtime;	/* time last modified	    (upstream time_t) */
-	int	di_ctime;	/* time created		    (upstream time_t) */
+	v8_i32	di_atime;	/* time last accessed	    (upstream time_t) */
+	v8_i32	di_mtime;	/* time last modified	    (upstream time_t) */
+	v8_i32	di_ctime;	/* time created		    (upstream time_t) */
 };
 /*
  * the 40 address bytes:

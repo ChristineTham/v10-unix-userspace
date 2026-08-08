@@ -215,3 +215,84 @@ of. `long` is 64 bits here and was 32 on the VAX, so **every one of these
 typedefs is wrong for a disk record and right for everything else** — which is
 why the fix is one global narrowing plus four fields, and not a rewrite of this
 file.
+
+## The widths are now spelled out, and LP64 turns out to be forced
+
+The section above pins the record structs by *choosing types whose width
+happens to be right* — `int di_size` is four bytes because this port is LP64,
+and the header never says so. That worked and was fragile in a specific way:
+the declaration and the reason lived in different places, so a change to the
+data model would have moved every one of these fields silently.
+
+`<sys/types.h>` now declares `v8_i16`, `v8_u16`, `v8_i32`, `v8_u32`, and every
+field of every on-disk and on-tape record is spelled with one of them. `char`
+stays `char` — a char array in a record is bytes, not a narrow integer.
+Covered: `dinode`, `filsys` (including both arms of its union), `fblk`, `spcl`.
+`direct`, `dir` and `idates` already used `ino_t`/`daddr_t`/`char`, which are
+explicit already.
+
+### Asking whether the model could move, and measuring the answer
+
+The obvious question this raises is whether `int` should simply be 64 bits, so
+that none of this is needed and V8's own `sizeof(int) == sizeof(char *)`
+assumption — the source of this port's *dominant* bug class — comes back true.
+It was tried, not argued: `SZINT`/`ALINT` flipped to 64 in
+`compiler/ccom-arm64/macdefs.h` and the tree built.
+
+**It cannot be done, and the reason is a counting argument.** V8's ccom has
+exactly four integer types — `CHAR SHORT INT LONG` at `common/manifest.h`
+:224-227, with no `long long` anywhere in the front end — and this port must
+express exactly four widths:
+
+| width | who needs it |
+|---|---|
+| 8 | `char`, `di_addr[40]` |
+| 16 | `ino_t`, `di_mode`, `d_ino` — V8's own short fields |
+| **32** | `daddr_t`, the on-disk times, `c_magic`, `c_checksum` |
+| 64 | a pointer; the host's `time_t` and `off_t` |
+
+Four types, four widths, so `char/short/int/long` must be `8/16/32/64` — and
+that assignment **is** LP64. Making `int` 64 bits leaves nothing that can spell
+32, and every field in the table above would have to become `char[4]` with
+hand-packing, which means editing the authentic programs that read them. The
+build fails first somewhere much smaller — `local.c`'s `sz_incode()` tests
+`inwd == SZINT` before `SZLONG`, so with the two equal a 64-bit initialiser is
+emitted as `.long`, four bytes — but the disk formats are where it would end.
+
+So these typedefs are not a step toward changing the model. They are the
+opposite: they mark every place that would have to be revisited if it ever did.
+
+### How the change was verified
+
+A refactor that is a no-op has to be shown to be one, and "the tests pass" is
+weaker than it sounds here.
+
+- **Layout, measured directly.** `tests/mkfs/probe.c` prints `sizeof` and
+  `offsetof` from the V8 side: `dinode 64`, `filsys 4096`, `fblk 716`,
+  `direct 256`, `spcl` offsets `0 4 8 12 16 20 24 28 32 96 100` — unchanged.
+- **The artefacts, byte for byte.** A filesystem image built before and after
+  differs at exactly seven offsets — and two images built by the *same* binary
+  1.2 s apart differ at exactly the same seven. The refactor moves no byte the
+  clock does not.
+- **The tape likewise**, once the comparison is made honestly: dumping two
+  *different* images exaggerates it, because the dinode times inside `c_dinode`
+  differ too. Dumping the *same* image with both binaries gives 28 differing
+  bytes, and classifying every one by its position within the 1024-byte record
+  puts 14 in `c_date` and 14 in `c_checksum`, with **zero** anywhere else.
+- **A guard, mutation-verified.** `tests/mkfs` asserts `v8_i16/u16/i32/u32` are
+  `2 2 4 4`. Widening `v8_i32` to `long` turns it red *first*, ahead of the
+  eight downstream size assertions it causes — which is the point of naming the
+  root cause rather than only its symptoms.
+
+### And `sys/fblk.h` had never been imported at all
+
+Found while doing this. `rootfs/usr/include` is built by copying third_party's
+pristine headers and then overlaying ours (`Makefile:1867` then `:1873`), so a
+header nobody imported silently stays 1985's. `struct fblk` — an on-disk record
+in the same image as `dinode` and `filsys`, both of which are patched copies
+here — was one of them. It measured 716 anyway, because `int` is 32 bits here
+as it was on the VAX and `daddr_t` came from our patched `<sys/types.h>`: right
+by coincidence, twice over, and **invisible to anyone auditing "the port's
+headers"**, because it was not among them. `tests/deps` had even written the
+gap down — its case read *"sys/fblk.h is upstream, so sys/filsys.h stands for
+it"* — and now depends on the real file.

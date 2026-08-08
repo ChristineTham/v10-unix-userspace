@@ -438,8 +438,17 @@ dep 'sys/param.h -> mkfs object'   src/include/sys/param.h     $B/mkfs/mkfs.o
 # against a different idea of the format than the writer is the one arrangement
 # that makes a validator worse than useless: it agrees with itself.
 dep 'sys/ino.h -> icheck object'   src/include/sys/ino.h       $B/icheck/icheck.o
-dep 'sys/fblk.h is upstream, so sys/filsys.h stands for it' \
-                                   src/include/sys/filsys.h    $B/icheck/icheck.o
+# THIS CASE USED TO READ "sys/fblk.h is upstream, so sys/filsys.h stands for
+# it", and that was true and is the gap it was standing in for.
+# rootfs/usr/include is third_party's pristine headers with ours copied over
+# the top (Makefile:1867 then :1873), so a header nobody imported silently
+# stays 1985's -- and struct fblk, an on-disk record sitting in the same image
+# as dinode and filsys, was the one nobody had. It measured 716 anyway, because
+# `int' is 32 here as it was on the VAX and daddr_t came from our patched
+# types.h. Right by coincidence, and invisible: a reader auditing "the port's
+# headers" would not have found it in src/include at all.
+dep 'sys/fblk.h -> icheck object'  src/include/sys/fblk.h      $B/icheck/icheck.o
+dep 'sys/filsys.h -> icheck object' src/include/sys/filsys.h   $B/icheck/icheck.o
 dep 'sys/ino.h -> dcheck object'   src/include/sys/ino.h       $B/dcheck/dcheck.o
 # fsck reads every one of them and is the only program in the tree that reaches
 # sys/inode.h -- imported for this step, for IFMT/IFDIR/IFREG alone; struct

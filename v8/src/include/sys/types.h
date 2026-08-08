@@ -48,8 +48,40 @@ typedef	unsigned short	u_short;
 typedef	unsigned int	u_int;
 typedef	unsigned long	u_long;
 
+/*
+ * PORT: the widths an on-disk or on-tape record fixes, said out loud.
+ *
+ * Every field of a 1985 record has a width that belongs to the RECORD and not
+ * to the compiler.  Until now the headers expressed that by writing `int' and
+ * relying on this port being LP64 -- true today, and true only by coincidence
+ * of the data model.  `int di_size' does not mean "an int"; it means "exactly
+ * four bytes, because a VAX wrote four bytes there".  These typedefs let the
+ * struct say the second thing.
+ *
+ * IT IS ALSO WHY THE MODEL CANNOT MOVE.  V8's ccom has exactly four integer
+ * types -- CHAR SHORT INT LONG, manifest.h:224-227, no `long long' anywhere in
+ * the front end -- and this port has to express exactly four widths: 8 for
+ * char, 16 for ino_t and di_mode, 32 for daddr_t and the on-disk times, 64 for
+ * a pointer.  Four types, four widths, so char/short/int/long must be
+ * 8/16/32/64 and that assignment IS LP64.  Making `int' 64 bits leaves nothing
+ * that can spell 32, and every on-disk field would have to become char[4] with
+ * hand-packing -- which would mean editing the authentic programs that read
+ * them.  Measured, by building the tree that way: it fails first in the
+ * initialiser path, and the disk formats are where it would end.
+ *
+ * So these are not a step towards changing the model.  They are the opposite:
+ * they pin the places that would have to be revisited if it ever did, and they
+ * make a width a property of the format rather than a property of the target.
+ *
+ * char stays char.  A char array in a record is bytes, not a narrow integer.
+ */
+typedef	short		v8_i16;		/* exactly 2 bytes */
+typedef	unsigned short	v8_u16;
+typedef	int		v8_i32;		/* exactly 4 bytes -- a VAX `long' */
+typedef	unsigned int	v8_u32;
+
 typedef	struct	_physadr { int r[1]; } *physadr;
-typedef	int	daddr_t;	/* upstream `long': see the note above */
+typedef	v8_i32	daddr_t;	/* upstream `long': see the note above */
 typedef	char *	caddr_t;
 typedef	u_short	ino_t;
 typedef	long	swblk_t;

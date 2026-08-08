@@ -52,6 +52,17 @@ w() { awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}' "$TMP/w"; }
 # The VAX values.  Not preferences: sizeof(dinode) is 64 because param.h
 # hardcodes INOPB 16 for a 1024-byte block, and the free-list superblock's
 # 964 used bytes have to fit in one.
+# THE TYPEDEFS THE RECORD STRUCTS ARE SPELLED WITH, and this case is the whole
+# reason the spelling is worth anything.  `v8_i32 di_size' only says something
+# about the disk if v8_i32 is really four bytes -- it is `int' underneath, and
+# therefore four bytes ONLY because this port is LP64.  V8's ccom has exactly
+# four integer types and no `long long', so char/short/int/long must cover
+# 8/16/32/64 and that assignment IS LP64; measured, by building the tree with
+# `int' at 64 bits, where 32 becomes unspellable and every field below would
+# have to become char[4] with hand-packing.  The day the model moves, this line
+# goes red first and the fields to move are the ones named v8_*.
+check "the fixed-width typedefs are 2 2 4 4"	"2 2 4 4"	"$(w fixed)"
+
 check "daddr_t is four bytes"		"4"	"$(w daddr)"
 check "struct dinode is 64"		"64"	"$(w dinode)"
 check "struct filsys is 4096"		"4096"	"$(w filsys)"

@@ -19,18 +19,18 @@
  */
 struct	filsys
 {
-	unsigned short s_isize;		/* size in blocks of i-list */
+	v8_u16	s_isize;		/* size in blocks of i-list */
 	daddr_t	s_fsize;   		/* size in blocks of entire volume */
-	short  	s_ninode;  		/* number of i-nodes in s_inode */
+	v8_i16 	s_ninode;  		/* number of i-nodes in s_inode */
 	ino_t  	s_inode[NICINOD];	/* free i-node list */
 	char   	s_flock;   		/* lock during free list manipulation */
 	char   	s_ilock;   		/* lock during i-list manipulation */
 	char   	s_fmod;    		/* super block modified flag */
 	char   	s_ronly;   		/* mounted read-only flag */
-	int    	s_time;    		/* last super block update (upstream time_t) */
+	v8_i32 	s_time;    		/* last super block update (upstream time_t) */
 	daddr_t	s_tfree;   		/* total free blocks*/
 	ino_t  	s_tinode;  		/* total free inodes */
-	short	s_dinfo[2];		/* interleave stuff */
+	v8_i16	s_dinfo[2];		/* interleave stuff */
 #define	s_m	s_dinfo[0]
 #define	s_n	s_dinfo[1]
 	char   	s_fsmnt[14];		/* ordinary file mounted on */
@@ -38,13 +38,13 @@ struct	filsys
 	ino_t	s_nbehind;		/* est # free inodes before s_lasti */
 	union {
 		struct {
-			short  	S_nfree;/* number of addresses in s_free */
+			v8_i16 	S_nfree;/* number of addresses in s_free */
 			daddr_t	S_free[NICFREE];/* free block list */
 		} R;
 		struct {
 			char	S_valid;/* 1 on disk means bit map valid */
 #define BITMAP	961
-			int	S_bfree[BITMAP];/* bit map (upstream long) */
+			v8_i32	S_bfree[BITMAP];/* bit map (upstream long) */
 		} B;
 	} U;
 };

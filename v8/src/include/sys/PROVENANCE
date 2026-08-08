@@ -11,3 +11,4 @@ b66298ca751715cfe7aa644403e8f1ede330b567  v8/usr/include/sys/proc.h
 eb24be19260568a2335a920d48da1e5930b6432e  v8/usr/include/sys/ino.h
 22e15ab1621233c5447261e9bcc5f400189fec38  v8/usr/include/sys/filsys.h
 2bcd0851d16e8353db8c707f3d9d882828d68d5b  v8/usr/include/sys/inode.h
+9a1ba29085643de9802c5d7ee522fb088b980a74  v8/usr/include/sys/fblk.h
