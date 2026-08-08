@@ -269,12 +269,31 @@ Everything in `shim/v8sys/` stays raw-syscall-only (`dir.c` says so at its top,
 and that still holds). libc is for reading system facts, never for file I/O,
 strings, or anything `rawsys.h` already covers — that would be convenience, and
 convenience is how an exception list stops meaning anything. PLAN.md §7 has the
-reasoning, and `tests/kmemu` turns it into an assertion: `who` imports exactly
-`_setutxent _getutxent _endutxent` and nothing else does.
+reasoning, and `tests/kmemu` turns it into an assertion.
 
-The same per-file rule holds *inside* libkmemu. Only `utmp.c` names a libc
-function; `synth.c` writes the file it produces through `rawsys.h` like the rest
-of the shim, so the line is visible in the code rather than only in this list.
+**TWO SENTENCES HERE WERE STALE, and both went stale the same way — true when
+libkmemu was `utmp.c` alone, made false by Phase 4's `df`/`load`/`w` and by
+`ps`, while the rule they described stayed exactly right.** Re-measured:
+
+- This said "`who` imports exactly `_setutxent _getutxent _endutxent` and
+  nothing else does". `nm -u` says `who` imports **all eight** of
+  `endutxent getfsstat getutxent proc_listpids proc_pidinfo setutxent statfs
+  sysctlbyname`, and so do `ps`, `w` and `uptime` — identically, because
+  `KMEMU_LDADD` is `-Wl,-force_load` and pulls every archive member in. What
+  `tests/kmemu` actually asserts is the **set** (`KMEMU_IMPORTS`, those eight)
+  plus the thing that carries the real weight: no other Mach-O in the rootfs
+  imports anything at all. `nm -u rootfs/bin/cat` is empty, measured.
+- And it said "Only `utmp.c` names a libc function" inside libkmemu. **Five
+  do** — `utmp.c` (the `getutxent` trio), `mtab.c` (`getfsstat`, `statfs`),
+  `procfs.c` (`proc_listpids`, `proc_pidinfo`, `sysctlbyname`), `kmem.c`
+  (`sysctl`, `sysctlbyname`) and `synth.c` (`getfsstat`, `getutxent`,
+  `sysctl`). Every one of them is *reading a system fact*, which is the rule.
+
+So the rule is intact and `synth.c` is still its demonstration — it reads facts
+through libc and writes the file it produces through `rawsys.h`, naming no libc
+I/O function at all (10 `rawsys` calls, zero `open`/`write`/`fopen`). What was
+wrong was a count standing in for a rule, which is how a claim about *this
+file* survives the code moving underneath it.
 
 ### The bootstrap ladder
 
@@ -625,11 +644,38 @@ grep -rnE '(ctime|localtime|gmtime|asctime)[ \t]*\([ \t]*&' src shim compiler
 grep -rnE '(^|[^a-z_])time[ \t]*\([ \t]*&'                  src shim compiler
 ```
 
-19 and 22 today, and `fsck.c` is the only narrow target in either. Two rules:
-**the pattern is not `time(&` but any callee reached through the address of a
-narrowed field**, and **a sweep is a statement about a tree at a moment** — where
-the property matters, put it in a suite, as `tests/mkfs` now does by comparing
-`s_tfree` against icheck's independently walked free count.
+Two rules: **the pattern is not `time(&` but any callee reached through the
+address of a narrowed field**, and **a sweep is a statement about a tree at a
+moment** — where the property matters, put it in a suite, as `tests/mkfs` now
+does by comparing `s_tfree` against icheck's independently walked free count.
+
+**AND THE RAW COUNT IS THE WRONG THING TO RECORD, WHICH THIS ENTRY LEARNED BY
+GOING STALE.** It said "19 and 22 today"; re-measured it is 38 and 39, and
+nothing regressed. Two causes, both structural rather than accidental. The
+tape trio landed *after* the number was written, so `dump`, `restor`,
+`dumpdir` and `unctime.c` legitimately added sites. And — the reusable half —
+**the sweep now matches the prose that records it**: eleven of the 38 are
+prose, eight in `.md` files and three in the PORT comments that quote the
+fixed line, so the population grows every time someone writes a find down. A
+number that a *correct* fix increases is not a regression signal.
+
+What is comparable across time is the narrow-target filter, so run that
+instead of counting:
+
+```bash
+grep -rnE '(ctime|localtime|gmtime|asctime|(^|[^a-z_])time)[ \t]*\([ \t]*&' \
+     src shim compiler | grep -vE '\.md:' |
+     grep -E '&(sb|sblock|dp|ip|di_|s_|spcl|c_|.*->(di_|s_|c_))'
+```
+
+Three hits today, and all three are right: the PORT comments in `fsck.c:1711`
+and `icheck.c:541` quoting the two fixes, and `pr.c:60`'s
+`ctime(&sbuf.st_mtime)` — genuine, because only `sys/ino.h` and
+`sys/filsys.h` narrow per field and `struct stat`'s `time_t` stays eight
+bytes. (`sys/stat.h` is another header nobody imported, like `sys/fblk.h`
+before it, so it is upstream's `time_t st_atime` reading our full-width
+typedef. Right here, and right for the same by-coincidence reason — worth
+knowing before anything narrows `time_t` globally.)
 
 **A SAME-REGISTER RETURN IS NOT A SAME-TYPE RETURN, and floating point is
 where the port had never looked.** Two bugs, both measured, and each hid the
