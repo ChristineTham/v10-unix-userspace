@@ -37,20 +37,48 @@ WORK=$2; mkdir -p "$WORK/run" && cd "$WORK/run" || exit 1
 # trades run time for nothing.  The whole sweep is minutes either way.
 DEADLINE=${3:-5}
 
-# THE SKIP LIST IS A COVERAGE HOLE, AND IT HAS BEEN MEASURED RATHER THAN LEFT
-# OPEN.  These are excluded because they create, move, remove or format things
-# and a probe that damages the tree is worse than no probe -- which is why
-# `fsck -t' could only ever have been found by the static audit (PLAN.md S4i).
-# They CAN be probed safely, because the jail is per-binary: a V8 binary
-# resolves every path inside $V8ROOT, so a throwaway copy of the rootfs per
-# invocation contains anything it does, and `cp -ac' clones on APFS for ~0.3 s.
-# Done once against the seventeen that exist here as Mach-O -- rm rmdir mv cp
-# ln chmod mkdir mkfs clri fsck restor dump sh ed tee cc make -- for 901
-# invocations: ZERO signal deaths.  A negative result, and the reason this
-# stays a note rather than becoming a mode of this script.
-SKIP='rm rmdir mv cp ln chmod chown chgrp mkdir mkfs clri fsck dd restor dump
-      cron su kill sh csh ed qed adb login passwd init mount umount sync
-      halt reboot shutdown tee cc as ld ar make nohup at write mail v8'
+# A FIFTH THING, AND IT IS THE FIRST ONE'S OTHER HALF.  The scan list used to
+# be six literal globs, and two of them were wrong in the same direction as the
+# original /etc omission: `$ROOT/usr/lib/spell/*' treats spell as a DIRECTORY by
+# analogy with refer, and /usr/lib/spell is a Mach-O FILE -- V8's spellprog, the
+# binary the /usr/bin/spell shell script calls.  So it matched nothing and spell
+# was never probed.  /usr/lib/man was not named at all.  Both are clean (106
+# invocations, zero signals), so this cost nothing THIS time; it is fixed
+# because a hole that happens to be empty still hides the next thing to fall in
+# it.  Note the shape -- the fix that added /etc and /usr/lib/refer stopped one
+# directory short, which is CLAUDE.md's rule that the fix lands on one line and
+# the line beside it keeps the assumption.
+#
+# So the population is now DERIVED: find over the installed directories,
+# filtered to Mach-O.  A newly installed program is covered the day it lands,
+# and the script PRINTS what it found -- because the count below drifted from
+# seventeen to eighteen (the `v8' launcher) with nothing to say so.
+
+# THE TWO LISTS ARE A CLASSIFICATION, NOT A SKIP LIST, and the split is the
+# whole point.  What was one blob is now two, because the reasons are opposite
+# and only one of them is a permanent exclusion.
+#
+# UNSAFE escapes the jail, so no amount of throwaway rootfs contains it: halt,
+# reboot, shutdown, init, sync, mount and umount act on the HOST; kill signals
+# host pids; adb wants ptrace on them; su, login, passwd, cron, at, mail and
+# write are interactive or touch system state; as, ld and ar are the host's by
+# PLAN.md S1, so probing them probes Apple's tools rather than this port's.
+#
+# MUTATES only changes things INSIDE the jail, which the jail can therefore
+# contain: a V8 binary resolves every path inside $V8ROOT, so a throwaway copy
+# of the rootfs per invocation bounds anything it does.  Measured here: `cp -ac'
+# clones a 15 MB rootfs in 0.146 s.  These are probed under PROBE=mutating,
+# each invocation in its own clone -- because a prober must be a pure function
+# of the program and its arguments, which is the hermeticity lesson above.
+UNSAFE='halt reboot shutdown init sync mount umount kill adb
+        cron su login passwd at write mail as ld ar'
+MUTATES='rm rmdir mv cp ln chmod chown chgrp mkdir mkfs clri fsck dd restor
+         dump sh csh ed qed tee cc make nohup v8'
+
+# safe (default) -- today's population, and the numbers stay comparable.
+# mutating      -- only the MUTATES set, each invocation in a fresh rootfs.
+# all           -- both.
+PROBE=${PROBE:-safe}
 
 # run1 <prog> <label> [args...] -- run once and report only a REAL signal death.
 #
@@ -61,9 +89,23 @@ SKIP='rm rmdir mv cp ln chmod chown chgrp mkdir mkfs clri fsck dd restor dump
 # statuses landed in 129..159, which an earlier draft of this script reported
 # as SIGABRT.  So the child is run under perl, which keeps the real wait status
 # and can ask `$? & 127'.  The alarm is set in the child and survives exec.
+#
+# When $clone is set the invocation also gets its own copy of the whole rootfs
+# and runs the binary OUT OF that copy, with V8ROOT pointing at it -- so a
+# program that removes /bin removes the clone's.  Both halves are needed: a
+# fresh cwd alone would not stop `rm -r /' from emptying the real tree.
 run1() {
 	p=$1; lbl=$2; shift 2
 	rm -rf "$WORK/cell"; mkdir -p "$WORK/cell"
+	if [ -n "$clone" ]; then
+		rm -rf "$WORK/root"
+		cp -ac "$ROOT" "$WORK/root" 2>/dev/null ||
+			cp -a "$ROOT" "$WORK/root" || return
+		V8ROOT=$WORK/root; export V8ROOT
+		p=$WORK/root${p#$ROOT}
+	else
+		V8ROOT=$ROOT; export V8ROOT
+	fi
 	res=$(cd "$WORK/cell" && perl -e '
 		my $deadline = shift;
 		my $pid = fork();
@@ -99,20 +141,49 @@ run1() {
 	esac
 }
 
-hits=0 tried=0 tainted=0
-for p in "$ROOT"/bin/* "$ROOT"/usr/bin/* "$ROOT"/etc/* "$ROOT"/usr/lib/refer/* \
-         "$ROOT"/usr/lib/spell/* "$ROOT"/lib/*; do
-	[ -f "$p" ] && [ -x "$p" ] || continue
-	b=$(basename "$p")
-	case " $SKIP " in *" $b "*) continue;; esac
+# A name in both lists would be silently probed or silently not, depending on
+# which case ran first.  Say so instead.
+for n in $UNSAFE; do
+	case " $(echo $MUTATES) " in
+	*" $n "*) echo "BUG: $n is in both UNSAFE and MUTATES"; exit 1;;
+	esac
+done
+
+hits=0 tried=0 tainted=0 nsafe=0 nmut=0
+for p in $(find "$ROOT/bin" "$ROOT/usr/bin" "$ROOT/etc" "$ROOT/lib" \
+                "$ROOT/usr/lib" -type f -perm -100 2>/dev/null | sort); do
 	file "$p" 2>/dev/null | grep -q 'Mach-O' || continue
+	b=$(basename "$p")
+	case " $(echo $UNSAFE) " in *" $b "*) continue;; esac
+	clone=
+	case " $(echo $MUTATES) " in
+	*" $b "*)
+		case $PROBE in mutating|all) clone=1;; *) continue;; esac
+		nmut=$((nmut+1));;
+	*)
+		case $PROBE in mutating) continue;; esac
+		nsafe=$((nsafe+1));;
+	esac
 	tried=$((tried+1)); run1 "$p" "$b (no arguments)"
 	for o in a b c d e f g h i j k l m n o p q r s t u v w x y z \
 	         A B C D E F G H I J K L M N O P Q R S T U V W X Y Z; do
 		tried=$((tried+1)); run1 "$p" "$b -$o" "-$o"
 	done
 done
+rm -rf "$WORK/root"
+
+# NAMED BUT ABSENT is the drift the transcribed count could not show.  A name
+# here is defensive -- the program is not installed -- and printing it is what
+# turns "seventeen" from something someone wrote down into something measured.
+absent=
+for n in $UNSAFE $MUTATES; do
+	find "$ROOT/bin" "$ROOT/usr/bin" "$ROOT/etc" "$ROOT/lib" "$ROOT/usr/lib" \
+	     -type f -name "$n" 2>/dev/null | grep -q . || absent="$absent $n"
+done
+
 echo "---"
+echo "population: $nsafe safe, $nmut mutating (PROBE=$PROBE)"
+[ -n "$absent" ] && echo "named but not installed:$absent"
 echo "$tried invocations, $hits died on a signal"
 if [ "$tainted" -gt 0 ]; then
 	echo "WARNING: $tainted more died on SIGKILL/SIGBUS -- the tree was"
