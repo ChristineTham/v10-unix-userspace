@@ -38,20 +38,26 @@ int falseflg, nhash, nitem, nfound, frtbl, kk;
 	/* special wart for refpart: default is tags only */
 
 /*
- * PORT: bare `hunt' has argc == 1, so argv[1] is the vector's terminating
- * NULL and this test reads it before the program does anything at all.  The
- * VAX read 0207, which is not '-', so the loop was skipped.  The guard says
+ * PORT: argc, which upstream never consults here.
+ *
+ * Bare `hunt' has argc == 1, so argv[1] is the vector's terminating NULL and
+ * this test read it before the program did anything at all.  The VAX read the
+ * 0207 at address 0, which is not '-', so the loop was skipped; the guard says
  * that directly.  todir(argv[1]) below is the same argument on the same path
  * and gets the "" that reproduces an unopenable index name.
  *
- * NOT SWEPT, and saying so rather than implying otherwise: the arms inside
- * this loop each do `argc--; argv++' and then read argv[1], so a dangling
- * -r/-i/-l/-t can still advance PAST the terminator, where the guard below
- * cannot help because the value there is not a NULL.  hunt is reached through
- * lookbib, which always appends an index path, so the bare invocation is the
- * one that was measured to crash.
+ * `argc > 1' rather than `argv[1] != 0', and the difference matters: the arms
+ * inside this loop each do `argc--; argv++' of their own, so after a dangling
+ * option argv[1] points PAST the terminator, where a null check proves nothing
+ * because what sits there is not a null.  argc is decremented in step by every
+ * arm and again at the bottom, so it is the quantity that stays true.
+ *
+ * Measured, which is how the -l arm below was found: of `hunt -r -i -l -t -s
+ * -o', five exited and `-l' SIGSEGV'd -- the other five store the null instead
+ * of dereferencing it.  hunt is normally reached through lookbib, which always
+ * appends an index path.
  */
-while (argv[1] != 0 && argv[1][0] == '-')
+while (argc > 1 && argv[1][0] == '-')
 	{
 	switch(argv[1][1])
 		{
@@ -87,7 +93,14 @@ while (argv[1] != 0 && argv[1][0] == '-')
 			break;
 		case 'l': /* length of internal lists */
 			argc--; argv++;
-			lmaster = atoi(argv[1]);
+			/* PORT: the arm runs after the loop's argc test and
+			 * then advances on its own, so `hunt -l' with -l last
+			 * hands atoi the terminating NULL.  The only one of
+			 * the six consuming arms that dereferences rather than
+			 * stores -- measured, not assumed.  atoi of the VAX's
+			 * address 0 found no digit and gave 0, leaving lmaster
+			 * at its default. */
+			lmaster = argv[1] == 0? 0: atoi(argv[1]);
 			break;
 		case 'g': /* suppress fgrep search on old files */
 			keepold = 0;

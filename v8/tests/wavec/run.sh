@@ -419,15 +419,28 @@ done
 # It is reached directly rather than through lookbib, which always appends an
 # index path.  Upstream's answer is an unopenable index name and the error
 # that follows, which is what "" produces.
+#
+# ...and each of the six arms INSIDE that loop, because they advance argv
+# themselves after the loop's test has already passed.  Measured rather than
+# reasoned: five of the six store the null and survive, `-l' dereferences it
+# through atoi and did not.  The loop guard is on argc rather than on
+# `argv[1] != 0' for the same reason -- after a dangling option argv[1] is
+# past the terminator, where a null check proves nothing.
 if [ -x "$REFD/hunt" ]; then
-	"$REFD/hunt" </dev/null >/dev/null 2>&1; rc=$?
-	if [ "$rc" -ge 129 ] && [ "$rc" -le 159 ]; then
-		fail=$((fail+1)); echo "FAIL bare hunt died on signal $((rc-128))"
-	else
-		pass=$((pass+1))
-	fi
+	for a in '' -a -r -i -l -t -s -o; do
+		# shellcheck disable=SC2086
+		perl -e 'alarm 10; exec @ARGV' "$REFD/hunt" $a \
+		    </dev/null >/dev/null 2>&1
+		rc=$?
+		if [ "$rc" -ge 129 ] && [ "$rc" -le 159 ] && [ "$rc" -ne 142 ]; then
+			fail=$((fail+1))
+			echo "FAIL hunt ${a:-(no arguments)} died on signal $((rc-128))"
+		else
+			pass=$((pass+1))
+		fi
+	done
 else
-	fail=$((fail+1)); echo "FAIL hunt not installed"
+	fail=$((fail+8)); echo "FAIL hunt not installed"
 fi
 
 echo "wavec: $pass passed, $fail failed"

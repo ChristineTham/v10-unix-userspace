@@ -1203,6 +1203,18 @@ not testable until it is installed.
   compiled looks exactly like a test correctly passing (this has now produced
   two false "the guard did not fire" readings) — and remember that mutation
   proves a test can fail, never that it can *pass elsewhere*.
+
+  **AND THE TRAP RUNS THE OTHER WAY TOO: THE RESTORE CAN BE THE THING THAT DOES
+  NOT COMPILE.** Measured — `hunt1.o` and `hunt1.c` ended up with the same
+  mtime to the second, `15:50:40`, because the mutate/build/test/restore cycle
+  finished inside one second. make declared the object current, the restored
+  source was never compiled, and **a mutated binary was left installed in the
+  rootfs**. That direction is worse than the first: the mutation half reports
+  correctly and looks like a clean verification, so nothing draws attention to
+  it, and the damage outlives the experiment. It was caught only by running the
+  full suite afterwards, which is the reason to do that rather than trust the
+  one suite the mutation targeted. `touch` the source after restoring, or diff
+  the built binary — and never end a mutation run without a full `make test`.
 - **A test that asserts a property of the machine fails on some other machine,
   and mutation testing cannot see it.** Both CI breaks in this repo were this:
   `p_nice == NZERO` assumed the host's baseline nice is 0 (a GitHub runner

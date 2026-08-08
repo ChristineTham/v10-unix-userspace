@@ -2184,3 +2184,56 @@ Switches are linear compare chains (correct, but dense switches in troff and
 the shell want a jump table). Debug symbols are stubbed; when they arrive they
 should be DWARF through the host assembler, not VAX stabs. The ELF/Linux path
 is written but untested.
+
+## 4j. The crash probe, and what it says is still open
+
+The address-0 sweep (§4i) was static: three subagents reading source, plus
+greps. Its empirical counterpart is `dangle2.sh` — run every installed Mach-O
+binary in the rootfs bare and then with each of the 52 single-letter options as
+its **last** argument, under a five-second deadline, and report anything that
+dies on a signal. Read-only programs only; anything that creates, moves,
+removes or formats is excluded by name, which is why `fsck -t` could never have
+been found this way and the static audit is the sole coverage for that set.
+
+**4134 invocations, 254 of them died on a signal.** So the static sweep, which
+found and fixed nine, was not the end of it.
+
+Two things the first draft of the probe got wrong, each of which had hidden a
+real finding, and both worth remembering for the next tool of this kind:
+
+- It scanned only `/bin` and `/usr/bin`, so `/etc` (`icheck`, `dcheck`) and
+  `/usr/lib/refer` (`hunt`) were never tried.
+- It always passed an option, so the **bare** invocation — which is how
+  `unexpand` and `bcd` crash — was never tried.
+- It had no per-invocation deadline, so one program that waits blocked the whole
+  run and the sweep simply never finished. A sweep that never finishes reports
+  nothing and looks like a sweep in progress.
+
+### The triage, so far, is that these are NOT all one class
+
+Partial breakdown while the full run completes: `lex` 53 (every invocation,
+including bare), `nroff` 38, `ptx` 2, `pr` 2, `sed` 1 (`sed -e`), `ps` 1
+(`-T`), `bcd` 1 (bare). Enough to say the population is mixed, and that
+matters more than the count:
+
+- `bcd` with no arguments is **not** the address-0 class. Its prompt loop is
+  `while ((c=getchar())!='\0' && c!='\n')`, which never tests EOF, so redirected
+  empty stdin spins and overruns a fixed buffer. A VAX would have overrun it
+  too — upstream's defect, not the target's, and so not automatically ours to
+  patch under §1.
+- `lex` failing on all 53 including bare is one root cause, not 53.
+- The dangling-option ones (`sed -e`, `ptx -g`/`-w`, `pr -m`/`-M`, `ps -T`) do
+  look like §4i's class and are probably the same one-token fix.
+
+**So the honest state is: measured, triaged in part, not fixed.** Each needs the
+same per-case judgement §4i applied — is there a VAX answer to reproduce, and is
+the change forced by the target — and that is the work, not the patching. The
+tool and its raw output are the deliverable that makes it startable; the number
+to beat is 254.
+
+`hunt` is the one carried across from the probe into §4i, because it was already
+open there: of the six consuming arms inside its option loop, `-l` dereferenced
+the terminator through `atoi` and the other five only stored it. Measured, not
+reasoned. The loop guard became `argc > 1` rather than `argv[1] != 0`, since
+after a dangling option `argv[1]` is *past* the terminator, where a null check
+proves nothing.
