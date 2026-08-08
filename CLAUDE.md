@@ -1306,6 +1306,20 @@ not testable until it is installed.
   full suite afterwards, which is the reason to do that rather than trust the
   one suite the mutation targeted. `touch` the source after restoring, or diff
   the built binary — and never end a mutation run without a full `make test`.
+- **NEVER EDIT SOURCE WHILE A SUITE IS RUNNING, and a filtered log cannot
+  testify about what it filtered.** `make test` builds each suite's
+  prerequisites when it reaches that suite, so an edit landing mid-run can
+  rebuild binaries a later suite is about to test — an edit touching
+  `gencode.c` rebuilds all seven `$(IMGBIN)` tools from a half-written
+  compiler, and what comes out is one wrong branch rather than a build error.
+  That is the leading explanation for the single `mkfs` `dcheck` failure that
+  stood open for a session while three innocent hypotheses were measured and
+  killed (120 clean suite runs, a rootfs hash diff showing only `/dev/kmem`
+  changes, and `sync(2)` unmoved by 800 MB of dirty pages). It took that long
+  partly because **the captured log had been filtered to `passed|failed|FAIL`,
+  which discards every compile line, and its lack of build output was read as
+  evidence that nothing had been built.** It is evidence of nothing. Capture
+  runs whole, or say out loud what the filter removed.
 - **A test that asserts a property of the machine fails on some other machine,
   and mutation testing cannot see it.** Both CI breaks in this repo were this:
   `p_nice == NZERO` assumed the host's baseline nice is 0 (a GitHub runner

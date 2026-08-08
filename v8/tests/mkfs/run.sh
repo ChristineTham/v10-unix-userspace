@@ -351,11 +351,27 @@ ic() { "$ICHECK" "$1" 2>&1 | sq; }
 # happen: no $(IMGBIN) source is staged in usr/src/cmd, and tests/jail asserts
 # $(IMGBIN) and $(V8BIN) stay disjoint.  Hypothesis closed.
 #
-# WHAT THEY LEAVE IN THE PAGE CACHE is what is left.  dcheck.c:108 is a sync(2),
-# the only call in this suite that can wait on data sixteen suites just dirtied,
-# and icheck's three syncs run first only because the suite happens to order
-# them that way.  Cause still unknown; the marker below is what will name the
-# next occurrence instead of blaming a link count for it.
+# WHAT THEY LEAVE IN THE PAGE CACHE.  dcheck.c:108 is a sync(2), the only call
+# in this suite that can wait on data sixteen suites just dirtied.  Measured:
+# ~800MB written and left dirty immediately before each of twelve dcheck runs
+# gives 0.05-0.26s and a clean answer every time -- no excursion at all, let
+# alone the 20x one a 20s deadline needs.  Dead as well.  (And note that the
+# 0.45-0.99s quoted above is the HARNESS: perl's exec plus the sq pipeline.
+# dcheck itself is a fifth of that, which is worth knowing before anyone tunes
+# the limit down.)
+#
+# So all three are closed, and what is left is not a property of this suite.
+# The one occurrence sits between two commits, 18:16 and 18:35, in a session
+# on record for editing source under a running `make test' TWICE -- and an edit
+# reaching gencode.c mid-run rebuilds all seven $(IMGBIN) tools from a
+# half-edited compiler before test-mkfs runs.  The captured log cannot rule
+# that out, because it was filtered through a grep for `passed', `failed' and
+# FAIL, which discards every compile line: THE ABSENCE OF BUILD OUTPUT IN A
+# FILTERED LOG IS NOT EVIDENCE THAT NOTHING WAS BUILT, and reading it as such
+# is what kept this open one round longer.  Not proven, but it is the only
+# surviving explanation and it names its own preventive -- do not edit source
+# while a suite is running.  The marker below stays, because a next occurrence
+# has to name itself rather than be reasoned about a fourth time.
 #
 # 142 is 128+SIGALRM.  A program exiting 142 itself would be indistinguishable
 # -- the shell cannot tell a signal from a status, which crash-probe.sh learned
