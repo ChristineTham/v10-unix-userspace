@@ -156,7 +156,11 @@ importing more:
   the shim's own raw syscalls a 32-bit `time_t`.
 
 `libv8kern.a` is separate from `libv8sys.a` for libkmemu's reason plus a
-storage one: 85 KB of bss, and `qinit()` dirties ~60 KB of pages. `cat` does not
+storage one: **94 KB** of zero-initialised storage (measured: 96332 bytes of
+common symbols, `_blkdata` 36736 and `_queue` 28672 the largest two), and
+`qinit()` dirties ~60 KB of pages. That figure said 85 KB until it was
+re-measured; it grew when `streamio.c` brought `_streams`, `_u` and `_file`,
+which is a count a correct import increases. `cat` does not
 carry it. Its externals are `_memcpy`, `_setjmp` and `_longjmp`, all three
 V8's own — and `tests/streams` gets that list by **subtracting what the archive
 defines from what it undefines** rather than by grepping away a hand-written
@@ -315,22 +319,40 @@ libkmemu was `utmp.c` alone, made false by Phase 4's `df`/`load`/`w` and by
 - This said "`who` imports exactly `_setutxent _getutxent _endutxent` and
   nothing else does". `nm -u` says `who` imports **all eight** of
   `endutxent getfsstat getutxent proc_listpids proc_pidinfo setutxent statfs
-  sysctlbyname`, and so do `ps`, `w` and `uptime` — identically, because
+  sysctlbyname`, and so do **`df`, `load`, `ps`, `uptime` and `w`** — six
+  binaries, identically, because
   `KMEMU_LDADD` is `-Wl,-force_load` and pulls every archive member in. What
   `tests/kmemu` actually asserts is the **set** (`KMEMU_IMPORTS`, those eight)
-  plus the thing that carries the real weight: no other Mach-O in the rootfs
-  imports anything at all. `nm -u rootfs/bin/cat` is empty, measured.
-- And it said "Only `utmp.c` names a libc function" inside libkmemu. **Five
+  (This sentence has now been corrected TWICE and both times the same way —
+  it named four binaries when six import the set, and `df` and `load` are
+  called grovelers two paragraphs above. Re-measure the set, do not edit the
+  list.) Plus the thing that carries the real weight: no other Mach-O in the
+  rootfs
+  imports anything at all — **with one stated exemption**: `lib/ccom` imports
+  36 names and `lib/cpp` 26, because those two are still the clang-built
+  stage-0 binaries (see the install note below), and `tests/kmemu` exempts them
+  by name with that reason. `nm -u rootfs/bin/cat` is empty, measured.
+- And it said "Only `utmp.c` names a libc function" inside libkmemu. **Four
   do** — `utmp.c` (the `getutxent` trio), `mtab.c` (`getfsstat`, `statfs`),
-  `procfs.c` (`proc_listpids`, `proc_pidinfo`, `sysctlbyname`), `kmem.c`
-  (`sysctl`, `sysctlbyname`) and `synth.c` (`getfsstat`, `getutxent`,
-  `sysctl`). Every one of them is *reading a system fact*, which is the rule.
+  `procfs.c` (`proc_listpids`, `proc_pidinfo`, `sysctlbyname`) and `kmem.c`
+  (`sysctlbyname`). Every one of them is *reading a system fact*, which is the
+  rule.
 
-So the rule is intact and `synth.c` is still its demonstration — it reads facts
-through libc and writes the file it produces through `rawsys.h`, naming no libc
-I/O function at all (10 `rawsys` calls, zero `open`/`write`/`fopen`). What was
-wrong was a count standing in for a rule, which is how a claim about *this
-file* survives the code moving underneath it.
+**AND THIS ENTRY SAID "FIVE", COUNTING `synth.c`, WHICH CALLS NONE OF THEM.**
+Its only occurrences of `getutxent`, `getfsstat` and `sysctl` are lines 13-14
+of its own header comment, where it lists the sanctioned interfaces as prose.
+The sweep matched **the documentation of the rule and counted it as an instance
+of the rule** — the same shape as the `time(&` sweep whose population grew every
+time someone wrote a find down. `kmem.c` was credited with a bare `sysctl` it
+never calls, for the same reason.
+
+The rule is intact and `synth.c` is a *better* demonstration than the sentence
+claimed, not a worse one: it is 100% `rawsys` and 0% libc — **8** call sites,
+zero `open`/`write`/`fopen`. (That was "10 `rawsys` calls"; `grep -c` counts
+lines, and three of them are the `#include` and two comments. A `grep -c` is a
+line count, not a call count.) What has to be re-measured is which files *read*
+a fact through libc, because that is the boundary an auditor would go looking
+for — and `synth.c` is not one of them.
 
 ### The bootstrap ladder
 
@@ -492,9 +514,18 @@ PLAN.md §4a has all three.
 — upstream V8, unmodified — with V8's make, cc and yacc, in a directory holding
 nothing but V8 sources, under `V8JAIL=strict`. That makefile is the one worth
 proving: its line 11 declares `lmain.o: lmain.c ldefs.c once.c`, the dependency
-whose absence caused this port's worst bug. What is left is three programs and
-none of them is mechanical: two are the shared-text stop above, and `df` needs
-its numbers to come from `/dev/kmem` rather than from a call this port added.
+whose absence caused this port's worst bug.
+
+**What is left is FOUR programs, not three, and the fourth had no entry at
+all.** There are 22 imported makefiles and rung 5 covers 18, so the uncovered
+set is `cpp`, `sh`, `df` and **`dump`** — and none of the four is mechanical.
+`cpp` and `sh` are the shared-text stop above; `df` needs its numbers to come
+from `/dev/kmem` rather than from a call this port added; and `dump` is in
+`$(IMGBIN)`, compiled `-DDIRSIZ=$(IMGDIRSIZ)`, so its own build description —
+which passes no `-D` — would produce a *different program*, exactly the
+argument `quot` escaped by measuring its object byte-identical either way.
+That reason was already written down under `$(IMGBIN)`; what was missing is
+that the two sentences never met, so the tally said three.
 
 **Phase 6 is done.** `make install PREFIX=... BINDIR_HOST=...` (defaults
 `/usr/local/v8` and `/usr/local/bin`) rebuilds with the prefix stamped into
@@ -644,7 +675,7 @@ does*, not against each other.
 
 **`sys/fblk.h` HAD NEVER BEEN IMPORTED**, and that generalises past this file.
 `rootfs/usr/include` is third_party's pristine headers with ours copied over
-the top (`Makefile:1867` then `:1873`), so **a header nobody imported silently
+the top (`Makefile:1960` then `:1966`), so **a header nobody imported silently
 stays 1985's**. `struct fblk` is an on-disk record sitting in the same image as
 `dinode` and `filsys`, both of which are patched copies in `src/include` — and
 it was reading upstream's declaration. It measured 716 anyway, because `int` is
@@ -962,16 +993,51 @@ what ran before rather than of the machine.
 
 **LP64 is not the only width problem: V8's 16-BIT RANGES are the other, and
 they fail later and quieter.** LP64 breaks a pointer immediately; a 16-bit field
-holds a value the host has simply not reached yet. Four so far, and they are
+holds a value the host has simply not reached yet. Five so far, and they are
 one class:
 
 | field | V8's range | the host's | how it failed |
 |---|---|---|---|
 | `DIRSIZ` | 14-char names | any length | truncated names, `pwd` could not `chdir` back |
-| `d_ino` | 16-bit inode | 64-bit | wraps; harmless *except* the value that wraps to 0 |
+| `d_ino` | 16-bit inode | 64-bit | **`pwd` printed another directory's path, exit 0** — see below |
 | `p_pid` | `short`, wrapped at 30000 | to 99998 | **negative pids** — 44145 read as −21391 |
 | `FSNMLG` | 32-char mount points | to 140 seen | `df` printed a mount point as a *device* |
 | `u_uid` | `short`, to 32767 | to 100000+ | a uid ≡ 0 mod 65536 reads as **root** |
+
+**THE `d_ino` ROW SAID "harmless" FOR MONTHS AND IT IS THE ONLY ONE OF THE FIVE
+THAT CANNOT BE FIXED.** The others narrow a value; this one narrows an
+*identity*, and identity is what three of V7's idioms are built on.
+`v8sys_fold_ino` (`shim/v8sys/dir.c:125`) XOR-folds a 64-bit host inode into
+16 bits and feeds **both** sides of `getwd`'s central comparison — `d_ino` in
+the directory snapshot and `st_ino` in `stat_translate`. So `getwd.c:62`,
+`while (dir->d_ino != d.st_ino)`, stops on whichever colliding entry `readdir`
+yields first. Measured on this host: `$TMPDIR` holds **5452 entries collapsing
+to 5250 folds, 199 shared**, and V8's `pwd` was wrong in **10 of 10** collision
+pairs — four printing another entry's name and **exiting 0**.
+
+Three things generalise, and the last is why it is a limit rather than a bug:
+
+- **A confirming `stat()` does not help**, which is the trap. It returns the
+  *folded* inode too, so the colliding file answers with the same `st_ino` and
+  the same `st_dev` and the check passes. `ttyname.c:59-65` is upstream's
+  careful version of the idiom — pre-filter on `d_ino`, then `stat` and compare
+  both fields — and it is defeated identically. Two files the shim maps to one
+  `(dev, ino)` are indistinguishable to a V8 program **by construction**, so no
+  consumer-side change can separate them. A patch to `getwd.c` was written and
+  withdrawn.
+- **A fresh test tree structurally cannot reproduce it.** APFS hands out
+  consecutive inodes and this fold separates consecutive values perfectly, so
+  1500 directories made back to back collided **zero** times. Collisions need
+  inodes spread over time. That is why `tests/wavea`'s `pwd` case fires roughly
+  never, and why the churn experiment recorded there had no chance — it churned
+  entries it had just created.
+- **The fold cannot be made injective**, because it must stay a pure function
+  of the host inode: `ls -i` twice must agree, and folded values are written
+  into `/etc/utmp` for another process to read. Assigning numbers in order of
+  first sighting is the easy way to be injective and is order-dependent. Nor is
+  a better hash available — 64 bits into 16 must collide, and this one already
+  collides at the birthday rate. `src/libc/gen/PORTING.md` has the account and
+  what a real fix would have to look like.
 
 **AND THE FIFTH ONE WAS WRITTEN ONE LINE BELOW THE PARAGRAPH ARGUING AGAINST
 IT.** `shim/kern/sys/fio.c` folds a Darwin pid into a VAX `short p_pid`'s range
@@ -1438,6 +1504,30 @@ not testable until it is installed.
   Validate a prober against a **known crasher and a known-clean program**
   before believing any number from it. And note what survived all four runs
   unchanged: the *set* of programs, which is what the fixes were driven from.
+
+  **AND A FOURTH WAY, WHICH IS THE SET ITSELF: IT WAS TRANSCRIBED.** The scan
+  was six literal globs, and `$ROOT/usr/lib/spell/*` treats spell as a
+  *directory* by analogy with `refer` — `/usr/lib/spell` is a Mach-O **file**,
+  V8's spellprog, the binary the `/usr/bin/spell` script calls. So it matched
+  nothing. `/usr/lib/man` was not named at all. Same direction as the original
+  `/etc` omission: the fix that added `/etc` and `/usr/lib/refer` **stopped one
+  directory short**. Both are clean (106 invocations, zero signals), so it cost
+  nothing this time — a hole that happens to be empty still hides the next
+  thing to fall in it. The population is now **derived** (`find` over the
+  installed directories, filtered to Mach-O) and verified to be the old set
+  plus exactly those two, 95 → 97, with **every** Mach-O in the rootfs
+  reachable. The script prints what it found, because the mutating count had
+  already drifted 17 → 18 (the `v8` launcher) with nothing to say so.
+
+  The old one-blob `SKIP` is now a **classification**, which is the part worth
+  copying. `UNSAFE` escapes the jail and no throwaway rootfs contains it —
+  `halt`/`reboot`/`init`/`sync`/`mount` act on the host, `kill` signals host
+  pids, `adb` wants ptrace on them, `as`/`ld`/`ar` are the host's by §1.
+  `MUTATES` only changes things *inside* the jail, which the jail therefore
+  bounds: `PROBE=mutating` gives each invocation its own `cp -ac` clone (0.146 s
+  for 15 MB, measured) and runs the binary out of it. 18 programs, 954
+  invocations, **zero** signal deaths — and containment proved by hashing the
+  real rootfs before and after, not asserted.
 - A guard that has never been seen to fail is not a guard. New test suites are
   verified by mutation (break the thing, watch the test fail, restore). Two
   traps in doing that: **verify the object actually rebuilt** — mtimes compare

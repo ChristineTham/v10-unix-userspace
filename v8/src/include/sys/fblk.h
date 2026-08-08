@@ -3,7 +3,7 @@
  * imported is the point.
  *
  * rootfs/usr/include is built by copying third_party's pristine headers and
- * then overlaying ours (Makefile:1867 then :1873).  A header nobody imported
+ * then overlaying ours (Makefile:1960 then :1966).  A header nobody imported
  * therefore stays UPSTREAM'S, silently -- so every program that reads a free
  * list has been compiling `struct fblk' against 1985's own declaration, while
  * the two structs beside it in the same image, dinode and filsys, are patched
