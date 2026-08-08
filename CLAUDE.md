@@ -1342,7 +1342,14 @@ happened here:
   `make -n --warn-undefined-variables` after any Makefile edit, and flags
   multi-target rules that carry a recipe. ~60ms.
 - **`agents/lp64-auditor.md`** — subagent for the width, collision and variadic
-  hazards. Run it on a freshly imported program before building.
+  hazards. Run it on a freshly imported program before building — **and on the
+  shim code written to make that program build, which is where it has actually
+  found things.** Measured on the `streamio.c` import: 1093 lines of authentic
+  source came back clean for the dominant class, and both live findings were in
+  the shim written that hour. That is not luck. The imported code had been
+  surveyed at length before it was imported; the new code was written under the
+  confidence that survey produced, and whoever writes the fold is the person
+  least able to see the bare cast on the next line.
 - **`skills/port-program/`** — the workflow below, with `audit.sh` bundled.
   Invoke with `/port-program NAME`.
 
