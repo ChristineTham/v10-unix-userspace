@@ -275,11 +275,25 @@ own commitments rather than a bug in anything.
    ```c
    if (copyout((caddr_t)&fmt, arg, sizeof(arg)))     /* fmt is int, arg is caddr_t */
    ```
-   Compare `:690`, which correctly says `sizeof(nld)`. On the VAX `int` and
-   `caddr_t` were both 4 bytes, so this was right *by accident*; on LP64 it
-   writes **8 bytes out of a 4-byte object** into user memory. Reached by
-   `FIOLOOKLD` with a non-null argument. A byte-identical import inherits it,
-   so it needs a recorded deviation or a documented decision to leave it.
+   **VERIFIED, and the decision is taken: it becomes `sizeof(fmt)`.** The
+   declarations are `caddr_t arg` (`:543`) and `int fmt, nld, ioctime` (`:549`),
+   so on LP64 this reads **8 bytes out of a 4-byte object** and writes them to
+   user memory. On the VAX `sizeof(caddr_t)` was 4 and so was `sizeof(int)`, so
+   upstream's line computed the right number *by coincidence* — which makes the
+   change target-forced under S1 rather than a matter of taste, exactly like
+   `strncat`'s and `troff`'s.
+
+   The survey compared it against one sibling. **There are nine**, and that is
+   what settles it — `stioctl` copies at `:562 :567 :576 :623 :665 :690 :713
+   :732 :779`, and every one but `:713` names the *object* (`nld`,
+   `stq->pgrp`, `ld`, `sizeof(union stmsg)`, or a computed
+   `bp->wptr - bp->rptr`). One of nine names the pointer. A typo, not a design,
+   and now argued from eight controls rather than one.
+
+   Reached by `FIOLOOKLD` with a non-null argument. A byte-identical import
+   would inherit it, so this is a recorded deviation to apply at import time —
+   `tools/import.sh` keeps the upstream hash, and this paragraph is the diff's
+   justification.
 
 2. **`stream.h:67` is `short pgrp`, and it cannot be widened.** `streamio.c:573`
    stores a pid into it (`stq->pgrp = u.u_procp->p_pgrp = u.u_procp->p_pid`),
