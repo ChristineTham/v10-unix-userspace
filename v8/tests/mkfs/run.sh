@@ -323,7 +323,35 @@ ic() { "$ICHECK" "$1" 2>&1 | sq; }
 # run inline it takes the suite down and prints nothing, which is the failure
 # mode tests/wavec's alarm exists for.  Every image this suite hands dcheck is
 # one it built, so nothing should ever reach the deadline; that is the point.
-dc() { perl -e 'alarm 20; exec @ARGV' "$DCHECK" "$1" 2>&1 | sq; }
+#
+# A FIRED DEADLINE MUST SAY SO, and `perl -e alarm; exec' cannot.  A killed
+# child leaves TRUNCATED OUTPUT, and truncated output is compared as an ANSWER
+# -- so a timeout here would read as "dcheck disagreed about a link count" and
+# accuse exactly the wrong code.  That is not hypothetical given the hang above:
+# it would be six million `read error' lines cut off mid-flight, or none.
+#
+# Prompted by one unreproduced occurrence of that case failing in a full run
+# (once in five; not reproduced in three isolated runs or 300 hammered dcheck
+# invocations, and dcheck takes 0.45-0.99s against a 20s limit, so a plain
+# timeout needs a 20x slowdown).  Cause unknown -- which is the reason to make
+# the next occurrence name itself rather than to guess now.
+#
+# 142 is 128+SIGALRM.  A program exiting 142 itself would be indistinguishable
+# -- the shell cannot tell a signal from a status, which crash-probe.sh learned
+# expensively -- but the marker is ADDITIVE, so a false positive costs one line
+# and never hides real output.  The cap is the other half: a `got [...]' of six
+# million lines is not a diagnosis either.
+deadline() {
+	_lim=$1; shift
+	perl -e 'alarm shift; exec @ARGV' "$_lim" "$@" > "$TMP/.dl" 2>&1
+	_s=$?
+	head -200 "$TMP/.dl"
+	[ "$(wc -l < "$TMP/.dl" | tr -d ' ')" -gt 200 ] &&
+		echo "(output truncated at 200 lines)"
+	[ "$_s" -eq 142 ] && echo "DEADLINE: did not finish within ${_lim}s"
+	return 0
+}
+dc() { deadline 20 "$DCHECK" "$1" | sq; }
 
 out=$(ic "$IMG")
 # inode 1 is bflist()'s bad-block holder (IFREG), inode 2 the root (IFDIR).
@@ -542,7 +570,7 @@ FSCK=$V8ROOT/etc/fsck
 [ -x "$FSCK" ] || { echo "missing $FSCK -- run make"; exit 1; }
 # -y so no case can block on stdin, </dev/null so a prompt that ignored -y
 # would fail rather than wait, and a deadline for the hang above.
-fs() { perl -e 'alarm 25; exec @ARGV' "$FSCK" -y "$1" 2>&1 </dev/null | sq; }
+fs() { deadline 25 "$FSCK" -y "$1" </dev/null | sq; }
 
 # --- a clean image: agree with icheck, and change nothing --------------------
 cleanout=$(fs "$IMG")
