@@ -1085,8 +1085,13 @@ The boundary, so it does not spread:
   file kept current by `init` and `login`, both on the kernel's side of this
   seam, and the shim is that side.
 - **The exception stayed narrow, and it is checkable rather than asserted.**
-  `nm -u rootfs/bin/who` is exactly `_setutxent _getutxent _endutxent`. Every
-  other binary in the rootfs imports nothing.
+  `nm -u rootfs/bin/who` was recorded here as exactly
+  `_setutxent _getutxent _endutxent`. **Re-measured it is all eight of
+  `KMEMU_IMPORTS`, and six binaries import them, not one** -- `df ps who load
+  uptime w`, identically, because `KMEMU_LDADD` is `-Wl,-force_load`. The
+  claim that every other binary imports nothing holds with one stated
+  exemption: `lib/ccom` (36) and `lib/cpp` (26) are still the clang-built
+  stage-0 binaries. CLAUDE.md carries the current form.
 
 **What writing the boundary test actually yielded**, which was more than the
 feature. Sweeping every Mach-O in the rootfs found five functions that had been
@@ -1143,7 +1148,13 @@ So `sleep` is V8's own now, and **the allowed-leak list is what took it off**:
 Still on that list, named rather than tolerated: **`pic` and `grap` use Apple's
 libm** (`sin`, `cos`, `sqrt`, `atan2`, `exp`, `log`, `pow`, `floor`, `ceil`).
 V8 shipped a libm and this port has never built one. Found by the same sweep,
-not by a bad drawing. It is now the only entry.
+not by a bad drawing.
+
+**SUPERSEDED, and in the direction that mattered.** libm was excused as
+"non-variadic, so it works"; it was returning *wrong answers* the whole time,
+because v8cc passes doubles in `x0`-`x7` and AAPCS64 passes them in `d0`-`d7`.
+V8's math is in `libc/math` and is now built, so `nm -u` on both `pic` and
+`grap` is **empty** and the allowed list is `ALLOWED=""`.
 
 **`df` and `load` are in too.** `df` needed the one sanctioned source
 deviation (§7's "statfs backend") plus a manufactured `/etc/mtab` and
@@ -1584,6 +1595,62 @@ Ordered so that value lands before risk, and so each step is testable alone.
    the per-binary question first and importing once was the right order: it
    meant writing `tsleep` once, from a settled design, rather than twice under
    a build that would not link.
+   **STEP 1b: WHICH DRIVER GOES UNDERNEATH, SURVEYED THE SAME WAY.** Nothing
+   in the rootfs links `libv8kern.a` -- it is exercised only by
+   `tests/streams/sioprobe.c`, so 1093 lines of authentic kernel are
+   unreachable from any shipped binary. Three candidates were costed by
+   external-name count, which is the method that made step 1 tractable:
+
+   | | ext. names | missing | headers | verdict |
+   |---|---|---|---|---|
+   | `dev/spipe.c` (83 lines) | 19 | 2 (`minor()`, `NSP`) | 5, **2 new** | **impossible** |
+   | `dev/ttyld.c` (596 lines) | 28 | 3 (`max()`, `partab[]`, `NTTY`) | 6, **3 already in**, 1 new | cheap, but has no bottom |
+   | host-fd driver (new, layer 2) | **0** | **0** | **0** | **do this first** |
+
+   **`spipe` is structurally impossible, and not by a small margin.** It is the
+   64 `/dev/pt/pt00`-`pt63` nodes -- odd minor master, even slave -- and its two
+   ends exchange a `struct block *` **by direct function call**
+   (`spipe.c:73`). Every object involved is process bss: `spipes[256]`,
+   `queue[NQUEUE]` (`stream.c:16`), `qfreelist[4]`, `streams[NSTREAM]`
+   (`streamio.c:20`). A per-binary shim gives each process its own copy of all
+   four, so it can only wire a process to itself; `spopen` refuses the mismatch
+   by design at `spipe.c:36-37`. `fork` does not rescue it (copy-on-write
+   diverges) and `exec` clears `fdtyp[]` (`vfs.c:136-143`).
+
+   **`ttyld.c` is astonishingly cheap and is the reason to do the host-fd
+   driver first.** Three of its six headers are already in -- `ttyld.h` came in
+   with `streamio.c` and is **unused today** -- all twelve stream primitives it
+   calls exist, and the three missing names are an 8-line `max()` from
+   `rdwri.c:236` beside the `min()` already in `subr.c`, a 51-line pure-data
+   `partab.c` that imports whole, and one `#define NTTY 64`. But `conf/devices:82`
+   makes it **line-discipline 0, not a device** -- it has no bottom end, so it
+   cannot be exercised until something is under it. Hence the order: host-fd
+   driver, then `ttyld` pushed as ld 0, then `stty`.
+
+   Three things the survey settled that were not asked:
+
+   - **`qopen`'s rule is harsher than CLAUDE.md records.** Beside
+     `stopen:124/131`, the `FIOPUSHLD` path at `streamio.c:645-650` is
+     `else if (nip!=1) panic("pushld qopen returns inode", nip)` -- so anything
+     but 0 or 1 panics, not merely misbehaves. Verified in the file. Both
+     authentic candidates return literal 0/1 only.
+   - **Half of V8's `/dev` was streams.** `third_party/.../v8/proto-dev` is a
+     recursive listing of the running research machine: **184 of 378 nodes
+     (49%)** belong to stream drivers, and the largest single block is
+     `spipe`'s 64.
+   - **`stty` can be ported today, with no driver at all, and stays faithful.**
+     `FIOLOOKLD` returns -1, so `ldisc` matches neither `tty_ld` nor `ntty_ld`,
+     every new-tty ioctl is skipped, and `swdisc()` prints `stty: can't switch
+     line disciplines` -- explicit and honest, the same shape as `load` and `w`
+     under rung 5. `getmodes()`'s return is discarded at `stty.c:182` and the
+     one warning that would have said so is **commented out** at `:183-186`.
+     It needs `libc/gen/linedis.c` (20 lines, pure data), which is not ported.
+     The five ioctls it does use are already translated.
+
+   And the customers exist already: `ps.c:25` does `getdir("/dev/pt", devlist)`,
+   `w.c:563` has a `/dev/pt/pt??` fixup, and `ttyname.c:36` searches `/dev/pt/`
+   -- all three against a `rootfs/dev/pt` that is an **empty directory**.
+
 2. **The 9P switch itself**, with exactly one server behind it: **passthrough**,
    reproducing today's behaviour byte for byte. Nothing user-visible changes;
    the whole point is that the suites stay green while the floor is replaced.
@@ -1755,9 +1822,14 @@ Ordered so that value lands before risk, and so each step is testable alone.
      the register it had saved for `main` and handed it back corrupted, so
      `main`'s `dp` came back pointing into `cmdline` and `ps` walked off its
      `/proc` array. The frame now has three regions -- locals, saves, call area
-     -- and CLAUDE.md carries the general lesson. A sweep found exactly four
-     functions in the tree with a >8-argument call, which is why 156 Wave A
-     programs plus Wave B and C never saw it.
+     -- and CLAUDE.md carries the general lesson. This said "a sweep found
+     exactly four functions in the tree with a >8-argument call", and offered
+     that as why 156 Wave A programs plus Wave B and C never saw it.
+     **Re-measured: at least 26 (file, function) pairs make a call with nine
+     or more arguments**, Wave C full of them. The rare half was never the
+     argument count -- it is a function that uses REGISTER VARIABLES *and*
+     makes the wide call. Count the shape that gates the bug, and say which
+     half you counted.
    - **`/dev/dk`, `/dev/pt`, `/dev/drum`,** which `ps` `getdir`s and opens
      before touching `/proc` at all, calling `error()` on any failure. Empty,
      and the emptiness is the true answer.
@@ -2039,7 +2111,9 @@ Ordered so that value lands before risk, and so each step is testable alone.
    lives in an x register and arithmetic was emitted 64-bit. The value
    disagreed with itself -- it *printed* `Checksum error 244736`, which is 84446
    octal, the number it was looking for. `arm64_trunc()` in
-   `compiler/ccom-arm64/gencode.c` fixes it at all four emission sites; the
+   `compiler/ccom-arm64/gencode.c` fixes it at what this called four emission
+   sites -- **`arm64_trunc()` has five call sites today**, the unary `-` and
+   `~` having been added by the sweep that followed; the
    three-stage fixpoint still holds. CLAUDE.md has the general rule. Note the
    writer was unaffected, because `spcl.c_checksum = CHECKSUM - s` is a store
    and `str w` re-narrows: **the port could write correct 1985 tapes it could
@@ -2533,21 +2607,37 @@ sides of a real fix -- which is the point of the paragraph above, and the reason
 Both programs are upstream defects that crashed on upstream's hardware.
 **96 -> 58 -> 57 -> 55 -> 54**, and the remaining number is not a to-do list.
 
-### The skip list is a coverage hole, and most of it can be closed
+### The skip list was a coverage hole, and it is CLOSED -- as a mode, not a note
 
-`SKIP` in `crash-probe.sh` names ~40 programs that create, move, remove or
+`SKIP` in `crash-probe.sh` named ~40 programs that create, move, remove or
 format things, and excluding them is why `fsck -t` could only ever have been
-found by the static audit. Seventeen of them exist as Mach-O here. They can be
-probed safely, because **the jail is per-binary**: a V8 binary resolves every
-path inside `$V8ROOT`, so giving each invocation a throwaway *copy* of the
-rootfs contains anything it does. `cp -ac` clones on APFS, so a fresh 15 MB
-root per invocation costs ~0.3 s.
+found by the static audit. They can be probed safely, because **the jail is
+per-binary**: a V8 binary resolves every path inside `$V8ROOT`, so giving each
+invocation a throwaway *copy* of the rootfs bounds anything it does.
 
-What stays excluded is a decision rather than an oversight: `halt reboot
-shutdown init sync mount umount` affect the **host** rather than the jail,
-`su login passwd cron at mail write` are interactive or touch system state, and
-`as ld ar` are the host's by S1. None of those exist as Mach-O in the rootfs
-today, so the list is defensive.
+It had been done once, by hand, and written down as a note -- and that is the
+part that failed. **The count in the note drifted from seventeen to eighteen**,
+because the `v8` launcher was installed afterwards and a transcribed set cannot
+notice. So it is now a mode: `PROBE=mutating`, each invocation in its own
+`cp -ac` clone (**0.146 s** for 15 MB, measured, not the 0.3 s guessed here).
+18 programs, 954 invocations, **zero** signal deaths -- and containment proved
+by hashing the real rootfs before and after rather than asserted.
+
+The one blob became **two lists, because the reasons are opposite**. `UNSAFE`
+escapes the jail, so no throwaway rootfs contains it: `halt reboot shutdown
+init sync mount umount` act on the **host**, `kill` signals host pids, `adb`
+wants ptrace on them, `su login passwd cron at mail write` are interactive or
+touch system state, and `as ld ar` are the host's by S1. `MUTATES` only changes
+things inside the jail. Only the first is a permanent exclusion.
+
+**And the same pass found the scan list itself was wrong**, in the same
+direction as the `/etc` omission it had already been fixed for.
+`$ROOT/usr/lib/spell/*` treats spell as a *directory* by analogy with `refer`;
+`/usr/lib/spell` is a Mach-O **file**, V8's spellprog. It matched nothing, so
+spell was never probed, and `/usr/lib/man` was never named. The population is
+derived now -- `find` over the installed directories, filtered to Mach-O --
+verified to be the old set plus exactly those two (95 -> 97) with **every**
+Mach-O in the rootfs reachable, and the script prints what it covered.
 
 ## 4k. Why the data model is LP64, settled by counting
 
