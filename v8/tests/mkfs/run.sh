@@ -481,5 +481,161 @@ done
 tail=$(bytes "$BIMG" $(( IND * BSZ + 40 )) 984 | tr -d ' 0')
 check "the rest of the indirect block is zero" "" "$tail"
 
+# ---------------------------------------------------------------------------
+# 7. fsck, which is the first of these that REPAIRS.
+#
+# Everything above reports.  icheck says `missing 1' and dcheck prints a row;
+# neither changes anything, so every case so far could be satisfied by a program
+# that reads correctly and writes nothing.  fsck closes that: each corruption
+# already in this suite is handed to it, and THE OTHER PROGRAM is asked whether
+# the repair happened.  That is the property worth having -- fsck agreeing with
+# itself would prove only that it is self-consistent.
+#
+# It also runs UNDER A DEADLINE, and for a measured reason rather than as flake
+# insurance.  fsck's pinode() prints an inode's mtime, and until this step it
+# did that by handing a four-byte di_mtime to ctime(), which dereferences eight:
+# di_ctime became the high half, and gmtime()'s year loop counted towards 2.3e11
+# one year at a time.  A LIVE LOCK WITH NO OUTPUT, because nothing flushes.
+# pinode() runs only on a damaged filesystem, so every clean-image case passed
+# throughout.  The deadline is the assertion.
+# ---------------------------------------------------------------------------
+FSCK=$V8ROOT/etc/fsck
+[ -x "$FSCK" ] || { echo "missing $FSCK -- run make"; exit 1; }
+# -y so no case can block on stdin, </dev/null so a prompt that ignored -y
+# would fail rather than wait, and a deadline for the hang above.
+fs() { perl -e 'alarm 25; exec @ARGV' "$FSCK" -y "$1" 2>&1 </dev/null | sq; }
+
+# --- a clean image: agree with icheck, and change nothing --------------------
+cleanout=$(fs "$IMG")
+# icheck's `files' counts allocated inodes and `used' counts blocks; fsck's
+# n_files and n_blks are the same two quantities, arrived at by a different
+# walk.  Named separately because reusing one for both is exactly the mistake
+# that makes a case look like it is comparing two programs when it is not.
+icfiles=$(printf '%s\n' "$out" | grep '^files' | cut -d' ' -f2)
+check "fsck's summary is icheck's three numbers" \
+    "$icfiles files $icused blocks $icfree free" \
+    "$(printf '%s\n' "$cleanout" | grep 'files.*blocks.*free')"
+
+# THE STRONGEST CASE HERE, and the cheapest.  A checker that repairs is a
+# program that can destroy a filesystem it was asked to inspect, and the first
+# thing to know about it is that it does nothing to a filesystem that is well.
+cp "$IMG" "$TMP/clean.img"
+fs "$TMP/clean.img" >/dev/null
+if cmp -s "$IMG" "$TMP/clean.img"; then pass=$((pass+1))
+else bad "fsck modified a clean image"; fi
+check "and says so" "" \
+    "$(printf '%s\n' "$cleanout" | grep 'FILE SYSTEM WAS MODIFIED')"
+
+# A COMMAND-LINE ARGUMENT MUST NOT BE ABLE TO MAKE FSCK WRITE.  `-t <path>'
+# names a scratch file and upstream copies it into scrfile[80] with an
+# unbounded `while(*p++ = **argv)'.  Measured with the bound removed: a
+# 2000-character path runs off the end into lfname, checklist, big and lncntp,
+# and fsck then reports "***** FILE SYSTEM WAS MODIFIED *****" on a filesystem
+# that was well -- so the damage is not a crash but a WRITE, in the one program
+# here that writes to filesystems.  The case pairs a 2000-char argument with
+# the byte-identical check above; either half alone would miss it, because the
+# overflow neither crashes nor changes what fsck prints about the image.
+cp "$IMG" "$TMP/t.img"
+longt=/tmp/$(awk 'BEGIN { for (i = 0; i < 200; i++) printf "0123456789" }')
+fs "$TMP/t.img" >/dev/null 2>&1   # warm the same code path without -t
+perl -e 'alarm 25; exec @ARGV' "$FSCK" -y -t "$longt" "$TMP/t.img" \
+    >/dev/null 2>&1 </dev/null
+if cmp -s "$IMG" "$TMP/t.img"; then pass=$((pass+1))
+else bad "a 2000-char -t argument made fsck modify a clean image"; fi
+
+# --- A, the orphaned block: icheck reported it, fsck returns it --------------
+cp "$IMG" "$TMP/f1.img"
+printf '\0\0\0' | dd of="$TMP/f1.img" bs=1 seek=$((I2+12)) count=3 conv=notrunc 2>/dev/null
+f1=$(fs "$TMP/f1.img")
+check "fsck counts the block icheck called missing" "1 BLK(S) MISSING" \
+    "$(printf '%s\n' "$f1" | grep 'BLK(S) MISSING')"
+f1ic=$(ic "$TMP/f1.img")
+check "and afterwards nothing is missing"	"missing 0" \
+    "$(printf '%s\n' "$f1ic" | grep '^missing')"
+check "the freed block is back in the list"	"$((icfree + 1))" \
+    "$(printf '%s\n' "$f1ic" | grep '^free' | cut -d' ' -f2)"
+
+# mklost+found(8) is a shell script that pre-creates 256 empty slots so fsck can
+# reconnect an orphan without extending a directory.  It needs a MOUNTED
+# filesystem, so it waits for step 5 -- and this is what its absence costs, in
+# fsck's own words.  Asserted rather than left as a known gap: when step 5 lands
+# and lost+found exists, this case goes red and says which sentence to rewrite.
+check "with no lost+found, fsck can only clear" "SORRY. NO lost+found DIRECTORY" \
+    "$(printf '%s\n' "$f1" | grep 'lost+found')"
+
+# --- B, the link count: dcheck reported it, fsck adjusts it ------------------
+# dcheck prints `2 2 3' -- inode 2, two entries, three links.  fsck says the
+# same thing in words, and then makes it two.
+cp "$IMG" "$TMP/f2.img"
+printf '\003' | dd of="$TMP/f2.img" bs=1 seek=$((I2+2)) count=1 conv=notrunc 2>/dev/null
+f2=$(fs "$TMP/f2.img")
+check "fsck names the same disagreement dcheck saw" "COUNT 3 SHOULD BE 2" \
+    "$(printf '%s\n' "$f2" | grep -o 'COUNT 3 SHOULD BE 2')"
+check "and the link count is two again"		"2" \
+    "$(d2 "$TMP/f2.img" $((I2+2)))"
+check "dcheck now finds nothing"	"$TMP/f2.img:"	"$(dc "$TMP/f2.img")"
+
+# THE ctime GUARD.  This is the case the hang would fail, and it fails it twice
+# over: the deadline catches the live lock, and the string catches a wrong time.
+# The relation is between the IMAGE BYTES and fsck's stdout -- di_mtime at
+# offset 56, formatted by perl's ctime(3) rather than by V8's, so the two
+# implementations check each other.  Nothing here depends on the host clock.
+#
+# The `| sq' is load-bearing and not tidying: ctime(3) pads the day of the
+# month to two columns, so the first nine days of any month carry a double
+# space that fs() has already squeezed out of fsck's side.  Without it this
+# case passes for three weeks in four.
+f2mt=$(d4 "$IMG" $((I2+56)))
+want=$(perl -e 'my $s = scalar localtime($ARGV[0]);
+                print substr($s,4,12), " ", substr($s,20,4)' "$f2mt" | sq)
+check "the MTIME fsck prints is the inode's own" "MTIME=$want" \
+    "$(printf '%s\n' "$f2" | grep -o "MTIME=$want")"
+
+# --- C, the out-of-range address: both name the same block -------------------
+cp "$IMG" "$TMP/f3.img"
+printf '\377\377\177' | dd of="$TMP/f3.img" bs=1 seek=$((I2+12)) count=3 conv=notrunc 2>/dev/null
+check "fsck names the block icheck called bad, with its inode" "8388607 BAD I=2" \
+    "$(fs "$TMP/f3.img" | grep -o '8388607 BAD I=2')"
+
+# --- clri: ONE ACT, TWO HALVES, AND FSCK FIXES BOTH IN ONE RUN ---------------
+# Section 5 established that clri leaves damage neither checker can describe
+# alone: icheck sees an orphaned block, dcheck sees a directory entry naming a
+# cleared inode.  $CIMG is that image.  fsck repairs the pair, and each half is
+# confirmed by the checker that could see it.
+cbfree=$(printf '%s\n' "$cafter" | grep '^free' | cut -d' ' -f2)
+f4=$(fs "$CIMG")
+check "fsck removes the entry clri left, by name" "NAME=/hello" \
+    "$(printf '%s\n' "$f4" | grep -o 'NAME=/hello')"
+check "dcheck's half: no entry names a cleared inode"	"$CIMG:"  "$(dc "$CIMG")"
+f4ic=$(ic "$CIMG")
+check "icheck's half: the orphaned block is back"	"missing 0" \
+    "$(printf '%s\n' "$f4ic" | grep '^missing')"
+check "and it is exactly one block"		"$((cbfree + 1))" \
+    "$(printf '%s\n' "$f4ic" | grep '^free' | cut -d' ' -f2)"
+
+# THE s_time GUARD, and it is stricter than icheck's because fsck WRITES the
+# superblock.  Upstream's `time(&superblk.s_time)' put four bytes onto s_tfree
+# at offset 220 and then called sbdirty(), so a repaired filesystem would come
+# back claiming zero free blocks -- while icheck, which walks the list rather
+# than reading the counter, went on saying 1916.  The relation is between the
+# two.
+#
+# IT HAS TO BE READ HERE, BEFORE THE CONVERGENCE CASE BELOW, and that is the
+# non-obvious part.  Measured with the fix reverted: pass 1 leaves s_tfree 0,
+# and pass 2 puts it back.  dfile.mod is set by bwrite(), and the superblock is
+# not written until ckfini() -- after this test -- so a pass whose only change
+# is the superblock never reaches the time() call at all.  The damage lands
+# only on a pass that also writes a data block, and the following pass repairs
+# it silently.  Written after the second fsck, this case passed with the bug in.
+check "s_tfree survived fsck's s_time write" \
+    "$(printf '%s\n' "$f4ic" | grep '^free' | cut -d' ' -f2)" \
+    "$(d4 "$CIMG" $((SB+220)))"
+
+# CONVERGENCE.  A repair that has to be run twice has not finished, and this is
+# the case that notices a fix which merely moves the damage -- including, as it
+# turned out, the s_time write above.
+check "a second pass finds nothing to do" "" \
+    "$(fs "$CIMG" | grep 'FILE SYSTEM WAS MODIFIED')"
+
 echo "mkfs: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

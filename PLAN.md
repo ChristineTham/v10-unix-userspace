@@ -1496,9 +1496,51 @@ Ordered so that value lands before risk, and so each step is testable alone.
    directory entry naming it, so `icheck` reports the orphaned block and `dcheck`
    reports the dangling entry, and neither could report the other's half.
 
-   `fsck` and `mklost+found` follow.
+   **`fsck` IS IN, AND IT REPAIRS.** Berkeley 4.13, 1925 lines, all five phases,
+   and each corruption above handed to it with **the other program** asked
+   whether the repair happened: the orphaned block goes back in the free list
+   (icheck: `missing 0`, 1917 -> 1918), the link count is adjusted (dcheck
+   silent), the out-of-range address is named with the same inode, and clri's
+   two halves -- which no single checker could describe -- are both fixed in one
+   pass, after which a second pass reports nothing. `tests/mkfs` is 97 cases;
+   `src/cmd/fsck.PORTING.md` is the record.
+
+   **ONE COMPILE ERROR IN 1925 LINES, and that is the measurement worth keeping
+   about step 4a.** `MAXDATA` is inside `#ifdef pdp11` / `#ifdef vax` and there
+   is no arm for this machine. Everything else -- seven union arms over `dinode`,
+   `filsys`, `fblk`, `direct` and a `daddr_t` indirect block, all of which must
+   come to exactly 4096 -- compiled unchanged, because the formats were fixed in
+   the *headers* rather than in the programs. `MAXDATA` is a ceiling ADDRESS
+   (`MAXDATA - sbrk(0)`), which is a size only where the data segment starts
+   near zero; the arm added names the arena and derives the ceiling, keeping the
+   VAX's 400 KB on purpose so the authentic scratch-file path stays reachable.
+
+   **The other finding is one of this port's own, and it is a hang.** §8a step 4a
+   narrowed `time_t` per field in the disk records; `icheck` met the *write*
+   direction of that seam and swept `grep -rn 'time(&'`. fsck brought a second
+   write **and the read direction**, which that pattern cannot match:
+   `ctime(&dp->di_mtime)` dereferences eight bytes, takes `di_ctime` as the high
+   half, and `gmtime()` counts towards the year 2.3e11 one year at a time -- a
+   live lock with an empty stdout, in `pinode()`, which runs only on a damaged
+   filesystem. So every clean-image case passed throughout. Also fixed:
+   `scrfile[80]`, filled by an unbounded copy from `-t`, which with a 2000-char
+   argument made fsck **modify a filesystem that was well**.
+
+   `-DDIRSIZ=14` changed kind here too. For the four readers a wrong DIRSIZ is a
+   wrong answer; `pass2()` copies DIRSIZ bytes per component into
+   `pathname[200]`, so at the host's 254 a single component overruns it. The
+   Makefile's `$(IMGBIN)` group is now a memory-safety property as well.
+
+   **`mklost+found` is what is left, and it is genuinely blocked rather than
+   deferred.** Every reconnect fsck attempts prints `SORRY. NO lost+found
+   DIRECTORY` and falls through to `CLEAR?`. Upstream's `mklost+found` is a
+   20-line shell script that pre-creates 256 slots so fsck can reconnect an
+   orphan without extending a directory -- it needs a *mounted* filesystem, so it
+   waits for step 5. Run against a passthrough directory it would prove the
+   shell works and nothing about the filesystem. `tests/mkfs` asserts the `SORRY`
+   line, so the case goes red the day step 5 lands.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
-   `rdwri.c` over that image. Then `fsck` and the other nine.
+   `rdwri.c` over that image. Then `mklost+found`, and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
 7. **FSKit host client**, with Phase 5. Public API since macOS 15.4, no kernel
    extension; lets the host mount a V8 image in Finder and disposes of the

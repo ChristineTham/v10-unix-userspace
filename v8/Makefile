@@ -1269,18 +1269,25 @@ $(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
 # WHY A GROUP AND NOT A FLAG ON MKFS.  When mkfs was alone the flag looked like
 # a property of that program.  dcheck reads the directories mkfs writes and
 # needs exactly the same 14, so it is a property of TALKING TO AN IMAGE.  Naming
-# the set is what stops the fourth one being compiled without it -- which would
+# the set is what stops the next one being compiled without it -- which would
 # not fail to build, and would not fail to run, and would report a healthy
 # filesystem as corrupt.
 #
-# They install in /etc rather than /bin because all three are section 8 and V8
-# keeps section 8 there; each man page's synopsis says /etc/<name>.  Being
-# explicit targets is also what keeps them clear of the $(ROOTFS)/etc/% rule
-# further down, which copies data files out of src/v8/etc and has no source for
-# a binary.
+# AND WITH FSCK THE COST OF FORGETTING IT CHANGED KIND.  For the four readers a
+# wrong DIRSIZ is a wrong answer.  fsck's pass2() copies DIRSIZ bytes per path
+# component into pathname[200] with no bound, so at the host's 254 a SINGLE
+# component overruns it by 54 bytes -- in the one program here that writes to
+# filesystems.  The flag is now a memory-safety property as well as a format
+# one; src/cmd/fsck.PORTING.md has it.
+#
+# They install in /etc rather than /bin because all five are section 8 and V8
+# keeps section 8 there; each man page's synopsis says /etc/<name>, and
+# Admin/etcfiles lists every one.  Being explicit targets is also what keeps
+# them clear of the $(ROOTFS)/etc/% rule further down, which copies data files
+# out of src/v8/etc and has no source for a binary.
 # ---------------------------------------------------------------------------
 IMGDIRSIZ = 14
-IMGBIN    = mkfs icheck dcheck clri
+IMGBIN    = mkfs icheck dcheck clri fsck
 
 # Generated for the reason $(V8DIRBIN)'s rules are: a static pattern rule cannot
 # put the stem in two places, and .SECONDEXPANSION is too large a blast radius.

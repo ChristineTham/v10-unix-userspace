@@ -484,6 +484,32 @@ past the headers**: narrowing `daddr_t` silently broke `libc/gen/ltol3.c`, whose
 arm64 arm strode eight bytes for exactly that type — two of this port's own
 patches, each right when written.
 
+**A NARROWED FIELD'S ADDRESS IS NOT A POINTER TO ITS OLD TYPE, and the sweep
+that found this went ONE WAY when the seam goes two.** `di_atime`, `di_mtime`,
+`di_ctime` and `s_time` are four bytes so the disk record is the VAX's; `time_t`
+is eight. So `&dp->di_mtime` is not a `time_t *`, and the width is invisible at
+the call. `icheck` met the **write** direction — `time(&sblock.s_time)` putting
+four bytes onto `s_tfree` — and swept `grep -rn 'time(&'`, correctly, for a tree
+that did not yet contain `fsck`. `fsck` brought a second one *and* the **read**
+direction, which that pattern cannot match and which is far worse:
+`ctime(&dp->di_mtime)` reads `di_ctime` as the high half, so `gmtime()` counts
+towards the year 2.3e11 one year at a time — **a live lock with an empty stdout**,
+diagnosed by sampling the stack rather than by reading the source. It only ever
+runs on a *damaged* filesystem, so every clean-image case passed throughout.
+Both directions, over three directories, and note the space in `load.c`'s
+`time (&t)` that the older spelling missed:
+
+```bash
+grep -rnE '(ctime|localtime|gmtime|asctime)[ \t]*\([ \t]*&' src shim compiler
+grep -rnE '(^|[^a-z_])time[ \t]*\([ \t]*&'                  src shim compiler
+```
+
+19 and 22 today, and `fsck.c` is the only narrow target in either. Two rules:
+**the pattern is not `time(&` but any callee reached through the address of a
+narrowed field**, and **a sweep is a statement about a tree at a moment** — where
+the property matters, put it in a suite, as `tests/mkfs` now does by comparing
+`s_tfree` against icheck's independently walked free count.
+
 **A SAME-REGISTER RETURN IS NOT A SAME-TYPE RETURN, and floating point is
 where the port had never looked.** Two bugs, both measured, and each hid the
 other so that fixing one alone changed nothing observable:
@@ -572,6 +598,15 @@ anyway. `param.h` now carries the guard its own comment claimed. **A flag that
 sets an on-disk format can be forgotten, so `tests/mkfs` asserts it on the bytes
 of a generated image** — `..` at offset 16, root `i_size` 32 — never on the
 compiler line.
+
+**And with `fsck` the cost of forgetting it changed KIND.** For the four readers
+in `$(IMGBIN)` a wrong `DIRSIZ` is a wrong answer. `fsck`'s `pass2()` copies
+`DIRSIZ` bytes per path component into `pathname[200]` with no bound, so at 254
+a **single** component overruns it by 54 bytes — in the one program here that
+writes to filesystems. 200 is upstream's sentence about 14, the same shape as
+`mv`'s `MAXN-DIRSIZ-2`, so `pathname[]` is correct arithmetic and stays at 200;
+what has to hold is the flag, and `tests/deps` asserts
+`sys/param.h -> fsck object` so the edge cannot be lost.
 
 **LP64 is not the only width problem: V8's 16-BIT RANGES are the other, and
 they fail later and quieter.** LP64 breaks a pointer immediately; a 16-bit field

@@ -234,6 +234,36 @@ because subscripting is self-correcting, and then anything that takes the
 *address* of the narrowed thing, because a callee's idea of the width is not
 visible at the call.
 
+### The sweep above was ONE-DIRECTIONAL, and importing one program falsified it
+
+Left standing because the rule it states is right and the *search* was not.
+`grep -rn 'time(&'` looks for the **write** direction only. The same seam has a
+read direction — a narrowed field's address handed to something that
+*dereferences* eight bytes — and `ctime(&`, `localtime(&`, `gmtime(&` are
+spellings that pattern cannot match.
+
+`fsck` (§8a step 4d, `src/cmd/fsck.PORTING.md`) brought both: a second
+`time(&superblk.s_time)`, and `ctime(&dp->di_mtime)` in `pinode()`. The read one
+is far worse than anything here. `di_mtime` is followed by `di_ctime`, so
+`ctime()` reads a time about 7.3 × 10¹⁸ seconds in the future and `gmtime()`'s
+year loop counts towards it one year at a time: **a live lock with an empty
+stdout**, in the only program in this port that writes to filesystems.
+
+Two things generalise, and the second is the one to carry.
+
+- **A sweep is a statement about a tree at a moment.** "Thirty-seven calls, and
+  this is the only one" was true when written and false the day `fsck.c` landed.
+  Where the property matters, it belongs in a suite: `tests/mkfs` now asserts
+  `s_tfree` against icheck's walked free count on a repaired image, which is a
+  claim about behaviour rather than about a grep.
+- **The pattern to sweep is not `time(&`.** It is *any callee reached through
+  the address of a narrowed field*. Re-run both:
+
+  ```bash
+  grep -rnE '(ctime|localtime|gmtime|asctime)[ \t]*\([ \t]*&' src shim compiler
+  grep -rnE '(^|[^a-z_])time[ \t]*\([ \t]*&'                  src shim compiler
+  ```
+
 ## Not changed
 
 - `icheck -s` rebuilds the free list and **writes to the image**. Nothing in
