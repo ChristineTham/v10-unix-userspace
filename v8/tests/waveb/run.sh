@@ -82,6 +82,30 @@ try sed 'sed deletes'      'apple cherry' "./sed '/banana/d' in.txt | tr '\n' ' 
 try sed 'sed prints a range' 'banana apple' "./sed -n '1,2p' in.txt | tr '\n' ' ' | sed 's/ \$//'"
 try sed 'sed uses a regexp' 'BANANA'      "./sed -n 's/^ban.*/BANANA/p' in.txt"
 
+# AN OPTION THAT RUNS OFF THE END OF argv.  Found by tests/crash-probe.sh, not
+# by the static sweep (PLAN.md S4i, S4j).  main()'s loop opens
+# `while (--eargc > 0 && (++eargv)[0][0] == '-')', so one has already come off
+# the count by the time an arm runs -- eargc == 1 means the option itself and
+# nothing after.  Both arms tested `<= 0'.
+#
+# -e SIGSEGV'd outright, in rline()'s copy loop.  -f did not, and only because
+# of two of this port's own tolerances: rootpath() hands a NULL path to the
+# kernel for EFAULT, and doprnt prints "(null)" for the %s in the diagnostic.
+# A walk off the end that lands on a soft floor is still a walk off the end, so
+# both were fixed together.
+try sed 'sed -e with no script exits'   '2' \
+    "./sed -e </dev/null >/dev/null 2>&1; echo \$?"
+try sed 'sed -e ... -e with none exits' '2' \
+    "./sed -e 's/a/b/' -e </dev/null >/dev/null 2>&1; echo \$?"
+try sed 'sed -f with no file exits'     '2' \
+    "./sed -f </dev/null >/dev/null 2>&1; echo \$?"
+# ...and the arms still WORK, which an exit-status-only case cannot see: a guard
+# that stopped consuming the argument would pass the three above and fail these.
+try sed 'sed -e still takes its script' 'BETA' \
+    "printf 'alpha\n' | ./sed -e 's/alpha/BETA/'"
+try sed 'sed chains two -e scripts'     '12' \
+    "printf 'ab\n' | ./sed -e 's/a/1/' -e 's/b/2/'"
+
 # ---- ed: the editor, driven by a script ----------------------------------
 try ed 'ed appends and prints' 'one two' \
     "printf 'a\none\ntwo\n.\n1,2p\nQ\n' | ./ed 2>/dev/null | tr '\n' ' ' | sed 's/ \$//'"

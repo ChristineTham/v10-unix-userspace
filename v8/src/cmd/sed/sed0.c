@@ -58,7 +58,18 @@ char	*argv[];
 			continue;
 
 		case 'f':
-			if(eargc-- <= 0)	exit(2);
+			/*
+			 * PORT: the same off-by-one as -e's in rline(), and
+			 * fixed with it rather than left because it does not
+			 * happen to crash.  `sed -f' with -f last reaches
+			 * fopen(NULL) -- which survives only on two of this
+			 * port's own tolerances, v8s_rootpath returning NULL
+			 * for a NULL path so the kernel answers EFAULT, and
+			 * doprnt.c printing "(null)" for the %s below.  A walk
+			 * off the end of argv that lands on a soft floor is
+			 * still a walk off the end of argv.
+			 */
+			if(eargc-- <= 1)	exit(2);
 
 			if((fin = fopen(*++eargv, "r")) == NULL) {
 				fprintf(stderr, "sed: Cannot open pattern-file: %s\n", *eargv);
@@ -770,7 +781,25 @@ char	*lbuf;
 	if(eflag) {
 		if(eflag > 0) {
 			eflag = -1;
-			if(eargc-- <= 0)
+			/*
+			 * PORT: <= 1, not <= 0.  The option loop in main()
+			 * opens `while (--eargc > 0 && (++eargv)[0][0] ==
+			 * '-')', so one has already been taken off the count
+			 * by the time -e gets here; eargc == 1 means the -e
+			 * itself and nothing after it, and `*++eargv' is then
+			 * the vector's terminating NULL.  `sed -e' and
+			 * `sed -e s/a/b/ -e' both SIGSEGV in the copy below.
+			 *
+			 * Traced against the cases that must keep working:
+			 * `sed -e s/a/b/ file' arrives with eargc 3 and
+			 * `sed -e a -e b file' with 5 then 3, so neither is
+			 * affected.  exit(2) is what the -f arm below already
+			 * does for its own missing argument -- the VAX read
+			 * the a.out header at address 0 into the script
+			 * buffer and failed to compile whatever that made,
+			 * which is a worse way to reach the same refusal.
+			 */
+			if(eargc-- <= 1)
 				exit(2);
 			q = *++eargv;
 			while(*++p = *q++) {

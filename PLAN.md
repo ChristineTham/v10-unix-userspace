@@ -2026,7 +2026,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-`make test` runs everything — seventeen suites, about 1275 cases.
+`make test` runs everything — seventeen suites, about 1280 cases.
 
 ### What actually works today
 
@@ -2240,7 +2240,7 @@ from it, which is what the run against `lex`, `primes` and `echo` now does.
 | `lex` | 53 | every invocation including bare. Its option loop **is** guarded, so not S4i's class -- one root cause, and diagnosed: an empty specification faults in `fprintf` at offset 0x18 of a null `FILE *`. `fout` is NULL until `sub1.c:99` opens it, and for a spec with no rules the path that opens it is never reached. A valid spec exits 0, so it is specifically the empty case. Not a one-line guard -- the fix is control flow inside lex -- so it is left open rather than rushed |
 | `nroff` | 38 | **fixed** -- only *unrecognised* options, bare `nroff` fine. One root cause, and the mechanism is address-0 after all: the `default:` arm calls `done(02)`, nroff's NORMAL shutdown, which reaches `done3()` -> `twdone()` -> `oputs(t.twrest)` before `ptinit()` has read the terminal table, so the field is still null. Guarded in `oputs`, which is the single point the four table fields share |
 | `pr` | 2 | `-m`/`-M` consume no argument at all; `-m` sets `Ncols = eargc`, which is 0 |
-| `sed` | 1 | `-e` with no script |
+| `sed` | 1 | **fixed** -- `-e` with no script. `eargc-- <= 0` where the loop's `--eargc` has already taken one off, so eargc 1 means the option and nothing after; rline()'s copy loop then walks the terminator. The `-f` arm had the identical off-by-one and did *not* crash, surviving only on `rootpath()` handing a NULL path to the kernel and `doprnt` printing "(null)" -- fixed with it, because a walk off the end that lands on a soft floor is still a walk off the end |
 | `ps` | 1 | `-T` consumes no argument; whatever `Tflag` enables |
 | `bcd` | 1 | bare. `while ((c=getchar())!='\0' && c!='\n')` never tests EOF, so redirected empty stdin spins and overruns a fixed buffer -- **a VAX would have overrun it too**, so upstream's defect and not automatically ours to patch under S1 |
 
@@ -2270,12 +2270,20 @@ things, and this is the case that proves it** -- no amount of re-reading
 
 ### What is left
 
-**Three programs and five invocations**, after nroff's 38 came out with one
-guard: `lex` (53, diagnosed above, needs control-flow work), `pr -m`/`-M`,
-`sed -e` and `ps -T`. None is S4i's class. Each needs that section's per-case
-judgement -- is there a VAX answer to reproduce, and is the change forced by the
-target. `bcd` already has its answer, which is no, and is recorded above rather
-than patched.
+**Two programs and three invocations**: `lex` (53, diagnosed above, needs
+control-flow work rather than a guard) and `pr -m`/`-M` and `ps -T`. Both of
+the latter were backtraced and neither is S4i's class:
+
+- `pr -m` faults in `get()` at offset 8 of a null `FILE *`, which is
+  `Files[colno].f_f` -- `-m` consumes no argument at all, it sets
+  `Ncols = eargc`, and with no files that is 0.
+- `ps -T` faults in `strcpy` on a wild pointer (0x53c5c, not null), so it is
+  not the address-0 class either -- `-T` consumes no argument and whatever
+  `Tflag` enables is reading something uninitialised.
+
+`bcd` already has its answer, which is no, and is recorded above rather than
+patched. **96 -> 58 -> 57**, and what is left needs reading rather than
+sweeping.
 
 ## 4k. Why the data model is LP64, settled by counting
 
