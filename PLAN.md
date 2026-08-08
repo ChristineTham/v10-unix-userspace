@@ -1474,13 +1474,31 @@ Ordered so that value lands before risk, and so each step is testable alone.
    (`user.h`, `proc.h`, `inode.h`, `file.h`) are the whole process model --
    `struct user` alone is referenced 69 times.
 
-   **`tsleep` is the one that decides it, and it is not a machine-dependent
-   fill-in.** In the kernel it blocks until *another process* calls `wakeup`.
-   A per-binary shim has no other process: the only producer that could run is
-   `queuerun()`, on the same thread, at `splx()`. So here it can only mean
-   "run `queuerun` and re-poll", which changes the engine's semantics rather
-   than supplying a machine fact. The per-binary question is not a caveat on
-   this step; it is its first compile error.
+   **`tsleep` is the one that decides it** — the first compile error, not a
+   caveat. **SETTLED, and the answer is milder than this said.** It used to
+   read "it can only mean run `queuerun` and re-poll, which changes the
+   engine's semantics"; measured against the file, that overstates it. Every
+   `tsleep` is inside a condition **re-test loop** (`stopen`'s
+   `while (sp->flag&STWOPEN)`, `stread`'s `for(;;) ... continue`), so
+   sleep/wakeup is advisory and an early return is harmless. All nine `wakeup`s
+   live in this same file, and seven of them in `strput` and `stwsrv` — the
+   stream head's own `qinit` procedures, registered in `strdata`/`stwdata` and
+   therefore reached by `putnext` and `queuerun()`, not by another thread. The
+   engine calls neither: `stream.c` has no `tsleep` and no `wakeup` at all.
+
+   So the only producer that is genuinely another process is the **driver at
+   the bottom of the stack** — and what sits at the bottom is a question step 2
+   already answered for filesystems: the host. The driver end is a host
+   descriptor, `tsleep` is `queuerun()` then `poll()` on it with the timeout,
+   and `wakeup` is a no-op. **Faithful, not a semantic change** — the kernel's
+   `tsleep` waits for the driver to interrupt and this waits for the fd
+   standing in for it. `shim/kern/dev/machdep.c` already has the first half in
+   `splx()`, and its comment anticipates the second.
+
+   **What remains of the per-binary question** is the case that has no host fd:
+   a stream between two *V8* processes, i.e. a streams-based pipe. Backing such
+   a stream with a host pipe is the obvious answer and is a decision rather
+   than a detail. `src/sys/PORTING.md` has the evidence in full.
 
    A genuinely pure stratum exists -- `qattach`, `qdetach`, `streadable`,
    `nilopen`, `nilput`, 86 lines, 7.9% -- and is unreachable in isolation,
@@ -2061,7 +2079,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 4 grovelers | **done** | `date`, `who`, `df`, `load`, `w`/`uptime` all run. `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` was the exception and is now done too, under S8a step 3 rather than here — V8's `ps` is a `/proc` client, not a kmem groveler, which was a plan revision forced by reading it. Only the full form of `w` remains, and it says `No mem` on purpose. See S7 |
 | 5 blitterm | not started | |
 | 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 62/62 |
-| 8a.1 streams | engine in | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c` surveyed and deferred — see S8a step 1 |
+| 8a.1 streams | engine in, `tsleep` settled | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c` surveyed; its blocker — what `tsleep` means per-binary — is now answered with evidence (`queuerun()` then `poll()` the driver's host fd; `wakeup` a no-op) and is **faithful rather than a semantic change**. What is left of the per-binary question is a stream between two V8 processes. See S8a step 1 |
 | 8a.2 fs switch | done | `shim/v8sys/vfs.c`, one mount table, passthrough behind it |
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |

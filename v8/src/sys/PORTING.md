@@ -165,13 +165,68 @@ Four headers drag in the entire process model — `user.h`, `proc.h`, `inode.h`,
 `user.h` and `iomove`. `struct user` is referenced **69 times** across 10
 distinct fields, 49 of them `u.u_error` alone.
 
-**The decisive name is `tsleep`, and it is not a machine-dependent fill-in.**
-In the kernel it blocks the caller until *another process* calls `wakeup(chan)`.
-In a per-binary shim there is no other process: the only producer that could
-ever run is `queuerun()`, on the same thread, at `splx()`. So `tsleep` here can
-only mean "run `queuerun` and re-poll" — a change to the engine's semantics
-rather than a stand-in for a machine fact. The per-binary question above is not
-a caveat on this work; it is the first compile error.
+**The decisive name is `tsleep`** — it is the first compile error, and the
+per-binary question above is not a caveat on this work but its precondition.
+
+### SETTLED, and the answer is milder than this section used to claim
+
+This paragraph used to say `tsleep` "can only mean run `queuerun` and re-poll —
+a change to the engine's semantics". Measured against the file, that overstates
+it. Three facts, none of which needs the import to establish:
+
+**1. Every `tsleep` sits inside a condition re-test loop.** `stopen:51` is
+`while (sp->flag&STWOPEN) { tsleep(...) }`; `stread:217` is `for (;;) { ... if
+(getq(...) == NULL) { ... tsleep(...); continue; } ... }`. That is ordinary
+kernel discipline — sleep/wakeup is *advisory*, and a `tsleep` that returns
+without the condition holding is harmless because the caller loops. So a shim
+`tsleep` is not obliged to reproduce "block until exactly this channel is
+signalled"; it is obliged not to spin and not to miss a wakeup.
+
+**2. Every `wakeup` that can release a sleeper is in this same file**, and all
+nine are in four functions:
+
+| waker | what it is |
+|---|---|
+| `strput` (5 of them) | the stream head's read-side **put** procedure |
+| `stwsrv` (1) | its write-side **service** procedure |
+| `stopen` (1), `stioctl` (1) | self-wakes, same thread, same syscall |
+
+`strdata = { strput, ... }` and `stwdata = { nulldev, stwsrv, ... }` register
+the first two as the head's `qinit` procedures, so they are reached by
+`putnext` and by `queuerun()` — not by an independent thread.
+
+**3. The engine calls neither.** `grep tsleep\|wakeup src/sys/dev/stream.c`
+returns nothing: `stream.c` is pure message passing and never blocks.
+
+So the only producer that is genuinely "another process" is the **driver at the
+bottom of the stack** — and what sits at the bottom of a stack is a question
+this port has already answered once, for filesystems, in §8a step 2: the host.
+A V8 stream's driver end is a host descriptor (a tty, a pipe, a socket), which
+makes the shim's `tsleep`
+
+```
+	tsleep(chan, pri, timo):
+		queuerun();                    /* anything already in the stream */
+		poll(driver fds, timo);        /* the host kernel IS the other process */
+		return TS_OK / TS_TIME / TS_SIG
+```
+
+and `wakeup` a no-op, because there is no second thread to release and the
+re-test loop plus `queuerun()` covers every in-stream case. **That is faithful
+rather than a semantic change**: in the kernel `tsleep` waits for the driver to
+interrupt, and here it waits for the host fd that stands in for the driver.
+
+`shim/kern/dev/machdep.c` already has the first half — `splx()` runs
+`queuerun()` when the level returns to 0 — and its own comment anticipates the
+second: *"When a signal-driven source arrives (a tty, a socket), spl6 gains the
+mask and the counter stays exactly as it is."*
+
+**What this does NOT settle**, and it is the piece to design next: a stream
+between two *V8* processes, which is what a streams-based pipe would be. There
+the producer is another process and no host fd backs it — unless one is made to,
+by giving such a stream a host pipe as its driver end. That is a decision, not a
+detail, and it is the remaining content of the per-binary question. The 33 other
+names are mechanical by comparison.
 
 **A pure stratum exists and is too small to justify the rest.** Five functions —
 `qattach`, `qdetach`, `streadable`, `nilopen`, `nilput`, 86 lines, 7.9% of the
