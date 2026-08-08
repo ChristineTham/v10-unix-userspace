@@ -279,6 +279,45 @@ test to say so.
 this port can break the rung-5 claim for a program whose makefile was fine all
 along.
 
+### And a FOURTH kind of stop, which is the dangerous one because it succeeds
+
+The three above all *fail*: a link error, an assembler error, a wrong `-D` you
+can read on the command line. The image tools stop differently, and it was found
+by measuring rather than by trying to build them.
+
+`mkfs`, `icheck`, `dcheck`, `clri` and `fsck` are bare `cmd/*.c` programs, so
+their build description is not a makefile but `Admin/Mk`, which for a `*.c`
+runs
+
+```sh
+	eval D=`Admin/dest $B`
+	cc $CFLAGS -o $B $B.c && install $B $D/$B
+```
+
+-- no `-D` of any kind, which is exactly right on a machine whose `param.h` says
+`DIRSIZ 14`. **This port's says 254**, because host filenames need it, and the
+five are compiled `-DDIRSIZ=14` by the Makefile's `$(IMGBIN)` group. So a
+rung-5 build here is not blocked at all: it compiles, it links, it installs, it
+runs, and `mkfs` writes an image with 256-byte directory records -- `i_size 512`
+with `..` at offset 256 instead of `i_size 32` with `..` at 16.
+
+**And all three checkers pronounce that image clean.** icheck never reads a
+directory; dcheck and fsck read 16-byte records, find `d_ino = 0` in the 240
+bytes between `.` and `..`, and skip them as deleted entries -- V7's own
+encoding -- then find `..` where the 254 writer left it and count two entries
+against two links. A wrong writer is invisible to every reader this port has.
+`tests/mkfs` section 8 builds it that way and asserts the difference on the
+bytes, which is the only place it is visible.
+
+So this is `df`'s lesson again and worse: a change of *ours* -- here a header
+rather than a source file -- invalidates a build description that was fine, and
+this time nothing fails to tell you. It also puts a real precondition on ever
+running `Admin/Mk` for these five: the flag has to come from somewhere the
+description can see, or `param.h` has to stop being two numbers at once. That is
+§8a step 5's question too, and it is already written down there -- a jailed
+program reading a mounted image wants 16-byte records while a passthrough
+directory gives it 256-byte ones.
+
 **And it closes on step 4 below, not on anything of its own** — which is only
 visible by reading `dfree()` rather than reasoning from "groveler". Upstream
 does `fi = open(file, 0)` and then `bread(1L, &sblock, sizeof sblock)`: a

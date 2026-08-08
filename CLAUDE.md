@@ -599,6 +599,19 @@ sets an on-disk format can be forgotten, so `tests/mkfs` asserts it on the bytes
 of a generated image** — `..` at offset 16, root `i_size` 32 — never on the
 compiler line.
 
+**And that rule is load-bearing, because A WRONG WRITER IS INVISIBLE TO EVERY
+READER WE HAVE.** Measured by building `mkfs` the way Bell Labs' own `Admin/Mk`
+would — `cc $CFLAGS -o $B $B.c`, no `-D` of any kind, correct on a machine whose
+`param.h` says 14. The image it writes has `i_size 512` and `..` at offset 256,
+and **icheck, dcheck and fsck all pronounce it clean**: the 240 bytes between
+`.` and `..` are zero, a zero `d_ino` is V7's own encoding for a deleted entry,
+so a 16-byte-record reader skips fifteen empty slots and finds `..` exactly
+where the 254 writer put it. The mirror of the accident above. So the three
+byte-level cases are not belt and braces — they are the only guard, and the
+group's own checkers cannot be one. `tests/mkfs` section 8; **this note used to
+say the opposite**, that forgetting the flag reports a healthy filesystem as
+corrupt, which is the harmless direction and the one that does not happen here.
+
 **And with `fsck` the cost of forgetting it changed KIND.** For the four readers
 in `$(IMGBIN)` a wrong `DIRSIZ` is a wrong answer. `fsck`'s `pass2()` copies
 `DIRSIZ` bytes per path component into `pathname[200]` with no bound, so at 254

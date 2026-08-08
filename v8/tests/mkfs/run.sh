@@ -637,5 +637,61 @@ check "s_tfree survived fsck's s_time write" \
 check "a second pass finds nothing to do" "" \
     "$(fs "$CIMG" | grep 'FILE SYSTEM WAS MODIFIED')"
 
+# ---------------------------------------------------------------------------
+# 8. What forgetting -DDIRSIZ=14 actually costs, built rather than argued.
+#
+# The Makefile names an $(IMGBIN) group so the flag cannot be forgotten, and
+# that comment used to say the cost was "a healthy filesystem reported as
+# corrupt".  Measured, the dangerous direction is the OTHER one, and it is the
+# direction Bell Labs' own build description produces.
+#
+# Admin/Mk is upstream's build for the half of cmd/ with no makefile, and for a
+# bare *.c it runs `cc $CFLAGS -o $B $B.c' -- no -D of any kind.  That is
+# correct on a machine whose param.h says DIRSIZ 14.  Ours says 254, because
+# host directories need it.  So this section compiles mkfs the way Mk would and
+# asks what comes out.
+#
+# What comes out is an image with 256-byte directory records -- and ALL THREE
+# CHECKERS PRONOUNCE IT CLEAN.  Not by luck in the loose sense: the root holds
+# only `.' and `..', and the 240 bytes between them are zero, which is V7's own
+# encoding for a deleted entry, so a 16-byte-record reader skips fifteen empty
+# slots and finds `..' exactly where the 254 writer put it.  icheck never looks
+# at directory contents at all; dcheck and fsck count two entries and two links
+# and agree.  The mirror image of the accident CLAUDE.md already records in the
+# other direction.
+#
+# So the byte-level cases in section 3 are not belt and braces.  They are the
+# only thing between this port and a silently wrong image, which is why the
+# rule is to assert the format on the BYTES and never on the compiler line.
+# ---------------------------------------------------------------------------
+if "$CC" -Od2 -o "$TMP/mkfs-nodirsiz" "$ROOT/src/cmd/mkfs.c" \
+   > "$TMP/nd.log" 2>&1; then
+	pass=$((pass+1))
+else
+	bad "mkfs would not build the way Admin/Mk builds it" "$(head -3 "$TMP/nd.log")"
+fi
+(cd "$TMP" && ./mkfs-nodirsiz nd.img 2000 >/dev/null 2>&1)
+NDB=$(( $(l3at "$TMP/nd.img" $((I2+12))) * BSZ ))
+# 512 = two 256-byte records; 32 = two 16-byte ones.  The assertion is against
+# the OTHER image rather than against 512, so it still means something if the
+# geometry changes.
+check "without the flag the root is 16x too big" \
+    "$(( $(d4 "$IMG" $((I2+8))) * 16 ))" "$(d4 "$TMP/nd.img" $((I2+8)))"
+check "and '..' lands at 256, not 16"	"2 .."	\
+    "$(u2 "$TMP/nd.img" $((NDB+256))) $(dname "$TMP/nd.img" $((NDB+258)) 14)"
+check "with offset 16 left empty"	"0"	"$(u2 "$TMP/nd.img" $((NDB+16)))"
+# And the part that makes the byte cases load-bearing: nothing else notices.
+# These three record what the checkers DO, not what they should do, so that the
+# three above are visibly the only guard.  If one of them ever goes red because
+# a checker got stricter, that is a good change and this is where to delete the
+# case -- but read it first, because the more likely cause is that the image
+# stopped being written in the 254 format and the mkfs-nodirsiz build is stale.
+check "icheck cannot notice: it never reads a directory"	"missing 0" \
+    "$(ic "$TMP/nd.img" | grep '^missing')"
+check "dcheck does not either: the gaps read as deleted entries" \
+    "$TMP/nd.img:"	"$(dc "$TMP/nd.img")"
+check "nor does fsck, in any of its five phases"	"" \
+    "$(fs "$TMP/nd.img" | grep 'FILE SYSTEM WAS MODIFIED')"
+
 echo "mkfs: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

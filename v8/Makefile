@@ -1270,8 +1270,20 @@ $(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
 # a property of that program.  dcheck reads the directories mkfs writes and
 # needs exactly the same 14, so it is a property of TALKING TO AN IMAGE.  Naming
 # the set is what stops the next one being compiled without it -- which would
-# not fail to build, and would not fail to run, and would report a healthy
-# filesystem as corrupt.
+# not fail to build and would not fail to run.
+#
+# WHAT IT WOULD DO WAS STATED BACKWARDS HERE, and the measurement is in
+# tests/mkfs section 8.  This said "report a healthy filesystem as corrupt",
+# which is what happens when the CHECKER has the wrong DIRSIZ.  The direction
+# that matters is the other one, because it is the direction upstream's own
+# build description produces: Admin/Mk compiles a bare cmd/*.c with
+# `cc $CFLAGS -o $B $B.c' and no -D at all, correct on a machine whose param.h
+# says 14.  Built that way here, mkfs writes a root with i_size 512 and `..' at
+# offset 256 -- and icheck, dcheck AND fsck all pronounce it clean, because the
+# 240 bytes between `.' and `..' are zero and a zero d_ino is V7's own encoding
+# for a deleted entry.  A WRONG WRITER IS INVISIBLE TO EVERY READER WE HAVE.
+# Only the byte-level cases see it, which is why the format is asserted on the
+# bytes of a generated image and never on this line.
 #
 # AND WITH FSCK THE COST OF FORGETTING IT CHANGED KIND.  For the four readers a
 # wrong DIRSIZ is a wrong answer.  fsck's pass2() copies DIRSIZ bytes per path

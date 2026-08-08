@@ -154,7 +154,12 @@ token.
 
 ## `DIRSIZ` is 14 for this program and 254 for everything else
 
-`mkfs` is compiled `-DDIRSIZ=14`, and it is the only thing in the tree that is.
+`mkfs` is compiled `-DDIRSIZ=14`. It was the only thing in the tree that was;
+it is now the Makefile's `$(IMGBIN)` group of five — `mkfs`, `icheck`, `dcheck`,
+`clri`, `fsck` — because the flag turned out to be a property of *talking to an
+image* rather than of writing one. `src/cmd/icheck.PORTING.md` has why `dcheck`
+joined, and `src/cmd/fsck.PORTING.md` why for `fsck` it is a memory-safety
+property as well as a format one.
 
 This port raises `DIRSIZ` 14 → 254 in three headers because macOS filenames
 exceed fourteen characters. That is right for every directory the shim serves
@@ -180,7 +185,27 @@ the moment something wanted a different one: cpp answered
 A `-D` is exactly the kind of thing that gets forgotten, so `tests/mkfs` asserts
 it **on the bytes of a generated image** — `..` at offset 16, root `i_size` 32 —
 rather than on the command line, which would only be reading the rule back to
-itself. Dropping `MKFS_DIRSIZ` to 254 turns six cases red.
+itself. Dropping `IMGDIRSIZ` to 254 turns six cases red.
+
+### And the byte assertions are not belt and braces — they are the only guard
+
+Measured after `fsck` landed, by building `mkfs` the way Bell Labs' own
+`Admin/Mk` builds a bare `cmd/*.c`: `cc $CFLAGS -o $B $B.c`, with no `-D` at
+all. That is correct on a machine whose `param.h` says 14, and here it produces
+a `mkfs` that writes `i_size 512` with `..` at offset 256.
+
+**icheck, dcheck and fsck all pronounce that image clean.** It is the accident
+above, running the other way: the 240 bytes between `.` and `..` are zero, a
+zero `d_ino` is a deleted entry, so a 16-byte-record reader skips fifteen empty
+slots and finds `..` where the 254 writer left it — two entries, two links,
+nothing missing. A wrong *writer* is invisible to every reader this port has,
+which means the group's own checkers cannot be the guard for the group's own
+flag. `tests/mkfs` section 8 builds it that way and asserts the difference at
+`i_size` and at offset 16, because that is the only place it exists.
+
+That also puts a precondition on ever running `Admin/Mk` for these five, which
+PLAN.md §4a now records as a fourth kind of rung-5 stop — the kind that
+succeeds.
 
 **Named rather than left to be discovered: this becomes a real conflict at
 §8a step 5.** When `v8fs` mounts an image, a program inside the jail reading a
