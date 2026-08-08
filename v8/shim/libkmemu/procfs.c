@@ -506,6 +506,7 @@ prgetpr(int pid, struct v8proc *p)
  */
 #define U_SIZE		4016
 #define UPAGES		10		/* sys/param.h:69 */
+#define V8_NOFILE	128		/* sys/param.h:19 */
 #define UBASE		(0x80000000L - (long)UPAGES * V8_NBPG)
 
 struct v8user {
@@ -519,8 +520,9 @@ struct v8user {
 	char	*u_cdir;		/* 344 */
 	char	*u_rdir;		/* 352 */
 	char	 pad4[528];
-	char	*u_ofile[16];		/* 888 -- NOFILE */
-	char	 pad5[1434];
+	unsigned int u_ofile[V8_NOFILE];/* 888 -- and see below: these are VAX
+					 * pointers, four bytes, 128 of them */
+	char	 pad5[1050];
 	unsigned short u_ttydev;	/* 2450 */
 	unsigned short u_ttyino;	/* 2452 */
 	char	 pad6[34];
@@ -543,6 +545,23 @@ AT(u_uid, 282);   AT(u_ruid, 286);   AT(u_procp, 296);  AT(u_cdir, 344);
 AT(u_rdir, 352);  AT(u_ofile, 888);  AT(u_ttydev, 2450); AT(u_ttyino, 2452);
 AT(u_comm, 2488); AT(u_start, 2744); AT(u_tsize, 2760); AT(u_dsize, 2768);
 AT(u_ssize, 2776); AT(vm_utime, 2784); AT(vm_stime, 2788);
+
+/* AND ONE ASSERTION THAT IS NOT AN OFFSET, BECAUSE THE OFFSETS CANNOT SEE IT.
+ * u_ofile is the only array here, and an offset-plus-total-size pair is blind
+ * to an array's LENGTH -- pad5 is computed from that length, so a wrong length
+ * and a compensating pad leave every AT() above green and sizeof exact.  It
+ * was wrong: `char *u_ofile[16]', sixteen LP64 pointers, 128 bytes, carrying
+ * the comment `NOFILE' for a constant that is 128 (sys/param.h:19).  The VAX
+ * slot is 128 four-byte pointers, 512 bytes, and only a third of it was named.
+ *
+ * Harmless while nothing writes the field -- synth() leaves it zero and the
+ * note below says why -- and that is exactly what made it invisible.  It stops
+ * being harmless the day a kernel-side struct user reuses this declaration,
+ * because streamio.c:994 is `u.u_ofile[i] = fp' with i up to NOFILE-1.  That
+ * is one of the three fields src/sys/PORTING.md hazard 4 turns on.
+ */
+_Static_assert(sizeof(((struct v8user *)0)->u_ofile) == 4 * V8_NOFILE,
+    "u_ofile is NOFILE VAX pointers -- four bytes each, 512 bytes in all");
 #undef AT
 
 /*
@@ -585,7 +604,11 @@ AT(u_ssize, 2776); AT(vm_utime, 2784); AT(vm_stime, 2788);
  *                   buys exactly nothing until the jail's /dev carries tty
  *                   nodes.  So: a decision, not a discovery.
  *   u_cdir, u_rdir  followed by ps -F through /dev/kmemr, which needs the
- *   u_ofile         kernel's inode table.  Out of scope; see PLAN.md.
+ *   u_ofile         kernel's inode table.  Out of scope; see PLAN.md.  Note
+ *                   that u_ofile is 128 FOUR-byte VAX pointers here and not an
+ *                   array this machine could dereference -- the assertion
+ *                   above says why, and it is why a kernel-side struct user
+ *                   cannot be this one.
  */
 static void
 prgetuarea(struct prinfo *g, struct v8user *u)

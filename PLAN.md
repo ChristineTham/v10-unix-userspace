@@ -1507,11 +1507,32 @@ Ordered so that value lands before risk, and so each step is testable alone.
    above covers. This port meanwhile answers `pipe(2)` with the host's, in
    `v8s_pipe`, and has done all along.
 
-   **So step 1's precondition is met.** What is left is the four hazards in
-   `src/sys/PORTING.md` — an upstream LP64 bug at `streamio.c:713`, a `short
-   pgrp` that cannot be widened because `stream.h` is asserted byte-identical,
-   a `char count` that wraps at 128 nested entries, and a second `struct user`
-   under different rules — plus 33 mechanical names.
+   **So step 1's precondition is met — and so are the four hazards that stood
+   behind it.** All four are now settled in `src/sys/PORTING.md`, and three of
+   them turned on reading *upstream's* declarations rather than only ours:
+
+   - `streamio.c:713` is an upstream LP64 bug: `sizeof(arg)` where the object
+     is `int fmt`. Eight sibling `copyout`s in the same function name the
+     object and one names the pointer, so it is a typo, and it becomes a
+     recorded deviation at import time.
+   - The `short pgrp` was **not** a conflict with V8 at all. `h/proc.h:28-29`
+     declares `short p_pid` and `short p_pgrp`, so the field is exactly as wide
+     as a VAX process id and loses nothing there. The narrowing is this port's
+     own widening of `p_pid` to `int` for `ps`, so the answer is the one
+     `daddr_t` already gets: the kernel-side `struct proc` keeps upstream's
+     `short` and the shim supplies ids in that range, while the /proc-facing
+     header stays `int`.
+   - The `char count` wrap needs **128 processes inside one stream**. `stenter`
+     has six callers, all of them system-call entry points, none reachable from
+     another and none stored in a `qinit` — measured — so one process
+     contributes 1 and a per-binary shim never exceeds it.
+   - The second `struct user` is forced by exactly three of the ten fields
+     `streamio.c` touches — `u_procp`, `u_qsav`, `u_ofile` — all pointer-shaped
+     and all frozen at VAX widths by the /proc ABI. Enumerating them found a
+     live defect in `procfs.c`'s copy, since fixed.
+
+   So what is left of step 1 is 33 mechanical names: code to write, with no
+   design question in front of it.
 
    A genuinely pure stratum exists -- `qattach`, `qdetach`, `streadable`,
    `nilopen`, `nilput`, 86 lines, 7.9% -- and is unreachable in isolation,
@@ -1521,11 +1542,8 @@ Ordered so that value lands before risk, and so each step is testable alone.
    writing `tsleep` twice and settling its semantics under a build that will
    not link.
 
-   Four hazards are already recorded against the day it happens, including an
-   upstream LP64 bug at `streamio.c:713` and a real conflict between two of
-   this port's commitments: `stream.h`'s `short pgrp` takes a pid, and
-   `stream.h` is byte-identical and asserted so, therefore cannot be widened
-   the way `p_pid` was.
+   The four hazards above are settled against the day it happens, so importing
+   once is now a matter of doing it rather than of deciding anything first.
 2. **The 9P switch itself**, with exactly one server behind it: **passthrough**,
    reproducing today's behaviour byte for byte. Nothing user-visible changes;
    the whole point is that the suites stay green while the floor is replaced.
@@ -2092,7 +2110,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 4 grovelers | **done** | `date`, `who`, `df`, `load`, `w`/`uptime` all run. `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` was the exception and is now done too, under S8a step 3 rather than here — V8's `ps` is a `/proc` client, not a kmem groveler, which was a plan revision forced by reading it. Only the full form of `w` remains, and it says `No mem` on purpose. See S7 |
 | 5 blitterm | not started | |
 | 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 62/62 |
-| 8a.1 streams | engine in, **blocker cleared** | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c`'s blocker — what `tsleep` means per-binary — is answered with evidence (`queuerun()` then `poll()` the driver's host fd; `wakeup` a no-op), and is **faithful rather than a semantic change**. The two-V8-process case turns out to be `pipe.c`'s, a separate file this port already answers with the host's `pipe(2)`. What is left is four recorded hazards and 33 mechanical names — no design question. See S8a step 1 |
+| 8a.1 streams | engine in, **blocker and all four hazards cleared** | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c`'s blocker — what `tsleep` means per-binary — is answered with evidence (`queuerun()` then `poll()` the driver's host fd; `wakeup` a no-op), and is **faithful rather than a semantic change**. The two-V8-process case turns out to be `pipe.c`'s, a separate file this port already answers with the host's `pipe(2)`. The four hazards are settled too, three of them by reading upstream's own declarations: `short pgrp` is as wide as a VAX pid (`h/proc.h:28-29`) so the narrowing is *ours*; `char count` needs 128 processes in one stream and `stenter`'s six callers cannot nest; the second `struct user` is forced by three pointer-shaped fields, and enumerating them found a live `u_ofile` defect in `procfs.c`. What is left is 33 mechanical names — code, not decisions. See S8a step 1 |
 | 8a.2 fs switch | done | `shim/v8sys/vfs.c`, one mount table, passthrough behind it |
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |

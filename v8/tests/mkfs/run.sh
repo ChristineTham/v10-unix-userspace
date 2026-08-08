@@ -331,10 +331,19 @@ ic() { "$ICHECK" "$1" 2>&1 | sq; }
 # it would be six million `read error' lines cut off mid-flight, or none.
 #
 # Prompted by one unreproduced occurrence of that case failing in a full run
-# (once in five; not reproduced in three isolated runs or 300 hammered dcheck
-# invocations, and dcheck takes 0.45-0.99s against a 20s limit, so a plain
-# timeout needs a 20x slowdown).  Cause unknown -- which is the reason to make
-# the next occurrence name itself rather than to guess now.
+# (once in five; dcheck takes 0.45-0.99s against a 20s limit, so a plain timeout
+# needs a 20x slowdown).  Re-measured since, and the number is worth keeping:
+# 300 hammered dcheck invocations, then **120 consecutive runs of this entire
+# suite -- 18240 cases -- with zero failures**.
+#
+# So it is NOT INTRINSIC TO THIS SUITE, and that is a result rather than a
+# shrug: it says every surviving hypothesis lives in the full-run context this
+# suite cannot reproduce on its own -- what the sixteen earlier suites leave
+# behind in rootfs/ (the third shape of the host-property trap, which has
+# already bitten tests/jail once) and what they leave in the page cache, which
+# dcheck's sync() at dcheck.c:108 is the only thing here that waits on.
+# Cause still unknown; the marker below is what will name the next occurrence
+# instead of blaming a link count for it.
 #
 # 142 is 128+SIGALRM.  A program exiting 142 itself would be indistinguishable
 # -- the shell cannot tell a signal from a status, which crash-probe.sh learned

@@ -162,8 +162,11 @@ again against `streamio.c` before deciding anything. It is not nine.
 
 Four headers drag in the entire process model — `user.h`, `proc.h`, `inode.h`,
 `file.h`. `dir.h` and `buf.h` come along innocently as prerequisites of
-`user.h` and `iomove`. `struct user` is referenced **69 times** across 10
-distinct fields, 49 of them `u.u_error` alone.
+`user.h` and `iomove`. `struct user` is referenced **71 times on 70 lines**
+across 10 distinct fields, 49 of them `u.u_error` alone. (This line said 69
+until hazard 4 below needed the fields enumerated rather than counted; `:573`
+names `u.u_procp` twice, which is where a line count and an occurrence count
+part company.)
 
 **The decisive name is `tsleep`** — it is the first compile error, and the
 per-binary question above is not a caveat on this work but its precondition.
@@ -245,8 +248,9 @@ a decision worth taking on its own merits, and not a prerequisite for anything.
 
 **So the per-binary question is answered for this step.** What was recorded as
 its remaining content turns out to be scoped to a file that is not being
-imported. The 33 other names are mechanical, and the four hazards below are the
-real cost.
+imported. The 33 other names are mechanical, and the four hazards below were
+the real cost — **all four are now settled too**, so what is left of this step
+is writing code rather than deciding anything.
 
 **A pure stratum exists and is too small to justify the rest.** Five functions —
 `qattach`, `qdetach`, `streadable`, `nilopen`, `nilput`, 86 lines, 7.9% of the
@@ -266,10 +270,15 @@ because the work is large, but because importing first would mean writing
 `tsleep` twice and deciding its semantics under the pressure of a build that
 does not link.
 
-### Four hazards to settle BEFORE importing, not after
+### Four hazards to settle BEFORE importing, not after — ALL FOUR SETTLED
 
-Found while surveying, and the second is a conflict between two of this port's
-own commitments rather than a bug in anything.
+Found while surveying. What settled every one of them was reading the
+**upstream** declarations rather than only ours — `h/proc.h`, `h/user.h`,
+`h/param.h` and `streamio.c`'s own call graph. One is a typo of upstream's, one
+dissolves on counting, and **two are conflicts between two of this port's own
+commitments**, which is precisely the kind that cannot be seen from our side of
+the seam alone: from here they look like V8 being too small for the machine,
+and upstream says the field was exactly the right size all along.
 
 1. **`streamio.c:713` is an upstream LP64 bug.**
    ```c
@@ -295,26 +304,104 @@ own commitments rather than a bug in anything.
    `tools/import.sh` keeps the upstream hash, and this paragraph is the diff's
    justification.
 
-2. **`stream.h:67` is `short pgrp`, and it cannot be widened.** `streamio.c:573`
-   stores a pid into it (`stq->pgrp = u.u_procp->p_pgrp = u.u_procp->p_pid`),
-   and `:371` then does `gsignal(stp->pgrp, SIGHUP)`. This port widened
-   `p_pgrp`/`p_pid` to `int` in `src/include/sys/proc.h:36` precisely because a
-   macOS pid above 32767 reads back negative — but `src/sys/h/stream.h` is
-   **byte-identical and asserted so by `tests/streams`**, so the same fix is not
-   available. A pid over 32767 truncates negative here and signals a negative
-   process group. Exactly the `p_pid` class, including the part where a freshly
-   booted CI runner never reaches it.
+2. **`stream.h:67` is `short pgrp` — AND THE AUTHENTIC FIELD IS NOT THE NARROW
+   ONE.** The hazard was recorded as "16 bits cannot hold a macOS pid, and the
+   header is byte-identical so the `p_pid` fix is unavailable". Upstream
+   contradicts the first half: `h/proc.h:28-29` declares `short p_pgrp` and
+   `short p_pid`, so on a VAX `stream.h`'s field is **exactly as wide as a
+   process id**, and `:573` — `stq->pgrp = u.u_procp->p_pgrp = u.u_procp->p_pid`
+   — loses nothing at all.
 
-3. **`stream.h:69` is `char count`**, signed on ARM64 macOS, incremented
-   unbounded by `stenter` (`:890`) and tested `--stp->count==0` by `stexit`
-   (`:904`). 128 nested entries wraps negative and the stream never closes.
+   The narrowing is entirely this port's. `p_pgrp` and `p_pid` were widened to
+   `int` at `src/include/sys/proc.h:36-37` because a macOS pid above 32767 reads
+   back negative and **`ps` has to print the real one**. So this is not V8 being
+   too small for the host; it is our widening meeting an authentic field that
+   never needed it — which makes the answer forced rather than chosen, and it is
+   the sentence `daddr_t` already gets: **a struct that crosses a seam keeps
+   that seam's width.**
 
-4. **`struct user` would then exist twice in this port, under two rules.**
-   `shim/libkmemu/procfs.c` already synthesises one declared *by byte offset*
-   with `_Static_assert`s, because `/proc`'s ABI is the real 4016-byte VAX
-   layout. A kernel-side `struct user` for `streamio.c` needs no particular
-   layout — nothing outside the file reads it. Two structs of one name with
-   opposite constraints is worth naming here, before it is created.
+   `src/include/sys/proc.h` crosses to `ps` and to the /proc ABI, so it stays
+   `int`. A kernel-side `struct proc` in `shim/kern/` crosses nothing —
+   `streamio.c` is its only reader — so it keeps **upstream's `short`**, and the
+   shim hands it ids in that range rather than raw host pids, mapping to the
+   host's where a signal is actually delivered. The authentic header is then
+   neither edited nor worked around: every store, the `:45` comparison and both
+   `gsignal`s (`:371 :379`) are exact for every value the port can produce.
+
+   One thing that is inherited rather than fixed. `TIOCGPGRP`/`TIOCSPGRP`
+   through a stream (`:567 :576`) copy `sizeof(stq->pgrp)` — **two** bytes — to
+   and from a user `int`, leaving its top half stale. The VAX copied two bytes
+   there too, so unlike `:713` above there is no coincidence to undo and S1 says
+   reproduce it.
+
+3. **`stream.h:69` is `char count`, and 128 NESTED ENTRIES CANNOT HAPPEN HERE.**
+   It is signed on ARM64 macOS, `stenter` (`:890`) increments it unbounded and
+   `stexit` (`:904`) tests `--stp->count==0`, so a wrap would mean a stream that
+   never closes. The field's own comment is the clue — `/* # processes in
+   stream routines */` — and counting settles it.
+
+   `stenter` is called from exactly **six** places: `:49 :205 :288 :428 :484
+   :553`, which are `stopen`, `stread`, `istread`, `stwrite`, `istwrite` and
+   `stioctl`. **None of the six is mentioned anywhere else in the file** — the
+   only other occurrences of those names are inside `printf` strings, so none
+   is called by another and, the part that actually needed checking in a file
+   this full of `qinit` dispatch, **none is stored in a function-pointer table
+   either.** They are the kernel's stream-switch entry points, one per system
+   call. A process therefore contributes at most 1, and this port runs exactly
+   one process per binary, so `count` is 0 or 1.
+
+   That leaves one obligation rather than a fact: a *module or driver* put
+   routine runs with a process already inside `stenter`, and re-entering the
+   stream from one would nest. Upstream's cannot, because the six are not
+   reachable; ours must not either, and that is a rule for `shim/kern/`, not
+   something the import guarantees.
+
+   The `longjmp` paths do not break that, which is the half worth checking
+   rather than assuming: every `tsleep` returning `TS_SIG` calls `stexit`
+   *before* `longjmp(u.u_qsav)` (`:54 :76 :223 :296 :436 :492`), because the
+   jump unwinds past the function's own exit. `:977` in `urcvfile` is the same
+   idiom on `stioctl`'s behalf — an `stexit` with no `stenter` above it in the
+   same function, which is the balance for `:800` and not a double decrement.
+
+   **What would make it reachable is precisely what this port is not:** a shared
+   kernel with 128 processes inside one stream. Recorded rather than dismissed,
+   because §8a could still grow one.
+
+4. **`struct user` twice — and THREE FIELDS ARE THE WHOLE REASON.** The premise
+   as recorded was a name colliding, and that part is already false:
+   `shim/libkmemu/procfs.c` calls its one `struct v8user`. The substance is a
+   width conflict, and it is now counted instead of feared.
+
+   `streamio.c` touches **ten** `u.u_` fields — `u_error` (49 uses), `u_procp`
+   (7), `u_count` (5), `u_qsav` (3), `u_uid` (2), and one each of `u_gid`,
+   `u_ttyino`, `u_ttydev`, `u_r`, `u_ofile`. Seven are the same width on a VAX
+   and on ARM64: chars, shorts, an `unsigned int`, and a union whose widest arm
+   is 8 bytes either way. **Three are not, and all three for one reason.**
+
+   | field | VAX | here | why it cannot be the /proc one |
+   |---|---|---|---|
+   | `u_procp` | `struct proc *`, 4 | 8 | dereferenced at `:45 :442 :573 :953 :1018 :1027`; the /proc slot at offset 296 is four bytes |
+   | `u_qsav` | `label_t` = `long[14]`, 56 under NOLONG | `jmp_buf` = `long[24]`, 192 | `longjmp(u.u_qsav)` has to work, and 56 bytes will not hold an ARM64 frame |
+   | `u_ofile` | `struct file *[128]`, 512 | 1024 | `:994` is `u.u_ofile[i] = fp` |
+
+   So the structs are two because **the /proc ABI freezes three pointer-shaped
+   fields at VAX widths and the machine needs LP64 ones.** A consequence to
+   state once, not a smell to clean up later. The /proc one stays offset-
+   declared and `_Static_assert`ed; the kernel-side one goes in
+   `shim/kern/h/user.h` beside `param.h`, spells its ten fields honestly, and
+   claims no layout, because nothing outside `streamio.c` reads it.
+
+   **And building that table found a live defect in the /proc one.** `u_ofile`
+   was `char *u_ofile[16]` — sixteen LP64 pointers, 128 bytes — carrying the
+   comment `NOFILE` for a constant that is **128** (`sys/param.h:19`), so barely
+   a third of the VAX's 512-byte slot was named. Every `_Static_assert` in the
+   file passed. That is the reusable part: **an offset-plus-total-size pair is
+   blind to an array's length**, because the pad after it was computed *from*
+   that length, so a wrong length with a compensating pad is exactly as green as
+   a right one. Harmless only because `synth()` leaves the field zero — and
+   fatal the day a kernel-side `struct user` reuses the declaration, which is
+   the hazard itself. Fixed, and the guard that can see it is a `sizeof` on the
+   member rather than another offset.
 
 One smaller thing worth knowing: the 13 ioctl codes `streamio.c` needs
 (`FIONREAD`, `TIOCGPGRP`, `FIOPUSHLD`, …) are **already spelled with identical
