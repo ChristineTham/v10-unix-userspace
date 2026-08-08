@@ -1647,8 +1647,10 @@ not testable until it is installed.
   suite's build is midway through writing. Measured: 42 failures across
   `libv8c`, `deps`, `wavea` and `mkfs`, four suites never ran at all, and every
   message read like a real defect — `libv8c`'s were all "(compile)", `deps`'
-  were all "was already stale before the touch". Serially, the same tree was
-  **1428 passed, 0 failed**. The tell is the *shape*: whole suites failing on
+  were all "was already stale before the touch". Serially, **that same tree**
+  was 1428 passed, 0 failed (the total of the day, not today's — the point is
+  the pair, measured minutes apart on identical sources). The tell is the
+  *shape*: whole suites failing on
   build steps rather than on assertions. This is the same root cause as the rule
   below — something modifying the tree while a suite reads it — arriving from
   make rather than from an editor.
