@@ -212,10 +212,21 @@ passthrough is meant to be the exception, not the rule.
 `sanctioned()` in `shim/v8sys/syscall.c` permits only what something actually
 execs — for a long time that was `/usr/bin/clang` alone, on the reasoning that
 `cc` reaches the rest through it. `as` joined it when `sh`'s `:fix` invoked the
-assembler by name, which is the first thing in this port to do so. `nm` is still
-absent and `tests/jail` asserts it is *refused*, so the array cannot quietly
-drift into "everything the prose mentions". Same shape as `v8s_mknod` passing
-its path unresolved: **an unexercised rule cannot be seen to be incomplete.**
+assembler by name, which is the first thing in this port to do so. `strip`
+joined it the same way, when Bell Labs' `Admin/Mk` ran: its `install()` is
+`strip $1 && cp $1 $2`, so a refused `strip` short-circuits the `&&` and
+**nothing is installed**, which reads as a build failure rather than as a jail
+decision. `nm` is still absent and `tests/jail` asserts it is *refused*, so the
+array cannot quietly drift into "everything the prose mentions". Same shape as
+`v8s_mknod` passing its path unresolved: **an unexercised rule cannot be seen to
+be incomplete.**
+
+How a jailed `sh` reaches one of these is worth knowing, because it is not a
+second mechanism: `sh` searches `PATH=/bin:/usr/bin:/etc` by `execve`, `/bin/`
+and `/usr/bin/` are **union** mounts, and a name the rootfs half does not have
+falls through to the host's — so `hosttools[]` is the gate on the fall-through
+rather than a special case bolted beside it. `/bin/strip` is a quiet miss (the
+Mac has none either) and `/usr/bin/strip` is the hit.
 
 **`shim/libkmemu/` may link host libc** — the one component that may, and it is
 built: `who` runs, with **no changes to `who.c` at all**, because the shim
@@ -294,6 +305,33 @@ uses), `load` and `w` (two lines each, and grovelers — see below), `make`
 (**V8's make building V8's make from V8's makefile** — the only entry that
 closes a loop), `eqn` (whose target is `a.out`, not its own name), and `pic` and
 `grap` (`-lm`). V8's make handled every one unchanged.
+
+**AND ON FIFTY MORE THAT HAVE NO MAKEFILE AT ALL, through `Admin/Mk`.** That is
+the other half of `cmd/`, and its build description is not a makefile but a
+shell script: for each bare `*.c` upstream runs
+`eval D=\`Admin/dest $B\`; cc $CFLAGS -o $B $B.c`, then
+`strip $1 && cp $1 $2`, then `rm -f $B.o $B`. Run verbatim inside the jail under
+`V8JAIL=strict`, it builds, installs and cleans up all fifty of this port's
+single-file commands — exercising V8's `sh` (`set -p`, functions, backquotes,
+`eval`, `case`), two nested shell scripts with **no `#!` line**, and V8's `cc`
+driving V8's `cpp` and `ccom`. Three host execs in total: `clang` twice per
+program and `strip` once.
+
+Two things it gives that the seventeen could not. **`Admin/dest` and the
+Makefile's `$(call v8dest,...)` are two independent derivations of the same
+answer**, one in V8's shell at run time and one in GNU make at build time, and
+`tests/jail` compares them for all fifty — the only thing that would notice the
+deliberately-omitted `ulibfiles` arm starting to matter. And it needed
+`/usr/src/` in the mount table, because `cd /usr/src/cmd` is the one absolute
+path in the script; `$(SRCTREE)` stages the sources there, so **the V8 world can
+now rebuild the half of itself that never had a makefile.**
+
+Writing that test taught one thing worth repeating: **`Mk` runs inside the world
+it is rebuilding.** `Admin/lookline` *is* `grep`, the loop `echo`s, every name
+goes through `basename`, and each program ends in `rm` — so a test that deletes
+all fifty binaries before the run kills the script on its second iteration, and
+the failure reads like a compiler error. Rebuilding those four over themselves
+is fine; removing them first is not.
 
 Three things came out of that which our own rules could not have surfaced.
 `sed` found a *driver* gap — `-n`, the VAX shared-text flag, now accepted and
@@ -390,6 +428,14 @@ inside it. Consequence, and it is load-bearing: the jail is **per-binary, not
 per-process-tree**. Host binaries never call `rootpath()`, so they see the real
 macOS with no special casing; anything `cc` produces links `libv8sys`, so it is
 jailed by construction.
+
+The mount table is `mounts[]` in `shim/v8sys/vfs.c`, and **`/usr/src/` is on it
+so V8's own source tree is inside the jail.** That is a rung-5 requirement
+rather than decoration: `Admin/Mk` opens with `cd /usr/src/cmd`, the only
+absolute path in it, so without the row the V8 world could rebuild a program
+that has a makefile and not one that has none. Adding a prefix here is cheap and
+its blast radius is the whole world — everything jailed then sees `/usr/src`
+redirected — so weigh a new row against what actually needs it.
 
 **A path resolver that keys on existence cannot resolve a creation, and that
 gap was one-directional.** `rootpath()` redirects a path whose rootfs copy

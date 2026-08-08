@@ -607,8 +607,21 @@ injail(char *p)
  * So the entry is not a new exception; it is the documented one, finally
  * reachable.  The same shape as v8s_mknod passing its path unresolved: an
  * unexercised rule cannot be seen to be incomplete.
+ *
+ * `strip' arrived the same way and for the same reason.  Admin/Mk is upstream's
+ * build description for the half of cmd/ with no makefile, and its install()
+ * is `strip $1 && cp $1 $2' -- so with strip missing the && short-circuits and
+ * NOTHING IS INSTALLED, which reads as a build failure rather than as a jail
+ * decision.  Note how it is reached, because it is not a new mechanism: sh
+ * searches PATH=/bin:/usr/bin:/etc by execve, /bin/strip is a quiet miss (the
+ * Mac has none either), and /usr/bin/ is a union mount whose rootfs half has no
+ * strip -- so the host's is what the third probe finds, and this list is the
+ * gate on it.  `nm' is still absent and tests/jail asserts it is refused, which
+ * is what stops this array drifting into "everything PLAN.md mentions".
  */
-static const char *hosttools[] = { "/usr/bin/clang", "/usr/bin/as", 0 };
+static const char *hosttools[] = {
+	"/usr/bin/clang", "/usr/bin/as", "/usr/bin/strip", 0
+};
 
 static int
 sanctioned(char *p)

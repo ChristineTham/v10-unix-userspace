@@ -55,6 +55,15 @@ static struct v8mount {
 	{ "/usr/man/",	 0, &v8fs_pass },
 	{ "/usr/spool/", 0, &v8fs_pass },
 	/*
+	 * /usr/src/ is where V8 kept its own sources, and it is here so that
+	 * Bell Labs' top-level build description can run in place.  Admin/Mk
+	 * opens with `cd /usr/src/cmd' -- an absolute path, and the only one in
+	 * the script -- so without this row the V8 world can rebuild a program
+	 * from its own makefile (rung 5) but cannot rebuild one that HAS no
+	 * makefile, which is more than half of cmd/.  See tests/jail.
+	 */
+	{ "/usr/src/",	 0, &v8fs_pass },
+	/*
 	 * /dev/ is here for the grovelers: load(1) opens /dev/kmem, which
 	 * libkmemu manufactures.  It does NOT capture /dev/null or /dev/tty,
 	 * by the same mechanism that protects every other entry -- a path whose

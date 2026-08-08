@@ -444,6 +444,30 @@ dep 'l3tol.c -> libc'          src/libc/gen/l3tol.c            $B/libc/libv8c.a
 # not a groveler -- it writes a filesystem rather than reading the host's.
 nodep 'mkfs does not reach libkmemu' shim/libkmemu/procfs.c    $B/bin/mkfs
 
+# --- /usr/src/cmd, staged so Bell Labs' Admin/Mk can run in the jail --------
+# Two edges per file and both matter.  A stale Admin/Mk in the rootfs would run
+# an old build description while the Makefile derived destinations from the new
+# tables -- the exact drift $(ADMIN) was pointed at src/ to prevent -- and a
+# stale staged .c would have Mk rebuild the version before the last patch,
+# which tests/jail would then compare against the current binary and call a
+# difference in the COMPILER.
+dep 'Admin/Mk -> the jail copy'     src/cmd/Admin/Mk \
+                                    rootfs/usr/src/cmd/Admin/Mk
+dep 'Admin/dest -> the jail copy'   src/cmd/Admin/dest \
+                                    rootfs/usr/src/cmd/Admin/dest
+dep 'Admin/binfiles too'            src/cmd/Admin/binfiles \
+                                    rootfs/usr/src/cmd/Admin/binfiles
+dep 'cat.c -> the staged source'    src/cmd/cat.c \
+                                    rootfs/usr/src/cmd/cat.c
+# ...and the same source still reaches the binary our own rules build, which is
+# what tests/jail compares Mk's output against.  One file, two consumers.
+dep 'cat.c -> our own cat'          src/cmd/cat.c              $B/bin/cat
+# Negative control: staging is a copy, not a compile.  If the .c ever grew a
+# dependency on the compiler the whole tree would restage on every toolchain
+# change, and a 50-file copy would hide inside the build noise.
+nodep 'staging a source does not depend on the compiler' \
+                                    $B/cc/v8cc                 rootfs/usr/src/cmd/cat.c
+
 # --- section 8a step 2: the filesystem switch -------------------------------
 # vfs.c holds the mount table and the passthrough type; syscall.c dispatches
 # through it.  Both directions are edges, and the header is the contract.
@@ -535,7 +559,8 @@ for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/bin/cal rootfs/bin/who rootfs/bin/df rootfs/usr/bin/load \
          rootfs/usr/bin/w rootfs/usr/bin/uptime rootfs/bin/ps \
          rootfs/etc/mkfs rootfs/etc/icheck rootfs/etc/dcheck \
-         rootfs/etc/clri rootfs/etc/fsck; do
+         rootfs/etc/clri rootfs/etc/fsck \
+         rootfs/usr/src/cmd/Admin/Mk rootfs/usr/src/cmd/cat.c; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1
 	if [ -f "$ROOT/$f" ]; then

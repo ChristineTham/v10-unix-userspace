@@ -212,12 +212,12 @@ SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin srctree clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys libv8kern crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex
+stage0: cpp v8ccom v8cc libv8sys libv8kern crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex srctree
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
@@ -974,13 +974,37 @@ BINDIR = $(BUILD)/bin
 # agreement from the far end, against the shipped directories rather than
 # against these tables, so the two sources still check each other.
 #
-# Note the hole in Admin/dest, since it explains why this is not simply a
-# transcription of that script: it greps a `ulibfiles' that is not in the
-# directory, so anything belonging in /usr/lib falls through to /usr/bin.
-# Nothing this port installs is affected -- checked -- and the shipped tree is
-# the source that would catch it.
+# ULIBFILES IS DELIBERATELY NOT READ, and the reason is a measurement rather
+# than the one that used to be written here.  This said Admin/dest "greps a
+# ulibfiles that is not in the directory".  IT IS IN THE DIRECTORY -- 51 names.
+# What is true is that it is the table the two upstream sources DISAGREE about.
+# Resolving all 128 listed names through dest and looking each up in the shipped
+# tree: 122 agree, 36 were never shipped, and SIX disagree --
+#
+#	crontab  dest=/usr/lib  shipped=/etc
+#	lint     dest=/usr/lib  shipped=/usr/bin
+#	login    dest=/bin      shipped=/etc
+#	man      dest=/usr/lib  shipped=/usr/bin
+#	pstat    dest=/bin      shipped=/etc
+#	uucp     dest=/usr/lib  shipped=/usr/bin
+#
+# Four of the six are ulibfiles entries that V8 shipped somewhere else, and one
+# of them, `man', is a command this port installs.  Omitting the arm sends man
+# to /usr/bin by fall-through, which is where the shipped tree has it -- so the
+# omission is what makes us right, and adding the arm for symmetry would break
+# it.  The shipped tree is the authority when they differ, because it is what
+# the machine actually looked like.
+#
+# tests/wavea asserts the choice rather than leaving it as a comment: it
+# recomputes the disagreement set and fails if anything this port installs
+# enters it.  Import `lint' or `crontab' tomorrow and that case goes red, which
+# is the only warning there would otherwise be.
 # ---------------------------------------------------------------------------
-ADMIN    := $(REPO)third_party/Research-Unix-v8/v8/usr/src/cmd/Admin
+# Read from src/, not third_party/: these are now imported with PROVENANCE like
+# any other upstream file, because the rootfs stages them at /usr/src/cmd/Admin
+# so Bell Labs' own Admin/Mk can run in the jail.  One copy, so the build-time
+# derivation and the run-time script cannot disagree.
+ADMIN    := $(SRC)/cmd/Admin
 ADMINBIN := $(shell cat $(ADMIN)/binfiles)
 ADMINETC := $(shell cat $(ADMIN)/etcfiles)
 ADMINLIB := $(shell cat $(ADMIN)/libfiles)
@@ -1334,6 +1358,51 @@ IMGBIN_INSTALL = $(call v8install,$(IMGBIN))
 
 imgbin: $(IMGBIN_BUILT) $(IMGBIN_INSTALL)
 mkfs: imgbin
+
+# ---------------------------------------------------------------------------
+# /usr/src/cmd -- V8's own source tree, staged inside the jail.
+#
+# WHY, and it is a rung-5 claim rather than decoration.  Rung 5 so far means
+# "V8's make reads Bell Labs' makefile", demonstrated on seventeen programs.
+# More than half of cmd/ HAS NO MAKEFILE: those are bare *.c files, and their
+# build description is Admin/Mk, which for each one runs
+#
+#	eval D=`Admin/dest $B`; cc $CFLAGS -o $B $B.c && install $B $D/$B
+#
+# Mk opens with `cd /usr/src/cmd' -- the only absolute path in it -- so without
+# a /usr/src inside the jail that description cannot run at all.  shim/v8sys/
+# vfs.c gains the mount row; this stages the files it expects to find.
+#
+# Sources are OURS, not third_party's pristine copies, by the same rule every
+# other rung-5 entry follows: the claim is that the build DESCRIPTION is Bell
+# Labs', not that the source is unpatched.  Admin/ is upstream and imported with
+# PROVENANCE, and $(ADMIN) above now reads the same copy, so the destination
+# this Makefile derives at build time and the one Mk derives at run time cannot
+# drift apart.
+#
+# Per-file targets rather than a directory stamp, for the reason tests/deps
+# already records: a stamp answers "the install ran", which is not the question
+# when someone deletes one file.
+# ---------------------------------------------------------------------------
+ADMINFILES = Mk dest lookline binfiles etcfiles libfiles ulibfiles large
+SRCTREE    = $(ROOTFS)/usr/src/cmd
+
+ROOTFS_ADMIN = $(patsubst %,$(SRCTREE)/Admin/%,$(ADMINFILES))
+ROOTFS_CSRC  = $(patsubst %,$(SRCTREE)/%.c,$(V8BIN))
+
+# dest and lookline are invoked as COMMANDS by Mk, not as `sh dest', so the
+# execute bit has to survive the copy -- plain cp does that, and upstream has
+# the three scripts 755 and the four tables 644 already, so anything stronger
+# here would make the data files executable and say something untrue about
+# them.  None of the three has a #! line; V8's sh runs them itself when execve
+# answers ENOEXEC.
+$(SRCTREE)/Admin/%: $(SRC)/cmd/Admin/%
+	@mkdir -p $(@D) && cp $< $@
+
+$(SRCTREE)/%.c: $(SRC)/cmd/%.c
+	@mkdir -p $(@D) && cp $< $@
+
+srctree: $(ROOTFS_ADMIN) $(ROOTFS_CSRC)
 
 # Installed under the rootfs so the shim's rootpath() can resolve /bin/... to
 # them -- this port's chroot, implemented where its kernel lives.

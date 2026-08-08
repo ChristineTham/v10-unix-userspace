@@ -773,5 +773,122 @@ case "$(echo 'man cat' | "$V8ROOT/usr/bin/v8" 2>&1)" in
 *) fail=$((fail+1)); echo "FAIL man via its shebang did not render" ;;
 esac
 
+# ---------------------------------------------------------------------------
+# RUNG 5 FOR THE HALF OF cmd/ THAT HAS NO MAKEFILE: Bell Labs' Admin/Mk.
+#
+# Everything above about rung 5 is "V8's make reads an upstream makefile", and
+# it is demonstrated on seventeen programs.  MORE THAN HALF OF cmd/ HAS NO
+# MAKEFILE -- those are bare *.c files, and their build description is
+# Admin/Mk, a shell script.  For each name it does
+#
+#	eval D=`Admin/dest $B`;  cc $CFLAGS -o $B $B.c
+#	install $B $D/$B         # strip $1 && cp $1 $2
+#	rm -f $B.o $B
+#
+# so a run exercises V8's sh (functions, backquotes, eval, case, set -p), two
+# nested V8 shell scripts with no #! line, V8's cc driving V8's cpp and ccom,
+# and upstream's own install-destination tables -- and then has to leave the
+# directory as it found it.
+#
+# THE WHOLE ROOTFS IS COPIED FIRST, and that is not tidiness: install() writes
+# to /bin and /usr/bin, so a run against the real rootfs would replace the
+# binaries every later suite uses with ones this test built.  14 MB, 0.3s.
+#
+# The other reason to copy: the programs can then be DELETED before the run, so
+# their reappearance is evidence.  A test that rebuilds over an existing file
+# proves only that make ran.
+# ---------------------------------------------------------------------------
+RFS=$TMP/rfs
+cp -a "$V8ROOT" "$RFS" || { echo "FAIL could not copy the rootfs"; fail=$((fail+1)); }
+MKNAMES=$(ls "$RFS"/usr/src/cmd/*.c 2>/dev/null | sed 's|.*/||')
+MKCOUNT=$(echo $MKNAMES | wc -w | tr -d ' ')
+# If the staging rule ever stops running, every case below would pass vacuously
+# on an empty list.  That is the failure tests/cpp already had once.
+if [ "$MKCOUNT" -ge 40 ]; then pass=$((pass+1))
+else fail=$((fail+1)); echo "FAIL only $MKCOUNT sources staged at /usr/src/cmd -- run make srctree"; fi
+
+# Where our Makefile put each one, before anything is deleted.
+for n in $(echo "$MKNAMES" | sed 's|\.c$||'); do
+	(cd "$RFS" && ls bin/$n usr/bin/$n etc/$n lib/$n 2>/dev/null | head -1)
+done > "$TMP/mk.before"
+ck 'every staged source has an installed binary to compare against' \
+   "$MKCOUNT" "$(grep -c . "$TMP/mk.before")"
+
+# DELETE A SUBSET, NOT ALL OF THEM, and the reason is worth keeping: Mk runs
+# inside the world it is rebuilding.  `Admin/lookline' IS grep, the loop echoes,
+# each program ends `rm -f $B.o $B', and every name is put through basename --
+# so deleting all fifty removes the tools the script needs on its second
+# iteration, and the run dies in a way that reads like a compiler failure.  (It
+# did.)  Rebuilding those four OVER THEMSELVES is fine and happens anyway; only
+# removing them first is not.
+MKDEL='cat rev sort sum wc who cal ascii od tr uniq comm'
+grep -E "/($(echo $MKDEL | tr ' ' '|'))\$" "$TMP/mk.before" > "$TMP/mk.del"
+ck 'the delete list resolves to installed paths' \
+   "$(echo $MKDEL | wc -w | tr -d ' ')" "$(grep -c . "$TMP/mk.del")"
+(cd "$RFS" && while read -r p; do rm -f "$p"; done < "$TMP/mk.del")
+ck 'they are gone before Mk runs' '0' \
+   "$(cd "$RFS" && while read -r p; do [ -e "$p" ] && echo x; done < "$TMP/mk.del" | grep -c .)"
+
+V8ROOT="$RFS" V8JAIL=strict "$RFS/bin/sh" "$RFS/usr/src/cmd/Admin/Mk" $MKNAMES \
+    > "$TMP/mk.log" 2>&1
+ck 'Mk reports one header per program' "$MKCOUNT" "$(grep -c '========' "$TMP/mk.log")"
+
+# Under strict, a sanctioned tool is silent and an escape is refused loudly, so
+# any v8sys line at all is a failure.
+ck 'nothing left the jail' '' "$(grep '^v8sys' "$TMP/mk.log")"
+
+# The claim.  Not "a binary appeared" but "the binary upstream's own tables name
+# appeared", which is what makes this a rung-5 case rather than a build check.
+ck 'every program is back, at the path Admin/dest names' "$MKCOUNT" \
+   "$(cd "$RFS" && while read -r p; do [ -x "$p" ] && echo x; done < "$TMP/mk.before" | grep -c .)"
+
+# TWO INDEPENDENT DERIVATIONS OF THE SAME ANSWER.  $(call v8dest,...) in the
+# Makefile reads Bell Labs' tables at build time; Admin/dest reads them at run
+# time, in V8's sh, with an arm for ulibfiles the Makefile deliberately omits.
+# Comparing them is the only thing that would notice the omission mattering.
+for n in $(echo "$MKNAMES" | sed 's|\.c$||'); do
+	(cd "$RFS" && ls bin/$n usr/bin/$n etc/$n lib/$n 2>/dev/null | head -1)
+done > "$TMP/mk.after"
+if cmp -s "$TMP/mk.before" "$TMP/mk.after"; then pass=$((pass+1))
+else fail=$((fail+1)); echo "FAIL Admin/dest and \$(call v8dest,...) disagree:"
+     diff "$TMP/mk.before" "$TMP/mk.after" | head -6; fi
+
+# Mk ends each program with `rm -f $B.o $B', so the source directory has to
+# come out as it went in.  A build that litters /usr/src/cmd would be caught
+# here and nowhere else.
+ck 'Mk cleans up after itself' '' \
+   "$(ls "$RFS/usr/src/cmd" | grep -vE '\.c$|^Admin$' | tr '\n' ' ' | sed 's/ $//')"
+
+# And they RUN, with the same answers as the ones our Makefile built.  The paths
+# are LOOKED UP rather than written down -- writing `bin/wc' when it is really
+# usr/bin/wc produced four failures that read as build errors and were a typo,
+# which is the same trap $(call v8dest,...) exists to avoid at build time.  `who'
+# is here because it is the one that needs libkmemu: a driver that quietly
+# dropped a library would show as a wrong ANSWER here rather than at the link.
+printf 'delta\nalpha\ncharlie\n' > "$TMP/mkin"
+mkpath() { grep -E "/$1\$" "$TMP/mk.before" | head -1; }
+for c in "cat $TMP/mkin" "rev $TMP/mkin" "sort $TMP/mkin" "sum $TMP/mkin" \
+         "wc -l $TMP/mkin" "who"; do
+	n=${c%% *}; args=${c#$n}
+	p=$(mkpath "$n")
+	if [ -z "$p" ]; then fail=$((fail+1)); echo "FAIL cannot locate $n"; continue; fi
+	a=$(V8ROOT="$V8ROOT" sh -c "\"$V8ROOT/$p\" $args" </dev/null 2>&1)
+	b=$(V8ROOT="$RFS"    sh -c "\"$RFS/$p\" $args"    </dev/null 2>&1)
+	if [ "$a" = "$b" ] && [ -n "$a" ]; then pass=$((pass+1))
+	else fail=$((fail+1)); echo "FAIL Mk-built $p differs"; echo "  ours [$a]"; echo "  Mk   [$b]"; fi
+done
+
+# What it reaches, named rather than merely counted as zero above.  strip is on
+# this list because Mk's install() is `strip $1 && cp $1 $2': without it the &&
+# short-circuits and NOTHING INSTALLS, which reads as a build failure rather
+# than as a jail decision.  clang appears twice per program, for the assemble
+# and the link.
+V8ROOT="$RFS" V8JAIL=warn "$RFS/bin/sh" "$RFS/usr/src/cmd/Admin/Mk" cat.c \
+    > "$TMP/mkwarn.log" 2>&1
+ck 'the only host tools Mk reaches are the documented ones' \
+   '/usr/bin/clang /usr/bin/strip' \
+   "$(grep '^v8sys: sanctioned' "$TMP/mkwarn.log" | sed 's/.*toolchain: //;s/ .*//' \
+      | sort -u | tr '\n' ' ' | sed 's/ $//')"
+
 echo "jail: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

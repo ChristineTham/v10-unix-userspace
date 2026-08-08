@@ -339,6 +339,51 @@ else
 	echo "FAIL installed where V8 did not put them:$misplaced"
 fi
 
+# WHERE THE TWO SOURCES DISAGREE, pinned so the Makefile's reasoning stays
+# falsifiable.  $(call v8dest,...) reads binfiles/etcfiles/libfiles and stops;
+# Admin/dest reads a fourth table, ulibfiles, that the Makefile deliberately
+# does NOT -- and the comment there justifies the omission by naming exactly
+# which six of the 128 listed commands the tables and the shipped tree disagree
+# about.  A comment naming six things is a claim, and the tables are vendored
+# files that a future import could change.  So recompute the set.
+#
+# `man' is the one that matters: it is in ulibfiles, so dest says /usr/lib,
+# while the shipped tree has /usr/bin -- and this port installs it.  Omitting
+# the arm is what makes us agree with the tree.  Adding it "for completeness"
+# would break man and this case would not notice, because it asks about
+# upstream rather than about us; the case above is the one that would.
+A=$ROOT/src/cmd/Admin
+adest() {
+	grep -qx "$1" "$A/binfiles"  && { echo bin;     return; }
+	grep -qx "$1" "$A/etcfiles"  && { echo etc;     return; }
+	grep -qx "$1" "$A/libfiles"  && { echo lib;     return; }
+	grep -qx "$1" "$A/ulibfiles" && { echo usr/lib; return; }
+	echo usr/bin
+}
+differ=
+# -f ON BOTH SIDES, and getting this wrong gave two different wrong answers
+# before it gave the right one.  A name in these tables can be a COMMAND or a
+# DIRECTORY: font, macros, term and tmac are directories under /usr/lib, and
+# lint and uucp are a command in /usr/bin AND a directory of the same name in
+# /usr/lib.  Ask with -e and the six become ten; ask with -e on one side and -f
+# on the other and lint and uucp look like disagreements about a command when
+# the tables are describing the directory.  The question this port has is only
+# ever about where a command goes, so both sides ask for a regular file.
+shipfile() {
+	for d in bin usr/bin lib etc usr/lib; do
+		[ -f "$SHIPPED/$d/$1" ] && { echo "$d"; return 0; }
+	done
+	return 1
+}
+for name in $(cat "$A"/binfiles "$A"/etcfiles "$A"/libfiles "$A"/ulibfiles | sort -u); do
+	d=$(adest "$name")
+	[ -f "$SHIPPED/$d/$name" ] && continue		# they agree
+	shipfile "$name" >/dev/null || continue		# no command of that name
+	differ="$differ $name"
+done
+check 'the tables and the shipped tree disagree about exactly these six' \
+   ' crontab lint login man pstat uucp' "$differ"
+
 # ...AND THE SAME QUESTION OF THE DIRECTORIES, which is where the glob above
 # was blind. `src/cmd/*.c' matches src/cmd/cat.c and never src/cmd/mv/mv.c, so
 # a command upstream happens to keep in a directory of its own was invisible to

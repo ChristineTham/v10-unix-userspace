@@ -1,0 +1,14 @@
+# Provenance for v8/src/cmd/Admin
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+019dd86763007514bda3a64b93ed2c85ea465ef4  v8/usr/src/cmd/Admin/Mk
+b87fc4579c65b1101ee446088f04271255c53c9c  v8/usr/src/cmd/Admin/dest
+6cbc366b75c170c381af3fd5d8a56613d70a4a86  v8/usr/src/cmd/Admin/lookline
+777fefca805392d1adb9575c4fe2e66567a2d428  v8/usr/src/cmd/Admin/binfiles
+f8c1b937a8182652acd745e79d327fbaf5cf84de  v8/usr/src/cmd/Admin/etcfiles
+d66b1c2ea6bc0185c2c3582fd477b0760d79fdfd  v8/usr/src/cmd/Admin/libfiles
+7e0f71329d3cac1cbcc5086d9847aaf957080c64  v8/usr/src/cmd/Admin/ulibfiles
+31d9055300eb3ce26583a5980e4822dfbc8a0915  v8/usr/src/cmd/Admin/large

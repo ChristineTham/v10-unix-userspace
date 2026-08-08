@@ -279,6 +279,60 @@ test to say so.
 this port can break the rung-5 claim for a program whose makefile was fine all
 along.
 
+### Admin/Mk closes the other half of cmd/, and it runs verbatim
+
+The seventeen above all have makefiles. **More than half of `cmd/` does not**,
+and for those the build description is `Admin/Mk` -- a shell script, not a
+makefile, so rung 5 for them is a different claim and needed different work.
+For each bare `*.c` it does
+
+```sh
+	eval D=`Admin/dest $B`
+	cc $CFLAGS -o $B $B.c && install $B $D/$B    # strip $1 && cp $1 $2
+	rm -f $B.o $B
+```
+
+Run unmodified inside the jail under `V8JAIL=strict`, it builds, installs and
+cleans up **all fifty** of this port's single-file commands. What that exercises
+is not the compiler but the world around it: V8's `sh` doing `set -p`, shell
+functions, backquotes, `eval` and `case`; two nested shell scripts with **no
+`#!` line**, which V8's `sh` runs itself when `execve` answers ENOEXEC; and
+upstream's own install-destination tables. Three host execs in total -- `clang`
+twice per program, `strip` once -- and `tests/jail` names them.
+
+Three things it took, each small and none guessable:
+
+- **`/usr/src/` in the mount table**, because `cd /usr/src/cmd` is the one
+  absolute path in the script. `$(SRCTREE)` stages `Admin/` and the fifty
+  sources there.
+- **`strip` in `hosttools[]`.** `install()` is `strip $1 && cp $1 $2`, so a
+  refused strip short-circuits the `&&` and nothing installs -- a jail decision
+  that presents as a build failure. Reached by the ordinary union fall-through,
+  not a new mechanism, so it is PLAN S1's documented exception finally becoming
+  reachable, exactly as `as` did.
+- **`$(ADMIN)` moved from `third_party/` to `src/cmd/Admin`**, imported with
+  PROVENANCE, so the tables the Makefile reads at build time and the ones `dest`
+  reads at run time are one copy and cannot drift.
+
+And it produced a cross-check nothing else could: `Admin/dest` and
+`$(call v8dest,...)` are **two independent derivations of the same answer**, in
+two languages at two times, and `tests/jail` compares them for all fifty. They
+agree on every one -- which is what makes the Makefile's deliberate omission of
+the `ulibfiles` arm a measured choice rather than a gap. `tests/wavea` pins the
+six names where the tables and the shipped tree genuinely disagree about a
+command -- `crontab`, `lint`, `login`, `man`, `pstat`, `uucp` -- so the comment
+justifying that omission is falsifiable. `man` is the one this port installs,
+and omitting the arm is what makes us agree with the tree.
+
+That case took two wrong answers before the right one, and the reason
+generalises: **a name in those tables can be a command or a directory.** `font`,
+`macros`, `term` and `tmac` are directories under `/usr/lib`; `lint` and `uucp`
+are a command in `/usr/bin` AND a directory of the same name in `/usr/lib`. Ask
+with `-e` and six become ten; ask with `-e` on one side and `-f` on the other
+and `lint` and `uucp` look like disagreements about a command when the table is
+describing the directory. The question this port ever has is where a *command*
+goes, so both sides ask for a regular file.
+
 ### And a FOURTH kind of stop, which is the dangerous one because it succeeds
 
 The three above all *fail*: a link error, an assembler error, a wrong `-D` you
