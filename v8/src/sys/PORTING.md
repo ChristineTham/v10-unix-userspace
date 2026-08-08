@@ -403,6 +403,46 @@ and upstream says the field was exactly the right size all along.
    the hazard itself. Fixed, and the guard that can see it is a `sizeof` on the
    member rather than another offset.
 
+### And "33 mechanical names" is a third of what it reads as
+
+The remaining cost was recorded as a count. Enumerated instead — every
+identifier `streamio.c` calls and does not define, then classified by who
+already provides it — **19 of the 34 are already in the tree**:
+
+| provider | names | n |
+|---|---|---|
+| `src/sys/dev/stream.c`, imported and byte-identical | `allocb allocq backq flushq freeb getq putbq putctl putq qreply queuerun` | 11 |
+| `src/sys/h/stream.h`, macros in the authentic header | `RD WR OTHERQ` | 3 |
+| `shim/kern`, already written | `spl6 splx panic` in `dev/machdep.c`; `printf` and `bcopy` redirected in `h/param.h` | 5 |
+| **still to write** | `tsleep wakeup copyin copyout iomove longjmp gsignal psignal selwakeup closef ufalloc iput min nulldev GETF` | **15** |
+
+(Three more names the extraction offers — `server`, `flag`, `called` — are
+inside comments at `:519` and `:842-843`. Worth saying because a grep for
+`name(` cannot tell code from prose, and 37 is the number it reports.)
+
+The fifteen are not fifteen problems, and the shape of the work is the point:
+
+- **`copyin` and `copyout` are `bcopy`.** One address space per binary, so
+  there is nothing to copy *between*. Two lines each — and `:713`'s recorded
+  deviation above is the only subtle thing about either.
+- **`min`, `nulldev` and `GETF` are one line each upstream** — `sys/rdwri.c`,
+  `sys/subr.c`, and a macro in `h/inline.h`, which is one of the eleven headers
+  already on the list.
+- **`tsleep` and `wakeup` are settled**: `queuerun()` then `poll()` on the
+  driver's host fd, and `wakeup` a no-op. That was this step's blocker and it
+  is answered above.
+- **`gsignal`, `psignal` and `selwakeup` are delivery**, and delivery works
+  here — `shim/v8sys/sigtramp.s` and the `struct __sigaction` account in
+  `shim/NOTES.md`.
+- **`longjmp` on `u.u_qsav` lands exactly on hazard 4's second field.** The
+  kernel-side `struct user` needs a jump buffer this machine can actually use,
+  which is why it cannot be the /proc one.
+- **`closef`, `ufalloc` and `iput` are the real three**, and the survey above
+  already named why: `strput` looks pure and is not, because `:372` reaches
+  `forceclose()`, which walks `file[0]`…`file[NFILE]`. The file table and the
+  inode edge are the design left in this step, and they are three names, not
+  thirty-three.
+
 One smaller thing worth knowing: the 13 ioctl codes `streamio.c` needs
 (`FIONREAD`, `TIOCGPGRP`, `FIOPUSHLD`, …) are **already spelled with identical
 values** in `shim/v8sys/ioctl.c` as `V8_*`. A second spelling would be the

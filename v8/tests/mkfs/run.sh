@@ -336,14 +336,26 @@ ic() { "$ICHECK" "$1" 2>&1 | sq; }
 # 300 hammered dcheck invocations, then **120 consecutive runs of this entire
 # suite -- 18240 cases -- with zero failures**.
 #
-# So it is NOT INTRINSIC TO THIS SUITE, and that is a result rather than a
-# shrug: it says every surviving hypothesis lives in the full-run context this
-# suite cannot reproduce on its own -- what the sixteen earlier suites leave
-# behind in rootfs/ (the third shape of the host-property trap, which has
-# already bitten tests/jail once) and what they leave in the page cache, which
-# dcheck's sync() at dcheck.c:108 is the only thing here that waits on.
-# Cause still unknown; the marker below is what will name the next occurrence
-# instead of blaming a link count for it.
+# So it is NOT INTRINSIC TO THIS SUITE, which is a result rather than a shrug:
+# every surviving hypothesis has to live in the full-run context the suite
+# cannot reproduce alone.  Two candidates, and the big one is now dead too.
+#
+# WHAT THE SIXTEEN EARLIER SUITES LEAVE IN rootfs/ -- the third shape of the
+# host-property trap, which has already bitten tests/jail once.  Measured by
+# hashing every regular file under rootfs/ either side of a full `make test':
+# exactly ONE differs, /dev/kmem, which libkmemu regenerates and which no image
+# tool opens.  And all seven $(IMGBIN) binaries are byte-identical to their
+# build objects, so Admin/Mk has never clobbered one -- the mechanism worth
+# fearing, since Mk compiles a bare cmd/*.c with no -DDIRSIZ=14 and a 254 dcheck
+# reports a link-count disagreement on a PERFECTLY GOOD image.  It cannot
+# happen: no $(IMGBIN) source is staged in usr/src/cmd, and tests/jail asserts
+# $(IMGBIN) and $(V8BIN) stay disjoint.  Hypothesis closed.
+#
+# WHAT THEY LEAVE IN THE PAGE CACHE is what is left.  dcheck.c:108 is a sync(2),
+# the only call in this suite that can wait on data sixteen suites just dirtied,
+# and icheck's three syncs run first only because the suite happens to order
+# them that way.  Cause still unknown; the marker below is what will name the
+# next occurrence instead of blaming a link count for it.
 #
 # 142 is 128+SIGALRM.  A program exiting 142 itself would be indistinguishable
 # -- the shell cannot tell a signal from a status, which crash-probe.sh learned
