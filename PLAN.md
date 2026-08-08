@@ -1604,7 +1604,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
    | | ext. names | missing | headers | verdict |
    |---|---|---|---|---|
    | `dev/spipe.c` (83 lines) | 19 | 2 (`minor()`, `NSP`) | 5, **2 new** | **impossible** |
-   | `dev/ttyld.c` (596 lines) | 28 | 3 (`max()`, `partab[]`, `NTTY`) | 6, **3 already in**, 1 new | cheap, but has no bottom |
+   | `dev/ttyld.c` (596 lines) | ~~28~~ **15** | ~~3~~ **1 (`max()`)** | 6, **5 already in**, 1 empty | cheap to compile, one number missing |
    | host-fd driver (new, layer 2) | **0** | **0** | **0** | ~~do this first~~ **there is nothing for it to be under** |
 
    **AND THE THIRD ROW WAS ANSWERING A QUESTION V8 DOES NOT ASK.** The host-fd
@@ -1653,6 +1653,40 @@ Ordered so that value lands before risk, and so each step is testable alone.
    hardware-free modules are all line disciplines. So a shipped stream *device*
    here would have to be a layer-2 invention, which is a weaker claim than a
    line discipline exercised over the bottom `tests/streams` already has.
+
+   **AND THE `ttyld` ROW WAS RE-MEASURED TOO, BECAUSE THE SAME SURVEY WROTE IT.**
+   Paren-matching its calls and subtracting its own eight definitions gives
+   **15** distinct callees, not 28 — the old figure counted variables. Fourteen
+   of the fifteen are already in `libv8kern.a`, checked with `nm`; the one
+   missing is `max()`, eight lines at `sys/rdwri.c:235`, beside the `min()`
+   already in `shim/kern/sys/subr.c`. `partab[]` is data, not a name to
+   implement: `sys/partab.c` is 51 lines and imports whole.
+
+   **The sixth header is not a header.** `ttyld.c:6` includes `"tty.h"`, and
+   `h/tty.h` is **zero bytes** — the only zero-length header in `h/`.
+   `conf/makefile:61-62` says why:
+
+   ```make
+   ../h/tty.h: /usr/include/sgtty.h ../h/ioctl.h
+	   touch ../h/tty.h
+   ```
+
+   It is a make timestamp node standing for "sgtty.h and ioctl.h are current",
+   deliberately empty. The include is a no-op by design, not a missing file —
+   the mirror of `sys/sys.c`, where a file that *is* present turned out not to
+   be built. Read the makefile before calling a file missing or present.
+
+   **What genuinely is not in the tree is `NTTY`.** It occurs exactly twice,
+   both inside `ttyld.c` (`:12` and `:50`), and is defined nowhere in
+   `usr/sys`; `nttyld.c` beside it uses `NNTTY` under a `#if NNTTY > 0` guard,
+   which is the 4BSD config-generated pattern. `conf/config_how` confirms it —
+   `config` writes "zillions of header files" into `/usr/sys/<sysname>/` from a
+   machine description that **is not shipped**, and `conf/config` is a VAX
+   `a.out` binary rather than source, so it cannot be regenerated either. So an
+   `NTTY` here is a **layer-2 decision and must be spelled as one**, the way
+   `libkmemu`'s `u_ssize`/`NSTACK` is. The `64` this section used to give has no
+   source: `proto-dev` has 8 hardware ttys and 64 `spipe` `pt` nodes, which
+   makes it a plausible guess and nothing more.
 
    **`spipe` is structurally impossible, and not by a small margin.** It is the
    64 `/dev/pt/pt00`-`pt63` nodes -- odd minor master, even slave -- and its two
