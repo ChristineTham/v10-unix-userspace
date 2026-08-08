@@ -433,9 +433,15 @@ arm64_widen(t, r)
  * Measured after this function landed, by scanning the emitted code of all 97
  * installed binaries for `bl -> mov xN,x0 -> arithmetic -> sxtw': 64 sites, 63
  * of them calling something that genuinely returns int.  The one that did not
- * was ps's undeclared ctime(), fixed in src/cmd/ps/ps.h.  Re-run that sweep
- * after adding an operator below -- a source grep cannot see it, because
- * whether a declaration was in scope is not a textual property of the call.
+ * was ps's undeclared ctime(), fixed in src/cmd/ps/ps.h.
+ *
+ * THAT SWEEP IS NOW A TEST, so adding an operator below cannot quietly widen
+ * the damage: tests/trunc-sweep.awk is the scanner and tests/v8ccom runs it
+ * over the whole rootfs, asserting every hit's callee is a known int-returning
+ * function -- with a staleness check on that list, and a guard on the scanner
+ * itself, because a sweep that matches nothing reports a clean tree.  It has
+ * to read the BINARIES: whether a declaration was in scope is not a textual
+ * property of the call site, so a source grep cannot see this at all.
  */
 static void
 arm64_trunc(op, t, r)

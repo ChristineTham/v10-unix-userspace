@@ -938,6 +938,73 @@ char *ct();
 char *cp2() { return (ct() + 4); }
 EOF
 
+# ---------------------------------------------------------------------------
+# ...AND THE SAME SEAM SWEPT ACROSS THE WHOLE INSTALLED TREE, which is the only
+# way to see it.  "Was this function declared where it was called" is not a
+# textual property -- the declaration may be in an #include'd non-header, or
+# simply absent, and the call site reads the same either way.  Only what the
+# compiler EMITTED distinguishes them, so this reads the binaries.
+#
+# Every hit is a place a CALL's return survives into arithmetic and is then
+# sign-extended.  That is CORRECT when the callee really returns int, so the
+# assertion is not "no hits" but "every hit's callee genuinely returns int" --
+# with a staleness check, because a list nobody audits is not a guard.  ps's
+# undeclared ctime() was the one that did not belong; it is fixed in ps.h.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- and no pointer-returning call is truncated anywhere in the rootfs"
+
+R=$ROOT/rootfs
+# Every one of these is defined with NO return type -- K&R implicit int -- so
+# truncating its result is right.  Checked below, not asserted here.
+INTFNS='_strlen _dysize _slength _maplow _length _width _sgn _roman _decml
+        _atoi _abc _read _jan1 _findcol _dolncnt _apack'
+
+find "$R/bin" "$R/usr/bin" "$R/etc" "$R/lib" "$R/usr/lib" -type f -perm -u+x 2>/dev/null |
+while read -r p; do
+	file "$p" 2>/dev/null | grep -q Mach-O || continue
+	otool -tV "$p" 2>/dev/null | awk -f "$ROOT/tests/trunc-sweep.awk" |
+	    sed "s|^|$p |"
+done > "$TMP/trunc.txt"
+
+# THE INSTRUMENT FIRST.  A sweep that silently matched nothing -- a changed
+# otool format, an awk that errors -- would report a clean tree, which is the
+# direction that looks like success.  strlen is called with arithmetic all over
+# this tree, so zero hits means the sweep is broken, not that the tree is.
+nhits=$(wc -l < "$TMP/trunc.txt" | tr -d ' ')
+if [ "$nhits" -gt 20 ]; then pass=$((pass+1))
+else fail=$((fail+1)); FAILED="$FAILED trunc-sweep(instrument)"
+	echo "FAIL trunc sweep found only $nhits sites; it should find dozens of"
+	echo "     legitimate int-returning ones.  The sweep itself is broken."
+fi
+
+# Compared with grep rather than a `case' inside $( ), because a case pattern's
+# unbalanced `)' inside a command substitution does not parse in every sh --
+# measured here, not a precaution.
+printf '%s\n' $INTFNS | sed '/^$/d' | sort -u > "$TMP/intfns.txt"
+awk '{print $2}' "$TMP/trunc.txt" | sort -u                > "$TMP/seen.txt"
+
+bad=$(grep -vxF -f "$TMP/intfns.txt" "$TMP/seen.txt")
+if [ -z "$bad" ]; then pass=$((pass+1))
+else fail=$((fail+1)); FAILED="$FAILED trunc-sweep(pointer)"
+	echo "FAIL a call whose result is truncated is not a known int-returning"
+	echo "     function.  If it returns a pointer, DECLARE IT in the caller"
+	echo "     (see src/cmd/ps/ps.h); if it returns int, add it to INTFNS."
+	for fn in $bad; do
+		echo "       $fn"
+		grep " $fn " "$TMP/trunc.txt" | head -2 | sed 's/^/         /'
+	done
+fi
+
+# The staleness half, the same discipline tests/kmemu's ALLOWED list uses: a
+# name that no longer appears is a claim nobody is checking any more.
+stale=$(grep -vxF -f "$TMP/seen.txt" "$TMP/intfns.txt")
+if [ -z "$stale" ]; then pass=$((pass+1))
+else fail=$((fail+1)); FAILED="$FAILED trunc-sweep(stale)"
+	echo "FAIL INTFNS names nothing the sweep found -- remove it:"
+	echo "$stale" | sed 's/^/       /'
+fi
+
 echo
 echo "v8ccom: $pass passed, $fail failed"
 [ -n "$FAILED" ] && echo "failing:$FAILED"

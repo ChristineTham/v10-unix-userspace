@@ -2449,9 +2449,18 @@ option is known, but it restores no VAX behaviour and S1 says leave it.
 
 ### What is left
 
-`lex`'s 13, and `bcd`'s 1, and all fourteen are upstream defects that crashed on
-upstream's hardware. **96 -> 58 -> 57 -> 55 -> 54**, and the remaining number is
-not a to-do list.
+**Re-run after the three fixes: 4134 invocations, 54 signals, no taint** --
+measured, not the arithmetic. 53 of them are `lex` and 1 is `bcd`.
+
+Note what those 53 are *not*: they are not 53 bugs, and they are not the 13 that
+remain unfixed. They are **all 53 invocations reaching the 11 + 2 empty-spec
+faults**, because the probe supplies no specification, so the 40 that used to
+die in `warning()` now fall through to `ctail()`. The count is the same on both
+sides of a real fix -- which is the point of the paragraph above, and the reason
+`tests/wavea` asserts `lex -a spec.l` rather than anything this number can see.
+
+Both programs are upstream defects that crashed on upstream's hardware.
+**96 -> 58 -> 57 -> 55 -> 54**, and the remaining number is not a to-do list.
 
 ### The skip list is a coverage hole, and most of it can be closed
 

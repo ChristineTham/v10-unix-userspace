@@ -1211,9 +1211,12 @@ away the `cd` in `cd src/cmd/lex && make`, the single most likely spelling of th
 mistake it exists to catch. Both passed a casual look. The negative cases matter
 as much: a hook that blocks the everyday build gets switched off within the hour.
 
-CI (`.github/workflows/ci.yml`) builds and tests on `macos-14` (ARM64 — an x86
-runner would not exercise the AAPCS64 bugs this port keeps finding), then
+CI (`.github/workflows/ci.yml`) builds and tests on **`macos-26`** (ARM64 — an
+x86 runner would not exercise the AAPCS64 bugs this port keeps finding), then
 asserts that a no-op `make` does zero work and that a clean `-j8` build passes.
+This paragraph said `macos-14` until the workflow was re-read; `macos-14` is
+deprecated (actions/runner-images#13518) and the pin moved without the prose
+following it. The workflow file is the authority, and it says why in a comment.
 
 ## Porting a program
 
