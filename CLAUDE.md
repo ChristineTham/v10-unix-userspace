@@ -43,7 +43,8 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1428 cases).  NOT `make -j8 test': see below
+make test             # all 17 suites (1430 cases, 1429 when wavea's pwd case
+                      # reports "not exercised").  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -365,6 +366,20 @@ The sweep matched **the documentation of the rule and counted it as an instance
 of the rule** — the same shape as the `time(&` sweep whose population grew every
 time someone wrote a find down. `kmem.c` was credited with a bare `sysctl` it
 never calls, for the same reason.
+
+**AND THE SAME SHAPE HAS NOW COST REAL WORK, WHICH THE FIRST TWO DID NOT.**
+`src/libc/gen/PORTING.md` recorded that `v8sys_fold_ino` must stay a pure
+function "because folded values are written into files
+(`shim/libkmemu/NOTES.md:247` — `e_tdev` in the manufactured `/etc/utmp`) that
+another process reads", and used that to rule out the one easy fix for the
+`pwd` collision. Every part of it is false: the function has **three** call
+sites (`dir.c:236`, `dir.c:238`, `syscall.c:1144`) and none is in `libkmemu` —
+the two `grep` hits there are comments; `NOTES.md:247` is about `u_ttyino` in
+`/proc`'s u-area, says it is left zero, and calls filling it hypothetical; and
+V8's `struct utmp` is `{ut_line[8], ut_name[8], ut_time}`, 24 bytes, with no
+inode field. `e_tdev` is in no source file at all. **A recorded constraint that
+blocks work has to be verified before it is obeyed** — read the citation, not
+the sentence citing it.
 
 The rule is intact and `synth.c` is a *better* demonstration than the sentence
 claimed, not a worse one: it is 100% `rawsys` and 0% libc — **8** call sites,

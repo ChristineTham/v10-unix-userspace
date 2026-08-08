@@ -164,19 +164,71 @@ recorded a folded `d_ino` as "wraps; harmless *except* the value that wraps to
 
 ### What a fix would have to be, and why it is its own task
 
-It has to live in the shim, and it has to survive one hard constraint: the fold
-must stay a **pure function of the host inode**, because a program that runs
-`ls -i` twice must see the same number, and folded values are written into
-files (`shim/libkmemu/NOTES.md:247` -- `e_tdev` in the manufactured
-`/etc/utmp`) that another process reads. That rules out assigning numbers in
-order of first sighting, which is the easy way to be injective and is
-order-dependent. It cannot be fixed by a better hash either: 64 bits into 16
-must collide, and the current fold already collides at the birthday rate, so it
-is as good as random and there is nothing to win there.
+It has to live in the shim, and the constraint recorded here was **half of it
+false** -- which matters, because the false half is the one that ruled out the
+easy fix.
 
-What is left is disambiguation at the *directory snapshot*, where the shim sees
-every entry at once and can resolve a clash by a rule that depends only on the
-set of inodes present -- with the perturbation recorded so `stat_translate`
-agrees. The ordering is the difficult part rather than the table: `getwd` calls
-`stat(".")` **before** it opens `..`, so a value perturbed by the snapshot
-arrives after the caller has already taken the unperturbed one.
+What stands: the fold must be a **pure function of the host inode**, because a
+program that runs `ls -i` twice must see the same number. What does not: this
+said folded values "are written into files (`shim/libkmemu/NOTES.md:247` --
+`e_tdev` in the manufactured `/etc/utmp`) that another process reads". Three
+things wrong with that sentence, measured:
+
+- **`v8sys_fold_ino` has exactly three call sites** -- `dir.c:236`, `dir.c:238`
+  and `syscall.c:1144`. Nothing in `libkmemu` calls it. `grep` found it in
+  `procfs.c:169` and `:603`, and both are **comments**.
+- **The cited note says the opposite.** `NOTES.md:247` is about `u_ttyino` in
+  `/proc`'s u-area, which is "left zero"; filling it *would* be a stat folded
+  through `v8sys_fold_ino`, and it explicitly "buys nothing until those nodes
+  exist". A hypothetical, read as a fact.
+- **`/etc/utmp` has no inode field at all.** V8's `struct utmp` is
+  `{char ut_line[8]; char ut_name[8]; long ut_time;}` -- 24 bytes -- and
+  `libkmemu/utmp.c` writes those three and nothing else. `e_tdev` appears
+  nowhere in any source file.
+
+That is the third instance of one shape in this repo: a sweep matching the
+*documentation* of a thing and counting it as the thing. It cost more here than
+the other two, because it stood as the reason not to try a fix.
+
+It still cannot be fixed by a better hash: 64 bits into 16 must collide, and
+the current fold already collides at the birthday rate, so there is nothing to
+win there.
+
+### Three candidates, costed
+
+**(a) Disambiguate at the directory snapshot.** The shim sees every entry at
+once and can resolve a clash by a rule over the set of inodes present. **The
+ordering kills it, and this is now measured rather than suspected**: `getwd`
+calls `stat(".")` *before* it opens `..`, so it has already taken the
+unperturbed value when the snapshot perturbs. Worse than a partial fix -- if
+the cwd is the entry that gets perturbed, the loop matches *nothing* and the
+walk fails, so a rule that repairs the 50% of cases that work today breaks the
+other 50% that currently work by luck. For `stat_translate` to compute the same
+perturbation it must know the parent's inode set, i.e. scan the parent on every
+`stat`, which is the `getdirentries`-inside-`ls -l` cost `v8sys_dirsize` already
+refused.
+
+A cheap variant -- give the later colliding entry `d_ino = 0` -- is worse than
+the disease: 0 is V7's deleted-entry marker, so `readdir` skips it and **the
+file vanishes from `ls`**.
+
+**(b) Order of first sighting, process-local.** Injective by construction, and
+the reason recorded against it has just been shown false, so it is back on the
+table. What is actually left of the objection is narrow: `ls -i` in two
+different processes could print different numbers **for a colliding inode
+only** (215 of 6031 entries here, 3.5%), and only for one that both runs
+observe. Against a `pwd` that is wrong 47% of the time inside a collision
+group, that trade looks right. The real difficulty is *bounding* the table --
+eviction reintroduces the inconsistency inside a single process, which is the
+one place it must not appear.
+
+**(c) Widen the identity.** The correct fix, and the expensive one. `ino_t` is
+`u_short` (`sys/types.h:86`) and appears in two **on-disk** records --
+`struct direct.d_ino` and `struct filsys.s_inode[]` -- so it cannot move
+globally. Per-field narrowing is exactly what `sys/ino.h` and `sys/filsys.h`
+already do for `time_t` and `off_t`, so the machinery exists; but `struct
+direct` is on-disk for `$(IMGBIN)` and in-memory for the live emulation, which
+would make `d_ino` a second `DIRSIZ`: two widths behind one `-D`, with the
+whole warning that entry carries. And a 4-byte `d_ino` moves the record to 258
+bytes, which the 44 raw directory readers survive only if every one of them
+uses `sizeof(struct direct)` rather than a literal.

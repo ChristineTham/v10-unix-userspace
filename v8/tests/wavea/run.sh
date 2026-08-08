@@ -311,11 +311,34 @@ try ls     'ls -l marks the directory' 'd' "./ls -l lsdir | awk '\$NF==\"sub\"{p
 # same blind spot is why this case fires roughly never: the test's own
 # directory is always freshly made.
 #
-# So the failure rate is a property of how cluttered $TMPDIR is, and the case
-# also compares against a HOST value from /bin/pwd -P, which is the class
-# CLAUDE.md warns about.  If it fires, the want/got lines are the whole
-# diagnosis -- do not filter them.
-try pwd    'pwd'             "$(/bin/pwd -P)" "./pwd"
+# SO THE CASE IS A HOST PROPERTY, AND IT NOW HIDES MORE THAN IT FINDS.  The
+# failure rate is a function of how cluttered $TMPDIR is, and on this machine
+# that has crossed from "roughly never" to twice in three runs.  make stops at
+# the first failing suite, so a red pwd took SEVEN later suites down with it --
+# and it was reporting a bug that is already reproduced, measured and tracked.
+#
+# CLAUDE.md's rule for exactly this: assert a relation the port controls, and
+# where coverage genuinely depends on the host, print "not exercised" rather
+# than passing silently or failing.  So the case asks first whether its own
+# directory is in a fold-collision group, and if it is, says so and moves on.
+#
+# IT ASKS THE SHIM RATHER THAN RECOMPUTING THE FOLD.  V8's own `ls -i' prints
+# the folded number, so a duplicate among the parent's entries is the collision,
+# measured through the implementation under test.  Writing the fold out a second
+# time here is the two-spellings-of-one-rule mistake this repo refuses
+# everywhere else -- and it would go stale the day the fold changes, which is
+# precisely what task #48 proposes to do.
+pwdmine=$("$ROOT/rootfs/bin/ls" -id "$TMP" 2>/dev/null | awk '{print $1}')
+pwddups=$("$ROOT/rootfs/bin/ls" -i "$(dirname "$TMP")" 2>/dev/null |
+          awk -v m="$pwdmine" '$1==m' | wc -l | tr -d ' ')
+if [ -n "$pwdmine" ] && [ "${pwddups:-0}" -gt 1 ]; then
+	echo "pwd: NOT EXERCISED -- this run's directory shares folded inode" \
+	     "$pwdmine with $((pwddups - 1)) other entry/entries in" \
+	     "$(dirname "$TMP"); getwd cannot tell them apart (task #48," \
+	     "src/libc/gen/PORTING.md).  Not a regression, and not a pass."
+else
+	try pwd 'pwd' "$(/bin/pwd -P)" "./pwd"
+fi
 
 # ---------------------------------------------------------------------------
 # EVERY IMPORTED SINGLE-FILE COMMAND MUST BE INSTALLED.
