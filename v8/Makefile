@@ -662,7 +662,8 @@ LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/strout.c $(LIBCSRC)/stdio/getw.c \
           $(LIBCSRC)/stdio/getpw.c $(LIBCSRC)/stdio/putw.c $(LIBCSRC)/stdio/tmpnam.c \
           $(LIBCSRC)/stdio/getpwent.c $(LIBCSRC)/stdio/getpwuid.c \
-          $(LIBCSRC)/stdio/getgrent.c $(LIBCSRC)/stdio/fstab.c \
+          $(LIBCSRC)/stdio/getgrent.c $(LIBCSRC)/stdio/getgrnam.c \
+          $(LIBCSRC)/stdio/fstab.c \
           $(LIBCSRC)/stdio/doscan.c $(LIBCSRC)/stdio/scanf.c \
           $(LIBCSRC)/stdio/popen.c $(LIBCSRC)/stdio/system.c \
           $(patsubst %,$(LIBCSRC)/math/%.c,$(LIBC_MATH))
@@ -1017,10 +1018,33 @@ ADMINLIB := $(shell cat $(ADMIN)/libfiles)
 # $(ROOTFS)/          etc/mkfs into TWO targets, $(ROOTFS)/ and etc/mkfs.  Seen:
 # "warning: overriding commands for target .../rootfs/" followed by
 # "No rule to make target `usr/bin/touch'", neither of which names the cause.
+#
+# A THIRD SOURCE, and it disagrees with Admin/dest exactly once in eleven.
+# Eleven imported makefiles state their own destination -- `mv lex
+# $(DESTDIR)/usr/bin', `cp ps /bin', `D=/etc/quot' -- and they agree with the
+# tables on ten: lex, cpp, make, yacc, ps, sh, df, quot, load, w.  The
+# exception is `dump', which is in NONE of binfiles, etcfiles or libfiles, so
+# the tables answer by FALL-THROUGH -- and a fall-through is "nobody said",
+# not "V8 said /usr/bin".  Somebody did say: dump's own Makefile ends
+# `mv dump $(DESTDIR)/etc', and its two siblings restor and dumpdir are both
+# etcfiles entries.  So dump goes to /etc, and it is the only name here that
+# needs this arm.
+#
+# Written as a list rather than parsed out of the makefiles at build time
+# because a $(shell) per program is slow and $(MKDEST_$(1)) would read an
+# undefined variable for every program that has no makefile -- the exact thing
+# --warn-undefined-variables exists to catch, and the reason $(dirsrcs) is
+# spelled out too.  tests/wavea does the general sweep instead: it recomputes
+# the destination from all eleven makefiles and fails if the disagreement set
+# is anything but this list, which is the same treatment the six-name
+# Admin/dest-versus-shipped-tree disagreement already gets.
+MKFILEETC := dump
+
 v8dest = $(strip \
          $(if $(filter $(1),$(ADMINBIN)),bin,\
          $(if $(filter $(1),$(ADMINETC)),etc,\
-         $(if $(filter $(1),$(ADMINLIB)),lib,usr/bin))))
+         $(if $(filter $(1),$(ADMINLIB)),lib,\
+         $(if $(filter $(1),$(MKFILEETC)),etc,usr/bin)))))
 
 # $(call v8install,NAMES) -> the installed paths for a list of commands.
 v8install = $(foreach p,$(1),$(ROOTFS)/$(call v8dest,$(p))/$(p))
@@ -1323,23 +1347,59 @@ $(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
 # out of src/v8/etc and has no source for a binary.
 # ---------------------------------------------------------------------------
 IMGDIRSIZ = 14
-IMGBIN    = mkfs icheck dcheck clri fsck ncheck quot
+IMGBIN    = mkfs icheck dcheck clri fsck ncheck quot restor dumpdir dump
 
-# Where each one's source sits under $(SRC)/cmd.  Six are bare cmd/<name>.c;
-# quot is cmd/quot/quot.c, because upstream gave it a makefile of its own and
-# import.sh brings a directory in as a directory.  Spelled out for all seven
-# rather than defaulted for the six, for $(dirsrcs)' reason: the short form
+# Where each one's sources sit under $(SRC)/cmd, as a LIST -- eight are a bare
+# cmd/<name>.c, quot is cmd/quot/quot.c because upstream gave it a makefile of
+# its own, and dump is six objects in a directory.  Spelled out for all ten
+# rather than defaulted for the eight, for $(dirsrcs)' reason: the short form
 # $(if $(imgsrc_$(1)),...) READS an undefined variable, and this Makefile is
 # checked with --warn-undefined-variables precisely because a variable used
 # above its definition expands to nothing in a prerequisite.
-imgsrc_mkfs   = mkfs
-imgsrc_icheck = icheck
-imgsrc_dcheck = dcheck
-imgsrc_clri   = clri
-imgsrc_fsck   = fsck
-imgsrc_ncheck = ncheck
-imgsrc_quot   = quot/quot
-imgsrcs       = $(imgsrc_$(1))
+imgsrc_mkfs    = mkfs
+imgsrc_icheck  = icheck
+imgsrc_dcheck  = dcheck
+imgsrc_clri    = clri
+imgsrc_fsck    = fsck
+imgsrc_ncheck  = ncheck
+imgsrc_quot    = quot/quot
+imgsrc_restor  = restor
+imgsrc_dumpdir = dumpdir
+imgsrc_dump    = dump/dumpmain dump/dumptraverse dump/dumptape \
+                 dump/dumpoptr dump/dumpitime dump/unctime
+imgsrcs        = $(imgsrc_$(1))
+
+# The include path each one needs, for the same "define above first use"
+# reason.  Only dump has a private header ("dump.h"); the rest reach everything
+# through $(ROOTFS_INC).
+imginc_mkfs    =
+imginc_icheck  =
+imginc_dcheck  =
+imginc_clri    =
+imginc_fsck    =
+imginc_ncheck  =
+imginc_quot    =
+imginc_restor  =
+imginc_dumpdir =
+imginc_dump    = -I$(SRC)/cmd/dump
+imgincs        = $(imginc_$(1))
+
+# ...and the private headers as PREREQUISITES, which is a different statement
+# from -I and the one that was missing.  -I tells cpp where to look; this tells
+# make to recompile.  All six dump objects include "dump.h", and without this
+# editing it rebuilt nothing -- the failure this whole suite exists for, and
+# tests/deps caught it on the first run.
+imgdep_mkfs    =
+imgdep_icheck  =
+imgdep_dcheck  =
+imgdep_clri    =
+imgdep_fsck    =
+imgdep_ncheck  =
+imgdep_quot    =
+imgdep_restor  =
+imgdep_dumpdir =
+imgdep_dump    = $(SRC)/cmd/dump/dump.h
+imgdeps        = $(imgdep_$(1))
 
 # quot IS in the group and does NOT need the -D, which is the distinction worth
 # keeping rather than smoothing over.  It reads inodes and never a directory --
@@ -1365,22 +1425,34 @@ imgsrcs       = $(imgsrc_$(1))
 # is $(BINDIR)/<prog> and a directory of that name makes the path a file and a
 # directory at once -- ld says "Is a directory", which reads as a linker problem
 # and is a layout one.
-define imgprog_rule
-$(BUILD)/$(1)/$(1).o: $$(SRC)/cmd/$(call imgsrcs,$(1)).c $$(V8CC_DEPS)
-	@mkdir -p $$(@D)
-	@$$(V8CCRUN) -DDIRSIZ=$$(IMGDIRSIZ) -c -o $$@ $$<
+# Two rules per program now: one object rule per source (dump has six) and one
+# link rule collecting them.  $(imgobjs) turns `dump/dumpmain dump/unctime'
+# into $(BUILD)/dump/dumpmain.o $(BUILD)/dump/unctime.o -- notdir, because the
+# objects all live under $(BUILD)/<prog>/ whatever subdirectory the source came
+# from, exactly as $(V8DIRBIN)'s do.
+imgobjs = $(patsubst %,$(BUILD)/$(1)/%.o,$(notdir $(call imgsrcs,$(1))))
 
-$(BINDIR)/$(1): $(BUILD)/$(1)/$(1).o $$(V8DEPS)
+define imgobj_rule
+$(BUILD)/$(1)/$(notdir $(2)).o: $$(SRC)/cmd/$(2).c $(call imgdeps,$(1)) \
+                                $$(V8CC_DEPS)
+	@mkdir -p $$(@D)
+	@$$(V8CCRUN) $(call imgincs,$(1)) -DDIRSIZ=$$(IMGDIRSIZ) -c -o $$@ $$<
+endef
+
+define imgprog_rule
+$(BINDIR)/$(1): $(call imgobjs,$(1)) $$(V8DEPS)
 	@mkdir -p $$(BINDIR)
 	@$$(HOSTCC) $$(V8LDFLAGS) -o $$@ $$(BUILD)/crt0.o \
-	    $(BUILD)/$(1)/$(1).o $$(V8LIBS)
+	    $(call imgobjs,$(1)) $$(V8LIBS)
 	@echo "built $$@"
 
 $(ROOTFS)/$$(call v8dest,$(1))/$(1): $(BINDIR)/$(1)
 	@mkdir -p $$(@D) && cp $$< $$@
 endef
 
-$(foreach p,$(IMGBIN),$(eval $(call imgprog_rule,$(p))))
+$(foreach p,$(IMGBIN),\
+  $(foreach s,$(call imgsrcs,$(p)),$(eval $(call imgobj_rule,$(p),$(s))))\
+  $(eval $(call imgprog_rule,$(p))))
 
 IMGBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(IMGBIN))
 IMGBIN_INSTALL = $(call v8install,$(IMGBIN))

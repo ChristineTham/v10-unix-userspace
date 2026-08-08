@@ -1,0 +1,14 @@
+# Provenance for v8/src/cmd/dump
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+e48fba03eaa9cb26fa9174dee5878b26f03c09b0  v8/usr/src/cmd/dump/dump.h
+41f921e4e29c25802a5e820c1e8d63e07ecdb800  v8/usr/src/cmd/dump/Makefile
+40a43f5f2e7cc350eb883a1ee9905bad7bc8ea99  v8/usr/src/cmd/dump/dumpmain.c
+a01204544ba77b495cc9b73ee2df974cc1c22900  v8/usr/src/cmd/dump/dumptraverse.c
+493cccf3a1499521c3513daeff7e4ab01e84ed35  v8/usr/src/cmd/dump/dumptape.c
+e601aa74fd7b388ca3ec6b80a2a79ab8dad02b0b  v8/usr/src/cmd/dump/dumpoptr.c
+e951eadbf951732d14fd7c0cd4cfbc90a6f3776a  v8/usr/src/cmd/dump/dumpitime.c
+e95f273517ac67c26da9c27ab0e60413d9d61109  v8/usr/src/cmd/dump/unctime.c

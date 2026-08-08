@@ -74,6 +74,34 @@ check "NINDIR agrees with NSHIFT"	  "$(w nindir)" "$(( 1 << $(w nshift) ))"
 check "ltol3/l3tol round trip"	"1193046 1 16777215 0"	"$(w l3back)"
 check "ltol3 keeps the low three bytes, little end first" "86 52 18" "$(w l3bytes)"
 
+# THE TAPE RECORD, which is the same argument one layer out.  struct spcl is a
+# WIRE format: dumptape.c writes each record from `char tblock[NTREC][BSIZE(0)]'
+# as exactly 1024 bytes, so what reaches the tape is the first 1024 of the
+# struct -- the header plus 924 of c_addr -- and widening a header field does
+# not grow the record, it SLIDES every field after it and drops the tail.
+#
+# The struct already had one VAX-shaped half before this port touched it, which
+# is what makes leaving c_date and c_ddate at eight bytes worse than either
+# choice: c_dinode is a struct dinode, fixed at 64 by step 4a.  The offsets
+# below are asserted as literals BECAUSE they are the format -- there is no
+# other expression of them in the tree to compare against, unlike INOPB and
+# NMASK, which is exactly the situation section 3 handles by reading bytes off
+# a real image.
+check "sizeof(struct spcl) is the VAX's 1124"	"1124"	"$(w spcl)"
+check "and its header sits at the VAX's offsets" \
+    "0 4 8 12 16 20 24 28 32 96 100"	"$(w spcloff)"
+# c_dinode has to land where a dinode fits whole inside the 1024 that go out.
+spo=$(w spcloff)
+check "c_addr starts after a whole dinode" \
+    "$(( $(echo $spo | cut -d' ' -f9) + $(w dinode) + 4 ))" \
+    "$(echo $spo | cut -d' ' -f11)"
+# restor's checksum() walks BSIZE(0)/sizeof(int) ints, and dump writes a word
+# to make the total come out.  It cannot see a layout change -- both ends are
+# ours -- but it CAN see sizeof(int) drifting, which would break the tape
+# against a real V8 silently.
+check "the checksum walks 256 ints, so the record is 1024 bytes" "256" \
+    "$(w spclwords)"
+
 # ---------------------------------------------------------------------------
 # 2. DIRSIZ, both ways.
 #

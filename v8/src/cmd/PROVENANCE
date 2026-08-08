@@ -61,3 +61,5 @@ d635c5066d782a9b7c743e6cc5e0390c757ff29e  v8/usr/src/cmd/ln.c
 26a202104bb669fb6ce41ad423b95111a1d9db92  v8/usr/src/cmd/clri.c
 0de6d73881d90ff9139ae2a53306f0842d635486  v8/usr/src/cmd/fsck.c
 98d76889fa6fbf2f24b4f616a53147cce991d7f2  v8/usr/src/cmd/ncheck.c
+0d0d4192787238c885470ee79b9fd7d7409dc59b  v8/usr/src/cmd/restor.c
+67777850a0632822264803d592fa08f9e5093da5  v8/usr/src/cmd/dumpdir.c

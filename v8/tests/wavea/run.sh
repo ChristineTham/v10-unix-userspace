@@ -384,6 +384,96 @@ done
 check 'the tables and the shipped tree disagree about exactly these six' \
    ' crontab lint login man pstat uucp' "$differ"
 
+# A THIRD SOURCE, AND THE CASE ABOVE STRUCTURALLY CANNOT SEE IT.  Eleven of the
+# imported makefiles say where they install -- `mv lex $(DESTDIR)/usr/bin',
+# `cp ps /bin', `D=/etc/quot' -- which is an upstream statement about a
+# destination that neither Admin/dest nor the shipped tree is.  It matters
+# because the pair above can only compare programs the distribution SHIPPED,
+# and `dump' is not one: it is in none of binfiles, etcfiles or libfiles
+# either, so Admin/dest answers /usr/bin BY FALL-THROUGH, which is "nobody
+# said" rather than "V8 said".  Its own Makefile does say: `mv dump
+# $(DESTDIR)/etc', which is also where its two siblings restor and dumpdir go.
+# The Makefile's $(MKFILEETC) is that one exception, and this recomputes the
+# whole set so the list cannot quietly grow.
+#
+# Only lines that move or copy THE PROGRAM ITSELF count.  lex's makefile also
+# does `cp ncform $(DESTDIR)/usr/lib/lex' and yacc's `cp yaccpar
+# $(DESTDIR)/usr/lib' -- data files, and both would read as a destination for
+# the program if the second field were not checked.  sh's `mv /bin/sh /bin/osh'
+# is skipped the same way; the line that counts is `cp sh /bin/sh' below it.
+# Make variables have to be expanded or the answer is the literal `$B'.
+# tsort's makefile is `B = /usr/bin' then `cp tsort $B', and read unexpanded it
+# looks like a disagreement -- which is how this parser first reported one.
+# A single non-recursive pass is enough for 1985 makefiles; note `$B' with no
+# parentheses is make's single-character form and has to be handled too.
+mkdest() {	# where a program's OWN makefile installs it, or nothing
+	_m=$(ls "$ROOT/src/cmd/$1"/[Mm]akefile 2>/dev/null | head -1)
+	[ -n "$_m" ] || return 1
+	awk -v p="$1" '
+	    { line[NR] = $0 }
+	    /^[A-Za-z_][A-Za-z0-9_]*[ \t]*=/ {
+		n = $0; sub(/[ \t]*=.*/, "", n); gsub(/[ \t]/, "", n)
+		v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]*$/, "", v)
+		var[n] = v }
+	    END {
+		for (i = 1; i <= NR; i++) {
+			s = line[i]
+			gsub(/\$\(DESTDIR\)/, "", s)
+			for (n in var) {
+				gsub("\\$\\(" n "\\)", var[n], s)
+				gsub("\\$\\{" n "\\}", var[n], s)
+				if (length(n) == 1) gsub("\\$" n, var[n], s)
+			}
+			# strip the leading tab of a recipe line first --
+			# split on /[ \t]+/ makes f[1] the empty string
+			# otherwise, and every mv/cp line stops matching.
+			# (No apostrophes in here: the whole program is
+			# inside a single-quoted shell string.)
+			sub(/^[ \t]+/, "", s)
+			nf = split(s, f, /[ \t]+/)
+			if (s ~ /^D[ \t]*=/) {
+				d = s; sub(/^D[ \t]*=[ \t]*/, "", d)
+			} else if (nf >= 3 && (f[1] == "mv" || f[1] == "cp") &&
+				   f[2] == p) {
+				d = f[3]
+			} else continue
+			sub("/" p "$", "", d); sub(/^\//, "", d)
+			if (d != "") { print d; exit }
+		} }
+	' "$_m"
+}
+mkdiffer= mkseen=
+for d in "$ROOT"/src/cmd/*/; do
+	name=$(basename "$d")
+	want=$(mkdest "$name"); [ -n "$want" ] || continue
+	mkseen="$mkseen $name"
+	got=$(adest "$name")
+	[ "$want" = "$got" ] || mkdiffer="$mkdiffer $name($want,dest=$got)"
+done
+# The sweep has to have found them, or the disagreement set is empty for the
+# wrong reason -- tests/cpp's failure exactly.
+if [ "$(echo $mkseen | wc -w | tr -d ' ')" -ge 10 ]; then pass=$((pass+1))
+else fail=$((fail+1)); echo "FAIL only $(echo $mkseen | wc -w) makefiles state a destination:$mkseen"; fi
+# TWO, and BOTH are programs that appear in no table at all, so Admin/dest is
+# answering by fall-through in each -- which is what makes the third source
+# worth consulting rather than a curiosity.  `cpp' is the one that shows the
+# fall-through is simply wrong: its makefile says /lib, the SHIPPED TREE says
+# /lib, and dest says /usr/bin.  This port already puts cpp in /lib, but by
+# accident rather than by derivation -- it is a toolchain target with its own
+# rule and never goes through $(call v8dest,...).  dump had no such accident
+# available, so the Makefile's $(MKFILEETC) follows the makefile deliberately.
+check 'an imported makefile and Admin/dest disagree about exactly these two' \
+   ' cpp(lib,dest=usr/bin) dump(etc,dest=usr/bin)' "$mkdiffer"
+check 'and for cpp the shipped tree sides with the makefile' 'lib' "$(shipfile cpp)"
+# ...and the Makefile followed the makefile rather than the fall-through.
+instdir() { for d in bin usr/bin lib etc; do
+		[ -x "$V8ROOT/$d/$1" ] && { echo "$d"; return 0; }; done; return 1; }
+check 'so dump is installed in /etc, beside restor and dumpdir' \
+   'etc etc etc' \
+   "$(for n in dump restor dumpdir; do instdir "$n"; done | tr '\n' ' ' | sed 's/ $//')"
+check 'and cpp in /lib, where its own makefile and the tree both put it' \
+   'lib' "$(instdir cpp)"
+
 # ...AND THE SAME QUESTION OF THE DIRECTORIES, which is where the glob above
 # was blind. `src/cmd/*.c' matches src/cmd/cat.c and never src/cmd/mv/mv.c, so
 # a command upstream happens to keep in a directory of its own was invisible to

@@ -20,6 +20,15 @@
 #include <sys/filsys.h>
 #include <sys/fblk.h>
 #include <sys/dir.h>
+#include <dumprestor.h>
+
+/*
+ * The offset of a member, spelled the only way K&R can: this port has no
+ * offsetof and <stddef.h> is not V8's.  A null pointer is never dereferenced,
+ * only differenced, which is the 1985 idiom and works here because the shim
+ * never touches the value.
+ */
+#define	OFF(t,m)	((int)((char *)&((struct t *)0)->m - (char *)0))
 
 main()
 {
@@ -40,6 +49,28 @@ main()
 	printf("nmask %d\n",	NMASK(0));
 	printf("nshift %d\n",	NSHIFT(0));
 	printf("nicfree %d\n",	NICFREE);
+
+	/*
+	 * THE TAPE RECORD.  struct spcl is dumprestor.h's, and it is a wire
+	 * format for the same reason struct dinode is a disk format: its other
+	 * end is not another program in this port.  dumptape.c writes each
+	 * record as exactly BSIZE(0) bytes out of a `char tblock[NTREC][1024]',
+	 * so what reaches the tape is the FIRST 1024 bytes -- the header plus
+	 * 924 of c_addr -- and a widened header field slides everything after
+	 * it rather than making the record bigger.  The offsets are therefore
+	 * the format, and they are what this prints.  restor's checksum() sums
+	 * those same 1024 bytes and cannot see the difference, because dump
+	 * writes a compensating word: both ends are ours and would be wrong
+	 * together.
+	 */
+	printf("spcl %d\n",	(int)sizeof(struct spcl));
+	printf("spcloff %d %d %d %d %d %d %d %d %d %d %d\n",
+	    OFF(spcl, c_type),   OFF(spcl, c_date),   OFF(spcl, c_ddate),
+	    OFF(spcl, c_volume), OFF(spcl, c_tapea),  OFF(spcl, c_inumber),
+	    OFF(spcl, c_magic),  OFF(spcl, c_checksum),
+	    OFF(spcl, c_dinode), OFF(spcl, c_count),  OFF(spcl, c_addr[0]));
+	/* the checksum walks this many ints over the record */
+	printf("spclwords %d\n", (int)(BSIZE(0)/sizeof(int)));
 
 	/* what INOPB would be if it were computed rather than hardcoded */
 	printf("inopbcalc %d\n", (int)(BSIZE(0)/sizeof(struct dinode)));

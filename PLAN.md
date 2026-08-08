@@ -1708,6 +1708,46 @@ Ordered so that value lands before risk, and so each step is testable alone.
    for `Admin/Mk` and Mk passes no `-D` either. `tests/jail` asserts `$(V8BIN)`
    and `$(IMGBIN)` are disjoint -- measured, `make` emits no warning of any kind
    when a name is in both.
+   **4f: `dump`, `restor` and `dumpdir` -- the last three of the ten, and the
+   only ones that are not filesystem tools.** A dump is a *tape* format, so
+   these answer to a different 1985 record; both `-f` flags take an ordinary
+   file, so no tape device is needed either.
+
+   **`struct spcl` IS A WIRE FORMAT WITH THE SAME PROBLEM EVERY ON-DISK STRUCT
+   HAD BEFORE STEP 4A**, and `<dumprestor.h>` is narrowed the way `<sys/ino.h>`
+   is: `c_date` and `c_ddate` to four bytes. Three things make that forced
+   rather than stylistic. The struct **already had a VAX-shaped half** -- it
+   embeds a `struct dinode`, fixed at 64 by step 4a -- so eight-byte times would
+   have been VAX-correct after `c_dinode` and shifted before it. The record is a
+   **fixed 1024 bytes**: `dumptape.c` copies exactly `BSIZE(0)` out of a `char
+   tblock[NTREC][1024]`, so what reaches the tape is the first 1024 of a
+   1124-byte struct, and widening a header field slides everything after it and
+   drops eight more bytes off `c_addr`. And **the checksum cannot see it** --
+   `restor` sums those same 256 ints and `dump` writes a compensating word, so
+   it catches a writer and reader who disagree and both are ours. Measured from
+   the V8 side and asserted: `spcl 1124`, offsets
+   `0 4 8 12 16 20 24 28 32 96 100`. `struct idates` is deliberately left alone,
+   because `/etc/ddate` is a *text* file.
+
+   **`getgrnam` was resolving from `-lSystem`**, so `dump` would have read the
+   Mac's `/etc/group` from inside the jail -- the `getgrent`/`ls -g` leak again,
+   caught the same way by `nm -u`. V8 ships the source; it is in `libv8c` now.
+
+   **A THIRD UPSTREAM SOURCE FOR THE INSTALL DESTINATION, and it is right where
+   `Admin/dest` falls through.** Eleven imported makefiles say where they
+   install themselves. They agree with the tables on nine; the two they do not
+   are both programs in *no table at all*, so `dest` answers by fall-through --
+   "nobody said", not "V8 said". `cpp` settles it: its makefile says `/lib`, the
+   shipped tree says `/lib`, `dest` says `/usr/bin`. This port already has `cpp`
+   in `/lib` but by accident, since it is a toolchain target with its own rule.
+   `dump` had no such accident, so the Makefile follows the makefile. The whole
+   set is recomputed by `tests/wavea` so the exception list cannot grow quietly.
+
+   Upstream ships a **1985 VAX `a.out` of `dump`** in its own source directory
+   (magic `0413`, 30275 bytes). It is deliberately not imported: it is a build
+   artefact whose name is the makefile's target, so a rung-5 case asking
+   `[ -x dump ]` after copying the directory would pass on a binary that cannot
+   run here.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `mklost+found`, and the other nine.
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.

@@ -178,6 +178,27 @@ tree itself**, `third_party/.../v8/{bin,usr/bin,lib,etc}`.
 for the half of `cmd/` that has no makefile, and for a *directory* it runs
 `make clean && make && make install`, which is exactly the rung-5 mechanism.
 
+**THERE IS A THIRD SOURCE, AND IT IS RIGHT WHERE `dest` FALLS THROUGH.** Eleven
+imported makefiles say where they install themselves — `mv lex
+$(DESTDIR)/usr/bin`, `cp ps /bin`, `D=/etc/quot`. They agree with the tables on
+nine, and the two they do not are both programs that appear in **no table at
+all**, so `Admin/dest` is answering by *fall-through* — which is "nobody said",
+not "V8 said /usr/bin":
+
+| | its makefile | shipped tree | `Admin/dest` |
+|---|---|---|---|
+| `cpp` | `/lib` | `/lib` | `/usr/bin` |
+| `dump` | `/etc` | not shipped | `/usr/bin` |
+
+`cpp` settles it: two sources against the fall-through. This port already puts
+`cpp` in `/lib`, but by accident — it is a toolchain target with its own rule
+and never goes through `$(call v8dest,...)`. `dump` had no such accident, so the
+Makefile's `$(MKFILEETC)` follows the makefile on purpose, which also puts it
+beside its two siblings `restor` and `dumpdir`. `tests/wavea` recomputes the
+whole set from all eleven makefiles — expanding `$(VAR)` and `$B`, because
+`tsort`'s `B = /usr/bin` read literally looks like a third disagreement — and
+fails if it is anything but those two.
+
 The Makefile **derives** the destination — `$(call v8dest,NAME)` reads Bell
 Labs' tables at build time — so a newly imported command lands where V8 put it
 without anyone deciding. `tests/wavea` asserts the result against the *other*

@@ -398,12 +398,23 @@ dep 'vfs.h -> ps'              shim/v8sys/vfs.h                $B/bin/ps
 # $(imgsrc_quot) and this loop has to agree, which is the point of asserting it:
 # a wrong path there makes the object rule name a file that does not exist, and
 # an eval'd rule for a target nothing asks for is silent.
-for p in mkfs icheck dcheck clri fsck ncheck quot; do
+for p in mkfs icheck dcheck clri fsck ncheck quot restor dumpdir; do
 	case $p in quot) src=src/cmd/quot/quot.c ;; *) src=src/cmd/$p.c ;; esac
 	dep "$p source -> object"     $src           $B/$p/$p.o
 	dep "$p object -> binary"     $B/$p/$p.o     $B/bin/$p
 	dep "$p -> installed in etc"  $B/bin/$p      rootfs/etc/$p
 done
+# dump is six objects, so the loop above cannot state it: $(imgobjs) has to
+# collect all six and each has to reach the link.  Asserted for every one
+# rather than a sample, because the failure mode of a generated rule is a
+# MISSING rule, and a missing rule for an object nothing else names is silent
+# -- make just relinks whatever .o happens to be there.
+for s in dumpmain dumptraverse dumptape dumpoptr dumpitime unctime; do
+	dep "dump/$s.c -> its object"  src/cmd/dump/$s.c  $B/dump/$s.o
+	dep "dump/$s.o -> the binary"  $B/dump/$s.o       $B/bin/dump
+done
+dep 'dump.h -> every dump object'  src/cmd/dump/dump.h  $B/dump/dumptape.o
+dep 'dump -> installed in etc'     $B/bin/dump          rootfs/etc/dump
 # The disk-format headers.  These carry the VAX widths -- dinode 64, filsys
 # 4096, daddr_t 4 -- and an edge that stops here means mkfs keeps writing an
 # image built from whatever it was compiled against last.  Both ends: the
@@ -456,6 +467,22 @@ dep 'sys/filsys.h -> quot object'  src/include/sys/filsys.h    $B/quot/quot.o
 # doprnt is where %.Ns lives, and ncheck is the first program in the tree to
 # print an unterminated fixed-width field through it.
 dep 'doprnt.c -> libc'         src/libc/stdio/doprnt.c         $B/libc/libv8c.a
+# THE TAPE FORMAT, and it is a fourth header carrying VAX widths.  dumprestor.h
+# narrows struct spcl's c_date and c_ddate to four bytes for the reason
+# sys/ino.h narrows di_mtime -- spcl is written to tape as exactly BSIZE(0)
+# bytes, so a widened field slides every field after it.  All three programs
+# read it and all three must rebuild.
+dep 'dumprestor.h -> dump'     src/include/dumprestor.h        $B/dump/dumptape.o
+dep 'dumprestor.h -> restor'   src/include/dumprestor.h        $B/restor/restor.o
+dep 'dumprestor.h -> dumpdir'  src/include/dumprestor.h        $B/dumpdir/dumpdir.o
+# ...and it reaches the rootfs view too, which is the end the programs actually
+# compile against.
+dep 'dumprestor.h -> rootfs headers' src/include/dumprestor.h \
+                                     rootfs/usr/include/.stamp
+# getgrnam was missing from libv8c, so dump resolved it from -lSystem and read
+# the MAC's /etc/group from inside the jail -- the getgrent/`ls -g' leak again,
+# caught by tests/kmemu's nm -u sweep.  V8 has the source; it is imported now.
+dep 'getgrnam.c -> libc'       src/libc/stdio/getgrnam.c       $B/libc/libv8c.a
 # daddr_t's width reaches libc as well as the program, because ltol3 strides by
 # it -- two patches that once disagreed about exactly this.
 dep 'sys/types.h -> libc'      src/include/sys/types.h         $B/libc/libv8c.a
@@ -581,6 +608,7 @@ for f in rootfs/usr/lib/term/tab.37 rootfs/usr/lib/font/dev202/DESC.out \
          rootfs/usr/bin/w rootfs/usr/bin/uptime rootfs/bin/ps \
          rootfs/etc/mkfs rootfs/etc/icheck rootfs/etc/dcheck \
          rootfs/etc/clri rootfs/etc/fsck rootfs/etc/ncheck rootfs/etc/quot \
+         rootfs/etc/dump rootfs/etc/restor rootfs/etc/dumpdir \
          rootfs/usr/src/cmd/Admin/Mk rootfs/usr/src/cmd/cat.c; do
 	rm -f "$ROOT/$f"
 	$MAKE >/dev/null 2>&1

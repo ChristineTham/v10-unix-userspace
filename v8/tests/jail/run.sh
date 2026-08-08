@@ -855,7 +855,7 @@ else fail=$((fail+1)); echo "FAIL only $MKCOUNT sources staged at /usr/src/cmd -
 # CLAUDE.md's third shape, a property of what ran before rather than of the
 # machine.  The fix is to delete the file (or `make clean'), not to relax this.
 overlap=
-for n in mkfs icheck dcheck clri fsck ncheck quot; do
+for n in mkfs icheck dcheck clri fsck ncheck quot restor dumpdir dump; do
 	case " $(echo $MKNAMES) " in *" $n.c "*) overlap="$overlap $n" ;; esac
 done
 if [ -z "$overlap" ]; then pass=$((pass+1))
