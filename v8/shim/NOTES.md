@@ -430,3 +430,23 @@ has no runtime witness. What is testable is the shim's half, and
 `tests/libv8c` now pins it at the level the three programs actually call:
 `fopen("/dev/tty")` is NULL with fd 3 closed and a real stream with it open,
 with the program arranging its own fd 3 rather than inheriting the harness's.
+
+### One limit `/dev/fd` makes spellable: a dup of a directory descriptor
+
+`dir.c`'s V7 snapshot is keyed by **descriptor**, so a `dup` produces a bare
+host directory fd with no snapshot behind it — and macOS refuses `read(2)` on
+one. Measured: the original reads a 256-byte record, the dup returns −1. V8,
+sharing the file struct, would have continued the scan at the shared offset.
+
+It is a limit rather than a defect to fix here, and it predates `/dev/fd` — but
+`/dev/fd` is what makes it **spellable**, since `open("/dev/fd/N")` reaches it
+without anyone writing `dup()`. It fails loudly, which is the tolerable
+direction. `tests/v8sys` asserts the honest behaviour so that a future `dir.c`
+which refcounts a shared snapshot turns the case red instead of quietly
+changing something nobody had examined — the `v8s_mknod` rule, applied before
+the fact for once rather than after.
+
+The neighbouring case *is* handled: `v8s_dup2` closes the target's snapshot when
+it dup2s over a directory descriptor, because the host closes that descriptor
+and `dir.c` would otherwise keep serving records for a file that is now
+something else.

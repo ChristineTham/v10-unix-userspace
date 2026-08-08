@@ -681,6 +681,28 @@ main(void)
 		v8fs_unbind(hostfd);
 		ok(v8s_dup2(hostfd, b) == b && v8fs_fdtype(b) == &v8fs_pass,
 		    "dup2 of a passthrough fd CLEARS the target's stale type");
+
+		/*
+		 * A DUP OF A DIRECTORY DESCRIPTOR CANNOT BE READ, and that is a
+		 * limit rather than a bug to fix here.  dir.c's V7 snapshot is
+		 * keyed by descriptor, so the dup is a bare host directory fd
+		 * and macOS refuses read(2) on one -- where V8, sharing the file
+		 * struct, would have continued the scan at the shared offset.
+		 *
+		 * Asserted because /dev/fd is what makes it SPELLABLE:
+		 * open("/dev/fd/N") on a directory N reaches it without anyone
+		 * writing dup().  It fails loudly, which is the tolerable
+		 * direction, and the case exists so a future dir.c that
+		 * refcounts a shared snapshot turns this red rather than
+		 * silently changing an unexamined behaviour.
+		 */
+		b = v8s_open(tmpl, 0, 0);
+		ok(v8s_read(b, buf, 64) > 0, "a directory descriptor reads V7 records");
+		a = v8s_dup(b);
+		ok(a >= 0, "...and dup of it succeeds");
+		ok(v8s_read(a, buf, 64) < 0,
+		    "...but the dup has no snapshot, so the read fails loudly");
+		v8s_close(a); v8s_close(b);
 		v8s_close(b);
 		v8s_close(hostfd);
 		v8s_close(3);

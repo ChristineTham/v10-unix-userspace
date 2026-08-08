@@ -370,7 +370,14 @@ if [ -x "$V8ROOT/usr/bin/refer" ]; then
 	# 0 -- text segment, mapped -- and simply failed the compare; macOS traps.
 	# The LAST citation in a file is the one that reaches it, so this case
 	# needs two citations with nothing after the second.
-	check 'refer says nothing on stderr' '0' "$(wc -c < ref.err | tr -d ' ')"
+	# THE CONTENT, NOT THE COUNT.  This was `wc -c < ref.err' against `0',
+	# and it fired exactly once in a full `make test' -- reporting
+	# `want [0] got [70]' and discarding the seventy bytes that were the
+	# entire diagnosis.  Eleven later runs of this suite and forty of refer
+	# standalone did not reproduce it, so what it says next time is all
+	# there will be.  Same rule as the filtered-log one in CLAUDE.md: a
+	# summary cannot testify about what it summarised.
+	check 'refer says nothing on stderr' '' "$(cat ref.err)"
 	check 'refer resolved both citations' '2' "$(grep -c '^\.ds \[F' ref.out)"
 	# The authors of record 1 must accumulate, and the two records must be
 	# classified differently -- book (has %I) vs journal-article (has %J).

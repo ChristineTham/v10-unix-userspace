@@ -200,10 +200,37 @@ v8fs_unbind(int fd)
  * rewritten -- this step is meant to change no behaviour at all.
  */
 
+/*
+ * THE CREATOR'S RULE BELONGS TO THE TYPE, and it was in syscall.c instead.
+ *
+ * `mkpath()' there is V8P_LOOK-then-V8P_MAKE, and its comment claims "every
+ * syscall that can bring a name into existence uses this -- open with O_CREAT,
+ * creat, mkdir, mknod...".  v8s_open never did: it passes V8P_MAKE straight
+ * through this function, and routing v8s_creat through the switch made that two
+ * callers rather than one.  So the rule moves here, where every filesystem type
+ * that resolves a path gets it, and mkpath stays for the syscalls that do not
+ * go through the switch at all (link, symlink, mkdir, mknod).
+ *
+ * It is a no-op for passthrough TODAY and that is worth saying rather than
+ * discovering: V8P_MAKE keys on the parent, and a file that exists always has a
+ * parent that exists, so LOOK and MAKE agree on every name LOOK can resolve.
+ * The order matters for a type where they need not -- and for the reader of
+ * this code, who should not have to derive that they agree.
+ *
+ * Two calls, never three, because v8sys_rootpath returns a pointer into its own
+ * static buffer: the second call overwrites the first's answer, so the result
+ * of LOOK has to be returned before MAKE runs.  That is the aliasing trap
+ * v8s_link records.
+ */
 static char *
 pt_path(char *p, int mode)
 {
-	return v8sys_rootpath(p, mode);
+	char *q;
+
+	if (mode != V8P_MAKE) return v8sys_rootpath(p, V8P_LOOK);
+	q = v8sys_rootpath(p, V8P_LOOK);
+	if (q != p) return (q);
+	return v8sys_rootpath(p, V8P_MAKE);
 }
 
 /*
