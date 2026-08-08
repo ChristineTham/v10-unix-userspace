@@ -2026,7 +2026,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-`make test` runs everything — seventeen suites, about 1250 cases.
+`make test` runs everything — seventeen suites, about 1270 cases.
 
 ### What actually works today
 
@@ -2185,58 +2185,92 @@ the shell want a jump table). Debug symbols are stubbed; when they arrive they
 should be DWARF through the host assembler, not VAX stabs. The ELF/Linux path
 is written but untested.
 
-## 4j. The crash probe, and what it says is still open
+## 4j. The crash probe, and three ways a crash probe lies to you
 
-The address-0 sweep (§4i) was static: three subagents reading source, plus
-greps. Its empirical counterpart is `dangle2.sh` — run every installed Mach-O
-binary in the rootfs bare and then with each of the 52 single-letter options as
-its **last** argument, under a five-second deadline, and report anything that
-dies on a signal. Read-only programs only; anything that creates, moves,
-removes or formats is excluded by name, which is why `fsck -t` could never have
-been found this way and the static audit is the sole coverage for that set.
+The address-0 sweep (S4i) was static: subagents reading source, plus greps. Its
+empirical counterpart is `tests/crash-probe.sh` -- run every installed Mach-O
+binary bare and then with each of the 52 single-letter options as its **last**
+argument, under a deadline, and report anything that dies on a signal.
+Read-only programs only; anything that creates, moves, removes or formats is
+excluded by name, which is why `fsck -t` could never have been found this way
+and the static audit is the sole coverage for that set.
 
-**4134 invocations, 254 of them died on a signal.** So the static sweep, which
-found and fixed nine, was not the end of it.
+**The answer is 96 signal deaths in 4134 invocations, across six programs.**
+Getting to that number took four runs, because the first three were wrong in
+three different ways -- and every one of them inflated the count, which is the
+direction that wastes the most time.
 
-Two things the first draft of the probe got wrong, each of which had hidden a
-real finding, and both worth remembering for the next tool of this kind:
+### The three ways it lied
 
-- It scanned only `/bin` and `/usr/bin`, so `/etc` (`icheck`, `dcheck`) and
-  `/usr/lib/refer` (`hunt`) were never tried.
-- It always passed an option, so the **bare** invocation — which is how
-  `unexpand` and `bcd` crash — was never tried.
-- It had no per-invocation deadline, so one program that waits blocked the whole
-  run and the sweep simply never finished. A sweep that never finishes reports
-  nothing and looks like a sweep in progress.
+**It was not hermetic.** Every invocation shared one working directory, so
+programs read each other's litter: `yacc` leaves `(null).tab.c`, and several
+write a file named after the option they were handed. `dcheck` then appeared to
+crash on 45 different options -- because its loop calls `check(*argv)` for
+**every** argument including options, so `dcheck -Q` does `open("-Q")`, and with
+a zero-length file of that name sitting there it read a superblock out of it and
+walked off a garbage `s_isize`. A real dcheck fault, provoked by the probe
+rather than by the option. A crash prober has to be a pure function of the
+program and its arguments, or its findings are a function of iteration order.
+Fixed with a fresh directory per invocation.
 
-### The triage, so far, is that these are NOT all one class
+**The shell cannot tell a signal from an exit status.** `$?` is 128+N when a
+child dies of signal N, but a program may exit(134) of its own accord -- and a
+V8 program whose `main()` falls off the end returns whatever was in the
+register. `primes` does exactly that, and 42 of its 53 garbage statuses landed
+in 129..159 and were reported as SIGABRT. The child now runs under perl, which
+keeps the real wait status and can ask `$? & 127`.
 
-Partial breakdown while the full run completes: `lex` 53 (every invocation,
-including bare), `nroff` 38, `ptx` 2, `pr` 2, `sed` 1 (`sed -e`), `ps` 1
-(`-T`), `bcd` 1 (bare). Enough to say the population is mixed, and that
-matters more than the count:
+**And the first diagnosis of the first problem was wrong.** The `dcheck` entries
+were signals 9 and 10, in one program and no other, which reads exactly like a
+concurrent rebuild replacing a Mach-O mid-execution -- so that is what it was
+recorded as, and a filter was added to discard SIGKILL *and SIGBUS* as
+contamination. That filter would have hidden 48 genuine crashes. SIGKILL is
+never a program bug and is still discarded; SIGBUS very much can be one.
 
-- `bcd` with no arguments is **not** the address-0 class. Its prompt loop is
-  `while ((c=getchar())!='\0' && c!='\n')`, which never tests EOF, so redirected
-  empty stdin spins and overruns a fixed buffer. A VAX would have overrun it
-  too — upstream's defect, not the target's, and so not automatically ours to
-  patch under §1.
-- `lex` failing on all 53 including bare is one root cause, not 53.
-- The dangling-option ones (`sed -e`, `ptx -g`/`-w`, `pr -m`/`-M`, `ps -T`) do
-  look like §4i's class and are probably the same one-token fix.
+The lesson is not any of the three individually. It is that **an ad-hoc crash
+prober is a measuring instrument, and this one was wrong three times while
+looking authoritative each time** -- 254, then 195, then 148, then 96. Validate
+it against a known crasher and a known-clean program before believing a number
+from it, which is what the run against `lex`, `primes` and `echo` now does.
 
-**So the honest state is: measured, triaged in part, not fixed.** Each needs the
-same per-case judgement §4i applied — is there a VAX answer to reproduce, and is
-the change forced by the target — and that is the work, not the patching. The
-tool and its raw output are the deliverable that makes it startable; the number
-to beat is 254.
+### What the six are, and they are not one class
 
-`hunt` is the one carried across from the probe into §4i, because it was already
-open there: of the six consuming arms inside its option loop, `-l` dereferenced
-the terminator through `atoi` and the other five only stored it. Measured, not
-reasoned. The loop guard became `argc > 1` rather than `argv[1] != 0`, since
-after a dangling option `argv[1]` is *past* the terminator, where a null check
-proves nothing.
+| program | count | what it is |
+|---|---|---|
+| `lex` | 53 | every invocation including bare. Its option loop **is** guarded, so this is not S4i's class -- one root cause, an empty-input fault |
+| `nroff` | 38 | only *unrecognised* options; bare `nroff` is fine. One root cause: the `default:` arm calls `done(02)`, which is nroff's NORMAL shutdown -- `dip = &d[0]`, `getword()`, `longjmp(sjbuf,1)` -- before `init1()` has run |
+| `pr` | 2 | `-m`/`-M` consume no argument at all; `-m` sets `Ncols = eargc`, which is 0 |
+| `sed` | 1 | `-e` with no script |
+| `ps` | 1 | `-T` consumes no argument; whatever `Tflag` enables |
+| `bcd` | 1 | bare. `while ((c=getchar())!='\0' && c!='\n')` never tests EOF, so redirected empty stdin spins and overruns a fixed buffer -- **a VAX would have overrun it too**, so upstream's defect and not automatically ours to patch under S1 |
+
+**`nroff`'s is worth carrying forward**, because it is `yacc -o`'s shape from
+S4i: an error path that reuses the normal shutdown path runs before
+initialisation. Two independent instances now.
+
+### Two were fixed, and one of them is the argument for the whole exercise
+
+`ptx -w` and `ptx -g` were S4i's class exactly: the guard reads `argc >= 2`
+while the loop above tests `argc>1`, so argc still counts the program name and
+two arguments means ptx and the option with nothing after. The guard is left as
+upstream wrote it and the *read* is what changed, so `ptx -w` still reaches the
+`Wrong width:` complaint a VAX printed instead of being silently accepted.
+
+**`inv` is the one that matters.** `inv1.c:32` was `while (argv[1][0] == '-')`
+with no argc guard -- `hunt1.c:40`'s bug, character for character, in the same
+directory, four files away. The static sweep read `hunt` and fixed it and did
+not find `inv`. Its author had even guarded the *later* use of the same pointer,
+line 61's `argc >= 2 ? argv[1] : "Index"`, and not the loop. 52 of inv's 53
+invocations died on it. **A static audit and an empirical probe find different
+things, and this is the case that proves it** -- no amount of re-reading
+`hunt1.c` would have turned up `inv1.c`.
+
+### What is left
+
+Four programs and six invocations, none of them S4i's class, each needing that
+section's per-case judgement: is there a VAX answer to reproduce, and is the
+change forced by the target. `bcd` already has its answer -- no -- and is
+recorded above rather than patched.
 
 ## 4k. Why the data model is LP64, settled by counting
 

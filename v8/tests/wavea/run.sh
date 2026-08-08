@@ -746,6 +746,22 @@ check 'yacc -o with no file name reports it cannot open' \
 check 'and exits rather than faulting in the shim' '1' \
     "$("$(v8which yacc)" -o >/dev/null 2>&1; echo $?)"
 
+# ptx came from the crash probe (tests/crash-probe.sh, PLAN.md S4j) rather than
+# from the static audit, and its guard is the interesting part: `argc >= 2' is
+# off by one because the loop above it tests `argc>1', so argc still counts the
+# program name.  Two arguments means ptx and -w with nothing after.  The guard
+# is left as upstream wrote it and the READ is what changed, so `ptx -w' still
+# reaches the "Wrong width:" complaint a VAX printed rather than being quietly
+# accepted -- which is what raising the guard to 3 would have done.
+check 'ptx -w with no width gives the VAX diagnostic' 'ptx: Wrong width:' \
+    "$("$(v8which ptx)" -w </dev/null 2>&1 | head -1 | sed 's/ *$//')"
+check 'ptx -g with no gap exits rather than faulting' '1' \
+    "$("$(v8which ptx)" -g </dev/null >/dev/null 2>&1; echo $?)"
+# ...and both options still do their job, so the guards are not bare returns.
+# two rotations of a two-word line, which is ptx doing its job.
+check 'ptx -w 60 still sets the width and permutes' '2' \
+    "$(printf 'alpha beta\n' | "$(v8which ptx)" -w 60 2>&1 | grep -c '^\.xx')"
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

@@ -443,5 +443,28 @@ else
 	fail=$((fail+8)); echo "FAIL hunt not installed"
 fi
 
+# inv IS THE SAME BUG FOUR FILES AWAY, and the static sweep of S4i missed it:
+# inv1.c:32 was `while (argv[1][0] == '-')' with no argc guard, exactly like
+# hunt1.c:40, in the same directory.  Its author even guarded the LATER use of
+# the same pointer -- line 61 reads `argc >= 2 ? argv[1] : "Index"' -- and not
+# the loop.  Found by the crash probe rather than by reading, which is the
+# argument for having an empirical half at all: 52 of inv's 53 invocations died.
+if [ -x "$REFD/inv" ]; then
+	for a in '' -a -n -v -d -p; do
+		# shellcheck disable=SC2086
+		perl -e 'alarm 10; exec @ARGV' "$REFD/inv" $a \
+		    </dev/null >/dev/null 2>&1
+		rc=$?
+		if [ "$rc" -ge 129 ] && [ "$rc" -le 159 ] && [ "$rc" -ne 142 ]; then
+			fail=$((fail+1))
+			echo "FAIL inv ${a:-(no arguments)} died on signal $((rc-128))"
+		else
+			pass=$((pass+1))
+		fi
+	done
+else
+	fail=$((fail+6)); echo "FAIL inv not installed"
+fi
+
 echo "wavec: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

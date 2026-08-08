@@ -21,25 +21,64 @@
 #     whole run and the sweep silently never finishes.
 ROOT=$1; export V8ROOT=$ROOT
 WORK=$2; mkdir -p "$WORK/run" && cd "$WORK/run" || exit 1
+# Optional third argument: the per-invocation deadline in seconds (default 5).
+# A program that has not crashed in a second almost certainly is not going to,
+# and shortening it only produces more SIGALRMs, which are filtered -- so it
+# trades run time for nothing.  The whole sweep is minutes either way.
+DEADLINE=${3:-5}
 
 SKIP='rm rmdir mv cp ln chmod chown chgrp mkdir mkfs clri fsck dd restor dump
       cron su kill sh csh ed qed adb login passwd init mount umount sync
       halt reboot shutdown tee cc as ld ar make nohup at write mail v8'
 
-run1() {	# run1 <prog> <label> [args...]; 5s deadline, no side effects
+# run1 <prog> <label> [args...] -- run once and report only a REAL signal death.
+#
+# THE SHELL CANNOT TELL A SIGNAL FROM AN EXIT STATUS.  $? is 128+N when a child
+# is killed by signal N, but a program is free to exit(134) of its own accord --
+# and V8 programs whose main() falls off the end return whatever was in the
+# register.  Measured: `primes' does exactly that, and 42 of its 53 garbage
+# statuses landed in 129..159, which an earlier draft of this script reported
+# as SIGABRT.  So the child is run under perl, which keeps the real wait status
+# and can ask `$? & 127'.  The alarm is set in the child and survives exec.
+run1() {
 	p=$1; lbl=$2; shift 2
-	perl -e 'alarm 5; exec @ARGV' "$p" "$@" </dev/null >/dev/null 2>&1
-	rc=$?
-	if [ $rc -ge 129 ] && [ $rc -le 159 ]; then
-		sig=$((rc-128))
-		[ $sig -eq 14 ] && return		# our own alarm
-		[ $sig -eq 13 ] && return		# SIGPIPE
+	rm -rf "$WORK/cell"; mkdir -p "$WORK/cell"
+	res=$(cd "$WORK/cell" && perl -e '
+		my $deadline = shift;
+		my $pid = fork();
+		if (!defined $pid) { print "EXIT 0\n"; exit }
+		if ($pid == 0) {
+			alarm $deadline;
+			open(STDIN,  "<", "/dev/null");
+			open(STDOUT, ">", "/dev/null");
+			open(STDERR, ">", "/dev/null");
+			exec @ARGV;
+			exit(127);
+		}
+		waitpid($pid, 0);
+		my $st = $?;
+		if ($st & 127) { printf "SIG %d\n", $st & 127 }
+		else           { printf "EXIT %d\n", $st >> 8 }
+	' "$DEADLINE" "$p" "$@")
+	case "$res" in
+	"SIG "*)
+		sig=${res#SIG }
+		[ "$sig" = 14 ] && return		# our own alarm
+		[ "$sig" = 13 ] && return		# SIGPIPE
+		# SIGKILL is never a program bug: something outside killed it,
+		# and a rebuild during the run will do that.
+		if [ "$sig" = 9 ]; then
+			echo "TAINTED sig 9  $lbl  (killed from outside -- rebuild?)"
+			tainted=$((tainted+1))
+			return
+		fi
 		echo "SIGNAL $sig  $lbl"
 		hits=$((hits+1))
-	fi
+		;;
+	esac
 }
 
-hits=0 tried=0
+hits=0 tried=0 tainted=0
 for p in "$ROOT"/bin/* "$ROOT"/usr/bin/* "$ROOT"/etc/* "$ROOT"/usr/lib/refer/* \
          "$ROOT"/usr/lib/spell/* "$ROOT"/lib/*; do
 	[ -f "$p" ] && [ -x "$p" ] || continue
@@ -54,3 +93,8 @@ for p in "$ROOT"/bin/* "$ROOT"/usr/bin/* "$ROOT"/etc/* "$ROOT"/usr/lib/refer/* \
 done
 echo "---"
 echo "$tried invocations, $hits died on a signal"
+if [ "$tainted" -gt 0 ]; then
+	echo "WARNING: $tainted more died on SIGKILL/SIGBUS -- the tree was"
+	echo "         almost certainly rebuilt during the run.  Those are not"
+	echo "         findings.  Re-run on a quiet tree."
+fi

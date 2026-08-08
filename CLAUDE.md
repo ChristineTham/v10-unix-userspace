@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (~1250 tests)
+make test             # all 17 suites (~1270 tests)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -1237,6 +1237,35 @@ not testable until it is installed.
 - Prefer measuring over reasoning. The hardest bugs here were settled by making
   the program print what a value *is* rather than arguing about what it should
   be — `V8DBG=1`, or logging what `malloc` wrote versus what was found there later.
+- **A MEASURING INSTRUMENT YOU WROTE IS A SUSPECT, AND THIS ONE WAS WRONG THREE
+  TIMES.** `tests/crash-probe.sh` runs every installed binary against every
+  single-letter option and counts signal deaths. It reported 254, then 195,
+  then 148, then **96** — and only the last is true. Each error inflated the
+  count, which is the direction that wastes the most time, and each looked
+  authoritative:
+  - **It was not hermetic.** All invocations shared one working directory, so
+    programs read each other's litter — `yacc` leaves `(null).tab.c`, others
+    leave a file named after the option they got. `dcheck` then "crashed" on 45
+    options, because its loop calls `check(*argv)` for *every* argument
+    including options, so `dcheck -Q` opened a file literally called `-Q` and
+    read a superblock out of it. A prober must be a pure function of the
+    program and its arguments, or its findings are a function of iteration
+    order.
+  - **The shell cannot tell a signal from an exit status.** `$?` is 128+N for a
+    signal, but a program may `exit(134)` itself — and a V8 `main()` that falls
+    off the end returns whatever was in the register. `primes` did, and 42 of
+    its garbage statuses landed in 129..159 and were counted as SIGABRT. Run
+    the child under something that keeps the real wait status and ask
+    `$? & 127`.
+  - **And the first diagnosis of the first fault was wrong.** Signals 9 and 10
+    in one program and no other reads exactly like a concurrent rebuild
+    replacing a Mach-O mid-execution — so a filter was added discarding SIGKILL
+    *and SIGBUS*, which would have hidden 48 genuine crashes. SIGKILL is never
+    a program bug; SIGBUS very much can be.
+
+  Validate a prober against a **known crasher and a known-clean program**
+  before believing any number from it. And note what survived all four runs
+  unchanged: the *set* of programs, which is what the fixes were driven from.
 - A guard that has never been seen to fail is not a guard. New test suites are
   verified by mutation (break the thing, watch the test fail, restore). Two
   traps in doing that: **verify the object actually rebuilt** — mtimes compare

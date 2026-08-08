@@ -29,7 +29,25 @@ int iflong =0;
 char *sortdir;
 
 sortdir = (access("/crp/tmp", 06)==0) ? "/crp/tmp" : "/usr/tmp";
-while (argv[1][0] == '-')
+/*
+ * PORT: argc, and this is hunt1.c's bug in the same directory.
+ *
+ * Bare `inv' has argc == 1, so argv[1] is the vector's terminating NULL and
+ * this test reads it before the program does anything.  The VAX read the 0207
+ * at address 0, which is not '-', so the loop was skipped -- and line 61 below
+ * then says `argc >= 2 ? argv[1] : "Index"', so the author DID guard the later
+ * use of the same pointer and not the loop.
+ *
+ * `argc > 1' rather than a null check, for hunt's reason: the -i arm does its
+ * own `argc--; argv++', so after a dangling option argv[1] is past the
+ * terminator, where a null check proves nothing.
+ *
+ * FOUND BY THE CRASH PROBE, NOT BY THE SWEEP THAT FIXED hunt.  The static
+ * audit of S4i read hunt1.c and missed inv1.c four files away, with the same
+ * shape and the same fix -- which is the argument for running the empirical
+ * half at all.  52 of inv's 53 probe invocations died here.
+ */
+while (argc > 1 && argv[1][0] == '-')
 	{
 	switch(argv[1][1])
 		{

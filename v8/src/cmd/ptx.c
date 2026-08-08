@@ -100,12 +100,30 @@ char **argv;
 			break;
 
 		case 'w':
+			/*
+			 * PORT: `argc >= 2' is off by one, and the loop above
+			 * says why: it tests `argc>1', so argc still counts
+			 * the program name.  Two arguments means ptx and -w,
+			 * with nothing after it -- and this arm then advances
+			 * onto the vector's terminating NULL and hands it to
+			 * atoi.  `ptx -w' SIGSEGVs.
+			 *
+			 * The guard is left as upstream wrote it and the read
+			 * is what changed, because that reproduces the VAX's
+			 * ANSWER rather than skipping the arm: atoi of address
+			 * 0 found no digit and returned 0, so llen was 0 and
+			 * the `Wrong width:' diagnostic below is what a VAX
+			 * printed.  Raising the guard to 3 would silently
+			 * accept `ptx -w' instead of complaining about it.
+			 */
 			if(argc >= 2) {
 				argc--;
 				wlen++;
-				llen = atoi(*++argv);
+				++argv;
+				llen = *argv == 0? 0: atoi(*argv);
 				if(llen == 0)
-					diag("Wrong width:",*argv);
+					diag("Wrong width:",
+					    *argv == 0? "": *argv);
 				if(llen > LMAX) {
 					llen = LMAX;
 					msg("Lines truncated to 200 chars.",empty);
@@ -120,7 +138,8 @@ char **argv;
 		case 'g':
 			if(argc >=2) {
 				argc--;
-				gap = gutter = atoi(*++argv);
+				++argv;		/* PORT: see -w above */
+				gap = gutter = *argv == 0? 0: atoi(*argv);
 			}
 			break;
 
