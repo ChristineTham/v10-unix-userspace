@@ -1495,10 +1495,23 @@ Ordered so that value lands before risk, and so each step is testable alone.
    standing in for it. `shim/kern/dev/machdep.c` already has the first half in
    `splx()`, and its comment anticipates the second.
 
-   **What remains of the per-binary question** is the case that has no host fd:
-   a stream between two *V8* processes, i.e. a streams-based pipe. Backing such
-   a stream with a host pipe is the obvious answer and is a decision rather
-   than a detail. `src/sys/PORTING.md` has the evidence in full.
+   **And what looked like the remainder belongs to a different file.** The case
+   with no host fd is a stream between two V8 processes — which in V8 is
+   `pipe(2)` *literally*: `sys/pipe.c:16` says "Allocate 2 open inodes, stream
+   them, and splice them together", and `:67-70` cross-connect the queues. Not
+   a corner case, the commonest IPC there is. But it is **not `streamio.c`'s
+   problem**: `pipe.c` is a separate 129-line file, the dependency runs
+   *pipe.c → streamio.c* (for `nilinfo`), and `streamio.c` mentions pipes
+   exactly once, in a comment. Every stream it opens itself hangs off an
+   inode's `i_sptr` with a *device* below — the single-ended case the answer
+   above covers. This port meanwhile answers `pipe(2)` with the host's, in
+   `v8s_pipe`, and has done all along.
+
+   **So step 1's precondition is met.** What is left is the four hazards in
+   `src/sys/PORTING.md` — an upstream LP64 bug at `streamio.c:713`, a `short
+   pgrp` that cannot be widened because `stream.h` is asserted byte-identical,
+   a `char count` that wraps at 128 nested entries, and a second `struct user`
+   under different rules — plus 33 mechanical names.
 
    A genuinely pure stratum exists -- `qattach`, `qdetach`, `streadable`,
    `nilopen`, `nilput`, 86 lines, 7.9% -- and is unreachable in isolation,
@@ -2079,7 +2092,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 4 grovelers | **done** | `date`, `who`, `df`, `load`, `w`/`uptime` all run. `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` was the exception and is now done too, under S8a step 3 rather than here — V8's `ps` is a `/proc` client, not a kmem groveler, which was a plan revision forced by reading it. Only the full form of `w` remains, and it says `No mem` on purpose. See S7 |
 | 5 blitterm | not started | |
 | 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 62/62 |
-| 8a.1 streams | engine in, `tsleep` settled | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c` surveyed; its blocker — what `tsleep` means per-binary — is now answered with evidence (`queuerun()` then `poll()` the driver's host fd; `wakeup` a no-op) and is **faithful rather than a semantic change**. What is left of the per-binary question is a stream between two V8 processes. See S8a step 1 |
+| 8a.1 streams | engine in, **blocker cleared** | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c`'s blocker — what `tsleep` means per-binary — is answered with evidence (`queuerun()` then `poll()` the driver's host fd; `wakeup` a no-op), and is **faithful rather than a semantic change**. The two-V8-process case turns out to be `pipe.c`'s, a separate file this port already answers with the host's `pipe(2)`. What is left is four recorded hazards and 33 mechanical names — no design question. See S8a step 1 |
 | 8a.2 fs switch | done | `shim/v8sys/vfs.c`, one mount table, passthrough behind it |
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |

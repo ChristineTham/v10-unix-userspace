@@ -221,12 +221,32 @@ interrupt, and here it waits for the host fd that stands in for the driver.
 second: *"When a signal-driven source arrives (a tty, a socket), spl6 gains the
 mask and the counter stays exactly as it is."*
 
-**What this does NOT settle**, and it is the piece to design next: a stream
-between two *V8* processes, which is what a streams-based pipe would be. There
-the producer is another process and no host fd backs it — unless one is made to,
-by giving such a stream a host pipe as its driver end. That is a decision, not a
-detail, and it is the remaining content of the per-binary question. The 33 other
-names are mechanical by comparison.
+### And the piece that looked left over belongs to a different file
+
+The obvious remaining worry is a stream between two *V8* processes, where the
+producer really is another process and no host fd backs it. **In V8 that is
+`pipe(2)`, literally** — `sys/pipe.c:16` says "Allocate 2 open inodes, stream
+them, and splice them together", and `:67-70` cross-connect each stream's write
+queue to the other's read queue. So it is not a corner case; it is the most-used
+IPC in the system.
+
+It is also **not `streamio.c`'s problem**, which is the measurement that matters
+here. `pipe.c` is a separate 129-line file, the dependency runs *pipe.c →
+streamio.c* (it needs `nilinfo`, the black-hole `streamtab`), and `streamio.c`
+mentions pipes exactly **once**, in a comment. Every stream `streamio.c` itself
+opens is attached to an inode's `i_sptr` with a *device* at the bottom — which
+is the single-ended, driver-backed case the `tsleep` answer above covers.
+
+And this port has already answered the pipe question a different way:
+`v8s_pipe` in `shim/v8sys/syscall.c` is the host's `pipe(2)`, and every V8
+program has had working pipes throughout. Importing `pipe.c` would mean
+*replacing* something that works with something that needs two-ended streams —
+a decision worth taking on its own merits, and not a prerequisite for anything.
+
+**So the per-binary question is answered for this step.** What was recorded as
+its remaining content turns out to be scoped to a file that is not being
+imported. The 33 other names are mechanical, and the four hazards below are the
+real cost.
 
 **A pure stratum exists and is too small to justify the rest.** Five functions —
 `qattach`, `qdetach`, `streadable`, `nilopen`, `nilput`, 86 lines, 7.9% of the
