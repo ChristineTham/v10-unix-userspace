@@ -566,6 +566,59 @@ dep 'our conf.h -> stream.o'    shim/kern/h/conf.h          $B/kern/stream.o
 dep 'machdep.c -> kern archive' shim/kern/dev/machdep.c     $B/kern/libv8kern.a
 dep 'rawsys.h -> machdep.o'     shim/v8sys/rawsys.h         $B/kern/machdep.o
 
+# --- and the syscall side, which brought eleven headers with it -------------
+#
+# MEASURED WHILE MUTATION-TESTING THESE, AND IT IS TRUE OF EVERY `dep' CASE IN
+# THIS FILE.  Deleting src/sys/h/inode.h from the Makefile's explicit
+# prerequisite list does NOT make the case below fail, because $(DEPFLAGS) is
+# `-MMD -MP' and the compiler-generated build/stage0/kern/streamio.d carries
+# the same edge.  Removing BOTH does fail it.
+#
+# So a `dep' case asserts the UNION of the two mechanisms, which is the right
+# thing to assert -- it is what make actually knows -- but it means the case
+# cannot tell you which one is carrying the edge.  The explicit list still
+# earns its place: -MMD's file appears only alongside the .o it describes, so a
+# rule written WITHOUT $(DEPFLAGS) has no depfile at all and the hand-written
+# prerequisites are the only thing left.  That is the failure this catches, and
+# it is why a mutation of the list alone looks like a passing test.
+# streamio.c reaches ELEVEN headers, six of them Bell Labs' and five ours, and
+# every one is reached by a quoted "../h/x.h" that resolves against a directory
+# the source is not in.  That is the shape a dependency scanner gets wrong and
+# a hand-written rule forgets, so all eleven are asserted -- the authentic ones
+# because a re-import must recompile, and ours because they are where every
+# machine fact lives.
+dep 'streamio.c -> kern archive' src/sys/sys/streamio.c    $B/kern/libv8kern.a
+dep 'stream.h -> streamio.o'     src/sys/h/stream.h        $B/kern/streamio.o
+dep 'dir.h -> streamio.o'        src/sys/h/dir.h           $B/kern/streamio.o
+dep 'inode.h -> streamio.o'      src/sys/h/inode.h         $B/kern/streamio.o
+dep 'ioctl.h -> streamio.o'      src/sys/h/ioctl.h         $B/kern/streamio.o
+dep 'ttyld.h -> streamio.o'      src/sys/h/ttyld.h         $B/kern/streamio.o
+dep 'file.h -> streamio.o'       src/sys/h/file.h          $B/kern/streamio.o
+dep 'inline.h -> streamio.o'     src/sys/h/inline.h        $B/kern/streamio.o
+dep 'sparam.h -> streamio.o'     src/sys/research/sparam.h $B/kern/streamio.o
+dep 'our param.h -> streamio.o'  shim/kern/h/param.h       $B/kern/streamio.o
+dep 'our user.h -> streamio.o'   shim/kern/h/user.h        $B/kern/streamio.o
+dep 'our proc.h -> streamio.o'   shim/kern/h/proc.h        $B/kern/streamio.o
+dep 'our buf.h -> streamio.o'    shim/kern/h/buf.h         $B/kern/streamio.o
+dep 'our conf.h -> streamio.o'   shim/kern/h/conf.h        $B/kern/streamio.o
+
+# setjmp.h is the twelfth and it is not one of the eleven: it arrives through
+# OUR param.h, because u_qsav has to be a jump buffer this machine can use and
+# it has to be V8's rather than the host's.  An edge with no #include naming it
+# in any authentic file, which is precisely why it is written down.
+dep 'V8 setjmp.h -> streamio.o'  src/include/setjmp.h      $B/kern/streamio.o
+
+# The four files that supply the fifteen names.  tsleep is the one that decided
+# whether this import could happen at all, so slp.c gets its own edge rather
+# than standing behind the archive.
+dep 'slp.c -> kern archive'      shim/kern/sys/slp.c       $B/kern/libv8kern.a
+dep 'fio.c -> kern archive'      shim/kern/sys/fio.c       $B/kern/libv8kern.a
+dep 'subr.c -> kern archive'     shim/kern/sys/subr.c      $B/kern/libv8kern.a
+dep 'ioconf.c -> kern archive'   shim/kern/sys/ioconf.c    $B/kern/libv8kern.a
+dep 'our user.h -> slp.o'        shim/kern/h/user.h        $B/kern/slp.o
+dep 'file.h -> fio.o'            src/sys/h/file.h          $B/kern/fio.o
+dep 'rawsys.h -> fio.o'          shim/v8sys/rawsys.h       $B/kern/fio.o
+
 # ...and the kernel archive must NOT be a prerequisite of an ordinary command.
 # 85 KB of bss and a 60 KB page-touching qinit() belong to programs that open a
 # stream, which today is none of them.  Same reasoning as libkmemu, different

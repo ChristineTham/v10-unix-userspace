@@ -10,16 +10,27 @@ machine-dependent half carrying the names the body expects. There it is
 `local.c` and `macdefs.h`; here it is `dev/machdep.c` and `h/`.
 
 ```
-h/param.h     types, NULL, and the kernel services -- plus the three
-              redirections (printf, bcopy, uballoc) that let stream.c stay
-              byte-identical instead of being edited
+h/param.h     types, NULL, and the kernel services -- plus the redirections
+              (printf, bcopy, longjmp, psignal, uballoc) that let the authentic
+              sources stay unedited, and the three host type-guards
 h/mtpr.h      the VAX privileged-register write, honouring SIRR and nothing else
 h/conf.h      struct streamtab; the driver switch tables are deliberately absent
+h/user.h      the u-area, thirteen fields, claiming no layout
+h/proc.h      four fields, at UPSTREAM's widths -- see src/sys/PORTING.md hazard 2
+h/buf.h       two constants out of a 107-line buffer cache
 dev/machdep.c spl6/splx, the queue scheduler's trigger, panic, kernel printf,
               bcopy -- raw syscalls only, like the rest of shim/ outside libkmemu
+sys/slp.c     tsleep and wakeup, and the setjmp half of u_qsav
+sys/fio.c     the u-area, the proc entry, the file table, the inode edge
+sys/subr.c    min, nulldev, copyin/copyout, iomove, the signal names
+sys/ioconf.c  streamtab[] and nstream, which config(8) generated upstream
 ```
 
-## The three translations that carry meaning
+The `sys/` half arrived with `src/sys/sys/streamio.c` and is named after the
+files V8 keeps each function in, so the mapping back to upstream is legible
+without a table.
+
+## The four translations that carry meaning
 
 **`spl6`/`splx` are a nesting counter, and the counter is load-bearing.** On the
 VAX these wrote the processor's interrupt priority level. There is no IPL in a
@@ -44,6 +55,20 @@ into a program that runs and is wrong.
 returning would let a corrupted freelist keep being used with a line of output
 to show for it. `panicstr` is set first, because `queuerun()` reads it to bail
 out early — V8's own comment says "to minimize destruction".
+
+**`tsleep` is `queuerun()` and then `poll()`, and that is a fourth translation
+of the same kind.** PLAN.md §8a step 2 answered "what is at the bottom of a
+stack" for filesystems with "the host"; a stream's driver end is a host
+descriptor, so the kernel's *wait for the device to interrupt* becomes *wait for
+the fd standing in for the device*. What a driver registers is therefore a
+descriptor **and a handler** — registering only the fd would make `tsleep`
+return to a caller whose queue is still empty, because nobody read the device.
+
+And `wakeup` is not the no-op the survey predicted: it counts. Every `wakeup` in
+`streamio.c` sits where a producer has just made progress, so a counter compared
+across `queuerun()` is exactly the one bit a single-threaded kernel can use, and
+it is what lets `tsleep` distinguish "something happened" from "nothing will".
+`sys/slp.c` has the argument.
 
 ## What this does not do yet, said plainly
 
@@ -71,3 +96,19 @@ archive's externals for exactly this, and mutation-testing that guard turned up
 something worth knowing: removing the `#define` leaks **`_memmove`**, not
 `bcopy`, because clang recognises the pattern and lowers it. An assertion phrased
 as "bcopy is absent" would have missed it.
+
+**`setjmp` is the same decision one level up, and it is why the archive imports
+three names rather than one.** `streamio.c` aborts a system call with
+`longjmp(u.u_qsav)` when a signal arrives mid-sleep, so `sys/slp.c` has to do
+the matching `setjmp` — and taking that from `<setjmp.h>` would be `bcopy` all
+over again, in an archive linked into V8 programs. `src/include/setjmp.h` is
+this port's own, 24 longs for AAPCS64's callee-saved set, implemented in
+`compiler/setjmp.s` to the same ABI clang compiles this directory with. So the
+kernel and the program above it use one jump buffer and one implementation.
+
+`tests/streams` now asserts the externals by **subtraction** — everything the
+archive undefines minus everything it defines — rather than by grepping away a
+hand-written list of the names it exports. The list would have had to grow by
+every name `streamio.c` and `shim/kern/sys/` added, and a name-by-name allow
+list is exactly how `tests/kmemu`'s allowed leaks went stale. The answer is
+`_memcpy`, `_setjmp`, `_longjmp`, and all three are checked to be V8's own.

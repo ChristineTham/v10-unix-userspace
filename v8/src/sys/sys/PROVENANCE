@@ -1,0 +1,7 @@
+# Provenance for v8/src/sys/sys
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+b9abf46a9027dbe4e549a6d9848c228892394a73  v8/usr/sys/sys/streamio.c

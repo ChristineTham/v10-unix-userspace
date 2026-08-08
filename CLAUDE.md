@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1298 cases)
+make test             # all 17 suites (1388 cases)
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -102,11 +102,29 @@ when the claim is "this ran entirely on V8 code".
 
 ## `src/sys/` — V8's kernel, and it plays by layer 1's rules
 
-New as of PLAN §8a step 1. `src/sys/dev/stream.c` is Dennis Ritchie's stream
-machinery, **byte-identical to upstream** — `tests/streams` compares
-`git hash-object` against PROVENANCE, so an edit is a test failure. The
-machine-dependent half is `shim/kern/`, in the same relationship
-`compiler/ccom-arm64/` has to ccom.
+PLAN §8a step 1, and **both halves of the stream machinery are in**:
+`src/sys/dev/stream.c`, Dennis Ritchie's engine, **byte-identical to
+upstream** — `tests/streams` compares `git hash-object` against PROVENANCE, so
+an edit is a test failure — and `src/sys/sys/streamio.c`, the 1093-line syscall
+side, which carries **two recorded LP64 deviations** and therefore cannot be
+guarded that way. The machine-dependent half is `shim/kern/`, in the same
+relationship `compiler/ccom-arm64/` has to ccom.
+
+**A FILE WITH DEVIATIONS NEEDS A DIFFERENT GUARD, AND "it has a PORTING.md"
+IS NOT ONE.** `tests/streams` diffs `streamio.c` against `third_party/` and
+asserts that upstream lost exactly one line, that it is the `sizeof(arg)`
+copyout, and that the second deviation added exactly the declaration it was
+supposed to. That makes the deviation *list* a test rather than prose, which is
+what a hash gives you for free and a patched file otherwise loses entirely.
+Count removals and additions separately — the two deviations here are not the
+same shape, and a first draft that assumed "two changed lines" failed.
+
+**AND IT COMPILES BY CLANG, SO v8cc's SAFETY NET IS NOT UNDER IT.** The
+compiler widens undeclared K&R parameters on purpose (`acctype()` in
+`compiler/ccom-arm64/gencode.c`) because the tree is full of them holding
+pointers. Nothing in `src/sys/` gets that: it is host-clang code. `urcvfile`'s
+missing `caddr_t arg` was found by the *build*, not by the survey, and it would
+have been invisible in a program compiled by v8cc.
 
 Three things about it generalise to the rest of `sys/`, so know them before
 importing more:
@@ -123,9 +141,28 @@ importing more:
   is what keeps the blob hash intact. A three-line deletion would have been
   easier and would have cost the strongest claim available.
 
+- **A stand-in kernel header that typedefs a name libc owns must CLAIM THE
+  HOST'S GUARD, not hope about include order.** `shim/kern/h/param.h` has to
+  spell `dev_t`, `ino_t` and `off_t`, because the authentic `inode.h`,
+  `file.h` and `dir.h` are written in them — and Darwin owns all three, two at
+  a different width (`ino_t` 2 vs 8, `dev_t` 2 vs 4). So which definition won
+  would have depended on whether a file included `<stdio.h>` first, and two
+  objects in one link could have disagreed about `struct inode`'s layout by
+  twelve bytes with nothing to say so. It is the DIRSIZ trap arriving through
+  a host header. Defining `_OFF_T`/`_INO_T`/`_DEV_T` makes the host's typedefs
+  no-ops; an `#error` catches the file that includes param.h too late. Do NOT
+  claim a guard for a name no struct here uses — `time_t` is deliberately left
+  to the host, because there is no layout to protect and claiming it would give
+  the shim's own raw syscalls a 32-bit `time_t`.
+
 `libv8kern.a` is separate from `libv8sys.a` for libkmemu's reason plus a
 storage one: 85 KB of bss, and `qinit()` dirties ~60 KB of pages. `cat` does not
-carry it.
+carry it. Its externals are `_memcpy`, `_setjmp` and `_longjmp`, all three
+V8's own — and `tests/streams` gets that list by **subtracting what the archive
+defines from what it undefines** rather than by grepping away a hand-written
+list of exported names. The hand-written version would have had to grow by
+every name `streamio.c` added, and a name-by-name allow list is exactly how
+`tests/kmemu`'s allowed leaks went stale.
 
 ## Architecture: three layers, three different rules
 
@@ -701,6 +738,24 @@ other so that fixing one alone changed nothing observable:
   `shim/libm/dummy.c` reproduces it, because eleven upstream makefiles link
   `-lm` and the honest answer to them is the empty archive V8 actually shipped.
 
+**AND THE INTEGER HALF OF THAT RULE IS NOT WHAT IT LOOKS LIKE, WHICH MATTERS
+FOR STREAM DRIVERS.** `struct qinit`'s `qopen` is `long (*)()` and
+`streamio.c` initialises it with functions declared `int` — the same shape.
+Measured at -O0 and -O2 rather than assumed: the top half of x0 is **not**
+unspecified garbage. Any write to `w0` zeroes bits 63:32 architecturally, so
+`return 1` and `return a+b` come back zero-extended; and an `int` return that
+forwards another call's result emits **no truncation instruction at all**, so a
+64-bit pointer survives intact. Two consequences:
+
+- **A `qopen` must never return a negative int.** `return -1` becomes
+  `0x00000000ffffffff`, which `stopen:124` does not see as NULL and `:131` does
+  not see as 1 — so the open "succeeds" and hands its caller an inode pointer
+  of `0xffffffff`. `-1` is not hypothetical; `ufalloc()` in the same tree uses
+  it.
+- **The pointer case works today by accident of code shape**, not because the
+  type is right, which is the worse half — it would break on a different clang,
+  a different `-O`, or a callee that spills across the return.
+
 Together these meant `pic` never computed a correct radius and every drawing it
 or `grap` produced here was geometrically wrong. `tests/wavec` missed it twice
 over: its inputs used only **default** sizes, which are compiled-in constants
@@ -916,6 +971,22 @@ one class:
 | `d_ino` | 16-bit inode | 64-bit | wraps; harmless *except* the value that wraps to 0 |
 | `p_pid` | `short`, wrapped at 30000 | to 99998 | **negative pids** — 44145 read as −21391 |
 | `FSNMLG` | 32-char mount points | to 140 seen | `df` printed a mount point as a *device* |
+| `u_uid` | `short`, to 32767 | to 100000+ | a uid ≡ 0 mod 65536 reads as **root** |
+
+**AND THE FIFTH ONE WAS WRITTEN ONE LINE BELOW THE PARAGRAPH ARGUING AGAINST
+IT.** `shim/kern/sys/fio.c` folds a Darwin pid into a VAX `short p_pid`'s range
+and says at length why a bare cast is wrong — *"a truncation can silently
+produce the one value the code reads as absent"* — and then cast `u_uid` and
+`u_gid` with `(short)` on the next two lines. That is CLAUDE.md's own rule
+about correcting one of these: **the fix lands on one line and the line beside
+it keeps the assumption.** Found by the `lp64-auditor` subagent, not by the
+person who wrote both lines.
+
+The magic value differs per field and that is what has to be preserved: 0 means
+*absent* for a pgrp and *root* for a uid, and `streamio.c:44` lets root bypass
+a stream's exclusive-use lock. So the contract is two properties rather than a
+formula — **root maps to root, and non-root never maps to root** — with every
+value that fits kept exact.
 
 **A 1985 BUFFER SIZE IS THE SAME CLASS, and the ratio is what breaks.** Raising
 `DIRSIZ` 14 → 254 did not just widen a field; it invalidated every buffer sized

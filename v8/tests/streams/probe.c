@@ -9,13 +9,23 @@
  * exercised the way the shim is, not the way a ported program is.
  */
 
-#include <stdio.h>
+/*
+ * THE INCLUDE ORDER IS FORCED IN BOTH DIRECTIONS, and shim/kern/h/param.h says
+ * why at length.  param.h first, because it claims _OFF_T/_INO_T/_DEV_T and
+ * the kernel's dev_t and ino_t are narrower than Darwin's -- getting this
+ * backwards changes the layout of struct inode rather than failing to compile
+ * (it #errors instead, which is the point).  The #undefs before <stdio.h>,
+ * because `#define printf v8k_printf' would otherwise rewrite stdio's own
+ * declaration into a conflicting prototype.
+ */
 #include "../../shim/kern/h/param.h"
-#include "../../src/sys/h/stream.h"
-#include "../../src/sys/research/sparam.h"
 
 #undef printf
 #undef bcopy
+
+#include <stdio.h>
+#include "../../src/sys/h/stream.h"
+#include "../../src/sys/research/sparam.h"
 
 extern struct block cblock[];
 extern struct block *qfreelist[4];

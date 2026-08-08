@@ -596,8 +596,81 @@ KERNFLAGS = -std=gnu89 -Wall -fno-stack-protector -fno-stack-check \
 # switch.  Left in the build noise they would train the eye past the warnings
 # that matter.
 
+# streamio.c -- the syscall side, PLAN.md section 8a step 1, imported whole.
+#
+# TWO MORE FLAGS THAN stream.c, and both are dialect rather than taste.
+#
+# -DKERNEL is upstream's own: conf/makefile:23 is `COPTS= ${IDENT} -DKERNEL',
+# so every V8 kernel object was compiled with it.  Here it buys exactly one
+# thing -- src/sys/h/file.h's guarded block, which declares `file', `fileNFILE'
+# and `nfile', the table forceclose() walks.  inode.h's guarded block comes
+# along and declares four names streamio.c never uses.
+#
+# -fcommon is 1985's linker, and without it the build does not link.  Those
+# declarations are TENTATIVE definitions, not externs -- the K&R idiom, where
+# the same three names appear in forty objects and the linker merges the
+# commons.  Modern clang defaults to -fno-common, which makes each a real
+# definition and collides with shim/kern/sys/fio.c's strong one.  Same shape as
+# -std=gnu89 above: compile the dialect the code is written in rather than edit
+# it into a newer one.
+#
+# TWO SUPPRESSIONS, AND THE FIRST ONE IS A HAZARD RATHER THAN NOISE.
+#
+# -Wno-incompatible-function-pointer-types fires three times, on streamio.c:25,
+# :26 and :27 -- `struct qinit strdata = { strput, NULL, nulldev, ... }', where
+# the qopen member is `long (*)()' (src/sys/h/stream.h:35) and nulldev and
+# nilopen are declared `int' at :23.  Authentic, in an initialiser, so the
+# alternative is editing Bell Labs' declaration.
+#
+# It is benign HERE and it is the same-register-return class CLAUDE.md records
+# for `extern float atof()'.  THE MECHANISM IS NOT THE OBVIOUS ONE, and this
+# comment said the obvious one until it was measured: the top half of x0 is not
+# "unspecified garbage".  Any write to w0 zeroes bits 63:32 architecturally, so
+# `return 1' and `return a+b' both come back zero-extended -- and a function
+# whose int return is another call's result emits NO truncation at all, so a
+# 64-bit pointer arrives intact.  Compiled and read, at -O0 and -O2.
+#
+# So the rule for a future driver is sharper than "declare a qopen long", and
+# it is a rule about VALUES:
+#
+#   A qopen must return 0, or 1, or a real `struct inode *'.  NEVER a negative
+#   int.  `return -1' becomes 0x00000000ffffffff, which stopen:124 does not see
+#   as NULL and stopen:131 does not see as 1 -- so the open "succeeds" and
+#   hands its caller an inode pointer of 0xffffffff.  -1 is not a hypothetical
+#   convention: ufalloc() in this very tree uses it.
+#
+# The pointer-returning case works today by accident of code shape rather than
+# by the type being right, which is the worse half: it would break on a
+# different clang, a different -O, or a callee that spills across the return.
+# Declaring a qopen `long' costs nothing and removes the accident.
+#
+# -Wno-extra-tokens is src/sys/h/file.h:16, `#endif CHAOS' -- the 1985 spelling
+# of `#endif /* CHAOS */', which C89 made a constraint violation and every
+# compiler still accepts.  Pure dialect.
+STREAMIOFLAGS = $(KERNFLAGS) -DKERNEL -fcommon \
+                -Wno-incompatible-function-pointer-types -Wno-extra-tokens
+#
+# It is deliberately NOT in KERNFLAGS.  stream.c compiles clean without any of
+# the four, and widening a flag set for one file's sake is how a suppression
+# that was argued for once ends up covering code nobody argued about.
+
 KERN_LIB = $(BUILD)/kern/libv8kern.a
-KERN_OBJ = $(BUILD)/kern/stream.o $(BUILD)/kern/machdep.o
+KERN_OBJ = $(BUILD)/kern/stream.o $(BUILD)/kern/machdep.o \
+           $(BUILD)/kern/streamio.o $(BUILD)/kern/slp.o \
+           $(BUILD)/kern/fio.o $(BUILD)/kern/subr.o $(BUILD)/kern/ioconf.o
+
+# The headers streamio.c reaches, split by who wrote them.  Six are AUTHENTIC
+# and live in src/sys/h/, so a quoted "../h/x.h" from src/sys/sys/ finds them
+# first; five are OURS in shim/kern/h/, reached only because the authentic ones
+# are absent and -Ishim/kern/dev turns "../h/" into that directory.  Nothing in
+# the include syntax says which is which, which is the property the seam wants.
+KERN_AUTH_H = $(SRC)/sys/h/stream.h $(SRC)/sys/h/dir.h $(SRC)/sys/h/inode.h \
+              $(SRC)/sys/h/ioctl.h $(SRC)/sys/h/ttyld.h $(SRC)/sys/h/file.h \
+              $(SRC)/sys/h/inline.h $(SRC)/sys/research/sparam.h
+KERN_SHIM_H = $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \
+              $(ROOT)shim/kern/h/conf.h $(ROOT)shim/kern/h/user.h \
+              $(ROOT)shim/kern/h/proc.h $(ROOT)shim/kern/h/buf.h \
+              $(SRC)/include/setjmp.h
 
 libv8kern: $(KERN_LIB)
 $(KERN_LIB): $(KERN_OBJ)
@@ -611,11 +684,31 @@ $(BUILD)/kern/stream.o: $(SRC)/sys/dev/stream.c $(SRC)/sys/h/stream.h \
 	@mkdir -p $(BUILD)/kern
 	$(HOSTCC) $(KERNFLAGS) $(DEPFLAGS) -c $< -o $@
 
+$(BUILD)/kern/streamio.o: $(SRC)/sys/sys/streamio.c $(KERN_AUTH_H) $(KERN_SHIM_H)
+	@mkdir -p $(BUILD)/kern
+	$(HOSTCC) $(STREAMIOFLAGS) $(DEPFLAGS) -c $< -o $@
+
 $(BUILD)/kern/machdep.o: $(ROOT)shim/kern/dev/machdep.c \
                          $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \
                          $(ROOT)shim/v8sys/rawsys.h
 	@mkdir -p $(BUILD)/kern
 	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -I$(ROOT)shim/kern/dev -c $< -o $@
+
+# The machine-dependent half of the SYSCALL side.  Modern C, like machdep.c and
+# for the same reason: it is ours.  slp.c is tsleep/wakeup, fio.c the u-area
+# and the file table, subr.c the twelve mechanical names, ioconf.c the stream
+# configuration table config(8) would have generated.
+#
+# ONE FLAG BEYOND SHIMFLAGS, and it is there because this is the only modern C
+# in the tree that includes Bell Labs' headers directly: fio.c reaches
+# src/sys/h/file.h for `struct file', and file.h:16 is `#endif CHAOS' -- the
+# 1985 spelling of `#endif /* CHAOS */'.  Dialect, in an authentic file, so it
+# is suppressed rather than edited.  Same flag and same reason as STREAMIOFLAGS.
+$(BUILD)/kern/%.o: $(ROOT)shim/kern/sys/%.c $(KERN_AUTH_H) $(KERN_SHIM_H) \
+                   $(ROOT)shim/v8sys/rawsys.h
+	@mkdir -p $(BUILD)/kern
+	$(HOSTCC) $(SHIMFLAGS) -Wno-extra-tokens $(DEPFLAGS) \
+	    -I$(ROOT)shim/kern/dev -c $< -o $@
 
 # ---------------------------------------------------------------------------
 # libv8c -- V8's own libc, compiled by v8cc, on top of the shim.

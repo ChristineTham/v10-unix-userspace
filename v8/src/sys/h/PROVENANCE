@@ -5,3 +5,9 @@
 #
 # <git blob hash of pristine upstream file>  <upstream path>
 ff2ab9f31295acd2ea507d96e22de5ee210c9672  v8/usr/sys/h/stream.h
+737a3a66b62bee95ecaf61f3b6ac14cccc0e8e49  v8/usr/sys/h/dir.h
+2bcd0851d16e8353db8c707f3d9d882828d68d5b  v8/usr/sys/h/inode.h
+f28ec73e371ab6404b95b036d1b9b3dc528c1b6e  v8/usr/sys/h/ioctl.h
+7335d37bec240a6f6ae89425b719028134aa31cf  v8/usr/sys/h/ttyld.h
+2a2652b30876d0ac3bca4e676e60eef55723e2f5  v8/usr/sys/h/file.h
+3d28063ef4756e6f59316af1313c139cb8bb120b  v8/usr/sys/h/inline.h

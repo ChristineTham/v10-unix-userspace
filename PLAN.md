@@ -1451,7 +1451,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
 
    **The engine is IN -- `dev/stream.c`, byte-identical to upstream.** This is
    the first Bell Labs *kernel* source in the port; `src/sys/PORTING.md` and
-   `shim/kern/NOTES.md` have it, `tests/streams` is 43 cases. The claim worth
+   `shim/kern/NOTES.md` have it, and `tests/streams` began at 43 cases. The claim worth
    repeating is that not one line changed, and it was affordable because the
    footprint is **nine names**: NULL, caddr_t, u_char, u_short, spl6, splx,
    panic, printf, uballoc. A 483-line message-passing engine that barely knows
@@ -1466,7 +1466,11 @@ Ordered so that value lands before risk, and so each step is testable alone.
    the implicit-int and implicit-declaration diagnostics off is how S1's "do not
    modernise K&R declarations" is actually obeyed.
 
-   **Still to do here: `sys/streamio.c`**, the syscall side -- `stopen`,
+   **AND THE SYSCALL SIDE IS IN TOO** -- what follows is the survey that
+   preceded it, kept because every number in it was checked before anything was
+   written, with the outcome at the end of this step.
+
+   **`sys/streamio.c`**, the syscall side -- `stopen`,
    `stread`, `stwrite`, `stioctl`, `I_PUSH`/`I_POP`. **Surveyed rather than
    estimated**, and the survey says not yet; `src/sys/PORTING.md` has it in
    full. The number that made `stream.c` affordable was nine external names.
@@ -1531,30 +1535,55 @@ Ordered so that value lands before risk, and so each step is testable alone.
      and all frozen at VAX widths by the /proc ABI. Enumerating them found a
      live defect in `procfs.c`'s copy, since fixed.
 
-   So what is left of step 1 is code to write, with no design question in front
-   of it — and less code than the count suggested. Enumerated by who already
-   provides them, **19 of the 34 external names are already in the tree**: 11
-   from the imported engine (`allocb`, `freeb`, `getq`, `putq`, `qreply`,
-   `queuerun`, …), 3 macros from the authentic `stream.h` (`RD`, `WR`,
-   `OTHERQ`), and 5 from `shim/kern` (`spl6`, `splx`, `panic`, plus `printf`
-   and `bcopy` redirected in `param.h`). Of the 15 left, `copyin`/`copyout` are
-   `bcopy` because there is one address space; `min`, `nulldev` and `GETF` are
-   one line each upstream; `tsleep`/`wakeup` are settled above; and `gsignal`,
-   `psignal`, `selwakeup` are delivery, which works here. **The design that is
-   genuinely left is three names — `closef`, `ufalloc`, `iput`**, the file
-   table and the inode edge that make `strput` look pure when it is not.
-   `src/sys/PORTING.md` has the table.
+   **DONE. `streamio.c` IS IN, and the estimate held.** 19 of the 34 external
+   names already existed — 11 from the imported engine, 3 macros from the
+   authentic `stream.h`, 5 from `shim/kern` — and the 15 left came to four
+   small files in `shim/kern/sys/`, named after the ones V8 keeps them in:
+   `slp.c` (tsleep, wakeup, the setjmp half of `u_qsav`), `fio.c` (the u-area,
+   the proc entry, the file table, the inode edge), `subr.c` (the twelve
+   mechanical names), `ioconf.c` (the table `config(8)` generated upstream).
+   Eleven headers: **six imported authentic** — `dir.h`, `inode.h`, `ioctl.h`,
+   `ttyld.h`, `file.h`, `inline.h` — and **five stand-ins** in `shim/kern/h/`,
+   split one at a time by whether the header describes V8 or describes a VAX.
+   `tests/streams` went from 43 cases to 111.
 
-   A genuinely pure stratum exists -- `qattach`, `qdetach`, `streadable`,
-   `nilopen`, `nilput`, 86 lines, 7.9% -- and is unreachable in isolation,
-   because a byte-identical import has to compile and link *whole*. Two-thirds
-   of the file would be provably dead at the end of it. **So: answer the
-   per-binary question first, then import once.** Doing it the other way means
-   writing `tsleep` twice and settling its semantics under a build that will
-   not link.
+   Two deviations, both LP64, both argued from a sibling one function away, and
+   both asserted by *diffing against third_party* rather than by hashing —
+   `stream.c` can be guarded by its hash because nothing in it changed, and
+   `streamio.c` cannot. `:713`'s `sizeof(arg)` on a 4-byte object is the
+   recorded one; the second was found by the compiler. **`urcvfile` declares
+   only `stq`, so `arg` is an implicit `int`** and its caller passes a
+   `caddr_t` — a wild pointer write from `FIORCVFD` on LP64. `v8cc` widens
+   undeclared K&R parameters on purpose, and `streamio.c` is compiled by
+   *clang*, so the widening this port leans on everywhere else is simply absent
+   here. The twin one function up, `usndfile`, declares it correctly.
 
-   The four hazards above are settled against the day it happens, so importing
-   once is now a matter of doing it rather than of deciding anything first.
+   **Three things the survey got wrong, all in the harmless direction.**
+   `wakeup` was predicted to be a no-op; it is a counter, because that is what
+   lets `tsleep` tell "a producer ran" from "nothing will" across its
+   `queuerun()`, and a no-op would have thrown the answer away. `nulldev` was
+   said to be safe because its callers discard the result — false, all three
+   `qopen` sites consume it; the real reason is that `strdata` sits on the
+   *head's* queue, which `qopen` never reaches. And an `int` return was said to
+   leave x0's top half unspecified — measured, a `w0` write zeroes bits 63:32
+   and a forwarded call emits no truncation at all, which gives the first
+   driver a sharper rule: a `qopen` must never return a negative int, because
+   `-1` becomes `0xffffffff`, neither NULL nor 1.
+
+   **And an `lp64-auditor` pass afterwards found a bug in the new shim code,
+   one line below the paragraph arguing against it.** `u_uid`/`u_gid` were a
+   bare cast to `short` directly beneath the note explaining why a bare cast is
+   wrong for `p_pid`. The magic value there is 0-means-root, and
+   `streamio.c:44` lets root bypass a stream's exclusive-use lock. Fixed; and
+   it is CLAUDE.md's own warning about correcting one of these — *the fix lands
+   on one line and the line beside it keeps the assumption.*
+
+   A genuinely pure stratum existed — `qattach`, `qdetach`, `streadable`,
+   `nilopen`, `nilput`, 86 lines, 7.9% — and was unreachable in isolation,
+   because a byte-identical import has to compile and link *whole*. Answering
+   the per-binary question first and importing once was the right order: it
+   meant writing `tsleep` once, from a settled design, rather than twice under
+   a build that would not link.
 2. **The 9P switch itself**, with exactly one server behind it: **passthrough**,
    reproducing today's behaviour byte for byte. Nothing user-visible changes;
    the whole point is that the suites stay green while the floor is replaced.
@@ -2121,7 +2150,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 4 grovelers | **done** | `date`, `who`, `df`, `load`, `w`/`uptime` all run. `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` was the exception and is now done too, under S8a step 3 rather than here — V8's `ps` is a `/proc` client, not a kmem groveler, which was a plan revision forced by reading it. Only the full form of `w` remains, and it says `No mem` on purpose. See S7 |
 | 5 blitterm | not started | |
 | 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 62/62 |
-| 8a.1 streams | engine in, **blocker and all four hazards cleared** | `src/sys/dev/stream.c` byte-identical to upstream; `streams` 43/43. `streamio.c`'s blocker — what `tsleep` means per-binary — is answered with evidence (`queuerun()` then `poll()` the driver's host fd; `wakeup` a no-op), and is **faithful rather than a semantic change**. The two-V8-process case turns out to be `pipe.c`'s, a separate file this port already answers with the host's `pipe(2)`. The four hazards are settled too, three of them by reading upstream's own declarations: `short pgrp` is as wide as a VAX pid (`h/proc.h:28-29`) so the narrowing is *ours*; `char count` needs 128 processes in one stream and `stenter`'s six callers cannot nest; the second `struct user` is forced by three pointer-shaped fields, and enumerating them found a live `u_ofile` defect in `procfs.c`. What is left is code, not decisions, and less of it than the count said: 19 of the 34 external names are already in the tree (11 from the engine, 3 macros from stream.h, 5 from shim/kern), and of the 15 remaining the only real design is three — `closef`, `ufalloc`, `iput`. See S8a step 1 |
+| 8a.1 streams | **done** | Both halves of Ritchie's stream machinery run on ARM64. `src/sys/dev/stream.c` is byte-identical to upstream; `src/sys/sys/streamio.c` — the syscall side, 1093 lines — carries **two recorded LP64 deviations**, and `tests/streams` diffs it against third_party rather than hashing it, so the deviation list is itself a test. A stream opens, a write goes down the stack and comes back up through `strput` and out of `stread`; the module stack pushes, looks up and pops; FIORCVFD passes a file; a hangup poisons the file table; and `tsleep` blocks in `poll(2)` on a real host descriptor and wakes when the device speaks. `streams` 43 -> 111. Six authentic headers imported, five stand-ins written, fifteen names in four files named after V8's own. See S8a step 1 |
 | 8a.2 fs switch | done | `shim/v8sys/vfs.c`, one mount table, passthrough behind it |
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |

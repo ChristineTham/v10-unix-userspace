@@ -33,12 +33,27 @@ bad() { fail=$((fail+1)); echo "FAIL $1"; shift; [ $# -gt 0 ] && echo "    $*"; 
 
 [ -e "$KERN" ] || { echo "missing $KERN -- run make"; exit 1; }
 
+# V8'S setjmp, NOT THE HOST'S, and this one object is the whole reason the link
+# line is not just $KERN.
+#
+# shim/kern/sys/slp.c does the setjmp half of streamio.c's three
+# `longjmp(u.u_qsav)' calls -- the idiom sys/trap.c:176 uses to abort a system
+# call when a signal arrives mid-sleep.  Taking that from <setjmp.h> would
+# leave the kernel side of a 1985 stream saving its context with Apple's code,
+# in an archive that gets linked into V8 programs; src/include/setjmp.h is this
+# port's own, 24 longs for AAPCS64's callee-saved set, implemented in
+# compiler/setjmp.s.  So the archive imports _setjmp and _longjmp exactly as it
+# imports _memcpy, and all three are asserted below to come from libv8c.
+SETJMP=$BUILD/libc/setjmp.o
+[ -e "$SETJMP" ] || { echo "missing $SETJMP -- run make"; exit 1; }
+
 # The probe is 1985 K&R code linked against 1985 K&R code, so it is compiled in
 # that dialect, exactly as the Makefile compiles stream.c.
 KFLAGS="-std=gnu89 -Wall -Wno-implicit-int -Wno-implicit-function-declaration
         -Wno-deprecated-non-prototype -Wno-parentheses -Wno-return-type
-        -Wno-char-subscripts"
-if ! clang $KFLAGS -o "$TMP/probe" "$ROOT/tests/streams/probe.c" "$KERN" \
+        -Wno-char-subscripts -Wno-extra-tokens
+        -Wno-incompatible-function-pointer-types"
+if ! clang $KFLAGS -o "$TMP/probe" "$ROOT/tests/streams/probe.c" "$KERN" "$SETJMP" \
      > "$TMP/build.log" 2>&1; then
 	# ld warns about __common alignment because blkdata[] is 36 KB; not an error.
 	grep -qv 'reducing alignment' "$TMP/build.log" &&
@@ -46,6 +61,18 @@ if ! clang $KFLAGS -o "$TMP/probe" "$ROOT/tests/streams/probe.c" "$KERN" \
 fi
 "$TMP/probe" > "$TMP/out" 2>"$TMP/err" || bad "probe exited nonzero" "$(head -3 "$TMP/err")"
 v() { awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}' "$TMP/out"; }
+
+# The syscall side gets its own probe, split the way the source is split -- see
+# the header of sioprobe.c.  A DEADLINE, because every failure mode of tsleep
+# is a hang rather than a wrong answer, and a hung suite prints nothing at all.
+if ! clang $KFLAGS -o "$TMP/sioprobe" "$ROOT/tests/streams/sioprobe.c" \
+     "$KERN" "$SETJMP" > "$TMP/siobuild.log" 2>&1; then
+	grep -qv 'reducing alignment' "$TMP/siobuild.log" &&
+		{ echo "sioprobe build failed:"; head -5 "$TMP/siobuild.log"; exit 1; }
+fi
+perl -e 'alarm 60; exec @ARGV' "$TMP/sioprobe" > "$TMP/sio" 2>"$TMP/sioerr" ||
+	bad "sioprobe exited nonzero" "$(head -3 "$TMP/sioerr")"
+s() { awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}' "$TMP/sio"; }
 
 # --- qinit built one freelist per size class ------------------------------
 # From src/sys/research/sparam.h, which is Bell Labs' own configuration for the
@@ -149,6 +176,209 @@ if clang $KFLAGS -w -o "$TMP/mtpr" "$ROOT/tests/streams/.mtpr.c" "$KERN" 2>/dev/
 else bad "mtpr probe build"; fi
 rm -f "$ROOT/tests/streams/.mtpr.c"
 
+# ===========================================================================
+# THE SYSCALL SIDE -- src/sys/sys/streamio.c, PLAN.md section 8a step 1.
+# ===========================================================================
+
+# --- stopen builds a stream head and hangs it off the inode -----------------
+check "stopen returns NULL on success"      "1" "$(s openret)"
+check "...and sets no error"                "0" "$(s openerr)"
+check "...and the inode now has a stream"   "1" "$(s attached)"
+# pgrp 0 means "no process group yet"; streamio.c:45 reads it that way, which
+# is why shim/kern/sys/fio.c folds a host pid to 1..30000 and never to 0.
+check "a fresh stream has no process group" "0" "$(s openpgrp)"
+
+# --- a record goes down the stack and comes back up -------------------------
+check "stwrite sets no error"                "0"     "$(s writeerr)"
+check "stread gets the bytes back"           "hello" "$(s readbuf)"
+check "...all five of them"                  "5"     "$(s readn)"
+check "...with no error"                     "0"     "$(s readerr)"
+
+# HAZARD 3, MEASURED RATHER THAN ARGUED.  stream.h:69 is `char count' -- "#
+# processes in stream routines" -- signed here, incremented unbounded by
+# stenter and tested for zero by stexit, so 128 nested entries would make a
+# stream that never closes.  src/sys/PORTING.md settles it by counting:
+# stenter has six callers, all system-call entry points, none reachable from
+# another and none stored in a qinit.  This is the observable half -- the
+# driver's put procedure runs while the process is still inside stwrite, so it
+# sees exactly 1, and 0 once the call returns.
+check "one process inside a stream counts 1" "1" "$(s insidecount)"
+check "...and 0 once the call returns"       "0" "$(s outsidecount)"
+
+# --- stioctl ----------------------------------------------------------------
+check "FIONREAD reports the queued bytes" "4" "$(s fionread)"
+check "...with no error"                  "0" "$(s fionreaderr)"
+# streamio.c:562 is the one copyout in stioctl with NO null check on arg, and
+# that is not an oversight: on a VAX a copyout to user address 0 landed in the
+# read-only text segment, faulted, and came back -1, so the ioctl returned
+# EFAULT.  shim/kern/sys/subr.c's copyout rejects NULL to reproduce the ANSWER
+# rather than the absence of the fault -- without it this is a SIGSEGV inside
+# the kernel archive.
+check "FIONREAD with a null argument is EFAULT" "14" "$(s fionreadnull)"
+check "a second record still round-trips"  "abcd" "$(s drained)"
+
+check "TIOCSPGRP with arg 0 adopts this process" "1" "$(s spgrp)"
+check "...and records the controlling device"    "1" "$(s ttydev)"
+check "...and its inode number"                  "1" "$(s ttyino)"
+check "TIOCGPGRP returns the group"              "1" "$(s gpgrplow)"
+# INHERITED, DELIBERATELY.  TIOCGPGRP copies sizeof(stq->pgrp) -- two bytes --
+# into a user int, leaving the top half stale.  The VAX copied two bytes there
+# too, so unlike the :713 copyout below there is no coincidence to undo and the
+# fidelity contract says reproduce it.  Asserted so a future "fix" is a
+# decision rather than a slip.  src/sys/PORTING.md hazard 2.
+check "...and leaves the user int's top half alone" "1" "$(s gpgrphigh)"
+check "TIOCEXCL sets exclusive use"   "1" "$(s excl)"
+check "TIOCNXCL clears it"            "1" "$(s nxcl)"
+
+# --- the module stack -------------------------------------------------------
+# src/sys/PORTING.md named qattach/qdetach as "exactly what tests/streams
+# cannot reach today", because pushing a line discipline needs streamio.c.
+# This is that gap closed.
+check "v8k_stconf appends contiguously" "0 1" "$(s ld0) $(s ld1)"
+check "FIOPUSHLD reports no error"      "0"   "$(s pusherr)"
+check "...and the discipline is on the stack" "1" "$(s pushed)"
+check "FIOLOOKLD finds it, by number"   "1"   "$(s lookval)"
+check "...with no error"                "0"   "$(s lookerr)"
+
+# THE RECORDED DEVIATION, AND THIS IS WHAT CHECKS IT.  Upstream's :713 is
+# `copyout((caddr_t)&fmt, arg, sizeof(arg))' -- fmt is int (:549), arg is
+# caddr_t (:543).  Four bytes on a VAX by coincidence; EIGHT here, so it reads
+# past a 4-byte object and writes eight bytes into user memory.  The import
+# changes it to sizeof(fmt).  A sentinel in the high half of the user object
+# must survive, and does not under upstream's line.
+check "FIOLOOKLD writes the number through the argument" "1" "$(s lookarg)"
+check "...and exactly four bytes of it"                  "1" "$(s lookhigh)"
+
+check "FIOPOPLD reports no error"        "0"  "$(s poperr)"
+check "...and the discipline is gone"    "1"  "$(s popped)"
+check "an unconfigured discipline is EINVAL" "22" "$(s pushbad)"
+
+# --- file passing -----------------------------------------------------------
+check "the file table hands out an entry" "1" "$(s falloc)"
+# ENXIO IS UPSTREAM'S ANSWER, not a gap here.  sndfile (:926) walks the write
+# chain looking for a queue whose qinfo is &strdata -- a stream HEAD -- and a
+# stream with a device at the bottom has only one.  The topology that has two
+# is pipe(2), which sys/pipe.c builds by cross-connecting two streams and which
+# this port answers with the host's pipe instead.  src/sys/PORTING.md.
+check "FIOSNDFD on a device-backed stream is ENXIO" "6" "$(s sndfd)"
+check "FIORCVFD takes the passed file"     "0"   "$(s rcvfderr)"
+check "...into the lowest free descriptor" "0"   "$(s rcvfd)"
+check "...and copies out the credentials"  "101 202" "$(s rcvuid) $(s rcvgid)"
+check "...and the descriptor really points at it" "1" "$(s rcvslot)"
+
+# --- tsleep, over a real host descriptor ------------------------------------
+# THE DESIGN THAT UNBLOCKED THIS WHOLE STEP.  A V8 stream's driver end is a
+# host descriptor; tsleep is queuerun() then poll() on it, and wakeup records
+# that a producer ran.  A pipe is the smallest device one process can drive.
+check "a driver registers its descriptor"   "1"        "$(s ndrv)"
+check "stread blocks in poll and gets the device's bytes" "device" "$(s drvread)"
+check "...and the driver can withdraw"      "0"        "$(s ndrvafter)"
+# tsleep's third argument is SECONDS -- upstream stores it in p_tsleep and
+# sys/clock.c:315 decrements it once a second.  Reading it as ticks would turn
+# stioctl's fifteen-second ack timeout into fifteen ticks and every ioctl
+# through a module into an EIO.
+check "a timed sleep with no device times out" "1" "$(s tsleeptime)"
+
+# --- hangup reaches out of the stream and into the file table ---------------
+check "M_HANGUP marks the stream"        "1" "$(s hungup)"
+check "...and poisons the open file"     "1" "$(s fhungup)"
+check "...clearing FWRITE"               "1" "$(s fnowrite)"
+# and NOT FREAD: a reader must still be able to drain what the device queued
+# before it vanished.  strput passes FWRITE alone; only stclose passes both.
+check "...but leaving FREAD, so the last output can be read" "1" "$(s freadkept)"
+check "a write to a hung-up stream is ENXIO" "6" "$(s writehung)"
+
+check "stclose detaches the stream" "1" "$(s closed)"
+check "no block leaked from the 4-byte class through all of that" "1" "$(s conserved4)"
+check "...the 16-byte class"  "1" "$(s conserved16)"
+check "...the 64-byte class"  "1" "$(s conserved64)"
+check "...or the 1K class"    "1" "$(s conservedbig)"
+
+# --- hazard 4's three widths, as sizes rather than as prose -----------------
+# The /proc struct user freezes u_procp, u_qsav and u_ofile at VAX widths
+# because a V8 program reads that layout; the kernel-side one needs LP64.  That
+# is why there are two, and enumerating it is what found the u_ofile defect in
+# shim/libkmemu/procfs.c.  A sizeof on the member is the guard an
+# offset-plus-total-size pair cannot be.
+check "u_ofile is NOFILE LP64 pointers"       "1024" "$(s ofilesize)"
+check "u_qsav is a jump buffer this machine can use" "192" "$(s qsavsize)"
+# ...and the two that stay at UPSTREAM's width, because they cross nothing.
+# h/proc.h:28-29 declare both short, so on a VAX the field was exactly as wide
+# as a process id.  The narrowing is this port's own widening for ps(1).
+check "the kernel-side p_pid keeps upstream's short" "2" "$(s pidsize)"
+check "and so does stream.h's pgrp"                  "2" "$(s pgrpsize)"
+check "so the shim hands it an id in a VAX pid's range" "1" "$(s pidrange)"
+
+# --- two signals, each in its own program because they are fatal ------------
+# strput's M_HANGUP arm gsignals SIGHUP to the stream's process group, and
+# stwrite psignals SIGPIPE to the writer.  Both are DELIVERY, which the survey
+# listed as already working here -- but "signal numbering translates" is not
+# "a handler runs", which is a distinction tests/v8sys learned the hard way.
+sigcase() {	# name, ioctl-or-action snippet, expected message
+	cat > "$ROOT/tests/streams/.sig.c" <<EOF
+#include "../../shim/kern/h/param.h"
+#undef printf
+#undef bcopy
+#undef psignal
+#undef longjmp
+#include <stdio.h>
+#include <signal.h>
+#include "../../src/sys/h/stream.h"
+#include "../../shim/kern/h/proc.h"
+#include "../../shim/kern/h/user.h"
+#include "../../src/sys/h/inode.h"
+#include "../../shim/kern/h/conf.h"
+int qreply(), putq(), putctl();
+static int lput(struct queue *q, struct block *bp) { qreply(q, bp); return 0; }
+static long lopen(struct queue *q, int d) { return 1; }
+static int lclose(struct queue *q) { return 0; }
+static struct qinit rd = { putq, 0, lopen, lclose, 512, 256 };
+static struct qinit wr = { lput, 0, lopen, lclose, 512, 256 };
+static struct streamtab info = { &rd, &wr };
+static struct inode ino;
+static void caught(int s) { printf("CAUGHT %d\n", s); exit(0); }
+main() {
+	v8k_streaminit(); v8k_procinit();
+	ino.i_count = 1; ino.i_number = 1; ino.i_sptr = 0;
+	stopen(&info, 0, 0, &ino);
+	signal(SIGHUP, caught); signal(SIGPIPE, caught);
+	$2
+	printf("NOSIGNAL\n");
+	return 0;
+}
+EOF
+	if clang $KFLAGS -w -o "$TMP/sig" "$ROOT/tests/streams/.sig.c" "$KERN" "$SETJMP" \
+	     2>/dev/null; then
+		check "$1" "$3" "$(perl -e 'alarm 20; exec @ARGV' "$TMP/sig" 2>&1)"
+	else bad "$1 (build)"; fi
+	rm -f "$ROOT/tests/streams/.sig.c"
+}
+sigcase "M_HANGUP signals the stream's process group" \
+	'stioctl(&ino, (("t"[0]<<8)|118), (caddr_t)0); putctl(ino.i_sptr->wrq->next, 2);' \
+	"CAUGHT 1"
+sigcase "a write to a hung-up stream raises SIGPIPE" \
+	'ino.i_sptr->flag |= HUNGUP; u.u_base="x"; u.u_count=1; stwrite(&ino);' \
+	"CAUGHT 13"
+
+# --- and the one configuration tsleep refuses to pretend about --------------
+# Separate program, because a panic exits.  With no device registered and no
+# timeout, nothing can wake the sleeper and shim/kern/sys/slp.c says so instead
+# of spinning, inventing a timeout, or hanging in poll(NULL, 0, -1).
+cat > "$ROOT/tests/streams/.deadlock.c" <<'EOF'
+#include "../../shim/kern/h/param.h"
+#undef printf
+#include <stdio.h>
+main() { tsleep((caddr_t)0, 0, 0); printf("SURVIVED\n"); return 0; }
+EOF
+if clang $KFLAGS -w -o "$TMP/dl" "$ROOT/tests/streams/.deadlock.c" "$KERN" "$SETJMP" \
+     2>/dev/null; then
+	out=$(perl -e 'alarm 20; exec @ARGV' "$TMP/dl" 2>&1); rc=$?
+	check "an untimed sleep with no device panics" \
+		"panic: tsleep: no device below, and no timeout" "$out"
+	check "...and does not return to the caller" "2" "$rc"
+else bad "deadlock probe build"; fi
+rm -f "$ROOT/tests/streams/.deadlock.c"
+
 # --- THE SEAM: stream.c is upstream's file, unmodified ----------------------
 # The strongest claim this port can make about a source file, and it is checked
 # rather than asserted.  If a machine dependency is ever handled by editing
@@ -156,6 +386,48 @@ rm -f "$ROOT/tests/streams/.mtpr.c"
 prov=$(awk '$2 == "v8/usr/sys/dev/stream.c" {print $1}' "$ROOT/src/sys/dev/PROVENANCE")
 here=$(git -C "$ROOT" hash-object src/sys/dev/stream.c)
 check "src/sys/dev/stream.c still hashes to pristine V8" "$prov" "$here"
+
+# --- and streamio.c differs by EXACTLY the two recorded deviations ----------
+# stream.c can be checked by hash because nothing in it changed.  streamio.c
+# cannot: it carries two target-forced deviations, so the guard has to be the
+# DIFF rather than the hash, or the whole file goes unwatched the moment one
+# line is allowed to move.
+#
+# Both are LP64, both are argued from a sibling one function away, and both are
+# written up in src/sys/PORTING.md.  What this asserts is that upstream lost
+# exactly two lines and that they are those two -- an added PORT comment is
+# fine, a third changed line is not.
+UP=$ROOT/../third_party/Research-Unix-v8/v8/usr/sys/sys/streamio.c
+uprov=$(awk '$2 == "v8/usr/sys/sys/streamio.c" {print $1}' "$ROOT/src/sys/sys/PROVENANCE")
+uphash=$(git -C "$ROOT" hash-object "$UP" 2>/dev/null)
+check "third_party's streamio.c is still pristine" "$uprov" "$uphash"
+
+# THE TWO DEVIATIONS ARE NOT THE SAME SHAPE, which is why this counts removals
+# and additions separately rather than counting "changed lines".  :713 REPLACES
+# a line -- sizeof(arg) becomes sizeof(fmt).  urcvfile ADDS one -- upstream
+# declares only stq, so the fix is a declaration that was never there.  A first
+# draft of this check asserted two removals and failed, correctly.
+#
+# Removed lines only; the PORT comments we add are additions and are not the
+# subject.  `diff' output, '<' side, minus the header.
+diff "$UP" "$ROOT/src/sys/sys/streamio.c" | sed -n 's/^< //p' |
+	sed 's/^[ 	]*//;s/[ 	]*$//' | grep -v '^$' > "$TMP/gone"
+check "exactly one upstream line is gone" "1" "$(grep -c . < "$TMP/gone")"
+check "...and it is the sizeof(arg) copyout" "1" \
+	"$(grep -c 'copyout((caddr_t)&fmt, arg, sizeof(arg)))' < "$TMP/gone")"
+
+# The replacements, so a deviation cannot be silently widened either.
+check "the copyout now names its object" "1" \
+	"$(grep -c 'copyout((caddr_t)&fmt, arg, sizeof(fmt)))' "$ROOT/src/sys/sys/streamio.c")"
+# Scoped to urcvfile's own parameter list: `caddr_t arg;' appears three times
+# in the file, and the other two are stioctl's and usndfile's, both upstream's.
+# usndfile is the twin that made the omission legible in the first place.
+check "urcvfile now declares arg a caddr_t" "1" \
+	"$(sed -n '/^urcvfile(stq, arg)$/,/^{/p' "$ROOT/src/sys/sys/streamio.c" |
+	   grep -c '^caddr_t arg;')"
+check "...and the twin that always did still does" "1" \
+	"$(sed -n '/^usndfile(stq, arg)$/,/^{/p' "$ROOT/src/sys/sys/streamio.c" |
+	   grep -c '^caddr_t arg;')"
 
 # --- ...and the archive takes nothing from the host -------------------------
 # stream.c calls bcopy, and NEITHER libv8c NOR libv8sys defines one -- so an
@@ -168,12 +440,31 @@ check "src/sys/dev/stream.c still hashes to pristine V8" "$prov" "$here"
 # clang emits it for the struct assignments in allocq().  It resolves to V8's
 # OWN memcpy, which libv8c defines -- asserted below, because "it links" does
 # not say whose.
-undef=$(nm -u "$KERN" 2>/dev/null | grep -v '^$' | grep -v '\.o:$' |
-	grep -vE '^_(panic|panicstr|qinit|queuerun|queueflag|spl6|splx|v8k_)' |
-	sort -u | tr '\n' ' ' | sed 's/ $//')
-check "the archive's only external is memcpy" "_memcpy" "$undef"
-nm "$ROOT/build/stage0/libc/libv8c.a" 2>/dev/null | grep -q ' T _memcpy' && ok ||
-	bad "libv8c defines memcpy, so the compiler-emitted call is V8's own"
+# SUBTRACTED RATHER THAN FILTERED, and the change is the point.  This used to
+# grep away a hand-written list of names the archive defines -- fine while
+# there were two objects, and a list that would have had to grow by every name
+# streamio.c and shim/kern/sys/ export.  A name-by-name allow list is exactly
+# how tests/kmemu's allowed leaks went stale.  So: everything the archive
+# UNDEFINES, minus everything the archive DEFINES, is what actually crosses the
+# seam, and nothing has to be maintained.
+#
+# Temp files rather than process substitution: this script's #! is /bin/sh, and
+# on macOS that is bash 3.2 in POSIX mode, where `<(...)' is a syntax error --
+# inside $(...) it fails at PARSE time, so the variable comes back empty and
+# the case fails with an empty `got' rather than with an error anyone can read.
+nm -u "$KERN" 2>/dev/null | grep -v '^$' | grep -v '\.o:$' |
+	sed 's/^ *//' | sort -u > "$TMP/undef"
+nm -g "$KERN" 2>/dev/null | awk '$2 ~ /^[TDBSC]$/ {print $3}' | sort -u > "$TMP/def"
+undef=$(comm -23 "$TMP/undef" "$TMP/def" | tr '\n' ' ' | sed 's/ $//')
+check "the archive's only externals are memcpy and V8's setjmp pair" \
+	"_longjmp _memcpy _setjmp" "$undef"
+# ...and all three are V8's OWN, which "it links" does not say.  memcpy is
+# emitted by clang for the struct assignments in allocq(); setjmp and longjmp
+# are called by shim/kern/sys/slp.c for streamio.c's u_qsav idiom.
+for sym in _memcpy _setjmp _longjmp; do
+	nm "$ROOT/build/stage0/libc/libv8c.a" 2>/dev/null | grep -q " T $sym\$" && ok ||
+		bad "libv8c defines $sym, so the archive's call is V8's own"
+done
 
 # --- and stream.c does NOT reach into libv8sys or libv8c --------------------
 # A negative control.  The kernel half is meant to be self-contained above the
