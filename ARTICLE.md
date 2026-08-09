@@ -1656,7 +1656,7 @@ succeeded, the accounting looked right from inside, the bytes read back. Only
 `icheck` and `fsck` caught it — a duplicate-block bug is invisible to a program
 that is both the writer and the reader, by construction.
 
-Six mutations in all. Two of them turned my own comments red rather than my
+Seven mutations in all. Two of them turned my own comments red rather than my
 code. One said the zeros in a file's hole come from a cleared disk block; they
 come from a buffer attached to no device at all, because `bmap` answers minus
 one for an unallocated block and `readi` has a whole arm for that. The other
@@ -1664,6 +1664,45 @@ said the read path dirties no buffer; it dirties one per lookup, because `readi`
 sets the access-time flag and `iput` writes the inode back. Both claims were
 plausible, cited nothing, and were false. Making a mutation fire is how you find
 out which of your sentences were decoration.
+
+### The auditor read the sentences, not just the code
+
+I then sent the LP64 auditor at the diff — the subagent this project keeps for
+the width and pointer hazards. It came back clean on every one of them, with
+the measurements rather than the verdicts, and two of those are worth keeping:
+that `writei`'s size check is *stricter* here than on a VAX, because upstream's
+arithmetic was 32-bit unsigned and wrapped where this is 64-bit signed and
+cannot; and that `u_error` is one signed byte with room for exactly the errnos
+the kernel can put in it, the largest being 62.
+
+What it found instead were five defects, and **four of them were sentences.** A
+comment describing `update()` and a `bflush()` as a sequence, when `update()`
+*ends* with `bflush` — so the second call was dead and the prose was what named
+it. A claim that three checkers were "bounded in time by their deadlines" when
+only one of them had one. A count of three that was one, because it counted
+renamed names while describing declarations. Two declarations with no call
+site. And one real bug: a `long` read uninitialised on the path where two
+things fail at once, so the strongest case in the section would report an
+arbitrary answer on precisely the run that needed a diagnosis.
+
+Its best observation was not a defect at all. The read-only check I had
+restored that morning is *read* on every create and can never be *taken*,
+because the mount code sets the flag to zero and nothing else ever sets it. A
+guard that has never been seen to fail. Making it fire meant setting the
+superblock field by hand — legitimate for the same reason the probe registers
+its own driver, since the code that would normally set it is a mount call this
+port has not imported — and asserting both halves: refused with `EROFS` when
+the flag is on, and *succeeding* when it is off, because otherwise the case
+passes against a permission check that refuses everything.
+
+And then the cleanup for that new case created a dangling directory entry — I
+freed the inode and left the name pointing at it. All three new cases went
+green. `fsck` did not: *FILE SYSTEM WAS MODIFIED*, and a byte difference at
+180289.
+
+Which is the whole argument for the acceptance test, arriving from the
+direction I had not expected. I put those three programs there to catch the
+kernel lying. Within an hour they caught the probe.
 
 
 ## What is left
