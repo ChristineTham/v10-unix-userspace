@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **1582 tests across 17 suites** guard it.
+assembly. **1599 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -1337,6 +1337,87 @@ crash, no message, a feature silently gone. That is exactly what happened to
 neither does.
 
 
+### One file, two paths, and a measure that could not see it
+
+With the survey done, the import began: six authentic kernel files, 2743 lines,
+into `src/sys/`. The survey had costed the twenty headers they need by line
+count and by how many times each mentions the VAX — sensible measures, and
+between them blind to the thing that mattered.
+
+Fourteen of the twenty are **the same file the port has already imported**.
+V8 ships each kernel header at `/usr/sys/h/` *and* `/usr/include/sys/`, byte
+for byte; `git hash-object` gives one hash for both. So the question was never
+"what do these headers cost" but "the port patched some of these years ago, for
+the userland — which copy should the kernel see?"
+
+Three of them are on-disk records, patched to exact widths because a VAX wrote
+four bytes where this machine writes eight. Importing the pristine kernel copies
+would have given the kernel an eight-byte timestamp in a superblock that `mkfs`
+writes with four — the same bug an earlier phase had already found and fixed,
+reintroduced on the *other side of one disk*, where nothing could have caught
+it: every checker in the tree would have used the patched header and only the
+kernel the pristine one. Two self-consistent halves disagreeing by hundreds of
+bytes.
+
+The rule that came out of it is stronger than "patch it in both places", because
+that is a rule vigilance has to keep: **a record written to a disk gets exactly
+one declaration in the tree.** The kernel side now holds three headers that
+contain one `#include` each.
+
+### The instruments, again — and one of them was the compiler
+
+Then the six were compiled, to find out what they actually need rather than what
+a name count predicted. The first run said every file had exactly **one error**.
+Uniform, plausible, and entirely an artefact: the shell had passed the whole
+flag string as a single argument. The second run said 19, 20, 20, 20, 20, 5 —
+which reads like a shared cause and is `clang`'s default ceiling of twenty. Two
+of the 20s were really 45 and 49.
+
+Both faults point the same way, and it is worth stating as a habit rather than a
+war story: **a set of measurements that clusters at a round number is telling
+you about your instrument, not your subject.** The real figure was 231, and it
+collapsed to four causes, of which importing one authentic header removed 57.
+
+Verifying *that* needed a rule the project had already paid for twice. The new
+header wins an include that three working files resolve, but it appears in no
+dependency file — so `make` has no reason to rebuild them, and reports success
+having compiled nothing. A stale object does not look like a build problem. The
+three were touched and rebuilt explicitly before the claim was made.
+
+### Nineteen names, and the twentieth was hiding in a macro
+
+A subagent was set to specify each of the nineteen kernel services the import
+needs. Its central claims were then re-read at source — the project's rule, and
+the report invited it by citing everything. All six checked held, and four
+changed the plan.
+
+The best of them: there are **twenty**, not nineteen. `plock` is called three
+times by one of the six files and defined in a seventh, and it was invisible
+because a header defines it as a *macro* — and one of the six includes that
+header while another does not. The same name is a macro in one file and a real
+function call in the next. A survey that reads them in the wrong order sees no
+symbol at all.
+
+Two others are the sort that would have cost a day each. `fubyte`, the primitive
+that fetches one byte from user space, is not a C function on a real V8 at all —
+a `sed` script rewrites it into VAX instructions before the assembler runs — and
+the instruction it becomes is `movzbl`, which **zero-extends**. Implement it the
+obvious way, with a signed char, and byte `0xFF` becomes `-1`, which the caller
+reads as a fault: a write that silently truncates at the first high byte. And
+its sibling `subyte` must return exactly zero on success, because upstream
+writes `if(id ? suibyte(p,c) : subyte(p,c) < 0)` and `?:` binds looser than `<`
+— so on one of the two branches the raw return value *is* the error test.
+Upstream is correct given its own convention. The convention is the thing to
+preserve, not the parenthesisation to fix.
+
+And a footnote that is the class this project collects, in its purest form.
+Sweeping the six files for signal names returned the word SIGNAL out of an
+English comment — plus two hits inside the header that documents this exact
+trap, one of them the sentence *"grep over it yields exactly those two plus the
+word SIGNAL"*. The sweep matched a comment warning that the sweep matches
+comments. Knowing the rule does not filter the output. Only filtering it does.
+
+
 ## What is left
 
 Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix
@@ -1349,8 +1430,10 @@ in.
 What remains, in rough order:
 
 - **The V8 filesystem server over the raw image**, which is what turns the image
-  from something the tools inspect into something the world can mount. It has
-  now been surveyed rather than estimated, and the survey moved it — see below.
+  from something the tools inspect into something the world can mount. The six
+  authentic files are imported and the headers are settled; what is left is the
+  twenty kernel services under them, and every one of the twenty now has a
+  specification read at source rather than an estimate.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.
