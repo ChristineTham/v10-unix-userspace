@@ -743,6 +743,18 @@ KERN_SHIM_H = $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \
               $(SRC)/include/setjmp.h
 
 libv8kern: $(KERN_LIB)
+# THE `rm -f' IS LOAD-BEARING AND NOT FOR THE USUAL REASON.  This archive has
+# TWO MEMBERS NAMED subr.o -- shim/kern/sys/subr.c (copyin, psignal, gsignal;
+# 7 symbols) and the authentic src/sys/sys/subr.c (bmap and friends; 60) --
+# because ar records a member's BASENAME and the two live in different build
+# directories.  Measured: `ar t $(KERN_LIB) | sort | uniq -d' prints subr.o.
+#
+# It links correctly because Mach-O's symbol index maps each name to a member
+# OFFSET, so both are reachable; every suite here proves it, since fsprobe
+# calls into both.  What would break it is turning this into an incremental
+# `ar r $@ $?', the obvious optimisation: `ar r' replaces a member BY NAME, and
+# with two candidates the choice is the tool's rather than ours.  Building the
+# archive from empty every time makes the question not arise.
 $(KERN_LIB): $(KERN_OBJ)
 	@rm -f $@ && ar rcs $@ $(KERN_OBJ)
 	@echo "built $@"

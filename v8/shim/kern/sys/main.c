@@ -342,8 +342,21 @@ iinit(void)
  * VAX memory: LIM_STACK is 512*1024, LIM_DATA is ctob(MAXDSIZ) and LIM_TEXT
  * is ctob(MAXTSIZ).  MAXDSIZ and MAXTSIZ are vmparam.h numbers about a VAX
  * address space; measured, nothing in libv8kern reads u_limit at any index
- * but LIM_FSIZE -- `grep -rn u_limit src/sys shim/kern' is rdwri.c:165 and
- * this file.  Naming them here rather than inventing values for them is the
+ * but LIM_FSIZE.  The bare sweep is NOT the thing to quote, because writing
+ * this paragraph put nine more matches in the tree -- the same class as the
+ * `time(&' population that grew every time someone recorded a find.  What
+ * stays comparable is:
+ *
+ *	grep -rn 'u\.u_limit\[' src/sys shim/kern | grep -v '\.md:' |
+ *	    grep -v ':[0-9]*:[[:blank:]]*\*'
+ *
+ * THREE hits today and all three are code: rdwri.c:165, the only READ and the
+ * one that indexes LIM_FSIZE; and the two lines of the loop below, one of
+ * which reads only the array's sizeof.  (The first draft of this filter said
+ * "two" and returned five, because it tried to strip a comment line with
+ * `^[^:]*: *\*' and a grep -n prefix has TWO colons in it.  Which is the
+ * instrument rule arriving inside a sentence about the instrument rule.)
+ * Agrees under /usr/bin/grep, which is the one CI has.  Naming them here rather than inventing values for them is the
  * same policy the binit() transcription below already follows for the swap
  * tail, and the same one conf.h follows for nfstyp: an arm with no consumer
  * is a claim nothing can check.
