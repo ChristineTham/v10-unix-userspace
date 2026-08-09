@@ -2470,6 +2470,43 @@ Ordered so that value lands before risk, and so each step is testable alone.
    which `nami.c` needs -- and `u_dbuf`'s placement in `struct user` decides
    whether the two-byte overread above is merely wrong or faults.
 
+   **AND THE COLLISION CLASS WAS THEN MEASURED ACROSS THE WHOLE PORT, WHICH
+   FOUND ONE ALREADY THERE.** The auditor's point about `free` is that
+   `tests/kmemu`'s `nm -u` sweep cannot see it: that sweep looks at what a
+   binary *imports*, and a collision is about what an archive *defines*. So the
+   four archives were diffed against each other:
+
+   | | defines | overlaps libSystem |
+   |---|---|---|
+   | `libv8c.a` | 196 | **153** — by design, it *is* a libc |
+   | `libv8kern.a` | 115 | 1 (`panic`) |
+   | `libv8sys.a` | 106 | 1 |
+   | `libkmemu.a` | 10 | 0 |
+
+   A blanket "no archive may define a libSystem name" is therefore impossible.
+   The useful assertion is pairwise, and it is **not empty today**:
+   `libv8kern.a` and `libv8c.a` both define **`min` and `max`** —
+   `shim/kern/sys/subr.c` for the kernel, and `src/libc/gen/min.c` and `max.c`
+   for the world. They are **different functions**: libc's are
+
+   ```c
+   min(a,b) { return (a<b? a: b); }        /* implicit int */
+   ```
+
+   and the kernel's are `unsigned`, which `rdwri.c:235`/`:249` and
+   `h/systm.h:61-62` independently agree on. Nothing links both archives today
+   — only `tests/streams` builds against `libv8kern.a`, and it pulls `setjmp`
+   from libc without pulling `min.o` — so it is latent. But it is the `free`
+   shape, present before step 5 adds any, and the difference is *signedness*,
+   which this port has already been bitten by three times through
+   `SIGNCONVKEEP`. Importing `rdwri.c` does not create this; it makes the
+   kernel's pair authentic while leaving libc's `int` pair beside it.
+
+   So step 5 wants a **pairwise archive-overlap assertion** rather than an
+   import-sweep, seeded with `min`/`max` as the known and explained pair —
+   which is the shape `tests/kmemu`'s allowed-leak list already has, and which
+   went stale exactly once before, when nothing audited an entry.
+
    Clean, and said out loud because a survey that only lists hazards cannot be
    audited: **the `urcvfile` class is absent.** Every implicit-`int` K&R
    parameter across the six was enumerated, and not one holds a pointer -- each
