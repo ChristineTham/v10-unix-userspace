@@ -19,12 +19,20 @@ macOS/ARM64. Not emulated. The authentic Bell Labs C compiler compiles the
 authentic V8 C library and the authentic V8 programs, on hardware that did not
 exist when they were written.
 
-Today the world has 58 installed binaries, including the Bourne shell, `troff`,
-`nroff`, `tbl`, `eqn`, `pic`, `grap`, `refer`, `spell`, `make`, `yacc` and
-`lex`. `grap | pic | troff` draws a graph end to end. `refer` resolves citations
-against an index its own tools built. The compiler reproduces itself: the ccom
-built by ccom, built by ccom, generates byte-identical assembly. 649 tests
-across 15 suites guard it.
+Today the world has **97 installed binaries**, including the Bourne shell,
+`troff`, `nroff`, `tbl`, `eqn`, `pic`, `grap`, `refer`, `spell`, `make`, `yacc`,
+`lex`, `ps`, and the ten tools that build and check a filesystem — `mkfs`,
+`fsck`, `icheck`, `dcheck`, `ncheck`, `clri`, `quot`, `dump`, `restor`,
+`dumpdir`. `grap | pic | troff` draws a graph end to end. `refer` resolves
+citations against an index its own tools built. `mkfs` writes a V7 filesystem
+image that three independent checkers pronounce clean. The compiler reproduces
+itself: the ccom built by ccom, built by ccom, generates byte-identical
+assembly. **1482 tests across 17 suites** guard it.
+
+The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
+lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
+ratio is the project: the new code is a thin machine-dependent layer under a
+large body of 1985 code that is left alone.
 
 The interesting part is not that it works. It is *what went wrong on the way*,
 because almost none of it failed the way you would expect. This is mostly an
@@ -129,15 +137,46 @@ thing permitted out is the documented as/ld exception. There is a jail mode
 (`V8JAIL=strict`) that refuses any escape to a host binary, so a green build is
 a claim about V8 code rather than about what happened to be on `PATH`.
 
-Rung 5 is demonstrated on seven programs chosen for their *makefile idioms*
-rather than their size: `lex` (dependency lines on `#include`d non-headers),
-`sed` (one-line rules and `*.o` globs), `fmt` (macro expansion), `tsort`
-(suffix rules), `tbl` (a 22-target dependency line), `yacc`, `spell`. V8's make
-handled every one unchanged.
+Rung 5 is demonstrated on **eighteen** programs chosen for their *makefile
+idioms* rather than their size: `lex` (dependency lines on `#include`d
+non-headers), `sed` (one-line rules and `*.o` globs), `fmt` (macro expansion),
+`tsort` (suffix rules), `tbl` (a 22-target dependency line), `yacc`, `spell`,
+`troff` (14 objects out of a 22-file directory — scale is its own idiom), `eqn`
+(whose target is `a.out`, not its own name), `refer`, `ps` (V8 make's `&`, which
+nothing else uses), `pic` and `grap` (`-lm`), `man`, `load`, `w`, `quot`, and
+`make` — **V8's make building V8's make from V8's makefile**, the only entry
+that closes a loop. V8's make handled every one unchanged.
 
 And it taught us something our own rules could not have: `tbl` and `yacc` prove
 V8's make gets `#include`d-non-header dependencies right — meaning **the
 knowledge our Makefile had to be told was in the tree the whole time.**
+
+**And then fifty more programs that have no makefile at all.** That is the other
+half of `cmd/`, and its build description is not a makefile but a shell script:
+`Admin/Mk` loops over the bare `*.c` files running
+``eval D=`Admin/dest $B`; cc $CFLAGS -o $B $B.c``, then `strip $1 && cp $1 $2`.
+Run verbatim inside the jail under `V8JAIL=strict`, it builds, installs and
+cleans up all fifty of this port's single-file commands — exercising V8's `sh`
+(`set -p`, functions, backquotes, `eval`, `case`), two nested shell scripts with
+no `#!` line, and V8's `cc` driving V8's `cpp` and `ccom`. Three host execs in
+total: `clang` twice per program, and `strip` once.
+
+Two things fell out of that which our own rules could not have surfaced. Four
+makefiles died on `Cannot load mv` — which is how we discovered that **eleven
+commands had been imported and never built**, so the V8 world had no `cp`, no
+`mv` and no `sed`. And `Admin/dest` turned out to be a *second, independent*
+derivation of where each program installs, computed by V8's shell at run time
+against our Makefile's computation at build time; the suite compares all fifty.
+
+Which raised a question we had got wrong for a long time. This port put
+everything in `/bin`, and that was wrong for **forty-one commands**: V8's `/bin`
+is a 56-entry root-filesystem set from when `/` had to fit on one pack, and
+`wc`, `tr`, `sort`, `sed`, `yacc`, `lex` and `dc` live in `/usr/bin`. Three
+upstream sources say so and they agree on all but two entries — and the two they
+disagree on are programs that appear in no table, where `Admin/dest` is
+answering by *fall-through*, which is "nobody said" rather than "V8 said". The
+split is now 25 in `/bin` and 56 in `/usr/bin`, derived from Bell Labs' own
+tables at build time rather than decided by us.
 
 ---
 
@@ -232,10 +271,43 @@ the host directory is snapshotted into a buffer of synthetic V7 records, and
 later `read()` calls are served from it. Nothing above the seam changes — not
 V8's `readdir()`, not the 44 raw readers.
 
-What is lost is documented rather than hidden: names longer than 14 characters
-are truncated (**and truncation can alias two entries onto one name**), and
-inode numbers are folded to 16 bits (**and can collide**). Both are authentic
-V8 limits — a V8 program could not have seen more either — but both are real.
+What is lost is documented rather than hidden: names are truncated to the
+directory record's width, and inode numbers are folded to 16 bits. Both are
+authentic V8 limits — a V8 program could not have seen more either.
+
+**And the second of those turned out not to be a limit at all, which took
+months to notice.** The note said folded inodes "can collide; harmless". They
+are not harmless, because a 16-bit inode narrows an *identity* rather than a
+value, and three of V7's idioms are built on identity. `getwd(3)` walks to the
+root by finding the entry in `..` whose `d_ino` equals `stat(".")`'s `st_ino`
+— and the same fold feeds both sides of that comparison, so two entries of one
+directory sharing a fold made `pwd` stop on whichever `readdir` yielded first.
+Measured across every directory in a months-old `$TMPDIR`: right 32 times in 60
+inside a collision group, against 60 of 60 outside. Six of the failures printed
+**another directory's path and exited 0**.
+
+A confirming `stat()` does not help — it returns the folded inode too, so the
+colliding file answers with the same `st_ino` *and* the same `st_dev`.
+`ttyname.c` contains upstream's careful version of the idiom, pre-filter then
+confirm, and it is defeated identically. So no consumer-side change can fix it,
+and a patch to `getwd.c` was written and withdrawn.
+
+What was recorded as the reason it *could not* be fixed was that the fold "must
+stay a pure function". That is what makes 64-into-16 impossible. It is not what
+the port needs: it needs the map to be **stable within a process**, which is
+strictly weaker and admits an append-only table — the fold proposes a number, a
+contended one takes the next free, and an assignment is never revised. On the
+same host, minutes apart: 6729 entries went from 6210 distinct values to
+**6729**, and `pwd` from 32-of-60 to **1752 of 1752**.
+
+Two things about that are worth more than the fix. **A test tree structurally
+cannot reproduce it** — APFS hands out consecutive inodes, which the old fold
+separated perfectly, so 1500 directories created back to back collided zero
+times; collisions need inodes spread over months. And the recorded constraint
+was false in every clause: it cited a file that says the opposite, about a
+field that does not exist, in a struct with no inode in it. A wrong *cause*
+eventually trips a test. **A wrong constraint never does, because the code it
+forbids does not exist.**
 
 ---
 
@@ -291,6 +363,156 @@ One wrong digit reads as an off-by-one in a buffer. It is not. When a value is
 wrong in exactly one place: stop reasoning about the source, and read what was
 emitted.
 
+### An `int` must wrap at 32 bits, and for this port's whole life it did not
+
+The one that should have been found first and was found late. Every integer
+here lives in an x register, correctly extended — an `int` is loaded with
+`ldrsw` and is a correct 64-bit quantity. Arithmetic was then emitted 64-bit,
+`add x9, x9, x10`. Right for every result that *fits*, and wrong the moment one
+does not, because a register has no 32-bit edge to wrap at. The value then
+**disagrees with itself**:
+
+```c
+printf("%d", i)     /* reads the low half   -- RIGHT */
+if (i == 84446)     /* compares all 64 bits -- WRONG */
+```
+
+Found in `dumpdir`'s `checksum()`, which sums 256 arbitrary ints off a tape
+record. It computed exactly `CHECKSUM`, **printed** exactly `CHECKSUM`, and took
+the not-equal branch — so every dump tape this port wrote was unreadable by the
+two programs written to read it.
+
+It needs an overflowing accumulator that lives in a **register**: an automatic
+is stored back through `str w` and re-narrowed by the store, so only `register`
+exposes it. That pair is why 1187 tests had not reached it.
+
+Then sweeping the class found the two unary operators, and for unsigned they
+are not edge cases at all:
+
+| | signed | unsigned |
+|---|---|---|
+| `-x` (`neg`) | wrong for `INT_MIN` only, which comes out **positive** | wrong for **every nonzero value** |
+| `~x` (`mvn`) | **already correct** — bits 63..32 all equal bit 31, and flipping every bit preserves that | wrong for **every value** |
+
+Both hid the way the checksum did: `~mask` is nearly always consumed by an `&`
+against a zero-extended value, which discards the wrong top half and restores
+the right answer. Only a comparison or a divide reads it whole.
+
+**And fixing it turned a test red, which was the test's fault.** A case expected
+`100000000000` from a function whose `long` arithmetic is returned through an
+implicit `int` return — so the answer is `1215752192`, and clang `-std=gnu89`
+agrees. It only ever read as the full value because the truncation never
+happened. That is the third time here that a compiler fix broke a test
+calibrated against the bug.
+
+### A same-register return is not a same-type return
+
+Floating point was somewhere the port had simply never looked, and there were
+two bugs, each hiding the other so that fixing one alone changed nothing.
+
+`extern float atof()` — in five upstream files — where `atof` returns `double`.
+On the VAX both came back in `r0/r1`; on ARM64 a `float` return is `s0` and a
+`double` return is `d0`, the same register read at a different width. So
+`atof("0.5")` gave 0.
+
+Underneath it: **v8cc passes doubles in `x0`–`x7` and AAPCS64 passes them in
+`d0`–`d7`**, so every call into the host's libm read its argument from the wrong
+register and `sqrt(2.0)` returned 0.000000. The test suite had tolerated libm as
+an allowed leak on the grounds that it was "non-variadic, so it works" — an
+argument about the *shape* of the call that is only as good as the register
+classes agreeing.
+
+The fix was not to port libm. V8's math is in `libc/math` and not in any libm at
+all: `v8/usr/lib/libm.a` is **216 bytes** — one member, `dummy.o`, whose entire
+symbol table is the name `_________`. It defines nothing. Eleven upstream
+makefiles link `-lm`, and the honest answer to them is the empty archive V8
+actually shipped, which `shim/libm/dummy.c` reproduces.
+
+Together these meant `pic` never computed a correct radius, and every drawing it
+or `grap` produced was geometrically wrong. The suite missed it twice over: its
+inputs used only **default** sizes, which are compiled-in constants that call
+neither `atof` nor the math library, and its end-to-end check counted drawing
+commands with a pattern that only matched *because every coordinate was zero*.
+**The test had been calibrated against the broken output, and fixing the program
+broke the test.**
+
+### An on-disk struct has an end that is not ours
+
+Until `mkfs`, every struct in the port had two ends we control — v8cc reads the
+header, clang re-spells it in the shim — so a widening was safe if both agreed.
+A filesystem image has to agree with 1985. Measured before the fix: `dinode` 80
+against the VAX's 64, `filsys` 7960 against 4096, `fblk` 1432 against 716.
+
+**V8's own compiler settles it in one line.** `# define NOLONG` — "map longs to
+ints" — at `cmd/ccom/vax/macdefs.h:20`. So `long` was 32 bits there, and
+`daddr_t`, `time_t` and `off_t` all silently doubled here.
+
+Three things generalise. The tree **already contradicted itself and nobody had
+looked**: `param.h` hardcodes constants that assert `sizeof(dinode) == 64`, one
+line from a `NINDIR` computed from the widened struct. A header nobody imported
+**silently stays 1985's** — `sys/fblk.h` was reading upstream's declaration and
+measured correctly anyway, by coincidence, twice. And narrowing a type globally
+reaches past the headers: it broke a hand-written ARM64 routine that strode
+eight bytes for exactly that type.
+
+The widths are now said out loud, because the model cannot move. `int di_size`
+did not mean "an int"; it meant "exactly four bytes, because a VAX wrote four
+bytes there" — true only by coincidence of LP64, with the declaration and the
+reason in different files.
+
+### The same number spelled in six places
+
+V8 spells `DIRSIZ` in **three** headers, and `#ifndef` means first-include wins.
+This port raises 14 → 254; patching two of the three changed nothing for exactly
+the programs that read directories raw, while looking like it had.
+
+And the sentence recording that was itself wrong for months: upstream guards two
+of the three and leaves `param.h` **bare**, so on a real V8 it always won by
+*redefinition* rather than by being first. It cost nothing while every spelling
+said 254, and was found the instant something wanted a different one — `mkfs`
+writes a disk image and is compiled `-DDIRSIZ=14`.
+
+**A wrong writer is invisible to every reader we have**, which is the part worth
+keeping. Built without the flag, `mkfs` writes `..` at offset 256 instead of 16
+— and `icheck`, `dcheck` and `fsck` all pronounce it clean, because the 240
+bytes between are zero, a zero `d_ino` is V7's own deleted-entry marker, and a
+16-byte-record reader skips fifteen empty slots and finds `..` exactly where the
+254 writer put it. So the group's own checkers cannot guard the group; the only
+guard is asserting the bytes of a generated image.
+
+### Sixteen-bit ranges, which fail later and quieter than LP64
+
+LP64 breaks a pointer immediately. A 16-bit field holds a value the host has
+simply not reached yet.
+
+| field | V8's range | the host's | how it failed |
+|---|---|---|---|
+| `DIRSIZ` | 14-char names | any length | truncated names; `pwd` could not `chdir` back |
+| `d_ino` | 16-bit inode | 64-bit | `pwd` printed another directory's path, exit 0 |
+| `p_pid` | `short`, to 30000 | to 99998 | **negative pids** — 44145 read as −21391 |
+| `FSNMLG` | 32-char mount points | to 140 seen | `df` printed a mount point as a *device* |
+| `u_uid` | `short`, to 32767 | to 100000+ | a uid ≡ 0 mod 65536 reads as **root** |
+
+The `p_pid` row is the shape to remember: **a freshly booted host has low pids**,
+so every check passes until the counter crosses 32767 and the same binary starts
+lying. It was found by mutation-testing something unrelated, when a mutation
+produced two extra failures it had no business producing.
+
+And the `u_uid` row was written **one line below the paragraph arguing against
+it**. The shim folds a Darwin pid into a VAX `short` and says at length why a
+bare cast is wrong — *"a truncation can silently produce the one value the code
+reads as absent"* — and then cast `u_uid` and `u_gid` with `(short)` on the next
+two lines. The fix lands on one line and the line beside it keeps the
+assumption. Found by a subagent, not by the person who wrote both lines.
+
+### A 1985 buffer size is the same class
+
+Raising `DIRSIZ` did not just widen a field; it invalidated every buffer sized
+*against* it. `mv`'s guard was `strlen(target) > MAXN-DIRSIZ-2`, which became
+`> -156`, so **every** directory move was refused with a false message. A
+constant can encode a *relationship*, and changing one of its terms silently
+rewrites the sentence.
+
 ### V8 assumes address 0 is readable
 
 The VAX put the text segment at 0, so `*(char *)0` returned a byte of the
@@ -300,6 +522,52 @@ program rather than trapping. macOS keeps page 0 unmapped.
 `df` hit it in `while (argc >= 1 && argv[1][0]=='-')` — which dereferences the
 NULL terminating `argv` — so **every invocation of `df` crashed before printing
 anything.**
+
+`quot`'s is the one to remember, because nothing about it is an edge case:
+`du[]` is indexed by uid, only the uids in `/etc/passwd` get a `name`, so **2046
+of 2048 entries are null** and `qsort` compares them against each other. That is
+the *default* invocation, before a line is printed. It was found by auditing
+before building, not by running.
+
+Then the paragraph that used to sit here said "the sweep is not done", and it
+was right: **doing it found nine more, all measured SIGSEGVs.** Every one is the
+program's last argument, which is the whole trigger — `icheck -b 5`, `dcheck -i
+5`, `join -j1`, `yacc -o`, bare `hunt`, `nroff -F`, and `unexpand` with **no
+arguments at all**, where `expand.c` one file away has the guard.
+
+Three things generalise:
+
+- **The same loop existed three times and only one was fixed.** `n =
+  atol(argv[1])` inside an option's number loop is byte-for-byte identical in
+  `ncheck`, `icheck` and `dcheck`. Fixing `ncheck` and writing it up did not find
+  the other two, because **the note was filed under the program rather than
+  under the shape**. `icheck`'s own porting note had even audited that exact
+  loop for a different overrun and gone one line past the null.
+- **The crash is not always in the program.** `yacc -o` faulted in *our shim*:
+  the output file cannot be created, the error path unlinks temp names that were
+  never assigned, and the shim inspected the path before the syscall could
+  answer `EFAULT`.
+- **Fix to the VAX's answer, not just to the absence of the fault.** Address 0
+  held `0x00`, so `strcmp(name, 0)` compared against the **empty string** — below
+  every name — and an unnamed uid sorted before a named one while two unnamed
+  ones compared equal. Reproducing that is a different patch from a null guard
+  returning 0, and `quot`'s ordering is visible in its output.
+
+**And for months that byte was recorded here as `0207`, "the low byte of the
+a.out magic".** It is wrong, it was repeated in a dozen files, and **every fix
+built on it is still correct** — which is exactly why nobody caught it. V8's
+shipped binaries are **ZMAGIC**, so `N_TXTOFF` is 1024 and the header is never
+mapped: virtual 0 is the first byte of **crt0**. `0x00` and `0207` are both "not
+`'-'`", both non-digits, and both below any name character, so the guards agree.
+
+The payoff of getting it right is that a VAX answer can now be computed for a
+*structure* rather than a byte. Those sixteen crt0 bytes are identical in every
+V8 binary, so reading them through the VAX `struct _iobuf` gives `_flag`
+`0xd050` — which is how an unchecked `fopen("/dev/tty")` was settled. `getc(p)`
+is `(--(p)->_cnt >= 0 ? …)`, which **writes** to virtual 0, and ZMAGIC text is
+read-only shared, so a VAX takes a protection fault too. What the port lost
+there is an *accident*, not a behaviour: `fopen` used to fall through to the
+**host's** `/dev/tty`, a different device entirely.
 
 ### A missing libc function does not fail the link
 
@@ -419,6 +687,65 @@ a fresh run between two samples — and the *first* fix was itself flaky, becaus
 `2.45 - 0.05` is `2.4000000000000004`, so a printed `2.4` fell outside a bracket
 it sat exactly on. The margin has to exceed the noise in computing the margin.
 
+**A measuring instrument you wrote is a suspect.** This is the lesson that cost
+the most. A crash probe runs every installed binary against every single-letter
+option and counts signal deaths. It reported 254, then 195, then 148, then
+**96** — and only the last is true. Each error inflated the count, which is the
+direction that wastes the most time, and each looked authoritative:
+
+- **It was not hermetic.** All invocations shared one working directory, so
+  programs read each other's litter. `dcheck` then "crashed" on 45 options,
+  because its loop calls `check(*argv)` for *every* argument including options,
+  so `dcheck -Q` opened a file literally called `-Q` and read a superblock out
+  of it. **A prober must be a pure function of the program and its arguments**,
+  or its findings are a function of iteration order.
+- **The shell cannot tell a signal from an exit status.** `$?` is 128+N for a
+  signal, but a program may `exit(134)` itself — and a V8 `main()` that falls
+  off the end returns whatever was in the register. `primes` did, and 42 of its
+  garbage statuses landed in 129..159 and were counted as SIGABRT.
+- **The first diagnosis of the first fault was wrong.** Signals 9 and 10 in one
+  program and no other reads exactly like a concurrent rebuild replacing a
+  Mach-O mid-execution, so a filter was added discarding SIGKILL *and SIGBUS* —
+  which would have hidden 48 genuine crashes.
+- **And the population itself was transcribed.** The scan was six literal globs,
+  one of which treated `/usr/lib/spell` as a directory by analogy with `refer`.
+  It is a Mach-O *file*. The set is now derived by `find`, and it grew by
+  exactly the two directories the transcription missed.
+
+What survived all four errors unchanged was the *set* of programs, which is what
+the fixes were actually driven from. Validate a prober against a known crasher
+and a known-clean program before believing any number from it.
+
+**A test that asserts a property of the machine fails on some other machine, and
+mutation testing cannot see it.** Both CI breaks in this repo were this:
+`p_nice == NZERO` assumed the host's baseline nice is 0 (a GitHub runner starts
+jobs renice'd), and "some pid exceeds 32767" assumed a host that has been up a
+while — the very property that let the 16-bit `p_pid` bug survive. Assert a
+*relation the port controls*, and where coverage genuinely depends on the host,
+print "not exercised" rather than passing silently.
+
+It runs the other way too. A `who -i` case compared one line of output against
+*every* line of another command's, an equality that holds only while the host
+has exactly one login session. It passed for months, passes on a runner, and
+broke the moment a second terminal was open.
+
+And a third shape, which is not a property of the machine but **of what ran
+before it**. The shim manufactures `/etc/utmp` lazily, when a reader first opens
+it — so after any earlier `who`, the file is real and gets carried into copies. A
+new case compared a `who` built by Bell Labs' own script against ours; it passed
+here and failed on a runner, and **the runner was right**: the script-built
+binary has no shim at all, and what it had been reading was a file an earlier run
+left behind. A fresh runner is the only machine with no history, which makes it
+the only one that can see this. Ask of any green suite: *would this still pass on
+a tree that has never been used?*
+
+**And `make -j8 test` is not `make -j8` followed by `make test`.** Under `-j`,
+make runs the suites concurrently with each other's prerequisite *builds*, so a
+suite reads objects another suite's build is midway through writing. Measured:
+42 failures across four suites, four suites never running at all, and every
+message reading like a real defect. Serially, the same tree was clean. The tell
+is the *shape* — whole suites failing on build steps rather than on assertions.
+
 There are also two blocking hooks — one refusing writes to `third_party/`, one
 refusing the *host's* make where a Bell Labs makefile would be read — and
 `tests/hooks` tests those, because a hook fails in the direction hardest to
@@ -475,12 +802,41 @@ that would make `ps` output a lie. Similarly `df -i` reports **65535** — the
 16-bit ceiling of the V7 superblock — rather than a believable-looking figure,
 because a V8 `df` could not have described a 548-million-inode volume either.
 
+### And `ps` turned out not to be a groveler at all
+
+The plan said `ps` would be ported "on top of `libproc`". Reading it first —
+which is a rule this project has now learned three separate times — says
+otherwise. **V8's `ps` is a `/proc` client**: `getdir("/proc")`,
+`open("/proc/<pid>")`, `ioctl(PIOCGETPR)` for the `struct proc`, and the u-area
+read at a virtual address. That is Killian's process filesystem, V8's own
+invention, already in V8's kernel. Bolting `libproc` on would have meant
+rewriting `ps`'s selection logic against an interface V8 had already abandoned,
+in order to avoid building the one it used. So `/proc` was built, and `ps` is a
+client of it.
+
+`w` is the counterpart, and the contrast is the point. It is
+`@(#)w.c 4.4 (Berkeley) 6/5/81` and grovels `/dev/kmem` and VAX page tables,
+while `ps` carries no `sccsid` at all. **Two process tools in one tree, from
+different eras**, and the era shows in what they open. Only the `uptime` half of
+`w` runs here; the full half says `No mem`, and the suite asserts that message,
+so a future `/dev/mem` is a decision rather than a discovery.
+
+Which produced the cleanest demonstration of what rung 5 actually claims. Bell
+Labs' own build script compiles `who` with `cc -Od2 -o who who.c` — complete and
+correct, and knowing nothing about the shim this port invented. So the binary it
+produces says `who: cannot open /etc/utmp`, while ours answers. The suite runs
+both, on the same host, seconds apart, and asserts the pair. **Rung 5 is a claim
+about the build description being Bell Labs', not about the binary being the
+installed one** — and having the two disagree out loud is what keeps that
+distinction honest.
+
 ---
 
-## Part 9: What we have just worked out
+## Part 9: What reading V9 and V10 changed
 
 The plan says V8 first, then V9, then V10. Before building the next large piece,
-we went and read V9 and V10. Several assumptions did not survive.
+we went and read V9 and V10. Several assumptions did not survive. **Most of what
+this section concluded has since been built — Part 10 is what came of it.**
 
 ### V8 has no FFS — but it has two filesystems
 
@@ -562,6 +918,14 @@ V8 program -> libv8sys -> 9P -> +-- passthrough   (today's transparent mode)
                                                    over a raw image)
 ```
 
+**Status, so this is not read as done:** the *switch* exists and carries three
+types, and `/proc` is one of them — that is Part 10. The **protocol** does not.
+Today the types are C function tables answering to V8's own `struct fstypsw`,
+called directly; 9P is what replaces the direct call when a server has to live
+in another process, which is what `v8fs` over a raw image and an FSKit host
+client will both need. Building the switch first, with the cheapest possible
+types behind it, is what let the suites stay green while the floor moved.
+
 ### The best test available to this project
 
 Images are **raw** — not VHD, not `.dmg`. Fixed VHD is only raw plus a 512-byte
@@ -580,14 +944,158 @@ stronger statement than any test we could write — because the judge is not us.
 
 ---
 
+## Part 10: The filesystem, and the kernel we started importing
+
+Part 9's plan has largely happened. What follows is what it cost, and the three
+places the plan was wrong.
+
+### The switch, and a type that made two dormant rules live
+
+There is one mount table and **three** filesystem types behind it: passthrough,
+`/proc`, and `/dev/fd`. Dispatch is **by descriptor, not by operation**, which
+stops being a detail at `ioctl`: the same command number is `ENOTTY` on an
+ordinary file and `EINVAL` on a `/proc` descriptor, two paths through one entry
+point.
+
+`/dev/fd` is the cheap type and the instructive one. It implements **three**
+operations and inherits the rest: identity for path resolution, `dup(minor)` for
+open, a synthesized character device for stat — and everything after open is
+passthrough's *unchanged*, because a dup'd descriptor **is** an ordinary host
+descriptor. Giving it a type of its own would have invented a difference the
+kernel does not have.
+
+Adding a third type made two rules live that had never been exercised, and both
+were incomplete. `creat` went straight to path resolution without dispatch — so
+**no second type could ever have seen a creat**, and `/proc` is read-only, so
+nothing had noticed. And `dup()` dropped the descriptor's type, so duplicating
+an open `/proc` file returned one whose reads went to the host. Both are the
+same shape as a syscall found earlier passing its path unresolved because
+nothing called it: **an unexercised rule cannot be seen to be incomplete.**
+Expect a fourth type to find a third.
+
+### `/dev/tty` is not a device, and the plan was wrong about it for the third time
+
+The plan costed a host-fd stream driver to sit under `/dev/tty`. **V8's
+`/dev/tty` is not a stream, not a device, and has no code behind it**: it is a
+hard link to `/dev/fd/3`, and opening anything in `/dev/fd` is `dup(2)`. Four
+confirmations, all read rather than recalled — the device prototype gives it
+major 40 minor 3 with link count 2, the device table names no driver, every
+`cdevsw` slot for that major is `nodev` with a null `streamtab`, and the kernel
+special-cases it in `open1()` *before* the permission check with `dup`'s body
+written out. The manual page says it in prose too.
+
+What makes fd 3 the terminal is `init`: open the tty as fd 0, push the tty line
+discipline, then `dup(0)` three times. **"Controlling terminal" is a userspace
+convention in V8, not a kernel fact** — so the launcher that starts this world is
+its init, and has to arrange it.
+
+Two things generalise past the instance. **A survey's citations decay
+independently of its conclusions**: the same block cited a line number for the
+line discipline that turned out to be a different driver entirely. And its
+ordering argument — "the discipline has no bottom end so it cannot be exercised"
+— was false *at the open path*, because that function never dereferences its
+downstream queue and sends nothing. Only *traffic* needs a device below.
+**Re-read the source a survey cites before building on the survey.**
+
+### Two kinds of guard, because a patched file cannot have a hash
+
+`stream.c` — Dennis Ritchie's stream engine — is imported **byte-identical**, and
+the suite compares `git hash-object` against the recorded provenance, so an edit
+is a test failure. That is the strongest claim available and it costs nothing.
+
+`streamio.c`, the 1093-line syscall side, carries **two recorded LP64
+deviations** and therefore cannot be guarded that way. **A file with deviations
+needs a different guard, and "it has a porting note" is not one.** The suite
+diffs it against pristine upstream and asserts that exactly one line was lost,
+that it is the specific `sizeof` copyout, and that the second deviation added
+exactly the declaration it was supposed to. That makes the deviation *list* a
+test rather than prose — which is what a hash gives you for free and a patched
+file otherwise loses entirely. Count removals and additions separately: the two
+deviations here are not the same shape, and a first draft that assumed "two
+changed lines" failed.
+
+The tty line discipline followed, also byte-identical — and keeping it that way
+is the whole reason its one missing number went where it did. It includes
+`"tty.h"`, which is *not* the zero-byte make-timestamp file of that name in the
+header directory but the per-configuration header `config(8)` generates from a
+machine description that **was not shipped**; the config binary is a VAX
+executable, so it cannot be regenerated either. There is no `#define NTTY`
+anywhere in the upstream tree. So the number is this port's decision — and
+because a quoted include falls through to the shim's directory, supplying it
+took **no edit to Bell Labs' source**, which is exactly what keeps the hash
+guard available.
+
+The value is derived rather than picked: a slot is one discipline *attached to a
+stream*, so the stream table bounds it exactly. On a VAX the number counted
+configured terminal lines; it cannot mean that here, because the shim is
+per-binary, so "how many terminals has this machine" is not a question one
+process can answer.
+
+### Writing the sibling is how you find the misdeclaration
+
+The discipline needed one function that was not yet present: an eight-line
+`max()`. Writing it found `min()` — sitting beside it, working, in use — recorded
+in two files as having "no declared return type". Upstream puts the word
+`unsigned` on the line above the name, both times. Nothing observable was wrong,
+because every call is bounded by a 1024-byte block, and that is precisely why
+the note survived for months. It would have been copied straight into `max`.
+
+**Adding the second instance is what forces a declaration to be read instead of
+recalled**, and that generalises well beyond this file.
+
+### A filesystem image, and checkers that cannot check each other
+
+`mkfs` writes a real V7 image; `icheck`, `dcheck`, `ncheck`, `clri`, `quot`,
+`fsck`, `dump`, `restor` and `dumpdir` read and repair it. Ten programs that
+were once written off as "raw VAX disks".
+
+Getting there needed the on-disk widths fixed first (above), and it produced the
+sharpest testing lesson in the project. Built without its `DIRSIZ` flag, `mkfs`
+writes a **wrong image that every one of those checkers pronounces clean** — so
+the group's own tools cannot guard the group, and the only real guard is
+asserting bytes at known offsets in a generated image.
+
+Verifying that the fix was a no-op needed three checks, and the middle one is
+the reusable trick: layout measured from the V8 side; the generated image
+compared byte-for-byte against **a same-binary, 1.2-seconds-apart noise floor**,
+which came out the identical seven offsets, so nothing but the clock had moved;
+and every differing tape byte classified by its position within the record — 14
+in the date field, 14 in the checksum, zero elsewhere. **Compare artefacts
+against what the clock alone does**, not against each other.
+
+
 ## What is left
 
-Phase 4 has `w` and `ps` outstanding. Then, in order: streams; the 9P switch
-carrying only a passthrough server, so the suites stay green while the floor is
-replaced; `/proc`; `mkfs` and a raw image; the V8 filesystem server over it, and
-with it the ten programs currently written off as "raw VAX disks"; the SIMH
-cross-check; an FSKit host client alongside the Blit terminal app; and then V9,
-which needs `mk` first.
+Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix
+into every binary and writes a launcher that drops you at `/` in a world whose
+`/bin`, `/etc`, `pwd` and compiler are all V8's, with the Mac still reachable
+through `PATH`. The filesystem switch, `/proc`, `/dev/fd`, `mkfs`, the raw
+image and its ten tools, the stream engine and the tty line discipline are all
+in.
+
+What remains, in rough order:
+
+- **A driver under the line discipline.** Its open path is exercised; its five
+  traffic functions compile and link with nothing driving them, because driving
+  them needs something underneath to send to. That is a new piece of layer-2
+  code rather than an import — the one V8 candidate is structurally impossible
+  in a per-binary shim, because its two ends exchange a pointer by direct
+  function call and every object involved is process-private, so it can only
+  ever wire a process to itself.
+- **The V8 filesystem server over the raw image**, which is what turns the image
+  from something the tools inspect into something the world can mount.
+- **The SIMH cross-check** — described below, and still the best test available.
+- **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
+  terminal app.
+- **V9**, which needs `mk` first, and a test already fails the day the first
+  `mkfile` appears so that the make-guarding hook cannot wave a whole new build
+  system through while reporting success.
+
+Two things are open and honest about it: one unexplained 70-byte stderr write
+from `refer`, seen once and never reproduced in fifty runs — the case now
+captures content so the next occurrence diagnoses itself — and `w`'s full form,
+which needs a `/dev/mem` that does not exist and says `No mem` rather than
+guessing.
 
 ---
 
@@ -596,18 +1104,39 @@ which needs `mk` first.
 Almost nothing here failed loudly.
 
 The compiler bug printed fifteen correct hex digits and dropped the sixteenth.
-The signal bug returned success and hung an hour later. The group-database
-escape printed a perfectly plausible list of group names — from the wrong
-machine. The buffer overrun corrupted output several rows after the row that
-caused it. Five missing libc functions gave *right answers* for months, from
-Apple's implementations, in a project whose entire premise is that the code is
-Bell Labs'.
+The truncation bug computed a checksum, printed it correctly, and took the
+not-equal branch. The signal bug returned success and hung an hour later. The
+group-database escape printed a perfectly plausible list of group names — from
+the wrong machine. The buffer overrun corrupted output several rows after the
+row that caused it. `pwd` printed another directory's path and exited 0. `mkfs`
+built with a missing flag wrote a wrong filesystem that all three checkers
+pronounced clean. Five missing libc functions gave *right answers* for months,
+from Apple's implementations, in a project whose entire premise is that the code
+is Bell Labs'.
 
 So the discipline that matters is not care while writing. It is building things
 that fail loudly on your behalf: mutation-tested guards, provenance hashes,
 `nm -u` sweeps over the whole world rather than one sample, hooks that refuse
 the plausible mistake, and a habit of measuring the actual path rather than a
 convenient proxy for it.
+
+**And then not trusting those either.** The instruments were wrong more often
+than the code was. A crash probe reported four different numbers before it
+reported the true one, each time authoritatively. A sweep counted the
+*documentation* of a rule as an instance of the rule, three separate times. A
+"verify the object rebuilt" check watched an object the suite does not link, and
+reported three real mutations as meaningless. And the most expensive one was a
+sentence: a recorded constraint saying a fix was impossible, whose every clause
+was false — citing a file that says the opposite, about a field that does not
+exist, in a struct with no such member. It stood for months. **A wrong cause
+eventually trips a test; a wrong constraint never does, because the code it
+forbids was never written.**
+
+The habit that comes out of that is narrower than "be rigorous". It is: when a
+note tells you something is impossible, go and read the thing it cites. And when
+you write a second instance of anything — a second function beside an existing
+one, a second filesystem type, a second checker — expect it to expose that the
+first one's stated reasons were wrong. It did here, every time.
 
 The 1985 code, for its part, has been almost entirely correct. Where it was
 wrong, it was wrong about the machine — that address 0 is readable, that a
