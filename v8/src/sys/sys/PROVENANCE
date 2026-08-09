@@ -6,3 +6,8 @@
 # <git blob hash of pristine upstream file>  <upstream path>
 b9abf46a9027dbe4e549a6d9848c228892394a73  v8/usr/sys/sys/streamio.c
 75859224e0a30c9709ac859a7d2efaedbc9bffaf  v8/usr/sys/sys/partab.c
+6622290f4e3eaf30b832354ac14e909fdba79e39  v8/usr/sys/sys/alloc.c
+f0ebc01ffbd5a098e14bb202331d4b7dc593637a  v8/usr/sys/sys/iget.c
+ae255e7faf3099660b840b08f0a66232d7a73e4a  v8/usr/sys/sys/nami.c
+353cae319e3cd3d99373d6ece07bfe1294dfb6f3  v8/usr/sys/sys/rdwri.c
+6ab91ea236d11e3e8c80fc8e6af78ef4e2da5f36  v8/usr/sys/sys/subr.c

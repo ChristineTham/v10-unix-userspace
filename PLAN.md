@@ -2390,6 +2390,37 @@ Ordered so that value lands before risk, and so each step is testable alone.
    references) is the only one that describes the machine, and only `bio.c`
    wants it. The other sixteen are 1286 lines of ordinary structure.
 
+   **AND THAT PARAGRAPH COSTED THEM BY LINE COUNT AND BY VAX-REFERENCE, WHICH
+   IS THE ONE PAIR OF MEASURES THAT CANNOT SEE WHAT THEY ARE.** Measured at
+   import time: **fourteen of the twenty are the same upstream blob as a file
+   this port has already imported.** V8 ships one header at
+   `/usr/sys/h/` *and* `/usr/include/sys/`, byte for byte --
+   `git hash-object sys/h/param.h include/sys/param.h` gives
+   `5409ff39...` twice, and the same holds for `dir.h inode.h filsys.h ino.h
+   fblk.h buf.h proc.h conf.h user.h systm.h mount.h acct.h vlimit.h`.
+
+   So the real question is not what the headers cost but **which copy the
+   kernel side should see, where the port has already patched one** -- and the
+   answer differs per header, because every patch was a *userland* decision:
+
+   - `filsys.h`, `ino.h`, `fblk.h` are patched to `v8_i32`/`v8_u16` per field
+     by step 4a. The kernel reads the same disk, so it needs the same patch.
+     **Importing the pristine kernel copies would have reintroduced step 4a's
+     bug on the far side of one disk** -- a `struct filsys` with an 8-byte
+     `s_time` over images `mkfs` writes with 4 -- and no reader in the tree
+     could have seen it, because every reader uses the patched header and only
+     the kernel the pristine one. Neither line count nor VAX-reference count
+     is capable of noticing that an ordinary-looking struct is an on-disk
+     record.
+   - `dir.h` is already split deliberately: `src/sys/h/dir.h` 14,
+     `src/include/sys/dir.h` 254, two divergent copies of one blob on the
+     layer boundary.
+   - `param.h` is settled below, and the settlement is *not* the third
+     spelling the caution expected.
+
+   `src/sys/PORTING.md`, "the six files, and what the headers turned out to
+   be", has the table.
+
    **Two things the import RETIRES, which the sentence in step 5 does not
    suggest.** `shim/kern/sys/subr.c` hand-writes `min`, `max` **and `iomove`**
    -- and `rdwri.c` defines all three (`:236`, `:250`, `:266`), so the import
@@ -2407,6 +2438,25 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `mkfs` is compiled `-DDIRSIZ=14` because what it writes is a disk image. A
    kernel-side `src/sys/h/param.h` is a third spelling of that number and must
    be settled deliberately, not inherited.
+
+   **SETTLED, AND IT IS NOT A THIRD SPELLING -- IT IS THE SAME FILE.**
+   `sys/h/param.h` and `include/sys/param.h` are one upstream blob, so a
+   kernel-side copy would be a second local divergence of a file the port has
+   already patched to 254. The tree permits that shape -- `dir.h` is exactly
+   it -- so the precedent is not what rules it out. **What rules it out is
+   `shim/kern/h/param.h`**, which holds the `_OFF_T`/`_INO_T`/`_DEV_T` guards
+   that stop Darwin redefining `struct inode`'s layout, and the
+   `printf`/`bcopy`/`uballoc` redirections that keep `stream.c`
+   byte-identical. An authentic `src/sys/h/param.h` **wins the quoted
+   include** and takes all of that from `stream.c`, `streamio.c` and
+   `ttyld.c`, which compile against it today. Upstream's is also headed
+   `"Tunable variables"` and carries `NBPG PGSHIFT CLSIZE CLOFSET UPAGES
+   clbase clrnd`, so it is a machine description by this tree's own test.
+
+   Not imported. The filesystem geometry goes into `shim/kern/h/param.h` at
+   upstream's values -- which is what that file's header comment already says
+   the policy is -- and a test **compares the values against the authentic
+   `src/include/sys/param.h`** rather than trusting the transcription.
 
    **AND THE `lp64-auditor` WAS RUN OVER ALL SIX BEFORE ANY OF THIS IS BUILT,
    WHICH IS WHERE THE SURVEY STOPS BEING ARITHMETIC.** Its central claims were

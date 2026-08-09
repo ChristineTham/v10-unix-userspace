@@ -943,3 +943,144 @@ failure by a batch runner and at two — the right two — when re-run alone. Th
 guards are fine; the batch reading is not. **Measure a mutation in isolation
 before believing its count**, which is the same rule as validating a prober
 against a known crasher before believing its number.
+
+## `v8fs`: the six files, and what the headers turned out to be
+
+PLAN.md §8a step 5 names four files -- `alloc.c`, `iget.c`, `nami.c`,
+`rdwri.c`. The survey that preceded this import established that the unit is
+**six**: those four, plus `sys/subr.c` (239 lines, for `bmap`) and
+`dev/bio.c` (783, the buffer cache), 2743 lines in all. All six are imported
+here; `nami.c` carries the only deviation.
+
+### THE HEADERS ARE NOT SIXTEEN NEW FILES. THEY ARE FOURTEEN FILES ALREADY IN THE TREE
+
+The survey costed the headers as *"20, and only one is a VAX document ... the
+other sixteen are 1286 lines of ordinary structure"*, and treated that as a
+size. It is not a size, it is a **collision**, and the measurement that shows
+it is one line:
+
+```
+$ cd third_party/Research-Unix-v8/v8/usr
+$ git hash-object sys/h/param.h include/sys/param.h
+5409ff3980c6c4edb6d48503bdb301383475de3b
+5409ff3980c6c4edb6d48503bdb301383475de3b
+```
+
+Every one of the fourteen headers that exists at both paths is **the same
+upstream blob** -- `param.h dir.h inode.h filsys.h ino.h fblk.h buf.h proc.h
+conf.h user.h systm.h mount.h acct.h vlimit.h`, checked individually. V8 ships
+one file at `/usr/sys/h/` and `/usr/include/sys/`, byte for byte. So the
+question step 5 actually asks is not *"what do these sixteen headers cost"*
+but **"the port has already imported most of them once and patched some of
+them; which copy should the kernel side see?"** -- and the answer differs per
+header, because the patches were made for the userland layer:
+
+| header | the port's local copy | what the kernel needs |
+|---|---|---|
+| `filsys.h` `ino.h` `fblk.h` | `src/include/sys/`, **patched** to `v8_i32`/`v8_u16` per field (§8a step 4a) | the SAME patch -- it reads the same disk |
+| `dir.h` | two copies already, deliberately: `src/include/sys/dir.h` at DIRSIZ 254, `src/sys/h/dir.h` at 14 | 14, and it is already there |
+| `param.h` | `src/include/sys/param.h`, patched to DIRSIZ 254 + an `#ifndef` guard | 14 -- see below |
+| `inode.h` | `src/include/sys/inode.h`, **pristine** | the same; `src/sys/h/inode.h` is already imported |
+
+That `filsys.h` row is the one worth stopping on. Importing the pristine
+kernel copy into `src/sys/h/` would have given the kernel a `struct filsys`
+whose `s_time` is 8 bytes and whose free-block map is 8-byte entries, over
+images `mkfs` writes with 4 -- **reintroducing the exact bug §8a step 4a
+fixed, on the other side of the same disk**, where no reader we have could
+see it, because every reader would be using the patched header and only the
+kernel the pristine one. The survey did not flag it because it counted the
+headers by line and by VAX-reference, and an on-disk record has neither
+property.
+
+### And `param.h` is settled the way `dir.h` already was, one layer down
+
+The survey's caution was that a kernel-side `param.h` would be *"a third
+spelling"* of DIRSIZ. Measured, it is not a third spelling: it is **the same
+blob** as the userland one, which this port patched to 254. The tree already
+contains that situation once -- `src/sys/h/dir.h` says 14 and
+`src/include/sys/dir.h` says 254, two locally-divergent copies of one upstream
+blob, split exactly on the layer boundary, with a header comment saying why.
+
+So the precedent permits importing it. What rules it out is a different file:
+`shim/kern/h/param.h` holds the `_OFF_T`/`_INO_T`/`_DEV_T` guards that stop
+Darwin's typedefs from silently redefining `struct inode`'s layout, and the
+`printf`/`bcopy`/`uballoc` redirections that keep `stream.c` byte-identical.
+An authentic `src/sys/h/param.h` **wins the quoted include** and takes all of
+that away from `stream.c`, `streamio.c` and `ttyld.c`, which compile against
+it today. Upstream's `param.h` also opens `"Tunable variables"` and carries
+`NBPG`, `PGSHIFT`, `CLSIZE`, `CLOFSET`, `UPAGES`, `clbase`, `clrnd` -- it is a
+machine description by this tree's own test.
+
+So: **not imported.** The filesystem geometry it holds (`BSIZE(dev)`,
+`INOPB(dev)`, `BMASK`, `BSHIFT`, `NMASK`, `NSHIFT`, `itod`, `itoo`, `fsbtodb`,
+`dbtofsb`, `NINDIR`, `BITFS`, `BUFSIZE`, `NICINOD`, `NICFREE`) goes into
+`shim/kern/h/param.h` at upstream's values, which is what that file's own
+header comment already says the policy is. The values stay Bell Labs' and a
+test **compares them against the authentic `src/include/sys/param.h`** rather
+than trusting the transcription -- the same discipline as making the header
+test compare `NMASK(0)` against the `sizeof`-derived `NINDIR` rather than
+against a number someone typed.
+
+### `nami.c`: the name compare, and `NOLONG` for the second time
+
+The one deviation, and it is total rather than partial -- with it, no path
+resolves at all. `nami.c:145-147`, inside `#if DIRSIZ == 14`:
+
+```c
+if (*(long *)&nm[0] == *(long *)&dp->d_name[0] &&
+    *(long *)&nm[4] == *(long *)&dp->d_name[4] &&
+    *(long *)&nm[8] == *(long *)&dp->d_name[8] &&
+    *(short *)&nm[12] == *(short *)&dp->d_name[12]) {
+```
+
+A hand-unrolled 14-byte compare, and the offsets are the argument: 4+4+4+2 is
+14 **only because V8's `long` is 32 bits**. That is
+`cmd/ccom/vax/macdefs.h:20`, `# define NOLONG`, "map longs to ints" -- the
+same line that made every on-disk struct in this port the wrong size. Note
+what the `#if` one line above is doing: upstream is stating the arithmetic it
+depends on, and stating it in `DIRSIZ`, the one term that *does* travel, while
+the term that does not travel is invisible.
+
+Here `long` is 8, so the three compares read 24 bytes where 12 were meant.
+`d_name` is 14 and `struct direct` is 16 (kernel `ino_t` is `u_short`), so
+bytes 14-15 of this entry and the first ten of the *next* decide an equality
+that is supposed to be about the name -- and the last entry in a block reads
+past the buffer. `dsearch()` fails to match a name that is present, so
+`namei()` returns ENOENT for every path.
+
+Fixed to `int`, which is 32 bits here and reproduces the VAX exactly. `short`
+is 2 on both and is untouched. Measured: **3 lines removed, 37 added** (the
+comment).
+
+**The wrong fix is `-DDIRSIZ=254`**, which reaches the `strncmp` arm and makes
+the symptom vanish by changing the size of an on-disk record. DIRSIZ is 14 in
+`src/sys/` because that is what a V8 disk holds.
+
+### What the `NOLONG` sweep eliminated, said out loud
+
+A sweep that only reports hits cannot be audited. Run over the six files:
+
+```bash
+grep -rnE '\*\([[:blank:]]*(unsigned[[:blank:]]+)?long[[:blank:]]*\*\)' src/sys
+grep -nE 'sizeof[[:blank:]]*\([[:blank:]]*(unsigned[[:blank:]]+)?(long|daddr_t|time_t|off_t)' ...
+grep -nE '(^|[^_a-zA-Z])(unsigned[[:blank:]]+)?long[[:blank:]]+[a-z_]' ...
+```
+
+- The pointer-cast shape is a **singleton across the entire upstream kernel**,
+  not just the six -- the three `nami.c` lines and nothing else in
+  `v8/usr/sys/`.
+- `sizeof(long)` and friends: **zero**.
+- `alloc.c:416` is the word "long" in an English sentence in a comment. Not an
+  instance -- the sweep matching prose, which this project has now been caught
+  by three times.
+- `bio.c:62-66` -- `nread nreada ncache nwrite bufcount[64]` -- are statistics
+  counters with no on-disk or ABI contact. Wider is harmless.
+- `rdwri.c:85` and `:179`, `if ((long)bn<0)`, are **correct**: `bn` is
+  `daddr_t` (`rdwri.c:33`, `:133`), and this port narrowed `daddr_t` to signed
+  `int`, so the cast sign-extends and the hole test still fires. It would be
+  wrong if `daddr_t` were unsigned, which is the one thing to re-check if
+  §4a's narrowing is ever revisited.
+- `nami.c:183`'s `extern long cdevpath` is **dead**: both it and its only use
+  (`:410`) are inside `#ifdef CHAOS` (`:182-184`, `:408-422`), and `CHAOS` is
+  not defined here. So it is neither a hazard nor an external name to supply
+  -- which a `long` sweep flags and a reader has to go and check.
