@@ -2673,6 +2673,54 @@ Ordered so that value lands before risk, and so each step is testable alone.
    the tree, eight of them caused by inserting one PORT comment; the `alloc.c`
    self-citations are now a test rather than prose.
 
+   **STEP 5d IS DONE: THE WRITE HALF, AND V8's OWN CHECKERS PASS ON WHAT IT
+   WROTE.** `writei`, `bmap`'s **allocating** arm, `alloc()`/`free()`,
+   `ialloc()`/`ifree()`, `itrunc` and `nami.c`'s `NI_CREAT`/`NI_DEL` all run.
+   The probe overwrites a block, extends into a new one, extends past block 9
+   so the indirect block is made too, creates a file **by name**, writes
+   several hundred blocks into it, deletes it, and flushes with
+   `update()`/`bflush()`. 315 -> 368 cases; the tree is **1763 across 17
+   suites**.
+
+   The instrument is the superblock's own `s_tfree`/`s_tinode` rather than a
+   count of device writes, and the strongest pair is the round trip: after the
+   delete both are exactly what they were before the create. **The free-list
+   CHAIN is the point** — `alloc()` only follows it when `s_nfree` hits 0
+   (`alloc.c:163-176`), so the probe reads `s_nfree` at run time and allocates
+   more than that; it is V7's `struct fblk`, written by mkfs and walked by a
+   1985 kernel, the metadata half of step 5c's data claim.
+
+   Four findings, and the first two were both *notes that stopped being true
+   without being touched*:
+
+   - **`u_limit[LIM_FSIZE]` was 0**, so `writei`'s IFREG arm rejected every
+     write to a regular file — with **EMFILE**, upstream's own choice, which
+     points an investigation at the file table. Fixed by `v8k_uinit()` in
+     `shim/kern/sys/main.c`, transcribing `main.c:52-79`.
+   - **`access()`'s `s_ronly` arm became restorable at step 5c** and the note
+     saying it was impossible was still there. Step 5d is the first step to
+     call `access()` with `IWRITE` at all.
+   - **A MUTATION KILLED THE TEST RUNNER INSTEAD OF FAILING A CASE.** With
+     `u_limit` 0, `writei` calls `psignal(u.u_procp, SIGXFSZ)`; the probe never
+     calls `v8k_procinit`, so `v8k_hostpid` was 0, `v8k_hostof` returned 0,
+     `psignal`'s guard was `hp < 0`, and the syscall was **`kill(0, SIGXFSZ)`
+     — the whole process group**. `gsignal` eleven lines away had carried the
+     equivalent guard since it was written. Both refuse 0 now.
+   - **The acceptance test is icheck, dcheck and fsck**, and mutation M3 is the
+     case for having them: breaking `alloc`'s free-list refill so blocks repeat
+     left **every probe case green** and was caught only by Bell Labs'
+     programs. A probe's reader and writer share a belief; theirs do not.
+
+   `src/sys/PORTING.md` has the account, including the two probe comments the
+   mutations proved wrong.
+
+   **What step 5 still does NOT have is a MOUNT.** Everything above is reached
+   by calling the kernel's functions directly from a probe. A fourth type in
+   `shim/v8sys/vfs.c` — so an ordinary V8 program's `open(2)` lands in v8fs and
+   `/bin/cat` can read a file out of an image — is its own step, because it is
+   about the shim's dispatch rather than about Bell Labs' code, and because it
+   needs `smount`, which is not imported.
+
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
 7. **FSKit host client**, with Phase 5. Public API since macOS 15.4, no kernel
    extension; lets the host mount a V8 image in Finder and disposes of the
@@ -2775,7 +2823,9 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-`make test` runs everything — seventeen suites, about 1280 cases.
+| 8a.5 v8fs | **done, less a mount** | V8's own filesystem code RUNS. Step 5c reads: `mkfs(8)` writes an image and Bell Labs' kernel walks `namei → fsnami → dsearch → iget → bmap → readi → bread` to a driver, with `cmp` confirming 28000 bytes two directories down and 28 blocks long — so a subdirectory and `bmap`'s **indirect** arm. Step 5d writes: `writei`, `bmap`'s **allocating** arm, `alloc()`/`free()` including the **free-list chain**, `ialloc()`/`ifree()`, `itrunc`, and `namei` with `NI_CREAT`/`NI_DEL` — a file created by name, grown past the superblock's cached free list, deleted, and the accounting exactly restored. The acceptance test is **icheck, dcheck and fsck**, three programs that know nothing about the probe. `streams` 111 → 368. Six imported files, one new stand-in (`shim/kern/sys/main.c`, for `sys/main.c` + `machdep.c` + `param.c`). **No MOUNT yet**: everything is reached by calling the kernel directly, so a fourth type in `vfs.c` is the next step. See S8a step 5 |
+
+`make test` runs everything — seventeen suites, **1763 cases**.
 
 ### What actually works today
 

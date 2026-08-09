@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **1707 tests across 17 suites** guard it.
+assembly. **1763 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -944,7 +944,7 @@ stronger statement than any test we could write — because the judge is not us.
 
 ---
 
-## Part 10: The filesystem, and the kernel we started importing
+## Part 10: The filesystem, and a kernel that reads and writes
 
 Part 9's plan has largely happened. What follows is what it cost, and the three
 places the plan was wrong.
@@ -1578,6 +1578,94 @@ the act of writing it. Those five citations are a test now, mutation-verified �
 insert a line anywhere above the code and all five go red.
 
 
+### The write half, and a mutation that killed the shell
+
+Reading proves the layout is understood. Writing proves the *bookkeeping* is,
+and it reaches code no reader can touch: `bmap`'s allocating arm, `alloc()` and
+`free()`, `ialloc()` and `ifree()`, `itrunc`, and `namei` with a create flag.
+So the probe grew a second half — overwrite a block that exists, extend into one
+that does not, extend past block 9 so the indirect block has to be made too,
+create a file *by name*, write several hundred blocks into it, delete it.
+
+The instrument is the superblock's own accounting rather than a count of disk
+writes, because a disk-write count depends on when a thirty-two-buffer cache
+happened to evict something, and that is a fact about the machine. `s_tfree`
+and `s_tinode` are what the allocator maintains. The strongest single assertion
+is that after the delete they are exactly what they were before the create: an
+off-by-one anywhere in five functions moves one of them.
+
+The case I most wanted was the free list. `alloc()` hands out blocks from a
+cache of numbers in the superblock, and only when that cache empties does it
+follow the chain — read the block it just gave away, and find the next batch of
+free block numbers written *inside* it. That is V7's on-disk format, a 716-byte
+record, and `mkfs` wrote one in 2025 for a 1985 kernel to walk. Reaching it
+means allocating more blocks than the cache holds, so the probe reads the count
+at run time and asks for that many plus twenty-four. Every one of those writes
+succeeding is the proof, because without the refill the allocator returns "no
+space".
+
+Then the first write failed. All of them did, with `EMFILE` — "too many open
+files", which is not what a size limit sounds like, and which sends you to the
+file table. `writei` compares the write against `u_limit[LIM_FSIZE]`, and a
+u-area that has never been initialised has that array all zero, so `0 + 1 > 0`
+and every write to a regular file is refused. The read half had never touched
+it. The fix is thirty lines transcribed from Bell Labs' `main()`, in the file
+that already stands in for `main()`.
+
+And then the mutation that was supposed to prove the new test could fail killed
+my shell.
+
+Not "failed the suite" — killed it. No failing case, no summary line, no output
+at all, because the harness had been piping to `grep '^FAIL'` and there was
+nothing to grep. What happened is that `writei`'s refusal is not silent: it
+sends `SIGXFSZ` first. On a VAX that sets a bit in the process table. Here
+`psignal` is a real `kill(2)`, because there is one process and it is a Mac
+process. The probe stands up a filesystem, not a process description, so it
+never calls the routine that records which host process it is — leaving the pid
+zero. The map returned zero. The guard was `if (hp < 0) return`, which zero
+passes. And `kill(0, sig)` is not a no-op. It signals every process in the
+group.
+
+Eleven lines below the function that did this, its sibling `gsignal` carries
+exactly the guard that would have prevented it, with a comment explaining that
+group zero is not a group. This project's most repeated failure, in its purest
+form: the fix landed on one line, and the line beside it kept the assumption.
+
+The case that guards it now asserts that the process is still alive after an
+over-limit write. That is a strange thing to assert and it is the only thing
+you *can* assert about a signal that must not arrive.
+
+### Three programs that do not share the probe's beliefs
+
+A probe that writes and then reads back is one program agreeing with itself.
+That is worth something and it is not worth much, because a misunderstanding
+lands on both halves.
+
+So the last thing the suite does is hand the finished image to `icheck`,
+`dcheck` and `fsck` — three programs Bell Labs wrote to inspect filesystems,
+which know nothing about any of this. `icheck` walks the image and recomputes
+the block accounting. `dcheck` walks the directory tree and recomputes the link
+counts. `fsck` does both and *repairs*, so its silence is the strongest of the
+three, and it is asserted twice: once on what it printed and once by `cmp` on
+the bytes, because a checker saying nothing and a checker changing nothing are
+different claims.
+
+The mutation that justified all of that broke the free-list refill so that
+handed-out blocks repeat. **Every case in my probe stayed green.** The writes
+succeeded, the accounting looked right from inside, the bytes read back. Only
+`icheck` and `fsck` caught it — a duplicate-block bug is invisible to a program
+that is both the writer and the reader, by construction.
+
+Six mutations in all. Two of them turned my own comments red rather than my
+code. One said the zeros in a file's hole come from a cleared disk block; they
+come from a buffer attached to no device at all, because `bmap` answers minus
+one for an unallocated block and `readi` has a whole arm for that. The other
+said the read path dirties no buffer; it dirties one per lookup, because `readi`
+sets the access-time flag and `iput` writes the inode back. Both claims were
+plausible, cited nothing, and were false. Making a mutation fire is how you find
+out which of your sentences were decoration.
+
+
 ## What is left
 
 Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix
@@ -1597,9 +1685,13 @@ What remains, in rough order:
   driver — and hands back 28000 bytes that `cmp` says are identical to the file
   mkfs was given. The file sits two directories down and spans 28 blocks, so the
   walk crosses a subdirectory and goes through the indirect block, not just the
-  ten addresses in the inode. What remains is the *writing* half and the mount:
-  `namei` with a create flag, `writei`, `ialloc`, and the shim's `vfs.c` gaining
-  a fourth filesystem type that dispatches to this code instead of to the host.
+  ten addresses in the inode. The writing half is done too — a file created by
+  name, grown past the superblock's cached free list so the on-disk chain has to
+  be followed, deleted, and the block and inode accounting exactly restored,
+  with `icheck`, `dcheck` and `fsck` pronouncing the result a filesystem. What
+  remains is the **mount**: the shim's `vfs.c` gaining a fourth filesystem type,
+  so that an ordinary V8 program's `open(2)` lands in this code instead of on
+  the host, and `cat` can read a file out of an image without a probe.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.

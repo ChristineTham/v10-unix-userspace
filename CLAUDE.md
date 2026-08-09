@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1707 cases, 1706 on a host whose $TMPDIR
+make test             # all 17 suites (1763 cases, 1762 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -314,6 +314,45 @@ Four things generalise:
   measured, and for `calloc` the warning is the only thing that would speak if
   that changed.
 
+**AND IT WRITES NOW TOO, WHICH IS WHERE THE KERNEL REACHES OUT AND TOUCHES THE
+HOST.** §8a step 5d: `writei`, `bmap`'s **allocating** arm, `alloc()`/`free()`
+including the free-list chain, `ialloc()`/`ifree()`, `itrunc`, and `namei` with
+`NI_CREAT`/`NI_DEL`. A file is created by name, grown past the superblock's
+cached free list, deleted, and the accounting comes back exact. Three things
+generalise, and the first two are about *notes* rather than about code:
+
+- **A NOTE SAYING SOMETHING IS IMPOSSIBLE DOES NOT NOTICE WHEN IT BECOMES
+  POSSIBLE.** `v8fs.c`'s `access()` had dropped upstream's `s_ronly` arm
+  because "there is no mount table populated here yet", and said to restore it
+  when there was one. Step 5c *gave it one* — `iinit()` calls `allocmount()`
+  and sets `s_ronly` — so the arm had been restorable for a whole step. What
+  surfaced it is that step 5d is the first thing in the port's history to call
+  `access()` with `IWRITE`. Third instance of this shape after `conf.h`'s "the
+  switch tables are deliberately absent" and the `shim/kern/h/buf.h` that died
+  when a third file arrived: **an unexercised rule cannot be seen to be
+  incomplete, and neither can an unexercised excuse.**
+- **`hp < 0` IS THE RIGHT TEST FOR "NOT FOUND" AND THE WRONG ONE FOR WHAT
+  `kill(2)` DOES.** `psignal` here is a real `kill(2)`, not a bit in `p_sig`.
+  A consumer that never called `v8k_procinit()` left `v8k_hostpid` 0,
+  `v8k_hostof(0)` matched `p_pid == 0` and returned 0, and the syscall was
+  **`kill(0, SIGXFSZ)` — the entire process group.** It killed the test runner
+  and the shell above it. `gsignal` **eleven lines away** has carried
+  `if (pgrp == 0) return` since it was written, with a comment saying group 0
+  is not a group: the fix landed on one line and the line beside it kept the
+  assumption, which is this file's most repeated shape. Both refuse 0 now, and
+  they are two different claims — "no host process is known" and "0 is not a
+  pid". The magic-value rule (`p_pid`, `u_uid`, `FSNMLG`) now has a member
+  where the magic value belongs to *the host's syscall* rather than to V8.
+- **A MUTATION THAT KILLS THE HARNESS IS A FINDING, NOT A HARNESS BUG** — and a
+  harness that filters its output cannot tell you so. The run above produced no
+  `FAIL` line and no summary; the first version of the mutation script piped to
+  `grep '^FAIL'` and printed nothing at all. Capture whole. Relatedly, an
+  unbounded `$(...)` around a checker is a hazard: a corrupted free list made
+  `fsck -y` print for its whole 40-second deadline and bash died with
+  `xrealloc: cannot allocate 18446744071562067968 bytes`, so the suite could not
+  report the failure it had caused. The three checker captures are `| head -200`
+  now.
+
 `libv8kern.a` is separate from `libv8sys.a` for libkmemu's reason plus a
 storage one: **240.7 KB** of zero-initialised storage, and `qinit()` dirties
 ~60 KB of pages. That figure said 85 KB, then 94 KB, then 95.8 KB; it grew when
@@ -329,6 +368,22 @@ MISSED ENTIRELY.** Commons are 104242 bytes (`_blkdata` 36736, `_queue` 28672,
 **142208 bytes of static `__bss`**, which is `NBUF * BUFSIZE` plus
 `inode[NINODE]`, and a sweep of `nm`'s `C` symbols cannot see a `static` array.
 Measure both: `nm -g` for the commons and `size -m` on `main.o` for the rest.
+
+**AND `nm -g` OVER AN ARCHIVE DOUBLE-COUNTS, so dedupe by name.** A common
+declared in a header emits a symbol in *every* object that includes it, so
+summing all the `C` lines gives **116674** where the truth is 104242 — the same
+number, inflated by 12%, with nothing to say so. Re-measured at §8a step 5d:
+104242 + 142208 = 246450 = 240.7 KB, unchanged, which is the right answer for a
+step that imported nothing. Take the max size per unique name:
+
+```bash
+nm -g v8/build/stage0/kern/libv8kern.a | awk '$2=="C"{print $3, $1}' |
+  python3 -c 'import sys;m={}
+for l in sys.stdin:
+    n,s=l.split(); m[n]=max(m.get(n,0),int(s,16))
+print(len(m),sum(m.values()))'
+```
+
 `cat` does not
 carry it. Its externals are `_memcpy`, `_setjmp` and `_longjmp`, all three
 V8's own — and `tests/streams` gets that list by **subtracting what the archive
@@ -1903,6 +1958,14 @@ not testable until it is installed.
 - Prefer measuring over reasoning. The hardest bugs here were settled by making
   the program print what a value *is* rather than arguing about what it should
   be — `V8DBG=1`, or logging what `malloc` wrote versus what was found there later.
+- **`make … | grep …; echo $?` REPORTS THE GREP, AND HID A FAILED BUILD FOR AN
+  HOUR.** `make -j8 2>&1 | grep -iE "error|warn" | head -20` looks like a
+  careful check and is not one: the exit status belongs to the last element of
+  the pipeline, the *previous* build's archive is still sitting there, and the
+  next thing you run links against it. What that cost here was a debugging round
+  spent on a shim change that had never been compiled. Run
+  `make -j8 > /tmp/mk.log 2>&1; echo "make $?"` and grep the log afterwards —
+  the log is also the thing you need when the failure is real.
 - **A MEASURING INSTRUMENT YOU WROTE IS A SUSPECT, AND THIS ONE WAS WRONG THREE
   TIMES.** `tests/crash-probe.sh` runs every installed binary against every
   single-letter option and counts signal deaths. It reported 254, then 195,
@@ -2010,6 +2073,26 @@ not testable until it is installed.
   the code it targeted does anything. Then delete the dead call, re-aim the case
   at the property that is load-bearing (here: `v8fs_bind` clearing the row
   rather than merging into it), and re-mutate to prove the new one fires.
+
+  **AND THE MUTATION THAT FIRES ONLY IN THE INDEPENDENT CHECKER IS THE ONE THAT
+  JUSTIFIES HAVING ONE.** §8a step 5d broke `alloc()`'s free-list refill so that
+  handed-out blocks repeat. **Every case in the probe stayed green** — the
+  writes succeeded, `s_tfree` moved by the right amount, the bytes read back —
+  and the only things that went red were `icheck`, `fsck` and a `cmp` on the
+  image. A probe's writer and reader are one program and share its beliefs; a
+  duplicate-block bug is invisible from inside by construction. So when the
+  artefact under test has *independent* readers — here three of Bell Labs' own,
+  which know nothing about the probe — run them and assert on them, and expect
+  them to be the only thing that catches a whole class.
+
+  Two more from the same session. **A mutation can kill the harness rather than
+  fail a case, and that is a finding**: leaving `u_limit` zero made `writei`
+  signal SIGXFSZ, which this port delivers with a real `kill(2)`, and
+  `kill(0, sig)` took down the runner and the shell. A harness that filtered to
+  `^FAIL` reported nothing at all — capture whole. And **bound every capture
+  around a program the mutation may have made verbose**: a corrupt free list
+  made `fsck -y` print for its entire deadline and bash died on the command
+  substitution, so the suite could not report the failure it had caused.
 - **`make -j8 test` IS NOT `make -j8` FOLLOWED BY `make test`, AND IT FAILS IN
   THE SHAPE OF A CODE BUG.** The two commands at the top of this file are two
   commands on purpose. Under `-j`, make runs the seventeen suites concurrently

@@ -1629,3 +1629,203 @@ this step, from `bdevsw[nblkdev] = *bd`) and **`iget.o`**, which needs it for
 compiler-generated structure copy. It is safe anyway, and for a reason the
 aggregate guard already asserts rather than one that depends on the list: every
 external import resolves to **libv8c**, so the memcpy is V8's own.
+
+## §8a step 5d: the WRITE half, and V8's own checkers as the acceptance test
+
+Step 5c drove `namei -> fsnami -> dsearch -> iget -> bmap -> readi -> bread`
+and left every one of their siblings unexecuted. Step 5d runs them: `writei`,
+**`bmap`'s allocating arm**, `alloc()` and `free()`, `ialloc()` and `ifree()`,
+`itrunc`, and `nami.c`'s `NI_CREAT` and `NI_DEL`. `streams` 315 -> 368; the
+tree is 1763 cases across 17 suites.
+
+**AND IT NEEDED NO CHANGE TO ONE LINE OF BELL LABS' CODE.** The whole step is
+`shim/` and `tests/`: `git diff --stat` touches five shim files, three test
+files and the prose, and nothing under `src/`. Step 5c could say that about the
+read path and this is the stronger version of it, because writing is where a
+port normally has to intervene — allocation, on-disk record layout, the time
+fields. §8a step 4a had already narrowed the records; everything that survived
+that is upstream's arithmetic running unmodified.
+
+The arc the probe drives is one filesystem's worth of work: overwrite a block
+that exists, extend into one that does not, extend past block 9 so the indirect
+block has to be made too, `ialloc` an inode and give it back, `NI_CREAT` a name,
+write a few hundred blocks into it, `NI_DEL` it, and then `update()` +
+`bflush(NODEV)`.
+
+### The instrument is the superblock, not a count of device writes
+
+`s_tfree` and `s_tinode` are what `alloc`/`free` and `ialloc`/`ifree` maintain,
+they are exact, and **icheck recomputes them independently at the end by walking
+the image**. A device-write count would depend on when a 32-buffer cache
+happened to evict something, which is the host-property class the suites are
+swept for. There is exactly one case where a device count *is* the assertion,
+and there the point is that a `bdwrite` does **not** do one.
+
+The strongest single pair is the round trip: after the delete, `s_tinode` is
+exactly what it was before the create and `s_tfree` exactly what it was after
+the last extend. An off-by-one anywhere in `alloc`, `free`, `ialloc`, `ifree`
+or `itrunc` moves one of them.
+
+### THE FREE-LIST CHAIN IS THE POINT, AND REACHING IT NEEDS A NUMBER READ AT RUN TIME
+
+`alloc()` hands out `fp->s_free[--fp->s_nfree]` until `s_nfree` reaches 0 and
+**only then** follows the chain (`alloc.c:163-176`): `bread` the block it just
+handed out, take `df_nfree` and `df_free` from it, carry on. That is V7's
+`struct fblk`, 716 bytes — the record `sys/fblk.h` had never been imported for,
+and the one §8a step 4a found was the wrong size in every direction. mkfs wrote
+it in 2025 and a 1985 kernel walks it here.
+
+So the drain is the metadata half of step 5c's data claim. The probe reads
+`s_nfree` out of the superblock and allocates `s_nfree + 24` blocks, so the
+margin cannot go stale — and **every one of those writes succeeding is itself
+the proof**, because without a refill `alloc()` takes `goto nospace` and returns
+ENOSPC.
+
+### `u_limit` was zero, which made EVERY write to a regular file fail — with EMFILE
+
+`writei`'s IFREG arm is
+
+```c
+if ((ip->i_mode&IFMT)==IFREG && u.u_offset + u.u_count > u.u_limit[LIM_FSIZE]) {
+	psignal(u.u_procp, SIGXFSZ);
+	u.u_error = EMFILE;
+```
+
+and a u-area that has never been initialised has `u_limit[]` all zero out of
+bss. Not "large writes fail": **all** of them, including one byte at offset 0,
+because `0 + 1 > 0`. The read half never touched `u_limit`, so this was
+invisible through step 5c.
+
+Two things generalise. **The errno points at the wrong subsystem** — EMFILE is
+"too many open files", upstream's own choice at `rdwri.c:167`, and a first write
+returning it sends an investigation to the file table rather than to a limit
+nobody had set. And **the fix belongs in `shim/kern/sys/main.c`**, which already
+stands in for `sys/main.c`: the u-area setup is `main.c:52-79`, the block
+between `p = &proc[0]` and `clkstart()`. `v8k_uinit()` transcribes it, omitting
+the three arms that name VAX memory (`LIM_STACK`, `LIM_DATA` = `ctob(MAXDSIZ)`,
+`LIM_TEXT` = `ctob(MAXTSIZ)`) — measured, nothing in libv8kern reads `u_limit`
+at any index but `LIM_FSIZE`.
+
+`u_uid` and `u_gid` are **deliberately left at zero**, which is root, and that
+is upstream's answer rather than a convenience: `main.c` sets neither, because
+process 0 is root. `shim/kern/sys/fio.c`'s `v8k_procinit()` folds the *host's*
+uid into them and exists for the stream side, where the u-area describes a real
+host process to `ps`. Calling it here would make `access()` compare the tester's
+uid against inodes mkfs wrote as uid 0 — so whether a write was permitted would
+depend on who ran the test.
+
+### A DROPPED CHECK BECAME RESTORABLE ONE STEP EARLIER AND NOTHING NOTICED
+
+`shim/kern/sys/v8fs.c`'s `access()` carried:
+
+> the s_ronly check needs a mounted filesystem, and there is no mount table
+> populated here yet ... Restore the s_ronly arm when v8fs learns to mount
+> read-only.
+
+**§8a step 5c gave it one** — `main.c`'s `iinit()` calls `allocmount()` and sets
+`fp->s_ronly` — so `getfs(ip->i_dev)` had answered since that step landed and
+the arm was simply still missing. Same shape as `conf.h`'s "the switch tables
+are deliberately absent" paragraph and as the `shim/kern/h/buf.h` that died when
+a third file arrived: **a note recording why something is impossible does not
+notice when it becomes possible.**
+
+What made it visible is that step 5d is the first step to call `access()` with
+`IWRITE` at all — `nami.c:485`, `:496` and `:517` are the only sites, and all
+three are in the create path. Mutation M2 (invert the test) turns 14 cases red,
+so the arm is load-bearing rather than decorative.
+
+Restoring it needed `filsys.h` in `v8fs.c`, and the include is worth a note of
+its own: `src/include/sys/filsys.h:57` is `struct filsys *getfs();` inside
+`#ifdef KERNEL`, and without it the call is an implicit `int` — which clang
+**refuses** under `-std=gnu99` rather than truncating. That is the same guard
+`fsprobe.c` arranges with an `#error`, working for free because the shim half is
+C99 while the imported half is not.
+
+### AND THE MUTATION THAT FOUND THE BEST BUG DID NOT PRODUCE A FAILING CASE
+
+Mutating `v8k_uinit` to leave `u_limit` at zero sent every write down the
+`psignal(u.u_procp, SIGXFSZ)` arm. The run produced **no FAIL lines and no
+summary**: it killed the test runner and the interactive shell above it.
+
+`fsprobe` does not call `v8k_procinit()` — it stands up a filesystem, not a
+process description — so `v8k_proc0.p_pid` was 0 out of bss and `v8k_hostpid`
+was 0. `v8k_hostof(0)` matched `v8pid == p_pid` and returned 0. `psignal`'s
+guard was `if (hp < 0) return`, which 0 passes. The syscall that came out was
+**`kill(0, SIGXFSZ)` — every process in the group.**
+
+Three things:
+
+- **`hp < 0` is the correct test for "not found" and the wrong test for what
+  `kill(2)` does.** 0 is not a pid; it is a broadcast. The guard is now in two
+  places because they are two different claims: `v8k_hostof` says *no host
+  process is known* (`v8k_hostpid <= 0`, which is exactly "procinit never ran"),
+  and `psignal` says *0 is not a pid*.
+- **THE OTHER HALF WAS ALREADY FIXED, ELEVEN LINES AWAY.** `gsignal` in the same
+  file has carried `if (pgrp == 0) return` since it was written, with a comment
+  explaining that group 0 is not a group. The guard landed on `gsignal` and the
+  line beside it kept the assumption — CLAUDE.md's most repeated shape, the same
+  one as `fio.c`'s own `(short)u_uid` cast sitting one line under the paragraph
+  arguing against a bare cast.
+- **It is a live hazard for every future consumer**, not a test artefact. Any
+  path in the imported kernel that signals — `streamio.c`'s SIGHUP and SIGPIPE
+  included — would have broadcast from a program that had not called
+  `v8k_procinit`.
+
+The case that now guards it asserts that the process is **still here** after an
+over-limit write, which is a strange-looking thing to assert and is the only
+thing that can be asserted about a signal that must not arrive. It is paired
+with EMFILE so that a `writei` which never reached the arm cannot pass it.
+
+### The acceptance test is three programs that know nothing about the probe
+
+A reader agreeing with a writer proves they share a belief, and the two halves
+of this probe are one program. So `run.sh` hands the finished image to
+**icheck**, **dcheck** and **fsck**: block accounting recomputed by an
+independent walk, link counts recomputed by another, and a checker that
+*repairs* — whose silence is the strongest of the three, and which is asserted
+twice, once on its output and once by `cmp` on the bytes.
+
+**Mutation M3 is the case for having them.** Breaking `alloc`'s free-list refill
+so that handed-out blocks repeat left **every probe case green** — the writes
+succeeded and the accounting looked right from inside — and icheck, fsck and the
+`cmp` caught it. The probe structurally cannot see a duplicate-block bug; three
+programs from 1985 can.
+
+Six mutations, each measured in isolation:
+
+| | mutation | fires |
+|---|---|---|
+| M1 | `v8k_uinit` leaves `u_limit` 0 | 11 — and, before the fix, the shell |
+| M2 | `access()` inverts the `s_ronly` test | 14, all in the create path |
+| M3 | `alloc`'s refill copies no entries | 6 — **none of them the probe's** |
+| M4 | `bmap` treats block 10 as direct | 9, including the step-5c `cmp` |
+| M5 | `itrunc` keeps the direct blocks | 7, incl. icheck's `missing` |
+| M6 | `bdwrite` goes synchronous | 3 |
+
+### TWO OF THE PROBE'S OWN COMMENTS WERE WRONG, AND THE MUTATIONS SAID SO
+
+**The hole case.** It claimed the zeros come from `alloc()`'s `clrbuf` via
+"readi's bmap-returns-0 arm". `bmap` for `B_READ` on an unallocated block
+returns **minus one** (`subr.c:31`), and `rdwri.c:85-87` answers that with
+`bp = geteblk(); clrbuf(bp);` — a buffer attached to no device at all. The zeros
+come from an empty buffer and no I/O happens. Same shape as the `ttyld` tab
+case: *the answer that surprises you is the one to go and read the guard for.*
+
+**The hermeticity case, which has now been wrong about itself twice.** It first
+said it was protecting "an image tests/mkfs validated"; the image is built fresh
+in `$TMP` for this probe alone. Its replacement said the read path "dirties no
+buffer" — it dirties one per lookup, because `rdwri.c:50` sets `IACC` at the top
+of `readi` and `iput`'s `IUPDAT` writes the inode back with `bdwrite`. M6 turned
+that case red, which is how it was found; the claim was plausible, cited
+nothing, and was false. What is left is exactly `bdwrite`'s contract — dirty
+buffers stay in the cache — which is worth asserting because it says the buffer
+cache is write-back and not write-through.
+
+### And the harness OOM'd the shell, which is the instrument rule again
+
+M3 corrupted the free list, `fsck -y` printed for the whole of its 40-second
+deadline, and the command substitution holding its output killed bash with
+`xrealloc: cannot allocate 18446744071562067968 bytes`. The three checkers were
+bounded in *time* by their deadlines and in *volume* by nothing. All three
+captures are `| head -200` now; on a healthy image they print six lines. A
+suite that cannot report a failure it caused is not reporting.
