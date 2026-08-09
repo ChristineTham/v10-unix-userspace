@@ -43,8 +43,9 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1433 cases, 1432 when wavea's pwd case
-                      # reports "not exercised").  NOT `make -j8 test': see below
+make test             # all 17 suites (1444 cases, 1443 on a host whose $TMPDIR
+                      # holds under 2 or over 65535 entries -- see wavea's inode
+                      # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
@@ -373,13 +374,15 @@ function "because folded values are written into files
 (`shim/libkmemu/NOTES.md:247` — `e_tdev` in the manufactured `/etc/utmp`) that
 another process reads", and used that to rule out the one easy fix for the
 `pwd` collision. Every part of it is false: the function has **three** call
-sites (`dir.c:236`, `dir.c:238`, `syscall.c:1144`) and none is in `libkmemu` —
+sites (`dir.c:423`, `dir.c:425`, `syscall.c:1144`) and none is in `libkmemu` —
 the two `grep` hits there are comments; `NOTES.md:247` is about `u_ttyino` in
 `/proc`'s u-area, says it is left zero, and calls filling it hypothetical; and
 V8's `struct utmp` is `{ut_line[8], ut_name[8], ut_time}`, 24 bytes, with no
 inode field. `e_tdev` is in no source file at all. **A recorded constraint that
 blocks work has to be verified before it is obeyed** — read the citation, not
-the sentence citing it.
+the sentence citing it. **And the cost is now countable rather than
+hypothetical: with the constraint gone, the fix was one function and one
+afternoon, and `pwd` went from 32-of-60 to 1752-of-1752.**
 
 The rule is intact and `synth.c` is a *better* demonstration than the sentence
 claimed, not a worse one: it is 100% `rawsys` and 0% libc — **8** call sites,
@@ -1066,18 +1069,28 @@ one class:
 | `FSNMLG` | 32-char mount points | to 140 seen | `df` printed a mount point as a *device* |
 | `u_uid` | `short`, to 32767 | to 100000+ | a uid ≡ 0 mod 65536 reads as **root** |
 
-**THE `d_ino` ROW SAID "harmless" FOR MONTHS AND IT IS THE ONLY ONE OF THE FIVE
-THAT CANNOT BE FIXED.** The others narrow a value; this one narrows an
-*identity*, and identity is what three of V7's idioms are built on.
-`v8sys_fold_ino` (`shim/v8sys/dir.c:125`) XOR-folds a 64-bit host inode into
-16 bits and feeds **both** sides of `getwd`'s central comparison — `d_ino` in
-the directory snapshot and `st_ino` in `stat_translate`. So `getwd.c:62`,
-`while (dir->d_ino != d.st_ino)`, stops on whichever colliding entry `readdir`
-yields first. Measured on this host: `$TMPDIR` holds **5452 entries collapsing
-to 5250 folds, 199 shared**, and V8's `pwd` was wrong in **10 of 10** collision
-pairs — four printing another entry's name and **exiting 0**.
+**THE `d_ino` ROW SAID "harmless" FOR MONTHS, THEN SAID "CANNOT BE FIXED", AND
+BOTH WERE WRONG.** It is the one of the five that narrows an *identity* rather
+than a value, and identity is what three of V7's idioms are built on.
+`v8sys_fold_ino` (`shim/v8sys/dir.c:277`) feeds **both** sides of `getwd`'s
+central comparison — `d_ino` in the directory snapshot and `st_ino` in
+`stat_translate` — so while it was a plain XOR fold, `getwd.c:62`
+(`while (dir->d_ino != d.st_ino)`) stopped on whichever colliding entry
+`readdir` yielded first. Measured over every directory in `$TMPDIR`: right
+**32 of 60** inside a collision group against **60 of 60** outside.
 
-Three things generalise, and the last is why it is a limit rather than a bug:
+**The "cannot" rested on a requirement that was never real: that the map be a
+pure function.** What the port actually needs is that it be **stable within a
+process**, which is strictly weaker and admits an append-only table — the fold
+proposes a number, a contended one probes for the next free, and an assignment
+is never revised. Re-measured on the same host after: **6729 entries, 6729
+distinct values** where the fold gave 519 entries sharing 257, and `pwd` right
+**1752 of 1752**. What paid for it is that two *processes* can now disagree
+about a colliding inode (7.7% of entries here), which nothing in the live tree
+reads — `find` is not even ported. `src/libc/gen/PORTING.md` has the full
+account, the 99.92% that keep their old number, and the two things left open.
+
+Three things generalise, and the third is the one that cost months:
 
 - **A confirming `stat()` does not help**, which is the trap. It returns the
   *folded* inode too, so the colliding file answers with the same `st_ino` and
@@ -1086,20 +1099,24 @@ Three things generalise, and the last is why it is a limit rather than a bug:
   both fields — and it is defeated identically. Two files the shim maps to one
   `(dev, ino)` are indistinguishable to a V8 program **by construction**, so no
   consumer-side change can separate them. A patch to `getwd.c` was written and
-  withdrawn.
+  withdrawn, and `getwd.c` is still unmodified: the fix belongs on the
+  *producer* side, which is the whole lesson.
 - **A fresh test tree structurally cannot reproduce it.** APFS hands out
-  consecutive inodes and this fold separates consecutive values perfectly, so
+  consecutive inodes and the fold separated consecutive values perfectly, so
   1500 directories made back to back collided **zero** times. Collisions need
-  inodes spread over time. That is why `tests/wavea`'s `pwd` case fires roughly
-  never, and why the churn experiment recorded there had no chance — it churned
-  entries it had just created.
-- **The fold cannot be made injective**, because it must stay a pure function
-  of the host inode: `ls -i` twice must agree, and folded values are written
-  into `/etc/utmp` for another process to read. Assigning numbers in order of
-  first sighting is the easy way to be injective and is order-dependent. Nor is
-  a better hash available — 64 bits into 16 must collide, and this one already
-  collides at the birthday rate. `src/libc/gen/PORTING.md` has the account and
-  what a real fix would have to look like.
+  inodes spread over time. That is why `tests/wavea`'s `pwd` case fired roughly
+  never, why the churn experiment recorded there had no chance — it churned
+  entries it had just created — and why the guard that replaced it asserts
+  distinctness over `$TMPDIR` and says so out loud when the population is below
+  the birthday bound of 256.
+- **THE REASON NOT TO TRY WAS A CITATION THAT SAID THE OPPOSITE.** The recorded
+  constraint was that folded values "are written into `/etc/utmp` for another
+  process to read". V8's `struct utmp` is `{ut_line[8], ut_name[8], ut_time}` —
+  24 bytes, no inode field — the cited note is about a `/proc` field it calls
+  hypothetical and leaves zero, and `libkmemu` never calls the function at all.
+  Same shape as the `time(&` sweep and the `synth.c` miscount, but this one
+  **blocked work** rather than inflating a number. A recorded constraint that
+  stops you doing something has to be read at its source before it is obeyed.
 
 **AND THE FIFTH ONE WAS WRITTEN ONE LINE BELOW THE PARAGRAPH ARGUING AGAINST
 IT.** `shim/kern/sys/fio.c` folds a Darwin pid into a VAX `short p_pid`'s range
@@ -1616,6 +1633,16 @@ not testable until it is installed.
   compiled looks exactly like a test correctly passing (this has now produced
   two false "the guard did not fire" readings) — and remember that mutation
   proves a test can fail, never that it can *pass elsewhere*.
+
+  **AND "THE OBJECT" IS NOT ONE OBJECT: CHECK THE ARTEFACT THE SUITE ACTUALLY
+  READS.** A harness that watched `build/stage0/v8sys/dir.o` reported three of
+  five mutations "meaningless, object did not rebuild" — and it had not, because
+  `test-v8sys` compiles the shim **sources** straight into
+  `build/stage0/v8sys/test` and never links that object at all. The same run
+  called `tests/wavea` green under a mutation it should have caught, because
+  wavea runs `rootfs/bin/ls` and only a *full* build relinks it. Both errors are
+  in the safe direction, and both cost a round. Before trusting a rebuild
+  check, read the rule that builds the thing the suite runs.
 
   **AND THE TRAP RUNS THE OTHER WAY TOO: THE RESTORE CAN BE THE THING THAT DOES
   NOT COMPILE.** Measured — `hunt1.o` and `hunt1.c` ended up with the same

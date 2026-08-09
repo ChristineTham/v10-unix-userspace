@@ -42,6 +42,23 @@ extern v8handler v8s_signal(int, v8handler);
 extern int v8sys_signo_to_host(int);
 extern int v8sys_signo_from_host(int);
 extern int v8sys_errno(int);
+extern v8_ino_t v8sys_fold_ino(unsigned long long);
+
+/*
+ * The map v8sys_fold_ino() used to be, written out here because it is the
+ * SPECIFICATION of one of the properties being tested and not a copy of the
+ * implementation: a host inode whose folded value nobody else wants must still
+ * get exactly that value, so that `ls -i' prints what it printed before the
+ * table existed and prints it in every process.
+ */
+static v8_ino_t
+classicfold(unsigned long long ino)
+{
+	unsigned short v;
+
+	v = (unsigned short)(ino ^ (ino >> 16) ^ (ino >> 32) ^ (ino >> 48));
+	return (v ? v : (v8_ino_t)1);
+}
 
 /*
  * V8's numbers, spelled out rather than taken from the host's <signal.h>.
@@ -261,6 +278,58 @@ c_longjmp(void)
 	_exit(0);
 }
 
+/*
+ * 65535 numbers is all a u_short has, so a process that sees more distinct
+ * inodes than that must run out.  What it must not do is hang in the probe
+ * loop, revise an assignment it has already made, or start handing out 0.
+ * Runs in a child because filling the table is not undoable, and under a
+ * deadline because the failure this guards against is a hang rather than a
+ * wrong answer.
+ *
+ * Feeding 1..65535 is deliberate: for a value under 65536 the old fold is the
+ * identity, so *most* iterations claim their own number and go straight in.
+ * Not all -- the parent has already taken a handful, and an iteration landing
+ * on one of those probes, and can displace the next.  (An earlier comment here
+ * claimed nothing probes at all, which was wrong for exactly that reason.)
+ * The assertions do not depend on the count either way.
+ *
+ * The bitmap is the injectivity assertion at scale, and it is sharper than
+ * counting: EVERY answer must be new until the space fills, and after that a
+ * repeat is legal only if it is the plain fold.  A repeat that is anything
+ * else means two host inodes were aliased onto one identity, which is the bug
+ * this whole change exists to remove.
+ *
+ * `late' is what proves the space really filled, and it is sharp rather than
+ * decorative: 0x4000000000000002 folds to 16386, which iteration 16386 has
+ * certainly claimed, so a table with room left would have probed it somewhere
+ * else.  Getting the fold back can only mean the fallback ran.
+ */
+static void
+ino_exhaust(void)
+{
+	static unsigned char seen[65536 / 8];
+	unsigned long long i, keep = 0x8000000000000001ULL;
+	unsigned long long late = 0x4000000000000002ULL;
+	v8_ino_t first, v;
+
+	if ((first = v8sys_fold_ino(keep)) == 0) _exit(2);
+	seen[first >> 3] |= 1 << (first & 7);
+	for (i = 1; i <= 65535; i++) {
+		if ((v = v8sys_fold_ino(i)) == 0) _exit(3);
+		if (seen[v >> 3] & (1 << (v & 7))) {
+			if (v != classicfold(i)) _exit(7);
+		} else
+			seen[v >> 3] |= 1 << (v & 7);
+	}
+	/* full: a host inode never seen before falls back to the plain fold */
+	if (v8sys_fold_ino(late) != classicfold(late)) _exit(4);
+	/* and it is still stable, because the plain fold is a pure function */
+	if (v8sys_fold_ino(late) != classicfold(late)) _exit(5);
+	/* an assignment made before it filled is still honoured */
+	if (v8sys_fold_ino(keep) != first) _exit(6);
+	_exit(0);
+}
+
 int
 main(void)
 {
@@ -271,6 +340,66 @@ main(void)
 	int fd, n, found_a, found_b, found_long;
 	char buf[4096];
 	char *b0, *b1;
+
+	/*
+	 * ------------------------------------------------ inode identity
+	 *
+	 * FIRST IN main(), AND THE POSITION IS PART OF THE TEST.  The v7 inode
+	 * number a host inode gets depends on what the process has already
+	 * asked for -- the table is append-only, so the first claimant of a
+	 * value keeps it.  Running before anything stats a file is what makes
+	 * "the first one gets the old fold" a deterministic assertion, and
+	 * that case is therefore also the guard on the position: move this
+	 * block down and it goes red rather than going quietly weak.
+	 *
+	 * The three inodes collide by construction.  The fold XORs the four
+	 * 16-bit words together, so flipping the same bit in any two of them
+	 * cancels: b flips bit 0 of words 0 and 1, c of words 0 and 2.
+	 *
+	 * A NOTE ON THE CONSTANTS, BECAUSE THE FIRST SET MADE THE HEADLINE
+	 * ASSERTION VACUOUS.  They were 0x0123456789abcdef and its two
+	 * variants, whose four 16-bit words XOR to exactly 0 -- so
+	 * classicfold() returned its 0-substitute 1, and "the first claimant
+	 * gets the old fold" was asserting 1 == 1.  Mutating inofold() to
+	 * `v + 1' left all five cases green while every non-colliding inode in
+	 * the system changed its number.  0x00ff00ff00ff5a3c folds to 0x5ac3,
+	 * which is a value rather than a special case, and the same mutation
+	 * now goes red.  The uncontended inode below is the second half of
+	 * that repair: it exercises the path where nothing probes at all.
+	 */
+	{
+		unsigned long long a = 0x00ff00ff00ff5a3cULL;	/* folds to 0x5ac3 */
+		unsigned long long b = a ^ 0x0000000000010001ULL;
+		unsigned long long c = a ^ 0x0000000100000001ULL;
+		unsigned long long g = 0x0f0f0f0f0f0f1234ULL;	/* folds to 0x1d3b */
+		v8_ino_t fa, fb, fc;
+
+		ok(classicfold(a) != 0 && classicfold(a) != 1,
+		    "the synthetic fold is an ordinary value, not the 0 substitute");
+		ok(classicfold(a) == classicfold(b) &&
+		   classicfold(a) == classicfold(c),
+		    "the three synthetic inodes really do collide under the fold");
+		ok(classicfold(g) != classicfold(a),
+		    "...and the uncontended one does not collide with them");
+		fa = v8sys_fold_ino(a);
+		fb = v8sys_fold_ino(b);
+		fc = v8sys_fold_ino(c);
+		ok(fa == classicfold(a),
+		    "the first claimant of a value gets exactly the old fold");
+		ok(v8sys_fold_ino(g) == classicfold(g),
+		    "an inode nobody contends for gets the old fold untouched");
+		ok(fa != fb && fa != fc && fb != fc,
+		    "colliding host inodes get DIFFERENT v7 numbers");
+		ok(fa != 0 && fb != 0 && fc != 0,
+		    "no v7 inode is 0, which V7 reads as an empty slot");
+		ok(v8sys_fold_ino(a) == fa && v8sys_fold_ino(b) == fb &&
+		   v8sys_fold_ino(c) == fc,
+		    "an assignment is never revised: ask again, same answer");
+		ok(v8sys_fold_ino(b) == fb,
+		    "...and again, after the other two have been re-asked");
+	}
+	okchild(ino_exhaust, 20000,
+	    "exhausting the 16-bit space degrades to the fold, without a hang");
 
 	if (mkdtemp(tmpl) == 0) { perror("mkdtemp"); return 1; }
 

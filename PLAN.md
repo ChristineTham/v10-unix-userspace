@@ -975,7 +975,7 @@ everything we port as our `NOLONG`-assumption detector.
 | Group | Treatment |
 |---|---|
 | Pure passthrough (~30) | `read write close lseek link unlink chdir chmod chown fchmod fchown access kill umask mkdir rmdir symlink readlink dup dup2 pipe getpid getppid getuid geteuid getgid getegid setuid setgid nice sync alarm pause utime execve fork` (vfork→fork) |
-| Translate structs/values | `stat/fstat/lstat` (16-bit ino via hash-fold, never 0; dev squeeze), `time/ftime/times`, `wait/wait3`, `select` (fd_set width), `open` (see directories), errno mapping host→V8 |
+| Translate structs/values | `stat/fstat/lstat` (16-bit ino via an append-only per-process table, never 0 — §8a; dev squeeze), `time/ftime/times`, `wait/wait3`, `select` (fd_set width), `open` (see directories), errno mapping host→V8 |
 | Emulate | `sbrk/brk` (reserved anonymous mmap arena, monotonic break), `signal` (V8 reset-on-delivery semantics + `SIGDOPAUSE`/`SIGDORTI` packing over sigaction; number translation ≈ identity except 16/23; **and a signal trampoline of our own** — the raw syscall takes `struct __sigaction`, and the handler is entered through the `sa_tramp` userland supplies, not directly), `ioctl` (sgtty `TIOC*` ↔ termios; `FIONREAD`; `TIOC[GS]PGRP`), `nap` (ms sleep), `syscall()` (dispatch into this table), `#!` handling in execve if needed |
 | Directory reads | `open()` on a directory returns a shim-backed fd streaming **synthesized V7 16-byte records** (snapshot via host `fdopendir`; names >14 bytes truncated — documented quirk). Fixes all 44 raw readers *and* V8 `readdir()` with zero source changes. |
 | Stub ENOSYS | `mount umount gmount procmount swapon reboot acct stime settod profil vadvise vlimit vtimes chroot ptrace mpx` + streams `FIOPUSHLD/FIOPOPLD`; fd-passing `FIOSNDFD/FIORCVFD` stubbed now, possible `SCM_RIGHTS` emulation later (needed only by `pt`/advanced upas plumbing) |
@@ -1436,8 +1436,11 @@ Three documented lies, all currently recorded as losses:
 
 - `dir.c` truncates names to 14 characters and **can alias two entries onto one
   name**.
-- `stat.c` folds inode numbers to 16 bits and **they can collide**, so `find`
-  hunting hard links may report false matches.
+- ~~`stat.c` folds inode numbers to 16 bits and **they can collide**~~ — closed.
+  A 64→16 map cannot be both pure and injective, but it does not have to be
+  pure, only *stable within a process*: `v8sys_fold_ino` is now an append-only
+  table, measured 6729 distinct values for 6729 entries where the fold gave
+  519 sharing 257. `src/libc/gen/PORTING.md`.
 - `df` carries this port's one sanctioned source deviation (S7), because there
   is no superblock to read.
 

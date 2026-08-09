@@ -497,7 +497,10 @@ fd_stat(char *p, struct v8_stat *st, int follow)
 	if (n < 0) { v8_errno = V8_ENOENT; return (-1); }
 	for (i = 0; i < (int)sizeof *st; i++) q[i] = 0;
 	st->st_dev   = 0;
-	st->st_ino   = (v8_ino_t)(n + 1);	/* never 0: dir.c:125's rule */
+	st->st_ino   = (v8_ino_t)(n + 1);	/* never 0: inofold()'s rule,
+						   dir.c:212 -- and assigned
+						   outside that map on purpose,
+						   see its `still open' note */
 	st->st_mode  = V8_S_IFCHR | 0666;	/* crw-rw-rw-, proto-dev:91 */
 	st->st_nlink = (short)(n <= 3 ? 2 : 1);	/* the four hard links */
 	st->st_rdev  = (v8_dev_t)((40 << 8) | n);	/* makedev(40, n) */

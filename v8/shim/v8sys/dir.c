@@ -22,9 +22,10 @@
  *   onto one name; that is the same collision a real V7 filesystem would have
  *   had, and it is why the V8 world should be given short filenames.
  *
- *   Inode numbers are folded to 16 bits (see stat.c) and can therefore collide.
- *   Programs that compare inode numbers for identity -- find(1) hunting for
- *   hard links -- may report false matches.  Never folded to 0, which V7 uses
+ *   Inode numbers are 16 bits, so a 64-bit host inode has to be mapped down.
+ *   That map is v8sys_fold_ino() below, and it is injective for the first
+ *   65535 inodes a process sees -- which it has to be, because V7 reads an
+ *   inode number as an identity and not as a label.  Never 0, which V7 uses
  *   to mean "empty slot" and which every reader skips.
  *
  * The snapshot is taken at open() time, so a directory changing underneath a
@@ -118,16 +119,246 @@ v8sys_dirsize(int fd)
 }
 
 /*
- * Fold a host inode number into 16 bits without ever producing 0, which V7
- * reserves for "this slot is empty" and which every directory reader skips.
+ * IDENTITY, NOT JUST WIDTH.
+ *
+ * 64 bits do not fit in 16, so some map is needed; the question this function
+ * answers is which one.  It used to be a pure fold --
+ *
+ *	ino ^ ino>>16 ^ ino>>32 ^ ino>>48
+ *
+ * -- which is stable, cheap, and wrong, because V7's idioms read an inode
+ * number as an identity rather than as a label.  getwd(3) walks to the root by
+ * looking for the entry in `..' whose d_ino equals stat(".")'s st_ino
+ * (getwd.c:62), so two entries of one directory sharing a fold make pwd(1)
+ * print another directory's path and exit 0.  Measured on a months-old
+ * $TMPDIR: 121 of 1545 directories sat in a collision group, and inside those
+ * groups pwd was right 32 times in 60, against 60 of 60 outside.  ttyname(3)
+ * has the same idiom in its careful form -- pre-filter on d_ino, then confirm
+ * with stat() -- and is defeated identically, because the confirming stat
+ * returns the folded number too.  Nothing above the seam can separate two
+ * files the shim has already mapped onto one (dev, ino).
+ *
+ * SO THE MAP HAS TO BE INJECTIVE, AND NO PURE FUNCTION OF THE INODE IS.  What
+ * replaces it is a process-local table: the fold proposes a number, and if
+ * that number is already spoken for by a different host inode the next free
+ * one is taken instead.  Three properties, and the third is what it costs:
+ *
+ *   Stable.  The table is append-only -- an assignment is never revised and
+ *   never evicted -- so `ls -i' twice in one process agrees, and so does the
+ *   stat(".") that getwd takes BEFORE it opens `..'.  That ordering is what
+ *   killed the cheaper fix of disambiguating inside the directory snapshot:
+ *   a snapshot cannot perturb a value its caller already holds.
+ *
+ *   Unchanged where it can be.  A host inode whose fold is free gets exactly
+ *   the fold, so entries that never collide -- 96.5% of $TMPDIR here -- print
+ *   the number they printed before this existed, and print it in every
+ *   process.
+ *
+ *   Process-local for the rest.  Which of two colliding inodes gets the fold
+ *   depends on which was seen first, so two processes can disagree about a
+ *   colliding inode (215 of 6031 entries here).  That is a real departure and
+ *   it is the price of the fix: the alternative is a rule over the set of
+ *   inodes in a directory, and stat(2) does not know the directory.
+ *
+ * WHEN THE TABLE CANNOT ANSWER -- 65535 distinct inodes seen, or mmap refused
+ * -- the fold is returned unrecorded.  That is exactly the old behaviour, and
+ * it is still stable, because the fold is a pure function.  Degradation is
+ * graceful rather than incoherent.
+ *
+ * AND IT IS NO LONGER A PURE FUNCTION, WHICH COSTS ASYNC-SIGNAL SAFETY.  The
+ * old fold could be called from anywhere; this one has a read-modify-write
+ * window from the inofind() below to the assignment at the end of it.  A
+ * signal arriving inside that window whose handler reaches stat(2) or
+ * opendir(3) re-enters, and the outer call's assignment is then either written
+ * into a table inogrow() has already orphaned or overwritten by the handler's
+ * -- and the affected inode answers differently next time, which is precisely
+ * the property this exists to guarantee.  There is no live caller: every
+ * signal() with a real handler in src/cmd was read, and the closest are
+ * sort.c's `term' and cc.c's `idexit' (unlink only), fsck.c's `catch'
+ * (ckfini), dumpoptr.c's `alarmcatch' (prints) and sh/fault.c:83 (sets a
+ * flag).  None stats or reads a directory.  So this is a property change with
+ * no known trigger rather than a bug, and it is written down because the
+ * paragraphs above argue the stability property at length and this is the one
+ * way it can be lost.
+ *
+ * NOT KEYED ON THE DEVICE, deliberately.  The old fold was not either, and the
+ * caller in this file has no device to offer: getdirentries64 reports d_ino
+ * and no d_dev.  Two files with the same host inode on different devices
+ * therefore still share a v7 inode, which is correct -- V7 identity is the
+ * pair, and stat_translate reports st_dev separately.  The synthetic
+ * filesystems assign their own numbers outside this map for the same reason
+ * (/proc's ROOTINO 2 at libkmemu/procfs.c:887, /dev/fd's minor+1 at vfs.c).
  */
-v8_ino_t
-v8sys_fold_ino(unsigned long long ino)
+#define INOSPACE	65536		/* the whole u_short range */
+#define INOWORDS	(INOSPACE / 32)
+
+struct inoslot {
+	unsigned long long	host;
+	unsigned short		v7;	/* 0 means the slot is empty */
+};
+
+static unsigned int	*inoclaim;	/* bit v set: v7 inode v is taken */
+static long		 inonclaim;
+static struct inoslot	*inomap;	/* host inode -> v7 inode */
+static long		 inosize;	/* a power of two; 0 until allocated */
+static long		 inoused;
+
+static unsigned short
+inofold(unsigned long long ino)
 {
 	unsigned short v;
 
 	v = (unsigned short)(ino ^ (ino >> 16) ^ (ino >> 32) ^ (ino >> 48));
-	return (v ? v : (v8_ino_t)1);
+	return (v ? v : (unsigned short)1);
+}
+
+/*
+ * Murmur3's 64-bit finaliser.  The fold cannot double as the table's hash --
+ * it is the value being handed out, and the whole problem is that it clusters
+ * -- so the table needs its own, and the probe stride below needs a second,
+ * independent opinion about the same key.
+ */
+static unsigned long long
+inohash(unsigned long long x)
+{
+	x ^= x >> 33;
+	x *= 0xff51afd7ed558ccdULL;
+	x ^= x >> 33;
+	x *= 0xc4ceb9fe1a85ec53ULL;
+	x ^= x >> 33;
+	return (x);
+}
+
+/* The slot holding `host', or the one it would go in.  0 if the table is full. */
+static struct inoslot *
+inofind(unsigned long long host)
+{
+	long mask = inosize - 1;
+	long i = (long)(inohash(host) & (unsigned long long)mask);
+	long n;
+
+	for (n = 0; n < inosize; n++) {
+		if (inomap[i].v7 == 0 || inomap[i].host == host)
+			return (&inomap[i]);
+		i = (i + 1) & mask;
+	}
+	return (0);
+}
+
+/*
+ * Double the table.  The v7 values do not move, so every assignment already
+ * made survives -- which is the stability property, and the reason growth is
+ * safe to do in the middle of a directory scan.  The old table is leaked into
+ * the pool, because v8sys_free() is a no-op; the total leak is bounded by the
+ * final size and the pool goes back to the kernel at exit.
+ */
+static int
+inogrow(void)
+{
+	long newsize = inosize ? inosize * 2 : 512;
+	struct inoslot *old = inomap, *nw;
+	long oldsize = inosize, i;
+
+	nw = (struct inoslot *)v8sys_alloc(newsize * (long)sizeof *nw);
+	if (nw == 0) return (-1);
+	bzero_((char *)nw, newsize * (long)sizeof *nw);
+	inomap = nw;
+	inosize = newsize;
+	for (i = 0; i < oldsize; i++)
+		if (old[i].v7) {
+			struct inoslot *s = inofind(old[i].host);
+			/*
+			 * Cannot be null: the new table is twice the old and
+			 * takes at most oldsize entries.  Tested anyway, because
+			 * that proof is a property of the growth FACTOR and
+			 * nothing else here states it -- change the 2, or add
+			 * tombstones, and this becomes a null store whose only
+			 * other failure path is the allocation above.
+			 *
+			 * MEASURED UNREACHABLE, not assumed: deleting this line
+			 * leaves every suite green (mutation M6), which is the
+			 * evidence for the paragraph above rather than a gap in
+			 * the tests.  Nothing can reach it until the factor
+			 * changes, and then it is the difference between a
+			 * refused rehash and a null store.
+			 */
+			if (s == 0) continue;
+			s->host = old[i].host;
+			s->v7   = old[i].v7;
+		}
+	v8sys_free((char *)old);
+	return (0);
+}
+
+static int
+inoinit(void)
+{
+	long n = INOWORDS * (long)sizeof *inoclaim;
+
+	if ((inoclaim = (unsigned int *)v8sys_alloc(n)) == 0)
+		return (-1);
+	bzero_((char *)inoclaim, n);
+	inoclaim[0] = 1;	/* value 0 is V7's empty slot: never handed out */
+	inonclaim = 1;
+	return (0);
+}
+
+#define TAKEN(v)	(inoclaim[(v) >> 5] & (1U << ((v) & 31)))
+
+v8_ino_t
+v8sys_fold_ino(unsigned long long ino)
+{
+	unsigned short v = inofold(ino);
+	struct inoslot *s;
+	unsigned long long step;
+	long n;
+
+	if (inoclaim == 0 && inoinit() < 0)
+		return ((v8_ino_t)v);		/* no table: the old answer */
+	if (inoused * 2 >= inosize)
+		(void)inogrow();		/* if it fails we run hotter */
+	if ((s = inofind(ino)) == 0)
+		return ((v8_ino_t)v);		/* full and could not grow */
+	if (s->v7)
+		return ((v8_ino_t)s->v7);	/* seen before: the same answer */
+	if (inonclaim >= INOSPACE)
+		return ((v8_ino_t)v);		/* every value is spoken for */
+
+	if (TAKEN(v)) {
+		/*
+		 * The stride is odd and the space is a power of two, so
+		 * v + k*step visits all 65536 values; bit 0 is claimed at init
+		 * so 0 is never among the free ones; and the count above says
+		 * at least one value IS free.  The loop therefore always finds
+		 * one, and the test after it cannot fire -- it is here so that
+		 * being wrong about that costs a duplicate rather than a
+		 * silent aliasing of two files onto one identity.
+		 *
+		 * THE COUNT CHECK AND THAT TEST ARE MUTUALLY REDUNDANT ON
+		 * CORRECTNESS, and a mutation says so: deleting the
+		 * `inonclaim >= INOSPACE' guard above leaves every suite green
+		 * (M5), because a full table then walks all 65536 values,
+		 * finds nothing, and falls out through the test below to the
+		 * same answer.  Neither is dead -- each catches the case the
+		 * other would miss -- but only the count guard bounds the
+		 * WORK, which is the thing no value-checking case can see:
+		 * without it every call after exhaustion costs 65536
+		 * iterations.  Do not delete one because a mutation of it
+		 * stayed green.
+		 */
+		step = (inohash(ino) | 1ULL) & 0xffffULL;
+		for (n = 0; n < INOSPACE; n++) {
+			v = (unsigned short)((v + step) & 0xffff);
+			if (!TAKEN(v)) break;
+		}
+		if (TAKEN(v)) return ((v8_ino_t)inofold(ino));
+	}
+	inoclaim[v >> 5] |= 1U << (v & 31);
+	inonclaim++;
+	s->host = ino;
+	s->v7   = v;
+	inoused++;
+	return ((v8_ino_t)v);
 }
 
 /*

@@ -88,12 +88,13 @@ alone --
 
 -- which is exact on a V7 filesystem, because an inode number is **unique
 within a device** there: 16 bits, and a V7 volume could not hold 65536 inodes.
-It is not exact here. `v8sys_fold_ino()` (`shim/v8sys/dir.c:125`) XOR-folds a
+It is not exact here. `v8sys_fold_ino()` (`shim/v8sys/dir.c:277`) maps a
 64-bit host inode into V7's `u_short ino_t`, and the same function feeds *both*
-sides of that comparison -- `d_ino` in the directory snapshot (`dir.c:236,238`)
-and `st_ino` in `stat_translate` (`shim/v8sys/syscall.c:1086`). So two files in
-one directory can share a `d_ino`, and this loop stops on whichever `readdir`
-yields **first**.
+sides of that comparison -- `d_ino` in the directory snapshot (`dir.c:423,425`)
+and `st_ino` in `stat_translate` (`shim/v8sys/syscall.c:1144`). While that map
+was a plain XOR fold, two files in one directory could share a `d_ino` and this
+loop stopped on whichever `readdir` yielded **first**. It is a table now, and
+the rest of this entry is how that was measured and what it cost.
 
 ### Measured — and re-measured after `tests/wavea` finally caught it in the wild
 
@@ -156,79 +157,151 @@ equally defeated here**, for the same reason. Two files that the shim maps to
 one `(dev, ino)` pair are indistinguishable to a V8 program *by construction*.
 No consumer-side change can separate them.
 
-So this is a **structural limit of the fidelity contract**, not a bug in
-`getwd.c`, and the note it corrects is CLAUDE.md's own 16-bit table, which
+So no *consumer-side* change can fix this, which is why `getwd.c` is
+unmodified; the note it corrects is CLAUDE.md's own 16-bit table, which
 recorded a folded `d_ino` as "wraps; harmless *except* the value that wraps to
 0". Measured, the wrap to 0 is the one case that **was** already handled
 (`fold_ino` never returns it); the collisions it called harmless are not.
 
-### What a fix would have to be, and why it is its own task
+It was recorded here as a **structural limit of the fidelity contract**, and
+that was too strong by one word: what is structural is that *no pure function*
+of a 64-bit inode is injective into 16 bits. The map does not have to be a
+pure function. It has to be *stable*, which is a weaker thing, and the fix
+below is the difference between the two.
 
-It has to live in the shim, and the constraint recorded here was **half of it
-false** -- which matters, because the false half is the one that ruled out the
-easy fix.
+### What the fix is: a table, because stability is weaker than purity
 
-What stands: the fold must be a **pure function of the host inode**, because a
-program that runs `ls -i` twice must see the same number. What does not: this
-said folded values "are written into files (`shim/libkmemu/NOTES.md:247` --
-`e_tdev` in the manufactured `/etc/utmp`) that another process reads". Three
-things wrong with that sentence, measured:
+Landed in `shim/v8sys/dir.c`, entirely inside `v8sys_fold_ino()` — the
+signature and all three call sites are unchanged. The fold now *proposes* a
+number, and if a different host inode has already claimed it the next free one
+is taken instead, recorded in a process-local table that is **append-only**: an
+assignment is never revised and never evicted.
 
-- **`v8sys_fold_ino` has exactly three call sites** -- `dir.c:236`, `dir.c:238`
-  and `syscall.c:1144`. Nothing in `libkmemu` calls it. `grep` found it in
+Append-only is what makes the ordering irrelevant, and the ordering is what
+killed candidate (a) below. `getwd` takes `stat(".")` *before* it opens `..`; a
+table that never changes an answer gives the same number whichever call arrives
+first, so the snapshot no longer has to know what the caller already holds.
+
+**The constraint recorded against this was half false, and the false half was
+load-bearing.** What stands: the map must be *stable within a process*. What
+does not: it was written here that folded values "are written into files
+(`shim/libkmemu/NOTES.md:247` — `e_tdev` in the manufactured `/etc/utmp`) that
+another process reads", and that was used to rule out any order-dependent
+scheme. Three things wrong with the sentence, measured:
+
+- **`v8sys_fold_ino` has exactly three call sites** — `dir.c`, twice, and
+  `syscall.c:1144`. Nothing in `libkmemu` calls it; `grep` found it in
   `procfs.c:169` and `:603`, and both are **comments**.
 - **The cited note says the opposite.** `NOTES.md:247` is about `u_ttyino` in
   `/proc`'s u-area, which is "left zero"; filling it *would* be a stat folded
   through `v8sys_fold_ino`, and it explicitly "buys nothing until those nodes
   exist". A hypothetical, read as a fact.
 - **`/etc/utmp` has no inode field at all.** V8's `struct utmp` is
-  `{char ut_line[8]; char ut_name[8]; long ut_time;}` -- 24 bytes -- and
+  `{char ut_line[8]; char ut_name[8]; long ut_time;}` — 24 bytes — and
   `libkmemu/utmp.c` writes those three and nothing else. `e_tdev` appears
   nowhere in any source file.
 
-That is the third instance of one shape in this repo: a sweep matching the
-*documentation* of a thing and counting it as the thing. It cost more here than
-the other two, because it stood as the reason not to try a fix.
+That is the third instance in this repo of a sweep matching the *documentation*
+of a thing and counting it as the thing. It cost more here than the other two,
+because it stood for months as the reason not to try.
 
-It still cannot be fixed by a better hash: 64 bits into 16 must collide, and
-the current fold already collides at the birthday rate, so there is nothing to
-win there.
+### Measured, before and after, on one host and one population
 
-### Three candidates, costed
+Re-measured minutes apart against the same `$TMPDIR`, which is the only place
+these numbers can come from: APFS hands out consecutive inodes and the old fold
+separated consecutive values perfectly, so a freshly built test tree collides
+zero times no matter how large it is.
+
+| | the old fold | the table |
+|---|---|---|
+| distinct v7 values for 6729 entries | 6210 | **6729** |
+| entries sharing a value with another | 519, over 257 values | **0** |
+| `pwd` right, inside a collision group | 32 of 60 | **149 of 149** |
+| `pwd` right, every directory in `$TMPDIR` | — | **1752 of 1752** |
+
+`pwd` was already right 60/60 *outside* a collision group, so the separation
+was clean in both directions and the fix closes the failing half without
+disturbing the other.
+
+**What it costs shows up in the same measurement.** Of the 6210 entries whose
+fold was already unique, **6205 keep exactly the old number and 5 do not** — a
+colliding entry seen earlier probed onto a free value, and that value turned
+out to be the fold of an entry not yet seen. Inherent to assigning without
+knowing the future, so "unchanged where it can be" is 99.92%, not 100%.
+
+The remaining departure is the honest one: **which of two colliding inodes gets
+the fold depends on which was seen first**, so two processes can disagree about
+a colliding inode — 519 of 6729 entries here, 7.7%, are eligible. Against a
+`pwd` that named another directory and exited 0 that is the right trade, and
+nothing in the live tree consumes an inode number across processes: `ls -i`
+prints one, and `find` is not ported at all (there is no `src/cmd/find`).
+
+### The three candidates, and why (b) won
 
 **(a) Disambiguate at the directory snapshot.** The shim sees every entry at
-once and can resolve a clash by a rule over the set of inodes present. **The
-ordering kills it, and this is now measured rather than suspected**: `getwd`
-calls `stat(".")` *before* it opens `..`, so it has already taken the
-unperturbed value when the snapshot perturbs. Worse than a partial fix -- if
-the cwd is the entry that gets perturbed, the loop matches *nothing* and the
-walk fails, so a rule that repairs the 50% of cases that work today breaks the
-other 50% that currently work by luck. For `stat_translate` to compute the same
-perturbation it must know the parent's inode set, i.e. scan the parent on every
-`stat`, which is the `getdirentries`-inside-`ls -l` cost `v8sys_dirsize` already
-refused.
+once and could resolve a clash by a rule over the set of inodes present.
+**Killed by ordering**, measured rather than suspected: `getwd` calls
+`stat(".")` before it opens `..`, so it already holds the unperturbed value
+when the snapshot perturbs. Worse than a partial fix — if the cwd is the entry
+that gets perturbed the loop matches *nothing*, so a rule repairing the half
+that fails today breaks the half that works by luck. For `stat_translate` to
+compute the same perturbation it would have to know the parent's inode set,
+i.e. scan the parent on every `stat`, which is the `getdirentries`-inside-`ls
+-l` cost `v8sys_dirsize` already refused.
 
-A cheap variant -- give the later colliding entry `d_ino = 0` -- is worse than
+A cheap variant — give the later colliding entry `d_ino = 0` — is worse than
 the disease: 0 is V7's deleted-entry marker, so `readdir` skips it and **the
 file vanishes from `ls`**.
 
-**(b) Order of first sighting, process-local.** Injective by construction, and
-the reason recorded against it has just been shown false, so it is back on the
-table. What is actually left of the objection is narrow: `ls -i` in two
-different processes could print different numbers **for a colliding inode
-only** (215 of 6031 entries here, 3.5%), and only for one that both runs
-observe. Against a `pwd` that is wrong 47% of the time inside a collision
-group, that trade looks right. The real difficulty is *bounding* the table --
-eviction reintroduces the inconsistency inside a single process, which is the
-one place it must not appear.
+**(b) Order of first sighting.** Taken, in the narrowed form above: not a
+counter from 1, which would make *every* inode number process-local, but the
+fold with a probe only where the fold is contended. The recorded difficulty was
+*bounding* the table, and it dissolved once eviction was ruled out entirely —
+a table that never shrinks cannot become inconsistent, it can only fill. At
+65535 distinct inodes it stops recording and returns the plain fold, which is
+the old behaviour and is still stable because the fold is pure. `tests/v8sys`
+drives that path with 65535 synthetic inodes and asserts that an assignment
+made before the wall is still honoured after it.
 
-**(c) Widen the identity.** The correct fix, and the expensive one. `ino_t` is
-`u_short` (`sys/types.h:86`) and appears in two **on-disk** records --
-`struct direct.d_ino` and `struct filsys.s_inode[]` -- so it cannot move
-globally. Per-field narrowing is exactly what `sys/ino.h` and `sys/filsys.h`
-already do for `time_t` and `off_t`, so the machinery exists; but `struct
-direct` is on-disk for `$(IMGBIN)` and in-memory for the live emulation, which
-would make `d_ino` a second `DIRSIZ`: two widths behind one `-D`, with the
-whole warning that entry carries. And a 4-byte `d_ino` moves the record to 258
-bytes, which the 44 raw directory readers survive only if every one of them
-uses `sizeof(struct direct)` rather than a literal.
+**(c) Widen the identity.** Still the correct fix and still the expensive one.
+`ino_t` is `u_short` (`sys/types.h:86`) and appears in two **on-disk** records
+— `struct direct.d_ino` and `struct filsys.s_inode[]` — so it cannot move
+globally. Per-field narrowing is what `sys/ino.h` and `sys/filsys.h` already do
+for `time_t` and `off_t`, so the machinery exists; but `struct direct` is
+on-disk for `$(IMGBIN)` and in-memory for the live emulation, which would make
+`d_ino` a second `DIRSIZ`: two widths behind one `-D`, with the whole warning
+that entry carries. And a 4-byte `d_ino` moves the record to 258 bytes, which
+the 44 raw directory readers survive only if every one of them uses
+`sizeof(struct direct)` rather than a literal.
+
+### What is still open
+
+Two things, both narrow, both written down rather than fixed.
+
+**The synthetic filesystems assign outside the map.** `/proc` hands out
+`ROOTINO` 2 and `pid + PRMAGIC` (`shim/libkmemu/procfs.c:887` and `:891`), and
+`/dev/fd` hands out `minor + 1` (`shim/v8sys/vfs.c`). Neither consults the
+table, so a real file can be given the same v7 inode as a `/proc` entry. That
+is correct as it stands — V7 identity is the `(dev, ino)` pair and those
+filesystems report a different `st_dev` — but it is correct by an argument
+rather than by construction, and a fourth filesystem type should be asked the
+same question. Reserving their ranges in the claim bitmap would cost 130
+values out of 65535 and buy construction instead of argument.
+
+**`st_dev` is still narrowed by truncation, and the pair leans on it harder
+than it looks.** `stat_translate` does `hs->st_dev & 0xffff` one line above the
+inode (`syscall.c:1143`), a bare 16-bit cut of a 32-bit host `dev_t` with no
+injectivity of its own. Measured on this host: 15 mounted filesystems, whose
+truncated devs are `0003 0005 0007 0008 000e 0010 0011 0012 0017 001b 001f
+0023 0026 88d9` — all distinct, so the pair *is* injective today. It is
+distinct because macOS keeps APFS volume minors small, not by construction:
+`/dev` is minor 2328793 and survives only as `0x88d9`.
+
+And the pair is doing real work rather than sitting idle: **eight of those
+fifteen mount points share host inode 2** — every APFS volume root — so they
+all map to v7 inode 2 and `st_dev` is the only thing separating them.
+`getwd.c:63-70`'s cross-device arm compares both fields and is correct;
+`v8sys_fold_ino` deliberately does not key on the device, because
+`getdirentries64` reports `d_ino` and no `d_dev`, and keying only `stat` on the
+pair would make the two call sites disagree — which is the bug this whole entry
+is about.

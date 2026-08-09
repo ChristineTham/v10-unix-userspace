@@ -267,32 +267,23 @@ try ls     'ls -l marks the directory' 'd' "./ls -l lsdir | awk '\$NF==\"sub\"{p
 # directory layer end to end: getwd(3) walks to the root matching each entry
 # against stat("."), which is what caught the APFS firmlink problem.
 #
-# THIS CASE FAILED ONCE, AND THE CAUSE IS NOW KNOWN AND REPRODUCED -- but not
-# fixed, so the case stays as written and stays occasionally red.
+# THIS CASE FAILED ONCE, THE CAUSE WAS FOUND, AND IT IS NOW FIXED -- so the
+# case runs unconditionally again, and the case below it guards the fix.
 #
 # getwd()'s same-device arm finds the entry in `..' whose d_ino equals
-# stat(".")'s st_ino, and stops there.  Both sides are folded from a 64-bit
-# host inode into V7's 16-bit ino_t by v8sys_fold_ino (shim/v8sys/dir.c:125),
-# so two entries in one directory can share a d_ino and the walk names
-# whichever readdir yields first.  src/libc/gen/PORTING.md has the whole
-# account, including why a stat() confirmation does NOT fix it.
+# stat(".")'s st_ino, and stops there.  Both sides pass through
+# v8sys_fold_ino(), which used to be a pure 64-bit-to-16-bit XOR fold, so two
+# entries in one directory could share a d_ino and the walk named whichever
+# readdir yielded first.  Measured over EVERY directory in $TMPDIR, sampling 60
+# from each class: 1545 directories, 121 in a collision group, right 32/60
+# inside against 60/60 outside -- 47% wrong, and 6 of those printed another
+# directory's path and exited 0.
 #
-# IT FIRED, AND THE RE-MEASUREMENT IS SHARPER THAN THE FIRST ONE -- which said
-# "$TMPDIR holds 5452 entries, 199 shared folds; ten collision pairs, wrong 10
-# times out of 10".  That was a sample of the reachable pairs presented as the
-# population.  Measured properly, by classifying EVERY directory in $TMPDIR and
-# sampling 60 from each class:
-#
-#   1545 directories, 121 of them in a fold-collision group
-#   colliding      60 sampled: 32 right, 6 named another directory, 22 said
-#                              `getwd: can't change back to .'  -- 47% wrong
-#   non-colliding  60 sampled: 60 right, 0 wrong
-#
-# A clean separation, and the 47% is explained rather than noisy: the walk stops
-# at whichever colliding entry readdir yields FIRST, so the first member of a
-# group is right and the later ones are not.  Both failure shapes come from the
-# same stop -- naming the wrong entry when it happens to be a directory you can
-# chdir into, and failing the final `chdir(pnptr)' at getwd.c:79 when it is not.
+# The fold is now an append-only process-local table (shim/v8sys/dir.c), and
+# re-measured on the same host afterwards: 1752 of 1752 directories right, 0
+# wrong, 0 `getwd: can't change back'.  src/libc/gen/PORTING.md has the whole
+# account, including why a confirming stat() does NOT fix it and why the
+# cheaper snapshot-local fix cannot work.
 #
 # Two instrument errors on the way, both in the flattering direction and both
 # the same shape as the ones CLAUDE.md already records.  Comparing V8's pwd
@@ -306,38 +297,56 @@ try ls     'ls -l marks the directory' 'd' "./ls -l lsdir | awk '\$NF==\"sub\"{p
 # was wrong in an instructive way.  It blamed v8sys_dirsize's two passes over a
 # changing directory, and tested that with 400 walks against a parent being
 # churned -- which could not have found the real cause, because the churn
-# created its own entries and APFS hands out CONSECUTIVE inodes, which this
-# fold separates perfectly.  A collision needs inodes spread over time.  The
-# same blind spot is why this case fires roughly never: the test's own
-# directory is always freshly made.
+# created its own entries and APFS hands out CONSECUTIVE inodes, which the old
+# fold separated perfectly.  A collision needs inodes spread over time, which
+# is why no test can manufacture one and why this case fired roughly never.
+try pwd 'pwd' "$(/bin/pwd -P)" "./pwd"
+
+# ...AND THE PROPERTY BEHIND IT, WHICH IS WHAT A FRESH DIRECTORY CANNOT SHOW.
+# pwd passing says the walk found the right entry once.  What the fix actually
+# promises is that no two entries of one directory share a v7 inode in one
+# process, and the only place that can be exercised is a directory whose inodes
+# were handed out over months -- $TMPDIR.  Measured here: 6729 entries, 6729
+# distinct values, where the old fold gave 519 entries sharing 257 values.
 #
-# SO THE CASE IS A HOST PROPERTY, AND IT NOW HIDES MORE THAN IT FINDS.  The
-# failure rate is a function of how cluttered $TMPDIR is, and on this machine
-# that has crossed from "roughly never" to twice in three runs.  make stops at
-# the first failing suite, so a red pwd took SEVEN later suites down with it --
-# and it was reporting a bug that is already reproduced, measured and tracked.
+# It asks through V8's own `ls -i', so it measures the implementation under
+# test rather than a second spelling of the rule -- the mistake this repo
+# refuses everywhere else, and one that would go stale the moment the map
+# changes again.
 #
-# CLAUDE.md's rule for exactly this: assert a relation the port controls, and
-# where coverage genuinely depends on the host, print "not exercised" rather
-# than passing silently or failing.  So the case asks first whether its own
-# directory is in a fold-collision group, and if it is, says so and moves on.
-#
-# IT ASKS THE SHIM RATHER THAN RECOMPUTING THE FOLD.  V8's own `ls -i' prints
-# the folded number, so a duplicate among the parent's entries is the collision,
-# measured through the implementation under test.  Writing the fold out a second
-# time here is the two-spellings-of-one-rule mistake this repo refuses
-# everywhere else -- and it would go stale the day the fold changes, which is
-# precisely what task #48 proposes to do.
-pwdmine=$("$ROOT/rootfs/bin/ls" -id "$TMP" 2>/dev/null | awk '{print $1}')
-pwddups=$("$ROOT/rootfs/bin/ls" -i "$(dirname "$TMP")" 2>/dev/null |
-          awk -v m="$pwdmine" '$1==m' | wc -l | tr -d ' ')
-if [ -n "$pwdmine" ] && [ "${pwddups:-0}" -gt 1 ]; then
-	echo "pwd: NOT EXERCISED -- this run's directory shares folded inode" \
-	     "$pwdmine with $((pwddups - 1)) other entry/entries in" \
-	     "$(dirname "$TMP"); getwd cannot tell them apart (task #48," \
-	     "src/libc/gen/PORTING.md).  Not a regression, and not a pass."
+# A DUPLICATE IS NOT AUTOMATICALLY A FAULT: two names for one file share a host
+# inode and MUST share a v7 one.  So a duplicate is reconciled against the host
+# before it is called a failure, and that reconciliation costs nothing on the
+# normal path because the duplicate list is empty.
+pwdpar=$(dirname "$TMP")
+"$ROOT/rootfs/bin/ls" -ia "$pwdpar" > "$TMP/inos" 2>/dev/null
+pwdn=$(wc -l < "$TMP/inos" | tr -d ' ')
+if [ "${pwdn:-0}" -lt 2 ] || [ "${pwdn:-0}" -gt 65535 ]; then
+	# Above 65535 the property cannot hold -- there are not that many
+	# numbers -- so this is a genuine skip rather than a weak pass.
+	echo "pwd: inode distinctness NOT EXERCISED -- $pwdpar holds ${pwdn:-0}" \
+	     "entries, and the property needs a directory with a history."
 else
-	try pwd 'pwd' "$(/bin/pwd -P)" "./pwd"
+	# A pass on a nearly empty directory is nearly vacuous, and check()
+	# says nothing when it passes.  Two entries collide with probability
+	# about n^2/2*65536, so a run under the birthday bound reports how
+	# little it proved instead of passing quietly.  A fresh CI runner is
+	# always in this arm; this host is not.
+	[ "$pwdn" -ge 256 ] || echo "pwd: inode distinctness WEAKLY exercised" \
+	     "-- only $pwdn entries in $pwdpar, against a birthday bound of 256."
+	pwdbad=0
+	for v in $(awk '{print $1}' "$TMP/inos" | sort | uniq -d); do
+		# every name sharing v7 inode v, stat'd on the host: one
+		# distinct host inode means they are links to one file
+		nh=$(awk -v v="$v" '$1==v{sub(/^[0-9]+[ \t]+/,""); print}' \
+		         "$TMP/inos" |
+		     while IFS= read -r nm; do
+			/usr/bin/stat -f '%i' "$pwdpar/$nm" 2>/dev/null
+		     done | sort -u | wc -l | tr -d ' ')
+		[ "${nh:-0}" -le 1 ] || pwdbad=$((pwdbad+1))
+	done
+	check "no two files of $pwdpar share a v7 inode ($pwdn entries)" \
+	      '0' "$pwdbad"
 fi
 
 # ---------------------------------------------------------------------------

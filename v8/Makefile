@@ -508,6 +508,17 @@ $(BUILD)/v8sys/libv8sys.a: $(SHIM_OBJ)
 # -fno-stack-protector and -fno-stack-check: both emit calls to libc helpers
 # (___stack_chk_fail, ___chkstk_darwin), and the whole point of the shim is that
 # it names no libc symbol -- see shim/v8sys/rawsys.h.
+#
+# AND THERE IS NO -O HERE ON PURPOSE, WHICH IS EASY TO READ AS AN OVERSIGHT.
+# clang's loop-idiom pass recognises the shim's hand-written byte loops -- the
+# bcopy_/bzero_ at the top of shim/v8sys/dir.c -- and rewrites them as calls.
+# Measured: the same dir.c compiles to `nm -u ... _v8_errno _v8sys_alloc' with
+# no -O, and gains `_bzero _memcpy' at -O2.  Adding -O is therefore a decision
+# about the libc rule and not about speed.  It does not fail silently:
+# rootfs/bin/cat links three symbols out of dir.o and imports nothing at all,
+# and tests/kmemu sweeps every Mach-O in the rootfs with `nm -u' against an
+# empty allowed list -- so the leak lands as a red suite, which is what makes
+# it safe to leave this as a comment rather than a hand-rolled memset.
 # V8ROOT_DEFAULT stamps the world's location into every V8 binary, so one run
 # without $V8ROOT set does not silently operate on the real filesystem -- see
 # v8root() in shim/v8sys/syscall.c.  In the build tree that is $(ROOTFS); `make
