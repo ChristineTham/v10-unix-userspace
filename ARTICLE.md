@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **1578 tests across 17 suites** guard it.
+assembly. **1582 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -1227,6 +1227,115 @@ and every differing tape byte classified by its position within the record — 1
 in the date field, 14 in the checksum, zero elsewhere. **Compare artefacts
 against what the clock alone does**, not against each other.
 
+### Costing the next step before doing it, and finding it was the wrong shape
+
+The plan's next step was one sentence: *the filesystem server — V8's own
+`alloc.c`, `iget.c`, `nami.c`, `rdwri.c` over that image*. Four files. The way
+this project sizes such a thing is to count the names a file calls but does not
+define, because that number is what made the stream engine affordable — nine
+names for 483 lines — and what made the tty discipline affordable at fifteen.
+
+The four files call **47 names they do not define**. Six already exist.
+Following the rest to whichever file defines them, and then following *those*,
+converges at **42 files and 17,393 lines** — the virtual memory system, the
+swapper, the trap handlers, the Unibus adapter, down to the registers of two
+particular VAX memory controllers. That is not an import. That is the kernel.
+
+But a transitive closure follows every call, including calls a filesystem never
+makes. The explosion turned out to run through **exactly two functions**. The
+biggest single dependency is the buffer cache, and classifying each of its
+twenty-three functions by whether it touches the VAX's page tables gives
+twenty-one that touch nothing but the interrupt-priority calls the shim already
+has — and all eight VAX-memory names living in `swap` and `physio`, which a
+filesystem server never calls. They have to *link*. They never have to *run*.
+
+With those two treated as dead weight the real unit is **six files and 2743
+lines**, needing nineteen new names, of which four are the panic stubs for the
+dead pair. A week of work rather than a month, and the difference was an
+afternoon of counting.
+
+Two things the survey turned up that the one-sentence version could not. The
+import **retires** hand-written code rather than only adding: three functions
+the shim currently spells by hand are defined by one of the six, and a
+thirty-line stand-in header exists whose own comment reads *"there is no buffer
+cache here and no disk driver, so importing it would put a description of
+hardware in the tree to obtain two constants"* — true when it was written, and
+this step is precisely the thing that falsifies it.
+
+And then the auditor found the one that would have cost days. `nami.c` compares
+a directory entry's name against the name being looked up, and under
+`#if DIRSIZ == 14` it does not call `strncmp` — it hand-unrolls the comparison
+as four-plus-four-plus-four-plus-two bytes, spelled in terms of `long`. That is
+exactly fourteen **because V8's `long` is thirty-two bits**, the same fact,
+recorded in one line of the original compiler's machine description, that had
+already made every on-disk structure in this port the wrong size. Here it is
+eight-plus-eight-plus-eight-plus-two: it reads past both names, fails to match
+a name that is present, and **every path lookup in the filesystem returns "no
+such file"**. Total failure, from a comparison that looks like an
+optimisation — and the tempting fix, changing `DIRSIZ`, makes the symptom
+vanish by silently changing the on-disk format.
+
+### Two sentences in the documentation, checked
+
+Neither of the last two findings came from reading code. They came from running
+an assertion the project's own notes make about the tree, which nobody had run.
+
+The notes document half a dozen `grep` sweeps — the ways to re-find each bug
+class after importing something new. Every one spelled its separator `[ \t]`,
+which looks like "space or tab" and is a GNU extension. The POSIX reading is
+three literal characters: space, **backslash**, and the letter `t`. Which you
+get depends on which `grep` is installed. On this machine, one thing; on a
+stock Mac and on the CI runner, another:
+
+| the sweep | stock `grep` | this machine |
+|---|---|---|
+| typed yacc tokens | **3** | 62 |
+| `#include` of a non-header | 71 | 69 |
+
+Fifty-nine of the sixty-two typed-token declarations in the tree put a *tab*
+after `%token`. So the sweep written to catch a specific pointer-truncation bug
+would, on a stock Mac, find three of sixty-two — and the file it would miss
+includes the exact line where that bug was found. The other sweep fails in the
+opposite direction, and shows the backslash doing the damage: it matched the
+escaped quote inside `printf("# include \"mfile2.h\"")`, and that same escaped
+quote is why the filter meant to discard such lines did not discard them. One
+stray character, two faults cooperating, and a plausible number.
+
+The second sentence read: *six spellings of one number*, about `DIRSIZ`. There
+are ten and they are four numbers. One of the disagreements is correct and
+interesting — the kernel header says 14 on purpose, because it describes a disk
+record. One was a live bug.
+
+`sh` has a spelling corrector: mistype a directory in `cd` and it offers the
+closest name. It keeps the best candidate in a buffer sized `DIRSIZ+1`, filled
+by a copy with no bound — exact on a system where a name cannot exceed
+fourteen characters, and an overflow here, where this port raised the limit to
+254. Measured under a sanitizer against the untouched source: a one-byte write
+past the end.
+
+One byte, and the reason it is only one byte is the interesting part: **the
+bound is in a different function**. The scoring routine that decides whether to
+copy will not score a name more than one character longer than the guess. So
+reasoning about the copy alone gets the severity wrong in both directions — it
+is not unbounded, and it is not harmless. The copy that fills the *other*
+buffer **is** bounded, which is why anyone auditing this function for exactly
+this bug class finds a bound and stops looking.
+
+It is also easier to hit than "one byte" suggests, because the corrector walks
+every component of the path and an exact match scores zero and copies too. The
+first probe run tripped on a path nobody had constructed for it: a
+fifty-two-character directory in the temporary tree, truncated to a
+fourteen-character guess, sitting beside a real fifteen-character directory
+that differed by one character.
+
+And the fix carries a trap the project has met before. The path buffer is 128
+bytes, and 128 is not an independent number — it is written into the code as
+`128 - DIRSIZ - 2`. Raise `DIRSIZ` alone and that becomes negative, the guard
+fires on the first pass, and the corrector returns "no suggestion" forever: no
+crash, no message, a feature silently gone. That is exactly what happened to
+`mv` when the same constant relationship was broken there. Both numbers move or
+neither does.
+
 
 ## What is left
 
@@ -1239,14 +1348,9 @@ in.
 
 What remains, in rough order:
 
-- **The rest of the line discipline.** The driver landed and the five traffic
-  functions run, but four flag-gated arms inside them are still dark:
-  upper-case mapping for terminals that had no lower case, backslash escaping,
-  the flow-control back-pressure path, and the output delays for four specific
-  1970s terminals whose timing V8 still carried in 1985. Those are tests to
-  write, not machinery to build.
 - **The V8 filesystem server over the raw image**, which is what turns the image
-  from something the tools inspect into something the world can mount.
+  from something the tools inspect into something the world can mount. It has
+  now been surveyed rather than estimated, and the survey moved it — see below.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.
