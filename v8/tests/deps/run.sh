@@ -608,6 +608,28 @@ dep 'our conf.h -> streamio.o'   shim/kern/h/conf.h        $B/kern/streamio.o
 # in any authentic file, which is precisely why it is written down.
 dep 'V8 setjmp.h -> streamio.o'  src/include/setjmp.h      $B/kern/streamio.o
 
+# --- ttyld.c, the tty line discipline, and the generated header it needs ----
+#
+# Five of its six includes are edges like streamio.c's.  The sixth is the one
+# worth the case: ttyld.c:6 is `#include "tty.h"', the per-configuration header
+# config(8) would have written, and the file that answers it is OURS --
+# shim/kern/dev/tty.h, found through KERNFLAGS' -Ishim/kern/dev by the same
+# fall-through that turns "../h/param.h" into a stand-in.  NTTY lives only
+# there, so if that edge is missing, changing the number leaves a stale object
+# holding a differently sized tty[] and nothing says so.
+dep 'ttyld.c -> kern archive'    src/sys/dev/ttyld.c       $B/kern/libv8kern.a
+dep 'stream.h -> ttyld.o'        src/sys/h/stream.h        $B/kern/ttyld.o
+dep 'ioctl.h -> ttyld.o'         src/sys/h/ioctl.h         $B/kern/ttyld.o
+dep 'ttyld.h -> ttyld.o'         src/sys/h/ttyld.h         $B/kern/ttyld.o
+dep 'sparam.h -> ttyld.o'        src/sys/research/sparam.h $B/kern/ttyld.o
+dep 'our param.h -> ttyld.o'     shim/kern/h/param.h       $B/kern/ttyld.o
+dep 'our conf.h -> ttyld.o'      shim/kern/h/conf.h        $B/kern/ttyld.o
+dep 'generated tty.h -> ttyld.o' shim/kern/dev/tty.h       $B/kern/ttyld.o
+
+# partab.c includes NOTHING -- 51 lines of pure data -- so the archive edge is
+# the only one there is, and its absence from the list above is not an omission.
+dep 'partab.c -> kern archive'   src/sys/sys/partab.c      $B/kern/libv8kern.a
+
 # The four files that supply the fifteen names.  tsleep is the one that decided
 # whether this import could happen at all, so slp.c gets its own edge rather
 # than standing behind the archive.

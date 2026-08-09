@@ -190,17 +190,31 @@ typedef long		label_t[14];	/* h/types.h:29 -- see hazard 4 */
 #define	TS_SIG	2		/* asynchronous signal wakeup */
 
 /*
- * The two signals streamio.c raises, and only those two.
+ * The signals the imported kernel source raises, and only those.
  *
  * Upstream's param.h says `#include <signal.h>' and takes all 31.  Including
  * the HOST's signal.h into 1985 K&R kernel code would drag sigaction, the
  * ucontext machinery and Darwin's own sigset_t through every kernel object, to
- * obtain two integers.  So the two are spelled, and shim/kern/sys/subr.c --
- * which is modern C and can see both -- _Static_asserts that they equal the
- * host's.  That is the same two-ends discipline src/include/PORTING.md states
- * for a struct that v8cc and clang each read one end of.
+ * obtain a handful of integers.  So they are spelled, and shim/kern/sys/subr.c
+ * -- which is modern C and can see both -- _Static_asserts that each equals
+ * the host's.  That is the same two-ends discipline src/include/PORTING.md
+ * states for a struct that v8cc and clang each read one end of.
+ *
+ * It was two, for streamio.c.  ttyld.c brought SIGINT and SIGQUIT -- the
+ * interrupt and quit characters, ttyld.c:101,146,150 -- and nothing else:
+ * `grep -oE SIG[A-Z]+' over it yields exactly those two plus the word SIGNAL
+ * in a comment.  The numbers are V8's own, usr/include/signal.h:4-6 and :24,
+ * and they are Darwin's too, which is what the asserts exist to keep true.
+ *
+ * KEEP THIS LIST MINIMAL RATHER THAN COMPLETE.  Spelling all 31 would end the
+ * need to touch this block again and would also end the property that makes it
+ * safe: every name here is one an imported file demonstrably raises, so the
+ * assert list and the raise sites stay the same set.  A name added "for
+ * completeness" is a claim nothing checks.
  */
 #define	SIGHUP	1
+#define	SIGINT	2
+#define	SIGQUIT	3
 #define	SIGPIPE	13
 
 /*
@@ -247,12 +261,23 @@ void	v8k_streaminit(void);	/* what the kernel's main() called qinit() for */
  * them in: slp.c (tsleep, wakeup), fio.c (ufalloc, closef, iput), subr.c (the
  * rest), ioconf.c (the configuration table).
  *
- * TWO SIGNATURES ARE NOT UPSTREAM'S AND BOTH DIFFERENCES ARE HERE, IN OURS.
+ * ONE SIGNATURE IS NOT UPSTREAM'S, AND IT USED TO SAY TWO BECAUSE THIS NOTE
+ * WAS WRONG ABOUT min.
  *
- * min is `min(a, b) unsigned a, b;' -- sys/rdwri.c:250, no declared return
- * type, so int(unsigned, unsigned).  Written out because "improve it to
- * int(int,int)" is the obvious wrong move: streamio.c calls it with u.u_count,
- * which is unsigned, against a pointer difference.
+ * It said min is "`min(a, b) unsigned a, b;' -- sys/rdwri.c:250, no declared
+ * return type, so int(unsigned, unsigned)".  Read at the source, rdwri.c:249
+ * is the word `unsigned' on a line of its own and :250 is `min(a, b)' -- the
+ * return type IS declared, and it is unsigned.  There is exactly one min in
+ * the whole kernel and no min macro in h/, so nothing else could have been
+ * meant.  min and max are both `unsigned' here now, which is upstream's, and
+ * the difference this paragraph existed to justify does not exist.
+ *
+ * Nothing observable changed, which is why it survived: `register n' in
+ * streamio.c is an implicit int, and every call is bounded by a stream block
+ * of at most 1024 bytes, so bit 31 is clear and int and unsigned have the same
+ * bits and the same extension.  The half worth keeping is the warning it
+ * carried -- "improve it to int(int, int)" is the wrong move, because
+ * streamio.c calls it with u.u_count against a pointer difference.
  *
  * iomove takes `void *' where upstream takes caddr_t, and that is the one
  * concession to the type checker in this header.  streamio.c hands it
@@ -267,7 +292,8 @@ int	tsleep(caddr_t chan, int pri, int seconds);
 void	wakeup(caddr_t chan);
 int	copyin(caddr_t from, caddr_t to, unsigned long n);
 int	copyout(caddr_t from, caddr_t to, unsigned long n);
-int	min(unsigned a, unsigned b);
+unsigned min(unsigned a, unsigned b);
+unsigned max(unsigned a, unsigned b);
 int	ufalloc(void);
 void	gsignal(int pgrp, int sig);
 void	iomove(void *cp, unsigned n, int flag);

@@ -684,7 +684,8 @@ STREAMIOFLAGS = $(KERNFLAGS) -DKERNEL -fcommon \
 KERN_LIB = $(BUILD)/kern/libv8kern.a
 KERN_OBJ = $(BUILD)/kern/stream.o $(BUILD)/kern/machdep.o \
            $(BUILD)/kern/streamio.o $(BUILD)/kern/slp.o \
-           $(BUILD)/kern/fio.o $(BUILD)/kern/subr.o $(BUILD)/kern/ioconf.o
+           $(BUILD)/kern/fio.o $(BUILD)/kern/subr.o $(BUILD)/kern/ioconf.o \
+           $(BUILD)/kern/ttyld.o $(BUILD)/kern/partab.o
 
 # The headers streamio.c reaches, split by who wrote them.  Six are AUTHENTIC
 # and live in src/sys/h/, so a quoted "../h/x.h" from src/sys/sys/ finds them
@@ -714,6 +715,47 @@ $(BUILD)/kern/stream.o: $(SRC)/sys/dev/stream.c $(SRC)/sys/h/stream.h \
 $(BUILD)/kern/streamio.o: $(SRC)/sys/sys/streamio.c $(KERN_AUTH_H) $(KERN_SHIM_H)
 	@mkdir -p $(BUILD)/kern
 	$(HOSTCC) $(STREAMIOFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# ttyld.c -- V8's tty line discipline, line discipline 0 (conf/devices:75),
+# imported byte-identical.  Its sixth include is "tty.h", the per-configuration
+# header config(8) would have generated; ours is shim/kern/dev/tty.h and
+# KERNFLAGS' -Ishim/kern/dev is already what finds it, by the same fall-through
+# that turns "../h/param.h" into the stand-in.  Nothing new in the flags, and
+# no edit to Bell Labs' source, which is the whole point of the arrangement.
+#
+# shim/kern/dev/tty.h is named as a prerequisite because it is the one input
+# here that no other rule mentions -- change NTTY and this object must rebuild.
+#
+# ONE FLAG BEYOND KERNFLAGS, and only one: ttyld.c:34-35 initialise struct
+# qinit -- whose qopen and qclose are `long (*)()' -- with ttyopen and ttyclose,
+# which are int.  Identical to streamio.c's case and suppressed for the
+# identical reason, but spelled separately rather than folded into KERNFLAGS,
+# because stream.c compiles clean without it and a suppression argued for once
+# should not quietly cover code nobody argued about.  ttyld does NOT need
+# STREAMIOFLAGS' other three: no -DKERNEL, no -fcommon (tty[NTTY] is the only
+# tentative definition and there is one translation unit), no -Wno-extra-tokens.
+#
+# What makes the suppression safe here is measured, not assumed.  CLAUDE.md's
+# rule is that a qopen must never return a negative int, because `return -1'
+# widens to 0x00000000ffffffff and stopen sees neither NULL nor 1.  ttyopen
+# (ttyld.c:41-63) returns exactly 0 and 1 on every path, and tests/streams
+# asserts the pair rather than this sentence.
+TTYLDFLAGS = $(KERNFLAGS) -Wno-incompatible-function-pointer-types
+$(BUILD)/kern/ttyld.o: $(SRC)/sys/dev/ttyld.c $(SRC)/sys/h/stream.h \
+                       $(SRC)/sys/h/ioctl.h $(SRC)/sys/h/ttyld.h \
+                       $(SRC)/sys/research/sparam.h \
+                       $(ROOT)shim/kern/dev/tty.h \
+                       $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \
+                       $(ROOT)shim/kern/h/conf.h
+	@mkdir -p $(BUILD)/kern
+	$(HOSTCC) $(TTYLDFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# partab.c is 51 lines of pure data -- the character parity/delay table ttyld.c
+# declares as `extern char partab[]'.  It includes nothing at all, so it has no
+# header prerequisites and that is not an omission.
+$(BUILD)/kern/partab.o: $(SRC)/sys/sys/partab.c
+	@mkdir -p $(BUILD)/kern
+	$(HOSTCC) $(KERNFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(BUILD)/kern/machdep.o: $(ROOT)shim/kern/dev/machdep.c \
                          $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \

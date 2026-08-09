@@ -612,3 +612,107 @@ in `shim/kern` a 32-bit `time_t` for its raw syscalls.
 The rule generalises past these three: **a stand-in kernel header that typedefs
 anything must ask whether libc owns the name**, and if it does, claim the
 guard rather than hope about order.
+
+## `ttyld.c` and `partab.c`: the tty line discipline, and one number that is ours
+
+Third and fourth authentic kernel files, both imported **byte-identical** and
+both guarded by hash in `tests/streams` — which is the point of how `NTTY` was
+handled, below.
+
+`ttyld.c` is 596 lines and is **line discipline 0**, not a device:
+`conf/devices:75` reads `standard line-discipline 0	tty	tty	info`, and what
+pushes it is `init.c:377`, `ioctl(0, FIOPUSHLD, &tty_ld)`, immediately before
+the three `dup(0)`s that make fds 1, 2 and 3. `partab.c` is 51 lines of pure
+data — the parity-and-class table `ttyld.c` declares as `extern char partab[]`
+— and lives in `sys/`, not `dev/`, which an earlier survey had wrong.
+
+### It cost one function, and the survey was right about that
+
+Fifteen external names, fourteen already in `libv8kern.a`. The one missing was
+`max()`, eight lines at `sys/rdwri.c:236`, and it is in `shim/kern/sys/subr.c`
+beside `min()` rather than imported, because `rdwri.c` is the file I/O layer —
+`readi`, `writei`, `iomove` — and taking sixteen lines of arithmetic would mean
+taking all of it. Same judgement as the `printf`/`bcopy`/`uballoc`
+redirections in `param.h`.
+
+`outconv` looks like a sixteenth callee and is `ttyld.c`'s own (`:351`). After
+the import the archive's externals are still exactly `_longjmp _memcpy
+_setjmp`, unchanged, which is the property that says nothing new leaked in.
+
+**AND WRITING max() FOUND min() MISDECLARED, WHICH IS THE USEFUL PART.** Both
+`param.h` and `subr.c` recorded that upstream's `min` has "no declared return
+type, so int(unsigned, unsigned)". `rdwri.c:249` is the word `unsigned` on a
+line of its own and `:250` is `min(a, b)`; there is exactly one `min` in the
+kernel and no `min` macro in `h/`. Both are `unsigned` now, which is
+upstream's. Nothing observable changed — `register n` in `streamio.c` is an
+implicit int and every call is bounded by a 1024-byte block, so bit 31 is
+clear and the two types have the same bits — and that is exactly why a wrong
+note survived beside a working function. It would have been copied into `max`.
+
+### `NTTY` is this port's decision, and it is derived rather than picked
+
+`ttyld.c:6` is `#include "tty.h"`, and there is no such file to import.
+`h/tty.h` upstream is **zero bytes**, a make timestamp node
+(`conf/makefile:61-62` touches it to mean "sgtty.h and ioctl.h are current"),
+and it is not what `ttyld.c` gets anyway — a quoted include tries the
+includer's own directory first, and `dev/` has no `tty.h`. What `ttyld.c` is
+asking for is the per-configuration header `config(8)` generates:
+`conf/files:98` marks the file `optional tty pseudo-device`, so
+`pseudo-device tty N` in a machine description becomes `#define NTTY N`. That
+description is not shipped, `conf/config` is a VAX `a.out` binary rather than
+source, and there is **no `#define NTTY` anywhere in `third_party/`**.
+
+So it is ours, and it goes in `shim/kern/dev/tty.h` — reached by exactly the
+fall-through that turns `"../h/param.h"` into the stand-in beside it, with
+`-Ishim/kern/dev` already in `KERNFLAGS`. **No edit to Bell Labs' source was
+needed to supply it, which is what keeps the hash guard available.**
+
+The value is **128 = NSTREAM** (`src/sys/research/sparam.h:6`, authentic), and
+it is derived: `NTTY` bounds `struct ttyld tty[NTTY]`, the pool `ttyopen()`
+allocates from, and a slot is one discipline **attached to a stream** rather
+than one terminal — `ttyopen` returns 1 immediately when `qp->ptr` is set, so
+it is one slot per stream, and a process cannot hold more streams than
+`NSTREAM`. On a VAX `NTTY` counted configured terminal lines and was far
+smaller; it cannot mean that here, because the shim is per-binary and `tty[]`
+is per-process, so "how many terminals has this machine" is not a question one
+process can answer. "How many streams can this process hold" is, and it is the
+tight bound. Cost is not the argument either way: `struct ttyld` is 14 bytes,
+so the array is 1792 bytes, and the archive's zero-initialised storage went
+from 96332 to **98124 bytes** — a figure a correct import increases.
+
+### What is exercised, and why the open path is not blocked by the missing driver
+
+There is no hardware driver under it, and an earlier survey concluded from
+that fact that `ttyld` "cannot be exercised". False at the open path:
+`ttyopen` (`:41-63`) never dereferences `q->next` and sends nothing
+downstream, so it runs on a bare queue pair. Only *traffic* needs a bottom
+end. `tests/streams/ttyprobe.c` is a third probe beside `probe.c` (the engine)
+and `sioprobe.c` (the syscall side), and it pushes the discipline through
+`qinfo->qopen` rather than calling `ttyopen` by name, so the `long (*)()` slot
+the Makefile suppresses a warning about is the thing under test.
+
+27 cases: the default terminal `ttyopen` builds (ECHO|CRMOD, erase `^H`, kill
+`@`, intr DEL, quit FS), idempotence on a second push, `ttyclose` releasing the
+slot, `partab` content at three points, and exhaustion.
+
+**Exhaustion is the case that matters, and it is the `qopen` rule.** CLAUDE.md
+records that a `qopen` must never return a negative int, because `return -1`
+becomes `0x00000000ffffffff`, which `stopen:124` does not see as NULL and
+`:131` does not see as 1 — so a refusal would read as SUCCESS and hand back an
+inode pointer of `0xffffffff`. `ttyopen` returns exactly 0 and 1 on every
+path. Measured, not read: 128 disciplines fit, the 129th is refused, and the
+refusal is 0. Mutating `return(0)` to `return(-1)` turns that case red (and
+the hash guard with it).
+
+The one flag beyond `KERNFLAGS` is `-Wno-incompatible-function-pointer-types`,
+for `ttyld.c:34-35` initialising `struct qinit`'s `long (*)()` slots with `int`
+functions — identical to `streamio.c`'s case and spelled as its own
+`TTYLDFLAGS` rather than folded into `KERNFLAGS`, because `stream.c` compiles
+clean without it.
+
+### What is still not exercised
+
+Everything below the open: `ttyldin`, `ttyinsrv`, `ttyosrv`, `ttysig` and
+`ttldioc` are compiled and linked and no test drives them, because driving
+them needs something under the discipline to send to. That is the next
+increment, and it is a driver rather than a module.

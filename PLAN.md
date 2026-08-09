@@ -1598,9 +1598,10 @@ Ordered so that value lands before risk, and so each step is testable alone.
    the per-binary question first and importing once was the right order: it
    meant writing `tsleep` once, from a settled design, rather than twice under
    a build that would not link.
-   **STEP 1b: WHICH DRIVER GOES UNDERNEATH, SURVEYED THE SAME WAY.** Nothing
+   **STEP 1b: WHICH DRIVER GOES UNDERNEATH, SURVEYED THE SAME WAY.**
+   **`ttyld` LANDED — see the closing note at the end of this step.** Nothing
    in the rootfs links `libv8kern.a` -- it is exercised only by
-   `tests/streams/sioprobe.c`, so 1093 lines of authentic kernel are
+   `tests/streams/`'s three probes, so 1700 lines of authentic kernel are
    unreachable from any shipped binary. Three candidates were costed by
    external-name count, which is the method that made step 1 tractable:
 
@@ -1742,6 +1743,36 @@ Ordered so that value lands before risk, and so each step is testable alone.
    missing bottom end that `ttyld` "cannot be exercised until something is under
    it". Both corrected above: the open path needs nothing below, only the
    traffic does.)
+
+   **DONE, AND THE SURVEY'S COST ESTIMATE HELD EXACTLY.** `dev/ttyld.c` and
+   `sys/partab.c` are imported **byte-identical** and hash-guarded in
+   `tests/streams`; `max()` was the one missing name and sits in
+   `shim/kern/sys/subr.c` beside `min()`; `NTTY` is 128 in
+   `shim/kern/dev/tty.h`, **derived** as `NSTREAM` because a slot is one
+   discipline attached to a stream and a process cannot hold more streams than
+   that. The quoted-include fall-through delivered the generated header with no
+   edit to Bell Labs' source, which is what keeps the hash guard available. The
+   archive's externals are still exactly `_longjmp _memcpy _setjmp`, and its
+   zero-initialised storage went 96332 -> 98124 bytes, +1792 for `tty[128]`.
+
+   `tests/streams/ttyprobe.c` is a third probe beside the engine and syscall
+   ones, and it drives the discipline through `qinfo->qopen` rather than by
+   name. 27 cases; the load-bearing one is exhaustion, because that is where
+   the `qopen`-must-not-return-negative rule lives -- 128 fit, the 129th is
+   refused, and the refusal is 0. Mutating `return(0)` to `return(-1)` turns it
+   red, and mutating `NTTY` to 64 turns four others red.
+
+   **Writing `max()` found `min()` misdeclared in two places**, both saying
+   upstream had "no declared return type"; `rdwri.c:249` is the word `unsigned`
+   on its own line. Nothing observable changed, which is why it survived --
+   and it would have been copied straight into `max`. Adding the sibling is
+   what forced the declaration to be read.
+
+   **What is NOT exercised is everything below the open**: `ttyldin`,
+   `ttyinsrv`, `ttyosrv`, `ttysig` and `ttldioc` compile and link and nothing
+   drives them, because driving them needs something under the discipline to
+   send to. That is the next increment, and it is a driver rather than a
+   module. `src/sys/PORTING.md` has the whole account.
 
    Three things the survey settled that were not asked:
 

@@ -5,3 +5,4 @@
 #
 # <git blob hash of pristine upstream file>  <upstream path>
 b9abf46a9027dbe4e549a6d9848c228892394a73  v8/usr/sys/sys/streamio.c
+75859224e0a30c9709ac859a7d2efaedbc9bffaf  v8/usr/sys/sys/partab.c

@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1444 cases, 1443 on a host whose $TMPDIR
+make test             # all 17 suites (1482 cases, 1481 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -143,6 +143,29 @@ importing more:
   is what keeps the blob hash intact. A three-line deletion would have been
   easier and would have cost the strongest claim available.
 
+**AND THE FIRST RULE HAS NOW PAID FOR A FILE THAT NEEDED A NUMBER V8 NEVER
+SHIPPED.** `ttyld.c` and `partab.c` are in (the tty line discipline, line
+discipline 0 — `conf/devices:75` — not a device), both **byte-identical** and
+both hash-guarded. `ttyld.c:6` includes `"tty.h"`, which is not `h/tty.h` (that
+is **zero bytes**, a make timestamp node at `conf/makefile:61-62`) but the
+per-configuration header `config(8)` generates from a machine description that
+was not shipped — `conf/files:98` marks the file `optional tty pseudo-device`,
+and there is **no `#define NTTY` anywhere in `third_party/`**. So `NTTY` is a
+layer-2 decision, it lives in `shim/kern/dev/tty.h`, and the quoted-include
+fall-through delivers it with **no edit to Bell Labs' source** — which is
+exactly what keeps the hash guard available. Derived, not picked: 128 =
+`NSTREAM`, because a slot is one discipline *attached to a stream* and a
+process cannot hold more streams than that. `src/sys/PORTING.md`.
+
+**And writing `max()` found `min()` misdeclared in two places.** Both
+`param.h` and `subr.c` said upstream's `min` has "no declared return type, so
+`int`"; `rdwri.c:249` is the word `unsigned` on its own line. Nothing
+observable changed — every call is bounded by a 1024-byte block, so bit 31 is
+clear — which is precisely why the wrong note sat beside a working function for
+months, and it would have been copied straight into `max`. **The way to find
+this class is to add the sibling**: a second instance forces the declaration to
+be read instead of recalled.
+
 - **A stand-in kernel header that typedefs a name libc owns must CLAIM THE
   HOST'S GUARD, not hope about include order.** `shim/kern/h/param.h` has to
   spell `dev_t`, `ino_t` and `off_t`, because the authentic `inode.h`,
@@ -158,11 +181,13 @@ importing more:
   the shim's own raw syscalls a 32-bit `time_t`.
 
 `libv8kern.a` is separate from `libv8sys.a` for libkmemu's reason plus a
-storage one: **94 KB** of zero-initialised storage (measured: 96332 bytes of
+storage one: **95.8 KB** of zero-initialised storage (measured: 98124 bytes of
 common symbols, `_blkdata` 36736 and `_queue` 28672 the largest two), and
-`qinit()` dirties ~60 KB of pages. That figure said 85 KB until it was
-re-measured; it grew when `streamio.c` brought `_streams`, `_u` and `_file`,
-which is a count a correct import increases. `cat` does not
+`qinit()` dirties ~60 KB of pages. That figure said 85 KB, then 94 KB; it grew
+when `streamio.c` brought `_streams`, `_u` and `_file`, and again by exactly
+1792 when `ttyld.c` brought `tty[NTTY]` — which is a count a correct import
+increases, so **re-measure it after every import rather than carrying it
+forward**. `cat` does not
 carry it. Its externals are `_memcpy`, `_setjmp` and `_longjmp`, all three
 V8's own — and `tests/streams` gets that list by **subtracting what the archive
 defines from what it undefines** rather than by grepping away a hand-written

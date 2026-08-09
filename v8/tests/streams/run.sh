@@ -74,6 +74,18 @@ perl -e 'alarm 60; exec @ARGV' "$TMP/sioprobe" > "$TMP/sio" 2>"$TMP/sioerr" ||
 	bad "sioprobe exited nonzero" "$(head -3 "$TMP/sioerr")"
 s() { awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}' "$TMP/sio"; }
 
+# And the line discipline gets a third, for the reason the first two are two:
+# probe.c is the stream engine, sioprobe.c the syscall side, ttyprobe.c a module
+# riding on both.  No deadline -- nothing here sleeps.
+if ! clang $KFLAGS -o "$TMP/ttyprobe" "$ROOT/tests/streams/ttyprobe.c" \
+     "$KERN" "$SETJMP" > "$TMP/ttybuild.log" 2>&1; then
+	grep -qv 'reducing alignment' "$TMP/ttybuild.log" &&
+		{ echo "ttyprobe build failed:"; head -5 "$TMP/ttybuild.log"; exit 1; }
+fi
+"$TMP/ttyprobe" > "$TMP/tty" 2>"$TMP/ttyerr" ||
+	bad "ttyprobe exited nonzero" "$(head -3 "$TMP/ttyerr")"
+t() { awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}' "$TMP/tty"; }
+
 # --- qinit built one freelist per size class ------------------------------
 # From src/sys/research/sparam.h, which is Bell Labs' own configuration for the
 # machine V8 was developed on -- not a number this port chose.
@@ -387,6 +399,19 @@ prov=$(awk '$2 == "v8/usr/sys/dev/stream.c" {print $1}' "$ROOT/src/sys/dev/PROVE
 here=$(git -C "$ROOT" hash-object src/sys/dev/stream.c)
 check "src/sys/dev/stream.c still hashes to pristine V8" "$prov" "$here"
 
+# ttyld.c and partab.c are in the same position and get the same guard, which
+# is the point of putting NTTY in shim/kern/dev/tty.h: the discipline needed a
+# number the shipped tree does not contain, and it still took NO edit to Bell
+# Labs' source to supply it.  The day someone answers a machine dependency by
+# touching ttyld.c instead of the header beside it, these go red.
+prov=$(awk '$2 == "v8/usr/sys/dev/ttyld.c" {print $1}' "$ROOT/src/sys/dev/PROVENANCE")
+here=$(git -C "$ROOT" hash-object src/sys/dev/ttyld.c)
+check "src/sys/dev/ttyld.c still hashes to pristine V8" "$prov" "$here"
+
+prov=$(awk '$2 == "v8/usr/sys/sys/partab.c" {print $1}' "$ROOT/src/sys/sys/PROVENANCE")
+here=$(git -C "$ROOT" hash-object src/sys/sys/partab.c)
+check "src/sys/sys/partab.c still hashes to pristine V8" "$prov" "$here"
+
 # --- and streamio.c differs by EXACTLY the two recorded deviations ----------
 # stream.c can be checked by hash because nothing in it changed.  streamio.c
 # cannot: it carries two target-forced deviations, so the guard has to be the
@@ -472,6 +497,80 @@ done
 # layering has inverted and the archive stops being linkable on its own.
 nm -u "$KERN" 2>/dev/null | grep -q '_v8s_' &&
 	bad "the kernel archive calls into libv8sys" || ok
+
+# ---------------------------------------------------------------------------
+# THE TTY LINE DISCIPLINE -- src/sys/dev/ttyld.c, imported byte-identical.
+#
+# It is line discipline 0 (conf/devices:75), not a device, and on a real V8 it
+# is pushed onto a terminal's stream by init.c:377.  Nothing is under it here,
+# which bounds the traffic paths and NOT the open path -- ttyopen never
+# dereferences q->next.  See ttyprobe.c's header.
+# ---------------------------------------------------------------------------
+
+# NTTY is the one number in this machinery that V8's shipped tree does not
+# contain: config(8) generated it from a machine description that was not
+# shipped, and there is no `#define NTTY' anywhere in third_party/.  So it is
+# this port's decision, spelled in shim/kern/dev/tty.h and DERIVED rather than
+# picked: a discipline needs a stream, so NSTREAM bounds it exactly.
+check "NTTY is NSTREAM, so the discipline is never the scarcer resource" \
+      "128" "$(t ntty)"
+check "...and NSTREAM is still what sparam.h says" \
+      "128" "$(awk '$2=="NSTREAM"{print $3}' "$ROOT/src/sys/research/sparam.h")"
+check "struct ttyld is 14 bytes"        "14"  "$(t ttyldsize)"
+
+# How big tty[] REALLY is, read out of the compiled archive rather than out of
+# a header.  ttyprobe.c includes the same tty.h ttyld.c did, so a sizeof there
+# would be one number read twice and would agree even if the object had been
+# built against a different NTTY.  `tty' is a common symbol and nm prints its
+# SIZE in the value column, so this is the object's own answer.
+ttysz=$(nm -g "$KERN" 2>/dev/null | awk '$2=="C" && $3=="_tty" {print $1}')
+check "tty[] in the object is NTTY * sizeof(struct ttyld)" \
+      "1792" "$((16#${ttysz:-0}))"
+
+# partab is the 51-line data file ttyld.c declares `extern char partab[]'.  A
+# missing definition would link as a common symbol of zeros and read back as
+# all-zero, so the CONTENT is asserted, at three points of the table, each
+# transcribed from src/sys/sys/partab.c.
+check "partab[0] is NUL's 0001"          "1"   "$(t partab0)"
+check "partab['\\t'] is 0004, a class"   "4"   "$(t partabTab)"
+check "partab['@'] is 0200, parity only" "128" "$(t partabAt)"
+
+# The open path, driven through qinfo->qopen rather than by calling ttyopen by
+# name -- so the `long (*)()' slot the Makefile suppresses a warning about is
+# the thing under test, not a direct call that sidesteps it.
+check "qopen returns 1"                      "1" "$(t open1)"
+check "it hangs a ttyld off the read queue"  "1" "$(t ptrset)"
+check "...and the write queue shares it"     "1" "$(t wrsame)"
+check "QDELIM is set"                        "1" "$(t qdelim)"
+check "QNOENB is set"                        "1" "$(t qnoenb)"
+
+# The default terminal V8 gives you, ttyld.c:51-57.  These are the values
+# init.c would have inherited before stty ever ran.
+check "the slot is marked in use"       "1"   "$(t ttuse)"
+check "ECHO is on by default"           "1"   "$(t echo)"
+check "CRMOD is on by default"          "1"   "$(t crmod)"
+check "erase is ^H"                     "8"   "$(t erase)"
+check "kill is @"                       "64"  "$(t kill)"
+check "intr is DEL, not ^C"             "127" "$(t intrc)"
+check "quit is FS"                      "28"  "$(t quitc)"
+check "no delimiters yet"               "0"   "$(t delct)"
+check "column 0"                        "0"   "$(t col)"
+
+# ttyld.c:47 returns early when qp->ptr is set, so a second push is a no-op
+# rather than a second slot.  Getting this wrong would leak a slot per push.
+check "pushing twice returns 1 again"   "1" "$(t open2)"
+check "...and does not take a new slot" "1" "$(t samescnd)"
+check "close releases the slot"         "1" "$(t closed)"
+
+# EXHAUSTION, and the second of these is the load-bearing one.  ttyopen refuses
+# past the end of tty[]; CLAUDE.md's rule is that a qopen must never return a
+# NEGATIVE int, because `return -1' widens to 0x00000000ffffffff, which
+# stopen:124 does not read as NULL and :131 does not read as 1 -- so the open
+# would appear to SUCCEED and hand back an inode pointer of 0xffffffff.
+# ufalloc() in this same tree does return -1, so the shape is not hypothetical.
+check "exactly NTTY disciplines fit"    "128" "$(t nopen)"
+check "the refusal is at slot NTTY"     "128" "$(t firstfail)"
+check "and it is 0, never negative"     "0"   "$(t negative)"
 
 echo "streams: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

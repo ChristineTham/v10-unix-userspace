@@ -27,8 +27,13 @@
  * host's value with itself.
  */
 #include <signal.h>
-enum { HOST_SIGHUP = SIGHUP, HOST_SIGPIPE = SIGPIPE };
+enum {
+	HOST_SIGHUP  = SIGHUP,  HOST_SIGINT  = SIGINT,
+	HOST_SIGQUIT = SIGQUIT, HOST_SIGPIPE = SIGPIPE
+};
 #undef SIGHUP
+#undef SIGINT
+#undef SIGQUIT
 #undef SIGPIPE
 
 #include "../../v8sys/rawsys.h"
@@ -40,6 +45,10 @@ enum { HOST_SIGHUP = SIGHUP, HOST_SIGPIPE = SIGPIPE };
 
 _Static_assert(SIGHUP == HOST_SIGHUP,
     "SIGHUP must be the host's, because psignal delivers with kill(2)");
+_Static_assert(SIGINT == HOST_SIGINT,
+    "SIGINT must be the host's, because psignal delivers with kill(2)");
+_Static_assert(SIGQUIT == HOST_SIGQUIT,
+    "SIGQUIT must be the host's, because psignal delivers with kill(2)");
 _Static_assert(SIGPIPE == HOST_SIGPIPE,
     "SIGPIPE must be the host's, because psignal delivers with kill(2)");
 
@@ -67,22 +76,39 @@ int	selwait;		/* the address is the channel, not the value */
 long	v8k_hostof(int v8pid);
 
 /*
- * min -- upstream sys/rdwri.c:250, and the types are upstream's too.
+ * min and max -- upstream sys/rdwri.c:249 and :235, and the types are
+ * upstream's, which they were NOT until max arrived and the declaration was
+ * read rather than recalled.  This said min had "no declared return type, so
+ * int(unsigned, unsigned)"; rdwri.c puts `unsigned' on the line above the
+ * name, both times, so both return unsigned.  param.h has the account.
  *
- * `min(a, b) unsigned a, b;' with no declared return type, so it is
- * int(unsigned, unsigned).  Worth writing out rather than "improving" to
- * int(int,int): streamio.c calls it as min(u.u_count, bp->wptr - bp->rptr),
- * where the first is unsigned and the second is a pointer difference.  On the
- * VAX that difference was 32 bits and the conversion was free; here it is 64
- * and the conversion truncates -- correctly, because a stream block is at most
- * 1024 bytes, and identically to what the VAX did with the same declaration.
+ * Worth writing out rather than "improving" to int(int, int): streamio.c calls
+ * min(u.u_count, bp->wptr - bp->rptr), where the first is unsigned and the
+ * second is a pointer difference.  On the VAX that difference was 32 bits and
+ * the conversion was free; here it is 64 and the conversion truncates --
+ * correctly, because a stream block is at most 1024 bytes, and identically to
+ * what the VAX did with the same declaration.
+ *
+ * They are here rather than imported because sys/rdwri.c is the file I/O
+ * layer -- readi, writei, iomove -- and taking sixteen lines of arithmetic
+ * would mean taking all of it.  Same judgement as the printf/bcopy/uballoc
+ * redirections in param.h, and recorded for the same reason: this is our
+ * spelling of Bell Labs' function, not Bell Labs' file.
  */
-int
+unsigned
 min(unsigned a, unsigned b)
 {
 	if (a < b)
-		return ((int)a);
-	return ((int)b);
+		return (a);
+	return (b);
+}
+
+unsigned
+max(unsigned a, unsigned b)
+{
+	if (a > b)
+		return (a);
+	return (b);
 }
 
 /*

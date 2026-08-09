@@ -5,3 +5,4 @@
 #
 # <git blob hash of pristine upstream file>  <upstream path>
 447f6d62448ddcc9f45d6584ebba03f04a074dd5  v8/usr/sys/dev/stream.c
+2fc0f887f03c3181514e9cca1ba2c1472102bbdb  v8/usr/sys/dev/ttyld.c
