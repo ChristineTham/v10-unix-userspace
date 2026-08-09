@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1562 cases, 1561 on a host whose $TMPDIR
+make test             # all 17 suites (1578 cases, 1577 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -165,7 +165,7 @@ discipline with one end is a discipline that cannot be driven.
 `tests/streams/ttyprobe.c` now builds the real thing the way `init.c:368-382`
 does — `stopen` the driver, `v8k_stconf` the discipline, `FIOPUSHLD` between —
 with `streamio.c` on top, `ttyld.c` in the middle, and **only the bottom layer
-ours**. Streams went 140 → 220 cases. Three things generalise:
+ours**. Streams went 140 → 236 cases. Three things generalise:
 
 - **The driver is in the probe, not `shim/kern/`, and that is the rule rather
   than laziness.** Nothing in the port consumes a tty driver — `/dev/tty` is
@@ -213,6 +213,24 @@ no payload, which `streamio.c:803-809` turns into `ENOTTY`.
   written as though it were the reason not to. Same shape as the recorded
   constraint that blocked the inode fix for months: **accurate, cited, and
   pointing the opposite way from what it concludes.**
+
+**AND A SHORT READ LEAKS INTO THE NEXT CASE, WHICH IS THE CRASH-PROBE LESSON
+ARRIVING INSIDE ONE PROCESS.** `tests/crash-probe.sh` learned that a prober
+must be a pure function of the program and its arguments, because programs
+sharing one directory read each other's litter. The same thing happens between
+*cases in one probe* when they share a stream: `ttyprobe`'s TANDEM case sent
+401 characters and read them into a 256-byte buffer, and the 145 left queued
+were read by the case after it — which reported a plausible wrong answer and
+made the case after **that** look broken. Two drafts of the `canonb` case were
+written against those 145 bytes before anyone asked where they came from.
+`readline()` now reads whole lines and every canonical read goes through it.
+**A case has to be a pure function of what it sent.**
+
+**AND MEASURE A MUTATION IN ISOLATION BEFORE BELIEVING ITS COUNT.** A batch
+harness scored two of them at one failure; re-run alone, each produced two —
+the right two. The guards were fine and the reading was not, which is the same
+class as the crash probe reporting 254 before it reported 96: **an instrument
+you wrote is a suspect**, and a batch runner is an instrument.
 
 **AND THE EXPECTED VALUE WAS WRONG BECAUSE THE GUARD IS ONE LINE ABOVE THE
 LOOP.** `outconv` expands a tab only when `(t_flags&TBDELAY)==XTABS`

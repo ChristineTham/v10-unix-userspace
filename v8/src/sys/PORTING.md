@@ -884,29 +884,62 @@ missing bound is what the next driver would inherit.
 16 for the flag-gated arms, 4 for the acknowledgement conventions the audit
 found.
 
-### And what is STILL dark, because "all eight functions run" is not "every arm"
+### The six remaining arms — also done, and the list itself was wrong twice
 
-All eight functions are now driven — `ttyopen`, `ttyclose`, `ttyldin`,
-`ttyinsrv`, `ttyosrv`, `outconv`, `ttysig`, `ttldioc` — and that is a weaker
-statement than it sounds, so here is the honest remainder:
+**Streams is 236 cases.** All eight functions and every arm inside them that
+this port can reach. Writing the list out was worth it on its own, because two
+of its six entries were wrong:
 
-- **`ttyldin`'s `M_DELIM` and `M_IOCACK`/`M_IOCNAK` arms.** Nothing sends either
-  of those *up* from the device. The `M_IOCACK` one is one line —
-  `(*q->next->qinfo->putp)(q->next, bp)` — and would need a driver that
-  originates an acknowledgement rather than answering one.
-- **`ttyosrv`'s `M_FLUSH` arm.** `ttysig`'s flush goes to `WR(q)->next`, which
-  is the *driver*, so it never lands on ttyld's own write queue. Reaching this
-  needs `TIOCFLUSH`, which `stioctl` handles itself at `:588-594`.
-- **Three of `outconv`'s four delay algorithms.** `CRDELAY` is measured;
-  `NLDELAY` (bits 8-9, tty 37 and vt05), the tab delays (bits 10-11) and
-  `VTDELAY`/`BSDELAY` are not. Each is a flag value and a number, so they are
-  four more cases of the shape already written.
-- **`ttyhog`.** `ttyldin:176` replaces a character with `\007` once `q->count`
-  reaches 512, and the TANDEM case deliberately stops at 400 to stay below it.
-- **`canonb` overflow.** `ttyinsrv` flushes at `CANBSIZ-1` = 255; the 400-byte
-  TANDEM line probably crosses it, but *probably* is not a measurement and no
-  case asserts it.
+- **`ttyosrv`'s `M_FLUSH` arm was described as unreachable, and the citation
+  said the opposite.** The note read *"needs `TIOCFLUSH`, which `stioctl`
+  handles itself at `:588-594`"* — as though `stioctl` handling it were the
+  obstacle. It is the mechanism: `:594` is
+  `putctl(stq->wrq->next, M_FLUSH)`, and `stq->wrq->next` **is** ttyld's write
+  queue, so the block lands on it and `ttyosrv` runs. Accurate line number,
+  opposite conclusion. Third instance of that shape here after the inode
+  constraint and the "streamio copies `wptr - rptr` either way" comment, and
+  the tell is the same each time: **the sentence cites something true and then
+  draws the reverse inference from it.**
+- **`BSDELAY` was listed as an unexercised delay and `ttyld.c` does not mention
+  it.** `grep -c BSDELAY src/sys/dev/ttyld.c` is **0** — the flag exists in
+  `ioctl.h` and this file has no arm for it. A name copied from the header into
+  a list of "things in the file".
 
-None of these needs new machinery — the stack that reaches them exists. They
-are cases, and listing them is cheaper than rediscovering that they were never
-written.
+What the four real ones turned out to be:
+
+- **`max()` had never executed.** It was written for this import — the one name
+  `ttyld.c` needed that the shim lacked — and writing it is what found `min()`
+  misdeclared in two files. It has **exactly one call site in the whole tree**,
+  `ttyld.c:439`, in the tty 37 newline delay. Two cases now, because `max` has
+  two branches and the column picks one: `abc` takes the constant 6, sixty-four
+  characters take the computed 7.
+- **`VTDELAY` is not reached by a vertical tab.** `partab.c:12` gives 013 (VT)
+  class **1**, *non-printing*; it is 014, **form feed**, that is class 5. So the
+  flag named for a vertical tab is a form-feed delay — 127 ticks, the longest
+  number in the file, because ejecting a page is the slowest thing a printer
+  does. Both are asserted: VT produces no delay, FF produces 127.
+- **`ttyhog` caps the queue at 512 and makes the terminal beep.** A character
+  that is not a newline is replaced by `\007` and never queued. 600 sent, 512
+  counted, bells observed.
+- **`canonb` is invisible to the reader, which is the better property.** 498
+  characters cross the 255-byte flush at least twice and come back in **one
+  read**, because `stread` loops on the delimiter rather than on a message
+  boundary.
+
+**AND THE CANONB CASE WAS WRONG TWICE BEFORE IT WAS RIGHT, both times from
+reasoning instead of asking.** The first draft expected ">255 bytes in one
+read". The second saw 145, concluded the line arrives in *pieces*, and asserted
+that — and 145 was not a piece at all: it was the TANDEM case's unread
+remainder, left behind because that case read a 401-byte line into a 256-byte
+buffer. **A short read leaks into the next case**, which then reports a
+plausible wrong answer and makes the case after *that* look broken. Same shape
+as `tests/crash-probe.sh`'s programs reading each other's litter, arriving
+inside one process instead of one directory. `ttyprobe.c` grew a `readline()`
+that reads whole lines, and every canonical read goes through it.
+
+**A footnote on the mutation harness, because it under-reported twice.** Two
+mutations (`count = 6` in the CR delay, forwarding `M_DELIM`) were scored at one
+failure by a batch runner and at two — the right two — when re-run alone. The
+guards are fine; the batch reading is not. **Measure a mutation in isolation
+before believing its count**, which is the same rule as validating a prober
+against a known crasher before believing its number.

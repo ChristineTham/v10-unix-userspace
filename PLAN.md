@@ -1769,7 +1769,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `init.c:368-382` does -- `stopen` the driver, `v8k_stconf` the discipline,
    `FIOPUSHLD` to push it between -- so `streamio.c`'s stream head sits on top,
    `ttyld.c` in the middle, and only the bottom layer is ours. **80 new cases,
-   streams 140 -> 220.** All five functions run, plus `outconv`, and the four
+   streams 140 -> 236.** All five functions run, plus `outconv`, and the four
    flag-gated arms with them: `LCASE` through `maptab[]` (a Model 33 with no
    lower case -- `\a` is `A`, `\(` is `{`), escape handling, `TANDEM`
    back-pressure at upstream's own `(600+60)/2`, and `outconv`'s padding

@@ -322,6 +322,43 @@ char *buf;
 }
 
 /*
+ * Read one canonical LINE, however many messages it takes -- and it takes more
+ * than one whenever the line is longer than canonb, because ttyinsrv returns
+ * early when the stream head's queue is full (ttyld.c:234).
+ *
+ * THIS EXISTS BECAUSE A SHORT READ LEAKS INTO THE NEXT CASE.  The TANDEM case
+ * sent 401 characters and read them into a 256-byte buffer; the 145 left in
+ * the stream were then read by the case after it, which reported a plausible
+ * wrong answer and made the case after THAT look broken.  Nothing was wrong
+ * with the discipline.  Same shape as tests/crash-probe.sh's programs reading
+ * each other's litter, arriving inside one process instead of one directory:
+ * a case has to be a pure function of what it sent.
+ *
+ * Bounded at eight reads, because a read past the last delimiter blocks and
+ * the suite's deadline is the only thing that would notice.
+ */
+static int lastreads;
+
+static int
+readline(buf, n)
+char *buf;
+{
+	int tot = 0, got;
+
+	lastreads = 0;
+	while (lastreads < 8 && tot < n) {
+		got = uread(buf + tot, n - tot);
+		lastreads++;
+		if (got <= 0)
+			break;
+		tot += got;
+		if (buf[tot-1] == '\n')
+			break;
+	}
+	return (tot);
+}
+
+/*
  * Render what the driver received so a shell can compare it.  Printable ASCII
  * as itself, everything else as \NNN -- because the whole point of outconv is
  * the bytes that are NOT printable, and a raw write to stdout would let a
@@ -379,7 +416,8 @@ traffic()
 	struct sgttyb sg;
 	struct tchars tc;
 	char buf[256];
-	int n, lds;
+	char big[1024];		/* the canonb-overflow line does not fit in buf */
+	int n, i, lds;
 
 	memset(&sg, 0, sizeof sg);	/* stioctl copies the WHOLE struct in,
 					 * and ttldioc reads three of its five
@@ -446,7 +484,7 @@ traffic()
 	 */
 	drvreset();
 	drvinput("hi\n", 3);
-	n = uread(buf, sizeof buf);
+	n = readline(buf, sizeof buf);
 	printf("canonn %d\n", n);
 	show("canon", buf, n);
 	printf("canonerr %d\n", u.u_error);
@@ -469,19 +507,19 @@ traffic()
 	 */
 	drvreset();
 	drvinput("hx\010i\n", 5);
-	n = uread(buf, sizeof buf);
+	n = readline(buf, sizeof buf);
 	show("canonerase", buf, n);
 
 	/* --- kill: '@' by default, and it discards the line so far -------- */
 	drvreset();
 	drvinput("junk@hi\n", 8);
-	n = uread(buf, sizeof buf);
+	n = readline(buf, sizeof buf);
 	show("canonkill", buf, n);
 
 	/* --- CRMOD on input: \r arrives, \n is what the program reads ----- */
 	drvreset();
 	drvinput("cr\r", 3);
-	show("crmodin", buf, n = uread(buf, sizeof buf));
+	show("crmodin", buf, n = readline(buf, sizeof buf));
 	printf("crmodinn %d\n", n);
 
 	/* ============ the write path: ttyosrv + outconv =================== */
@@ -707,7 +745,7 @@ traffic()
 
 	drvreset();
 	drvinput("x\023y\021z\n", 6);
-	n = uread(buf, sizeof buf);
+	n = readline(buf, sizeof buf);
 	show("flowline", buf, n);
 
 	/* ============ LCASE and maptab[]: a Model 33 with no lower case ==== */
@@ -734,7 +772,7 @@ traffic()
 	printf("lcaseerr %d\n", u.u_error);
 	drvreset();
 	drvinput("A\\a\\(\n", 6);
-	n = uread(buf, sizeof buf);
+	n = readline(buf, sizeof buf);
 	show("lcase", buf, n);
 
 	/* --- and the same escape with LCASE off keeps the backslash ------- */
@@ -751,7 +789,7 @@ traffic()
 	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
 	drvreset();
 	drvinput("\\z\\@\n", 5);
-	n = uread(buf, sizeof buf);
+	n = readline(buf, sizeof buf);
 	show("escape", buf, n);
 
 	/*
@@ -766,7 +804,7 @@ traffic()
 	 */
 	drvreset();
 	drvinput("\\\\z\n", 4);
-	n = uread(buf, sizeof buf);
+	n = readline(buf, sizeof buf);
 	show("dblesc", buf, n);
 
 	/* ================= TANDEM: back-pressure to the device ============ */
@@ -802,7 +840,7 @@ traffic()
 	 */
 	drvreset();
 	drvinput("\n", 1);
-	n = uread(buf, sizeof buf);
+	n = readline(big, sizeof big);		/* the WHOLE line, or it leaks */
 	printf("tandemread %d\n", n);
 	printf("tandemunblocked %d\n", (tp->t_state & TTBLOCK) == 0);
 	printf("tandemstartc %d\n", drvlen > 0 ? (drvbuf[0] & 0377) : -1);
@@ -837,6 +875,182 @@ traffic()
 	drvreset();
 	uwrite("\r", 1);
 	printf("nodelayn %d\n", drvdelay);
+
+	/* ---- the other three delay algorithms, and max()'s ONLY caller ---- */
+	/*
+	 * `max()' was written for this import -- it was the one name ttyld.c
+	 * needed that the shim did not have, and writing it is what found
+	 * `min()' misdeclared in two files.  It has exactly ONE call site in
+	 * the entire tree, ttyld.c:439, inside the tty 37 newline delay, and
+	 * until this case nothing had ever executed it.
+	 *
+	 * Two lines, because max() has two branches and one input decides
+	 * which: count is `max(t_col>>4 + 3, 6)', so a short line takes the
+	 * constant and a long one takes the computed value.  `abc' gives
+	 * max(3, 6) = 6; 64 characters give max(4+3, 6) = 7.
+	 */
+	sg.sg_flags = NL1;		/* no CRMOD: a bare \n, not a \r\n */
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	drvreset();
+	uwrite("abc\n", 4);
+	printf("nl1short %d\n", drvdelayval);
+	drvreset();
+	uwrite("0123456789012345678901234567890123456789012345678901234567890123\n", 65);
+	printf("nl1long %d\n", drvdelayval);
+
+	/*
+	 * The tab delay, which is the arm outconv reaches when TBDELAY names
+	 * an algorithm rather than XTABS.  `1 - (t_col | ~07)' at column 0 is
+	 * 1 - (-8) = 9, and the tab still moves the column to 8.
+	 */
+	sg.sg_flags = TAB1;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	drvreset();
+	uwrite("\t", 1);
+	printf("tab1delay %d\n", drvdelayval);
+	printf("tab1col %d\n", tp->t_col);
+
+	/*
+	 * And the vertical one, which is NOT reached by a vertical tab.
+	 * partab.c:12 gives 013 (VT) class 1, `non-printing'; it is 014, FORM
+	 * FEED, that is class 5.  So the flag spelled VTDELAY is a form-feed
+	 * delay -- 127 ticks, the longest in the file, because a printer
+	 * ejecting a page is the slowest thing a terminal does.
+	 */
+	sg.sg_flags = VTDELAY;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	drvreset();
+	uwrite("\013", 1);			/* VT: class 1, no delay */
+	printf("vtnone %d\n", drvdelay);
+	drvreset();
+	uwrite("\014", 1);			/* FF: class 5 */
+	printf("ffdelay %d\n", drvdelayval);
+
+	/* ============ ttyhog, and canonb overflow ========================= */
+	/*
+	 * Two limits inside the read path that a normal line never reaches.
+	 *
+	 * ttyhog (ttyld.c:176) is the older one and the ruder: once the read
+	 * queue holds 512, a character that is not a newline is REPLACED by
+	 * \007 and never queued -- so the terminal beeps at you instead of
+	 * accepting more, and the only thing that still gets through is the
+	 * newline that would end the line.  ECHO is on, so what the driver
+	 * receives is the bell.
+	 */
+	sg.sg_erase = CERASE;
+	sg.sg_kill  = CKILL;
+	sg.sg_flags = ECHO;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	drvreset();
+	for (n = 0; n < 600; n++)
+		drvinput("y", 1);
+	printf("hogcount %d\n", ttq->count);
+	for (n = 0, i = 0; i < drvlen; i++)
+		if ((drvbuf[i] & 0377) == 0007)
+			n++;
+	printf("hogbells %d\n", n > 0);
+	printf("hogcapped %d\n", ttq->count < 600);
+
+	/*
+	 * And canonb: ttyinsrv gathers into a 256-byte buffer and flushes at
+	 * CANBSIZ-1, so the ~498 characters ttyhog let through cross it at
+	 * least twice.  WHAT IS ASSERTED IS THAT THE READER CANNOT TELL --
+	 * one read returns the whole line, because stread loops on the
+	 * DELIMITER rather than on a message boundary, so an internal buffer
+	 * smaller than the line is invisible from outside.
+	 *
+	 * Two drafts of this case were wrong before the measurement.  The
+	 * first expected `more than 255 bytes in one read'; the second, after
+	 * seeing 145, concluded the line arrives in PIECES and asserted that
+	 * -- and 145 was not a piece at all, it was the TANDEM case's
+	 * unread remainder leaking in.  With readline() closing that hole the
+	 * answer is 498 in a single read.  Both wrong guesses came from
+	 * reasoning about the buffer instead of asking it.
+	 */
+	drvreset();
+	drvinput("\n", 1);
+	n = readline(big, sizeof big);
+	printf("canonbtotal %d\n", n);
+	printf("canonbonepiece %d\n", lastreads == 1);
+	printf("canonbend %d\n", n > 0 ? (big[n-1] & 0377) : -1);
+
+	/* ============ two arms only the DEVICE can originate ============== */
+	/*
+	 * ttyldin's switch has five non-data arms and the driver has been
+	 * sending only M_IOCTL and M_BREAK up.  These are the other two.
+	 *
+	 * M_DELIM is dropped on the floor (`freeb(bp); return'), because a
+	 * device has no business telling a canonical discipline where a line
+	 * ends -- that is the discipline's own judgement.  So the assertion
+	 * is that nothing came out, which needs the block count to show the
+	 * message was consumed rather than forwarded.
+	 */
+	sg.sg_flags = ECHO|CRMOD;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	drvreset();
+	putctl(ttq, M_DELIM);
+	drvinput("ok\n", 3);
+	n = readline(big, sizeof big);
+	show("delimdropped", big, n);
+
+	/*
+	 * And M_IOCACK, which goes straight THROUGH to the stream head
+	 * (ttyld.c:105-107, shared with M_IOCNAK and M_HANGUP).  Nothing in
+	 * this port had sent one upward: every ack so far has travelled the
+	 * other way, from the driver in reply to a request.  Here the device
+	 * volunteers one, and stioctl is not waiting for it -- streamio.c's
+	 * strput takes the `(stp->flag&IOCWAIT)==0' branch and frees it,
+	 * which is the case that proves an unsolicited ack cannot corrupt the
+	 * next real one.
+	 */
+	{
+		struct block *bp;
+
+		if ((bp = allocb(4)) != NULL) {
+			bp->type = M_IOCACK;
+			putq(ttq, bp);
+			qenable(ttq);
+		}
+		/* the next real ioctl must still work */
+		sg.sg_flags = ECHO|CRMOD;
+		u.u_error = 0;
+		stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+		printf("afterstrayack %d\n", u.u_error);
+	}
+
+	/*
+	 * ttyosrv's M_FLUSH arm, and the note that used to stand here was
+	 * WRONG ABOUT HOW TO REACH IT.  It said the arm "needs TIOCFLUSH,
+	 * which stioctl handles itself", as though handling it were the
+	 * obstacle.  It is the mechanism: streamio.c:594 is
+	 * `putctl(stq->wrq->next, M_FLUSH)', and stq->wrq->next IS ttyld's
+	 * write queue -- so the block lands on it, ttyosrv runs, flushes, and
+	 * passes the M_FLUSH down to the device.  Accurate citation, opposite
+	 * conclusion; the same shape as the constraint that blocked the inode
+	 * fix for months.
+	 */
+	drvreset();
+	drvinput("junk", 4);		/* something for the flush to discard */
+	u.u_error = 0;
+	stioctl(&tino, TIOCFLUSH, (caddr_t)0);
+	printf("flusherr %d\n", u.u_error);
+	printf("flushtodev %d\n", drvflush);
+	/*
+	 * What is asserted is that the arm was REACHED, not that its flushq
+	 * discarded anything -- and the difference is worth saying out loud
+	 * rather than dressing up.  ttyosrv drains its own write queue
+	 * eagerly, so there is normally nothing on it for the M_FLUSH arm to
+	 * throw away; making the flushq observable would need the queue
+	 * backed up behind a QFULL device, which is machinery this case does
+	 * not have.  A mutation deleting `flushq(q, 0)' would NOT turn this
+	 * red.  Recorded so the next reader does not mistake the case for
+	 * more than it is.
+	 */
 
 	/* ============ the ack the driver must SHORTEN, and the NAK ======== */
 	/*

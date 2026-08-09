@@ -773,8 +773,10 @@ check "...so TANDEM blocks"              "1"  "$(t tandemblocked)"
 check "...and one character goes to the device" "1" "$(t tandemstopped)"
 check "...and it is t_stopc, ^S"         "19" "$(t tandemstopc)"
 # The release is ttyinsrv's tail, not ttyldin's -- it only happens because
-# something READ.  256 is this probe's buffer, not a property of the stream.
-check "a read drains it"                 "256" "$(t tandemread)"
+# something READ.  401 is what was SENT (400 characters and the newline), which
+# is a property of the case; it used to read 256 and that was the probe's
+# buffer, a number that silently left 145 bytes queued for the next case.
+check "a read drains the whole line"     "401" "$(t tandemread)"
 check "...and TANDEM releases"           "1"   "$(t tandemunblocked)"
 check "...with t_startc, ^Q"             "17"  "$(t tandemstartc)"
 
@@ -791,6 +793,72 @@ check "...and the carriage is back at column 0" "0" "$(t crdelaycol)"
 # The negative control: the same CR with the delay bits clear emits nothing, so
 # the case above measures the ALGORITHM and not the presence of a return.
 check "...but with the bits clear, no delay at all" "0" "$(t nodelayn)"
+
+# --- the other three delay algorithms, and max()'s ONLY caller ------------
+# max() was written for this import -- the one name ttyld.c needed that the
+# shim did not have -- and writing it is what found min() misdeclared in two
+# files.  It has EXACTLY ONE call site in the whole tree, ttyld.c:439, inside
+# the tty 37 newline delay, and until these two cases nothing had executed it.
+# Two lines because max() has two branches and the column decides which:
+# count is max(t_col>>4 + 3, 6), so `abc' takes the constant and 64 characters
+# take the computed value.
+check "the tty 37 newline delay takes max()'s constant arm" "6" "$(t nl1short)"
+check "...and a long line takes its computed arm"           "7" "$(t nl1long)"
+
+# The tab delay -- the arm outconv reaches when TBDELAY names an algorithm
+# rather than XTABS.  1 - (t_col | ~07) at column 0 is 1 - (-8) = 9.
+check "the tty 37 tab delay is 9 at column 0" "9" "$(t tab1delay)"
+check "...and the tab still moves the column to 8" "8" "$(t tab1col)"
+
+# AND THE VERTICAL DELAY IS NOT REACHED BY A VERTICAL TAB.  partab.c:12 gives
+# 013 (VT) class 1, `non-printing'; it is 014, FORM FEED, that is class 5.  So
+# the flag spelled VTDELAY is a form-feed delay -- 127 ticks, the longest in
+# the file, because ejecting a page is the slowest thing a printer does.
+check "a vertical tab produces no delay at all" "0"   "$(t vtnone)"
+check "...but a form feed produces 127"         "127" "$(t ffdelay)"
+
+# --- ttyhog, and the buffer the reader cannot see -------------------------
+# ttyhog (ttyld.c:176) is the older limit and the ruder: once the read queue
+# holds 512, a character that is not a newline is REPLACED by \007 and never
+# queued, so the terminal beeps instead of accepting more.  600 sent.
+check "the read queue caps at 512"      "512" "$(t hogcount)"
+check "...and the terminal is made to beep" "1" "$(t hogbells)"
+check "...and fewer than 600 characters got in" "1" "$(t hogcapped)"
+
+# canonb is 256 bytes and ttyinsrv flushes at 255, so the ~498 characters that
+# got through cross it at least twice.  WHAT IS ASSERTED IS THAT THE READER
+# CANNOT TELL: one read returns the whole line, because stread loops on the
+# DELIMITER rather than on a message boundary.
+#
+# Two drafts of this case were wrong before it was measured.  The first
+# expected ">255 bytes in one read"; the second saw 145 and concluded the line
+# arrives in PIECES -- and 145 was not a piece, it was the TANDEM case's unread
+# remainder leaking in through a 256-byte buffer.  ttyprobe.c grew a readline()
+# to close that, which is why every canonical read now takes whole lines.
+check "a line longer than canonb comes back whole" "498" "$(t canonbtotal)"
+check "...in a single read, so the buffer is invisible" "1" "$(t canonbonepiece)"
+check "...ending in the newline"        "10"  "$(t canonbend)"
+
+# --- the two arms only the device can originate ---------------------------
+# M_DELIM sent UP is dropped on the floor (ttyldin:86-88, `freeb; return'),
+# because a device has no business telling a canonical discipline where a line
+# ends -- that is the discipline's own judgement.  So the line typed after it
+# arrives alone, with no empty record in front.
+check "an M_DELIM from the device is discarded" "ok\\012" "$(t delimdropped)"
+# And an unsolicited M_IOCACK goes straight through to the stream head, which
+# takes streamio.c's `(stp->flag&IOCWAIT)==0' branch and frees it.  The case
+# that matters is the one after: the next real ioctl must be unaffected.
+check "a stray ack does not corrupt the next real ioctl" "0" "$(t afterstrayack)"
+
+# ttyosrv's M_FLUSH arm, AND THE NOTE THAT STOOD HERE WAS WRONG ABOUT HOW TO
+# REACH IT.  It said the arm "needs TIOCFLUSH, which stioctl handles itself",
+# as though handling it were the obstacle.  It is the mechanism:
+# streamio.c:594 is putctl(stq->wrq->next, M_FLUSH), and stq->wrq->next IS
+# ttyld's write queue -- so the block lands on it, ttyosrv runs, and passes it
+# down.  Accurate citation, opposite conclusion; the same shape as the recorded
+# constraint that blocked the inode fix for months.
+check "TIOCFLUSH reaches ttyosrv"       "0" "$(t flusherr)"
+check "...which passes the flush to the device" "1" "$(t flushtodev)"
 
 # --- the ack a driver must SHORTEN, and the one it must refuse ------------
 # TIOCHPCL is in neither switch, so ttldioc's default arm passes it down and
