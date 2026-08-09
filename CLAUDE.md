@@ -757,8 +757,48 @@ this port's change to `src/cmd/yacc/y2.c:318` (`#define YYSTYPE long`, not
 
 ```bash
 grep -n 'yylval\.p *=' src/cmd/*/*.l
-grep -nE '^%(union|type|token)[ \t]*<' src/cmd/*/*.y
+grep -nE '^%(union|type|token)[[:blank:]]*<' src/cmd/*/*.y
 ```
+
+**AND THAT SWEEP USED TO SAY `[ \t]`, WHICH MADE ITS ANSWER A PROPERTY OF WHICH
+`grep` YOU HAVE.** `\t` inside a bracket expression is a GNU/ugrep extension.
+POSIX reads `[ \t]` as three literal characters — space, **backslash**, `t` —
+so BSD grep, which is what a stock macOS and the CI runner have, matches
+neither a tab nor much else you meant. Measured on this tree, same command,
+two greps:
+
+| sweep | BSD grep | ugrep | after `[[:blank:]]` |
+|---|---|---|---|
+| `^%(union\|type\|token)[ \t]*<` | **3** | 62 | 62 both |
+| `#[ \t]*include[ \t]*"[^"]*"` | 71 | 69 | 69 both |
+
+The yacc one is the serious half: **59 of the 62 typed-token declarations in
+the tree put a TAB after `%token`**, so on a stock macOS the sweep documented
+to catch this very bug class found 3 — and `grap.y:9` is
+`%token<TAB><p><TAB>PIC`, i.e. **the sweep would not have found the instance it
+was written for.** The three it did find are all `make/gram.y`, which has the
+bug in neither place.
+
+The `#include` one fails the other way and shows why the reading is worse than
+"tabs are missed": the **backslash** in the class matched the escape in
+`printf("# include \"mfile2.h\"")` (`ccom/common/sty.y:979`,
+`lex/header.c:7`), and that same escaped quote is what let the hits slip past
+the `grep -v '\.h"'` filter. One stray character produced two cooperating
+faults and a plausible number.
+
+Every sweep in this file now spells it `[[:blank:]]` (and `[[:space:]]` for the
+one `\s`), which is POSIX and agrees under both. Two rules: **write the POSIX
+class, never `\t` or `\s`**, and when a sweep's count is load-bearing, **run it
+under `/usr/bin/grep` as well** — that is the one CI has. And note the shape:
+this is the machine-property class the test suites are already swept for,
+arriving in a *documented sweep*, where nothing goes red.
+
+**AND THE SAME CHARACTER IS UNSAFE IN `sed` NO MATTER WHICH `grep` IS
+INSTALLED.** BSD `sed` has no `\t` extension at all, so `sed 's/[ \t]*(//'`
+turns `iget(` into `ige` — it eats the trailing `t`. `awk` interprets it. This
+was found by writing a callee-counting script for the §8a step 5 survey below,
+whose first run reported `ige`, `ipu`, `iupda` and `findmoun` as the names V8
+calls.
 
 **A K&R PARAMETER'S ADDRESS IS NOT AN ARRAY, because the argument slot changed
 size.** `mkfs`'s `gmode()` is `return((&m0)[i])` over four undeclared
@@ -776,7 +816,7 @@ handled long ago in `exec.c`, `doprnt.c`, `scanf.c`, `sprintf.c`, `printf.c`,
 indexed form was missed, and the sweep says it is a singleton:
 
 ```bash
-grep -rnE '\(&[a-z_][a-z_0-9]*\)\s*\[' src shim compiler
+grep -rnE '\(&[a-z_][a-z_0-9]*\)[[:space:]]*\[' src shim compiler
 ```
 
 **AN ON-DISK STRUCT HAS AN END THAT IS NOT OURS, and every one of them was
@@ -857,8 +897,8 @@ Both directions, over three directories, and note the space in `load.c`'s
 `time (&t)` that the older spelling missed:
 
 ```bash
-grep -rnE '(ctime|localtime|gmtime|asctime)[ \t]*\([ \t]*&' src shim compiler
-grep -rnE '(^|[^a-z_])time[ \t]*\([ \t]*&'                  src shim compiler
+grep -rnE '(ctime|localtime|gmtime|asctime)[[:blank:]]*\([[:blank:]]*&' src shim compiler
+grep -rnE '(^|[^a-z_])time[[:blank:]]*\([[:blank:]]*&'                  src shim compiler
 ```
 
 Two rules: **the pattern is not `time(&` but any callee reached through the
@@ -880,7 +920,7 @@ What is comparable across time is the narrow-target filter, so run that
 instead of counting:
 
 ```bash
-grep -rnE '(ctime|localtime|gmtime|asctime|(^|[^a-z_])time)[ \t]*\([ \t]*&' \
+grep -rnE '(ctime|localtime|gmtime|asctime|(^|[^a-z_])time)[[:blank:]]*\([[:blank:]]*&' \
      src shim compiler | grep -vE '\.md:' |
      grep -E '&(sb|sblock|dp|ip|di_|s_|spcl|c_|.*->(di_|s_|c_))'
 ```
@@ -903,7 +943,7 @@ other so that fixing one alone changed nothing observable:
   `d0` — the same register read at a different width — so `atof("0.5")` gave 0.
   Five sites, all upstream's: `pic/picl.l` and `troff`'s `ta.c`, `hc.c`, `tc.c`,
   `devi10/makefonts.c`. Same family as the `yylval.p` token bug: a *declaration*
-  that lies about a type. Sweep with `grep -rn 'float[ \t]*atof()' src/cmd/`.
+  that lies about a type. Sweep with `grep -rn 'float[[:blank:]]*atof()' src/cmd/`.
 - **v8cc passes doubles in `x0`–`x7`, AAPCS64 passes them in `d0`–`d7`.** So
   every call into the host's libm read its argument from the wrong register:
   `sqrt(2.0)` returned 0.000000. `tests/kmemu` had tolerated libm as an allowed
@@ -1103,7 +1143,43 @@ This port raises 14 → 254; patching two of the three changed nothing for
 exactly the programs that read directories raw, while looking like it had. All
 three now agree, plus `shim/v8sys/v8sys.h`'s `V8_DIRSIZ` and
 `src/libc/gen/readdir.c`'s `ODIRSIZ` and `shim/libkmemu/procfs.c`'s
-`PR_DIRSIZ` — six spellings of one number.
+`PR_DIRSIZ` — ~~six spellings of one number~~.
+
+**AND THAT LINE SAID "six spellings of ONE NUMBER", WHICH IS WRONG TWICE — AND
+COUNTING THEM PROPERLY FOUND A LIVE BUG.** Re-measured with
+`grep -rn 'define[[:blank:]]*[A-Z_]*DIRSIZ' src shim`, there are **ten** and
+they are **four** numbers:
+
+| | value | whose | verdict |
+|---|---|---|---|
+| the six above | 254 | this port | agree, as claimed |
+| `src/sys/h/dir.h:2` | **14** | upstream, imported | **right, and must stay** — `src/sys/` describes a *disk record*, so a kernel there reading 254 bytes would be wrong. Same reasoning as `mkfs -DDIRSIZ=14` |
+| `src/cmd/cc.c:24` | **255** | this port | deliberate, commented at `:6-16` |
+| `src/cmd/sh/spname.c:21` | **14** | upstream | **was a live 1-byte global-buffer-overflow** |
+| `src/cmd/sh/expand.c:15,17` | `MAXNAMELEN` / 14 | upstream | bounded copy, `movstrn` |
+
+So the rule is not "one number" but **one number per layer**, and the layer is
+what says which. `spname.c` is the fifth member of the "1985 buffer sized
+against DIRSIZ" table below — `static char best[DIRSIZ+1]` filled by an
+unbounded `do; while(*p++ = *q++);` from a `d_name` that is now 254 wide.
+Measured under ASan on the unmodified source; `src/cmd/sh/PORTING.md` has it.
+Three things generalise:
+
+- **The bound was in a different function**, so the copy reads as unbounded and
+  is not: `SPdist` gates it on a score under 3 and will not tolerate a name
+  more than one character longer than the guess, making the overrun **exactly
+  one byte**. Reasoning about the copy alone gets the severity wrong in *both*
+  directions.
+- **The sibling copy IS bounded** (`if(p != guess+DIRSIZ)`), which is why an
+  audit of this function for this very class finds a bound and stops.
+- **`newname[128]` is `mv`'s `MAXN` again** — `&newname[128-DIRSIZ-2]` at `:31`
+  — so raising DIRSIZ alone makes it `-132` and `spname` returns 0 forever:
+  `cd` stops correcting, silently. Both numbers move or neither does.
+
+And the method is the reusable half: this was not found by auditing `sh`, which
+had been read for other reasons. It was found by **checking a count in this
+file**. A claim of the form "N spellings of one number" is a testable assertion
+about the tree, and nobody had run it.
 
 **And the sentence above was wrong about `param.h` for months.** Upstream guards
 `dir.h` and `sys/dir.h` and leaves `param.h` **bare**, so on a real V8 this one
@@ -1500,7 +1576,7 @@ Makefile **except `refer/what..c`**, which feeds `whatabout` — not in
 than live. Re-derive the list rather than trusting it; the `#`-then-space
 spelling is why it is easy to miss one:
 ```bash
-grep -rnE '#[ \t]*include[ \t]*"[^"]*"' src/cmd | grep -v '\.h"'
+grep -rnE '#[[:blank:]]*include[[:blank:]]*"[^"]*"' src/cmd | grep -v '\.h"'
 ```
 
 **The compiler has no known unimplemented feature.** The last one was `STARG`,
@@ -1659,11 +1735,11 @@ with a history of costing multi-round debugging. `/port-program NAME` walks it.
    `$(V8LIBS)` / `$(V8LDFLAGS)` on the link rule — never respell the library
    list, and never introduce a variable below its first use.
 4. **Declare any `#include`d file that is not a `.h`.** Invisible to every
-   dependency scanner *and* to a `*.c` glob. Note the `[ \t]*` after the `#` —
+   dependency scanner *and* to a `*.c` glob. Note the `[[:blank:]]*` after the `#` —
    V8 writes `# include`, so a pattern anchored on `#include` silently finds
    nothing, which is the failure this step exists to prevent:
    ```bash
-   grep -rnE '#[ \t]*include[ \t]*"[^"]*"' src/cmd/NAME | grep -v '\.h"'
+   grep -rnE '#[[:blank:]]*include[[:blank:]]*"[^"]*"' src/cmd/NAME | grep -v '\.h"'
    ```
 5. Add the program to `.PHONY` and to the `stage0` target.
 6. Add cases to `tests/deps` for the new rules, including step 4's. Verify by

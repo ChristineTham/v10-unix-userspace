@@ -78,7 +78,7 @@ Reproduce the sweep:
 
 ```
 grep -n 'yylval\.p *=' src/cmd/*/*.l          # what the lexer stores
-grep -nE '^%(union|type|token)[ \t]*<' src/cmd/*/*.y   # what the grammar declares
+grep -nE '^%(union|type|token)[[:blank:]]*<' src/cmd/*/*.y   # what the grammar declares
 ```
 
 ## What it needed: STARG
@@ -180,7 +180,7 @@ the one bug class this tree is most careful about. There is **no** `#include`d
 non-header in grap; step 4 of the porting checklist finds nothing:
 
 ```
-grep -rnE '#[ \t]*include[ \t]*"[^"]*"' src/cmd/grap | grep -v '\.h"'
+grep -rnE '#[[:blank:]]*include[[:blank:]]*"[^"]*"' src/cmd/grap | grep -v '\.h"'
 ```
 
 `tests/deps` now asserts both halves: touching `grap.defines` must make the
