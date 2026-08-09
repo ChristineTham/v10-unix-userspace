@@ -2679,7 +2679,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
    The probe overwrites a block, extends into a new one, extends past block 9
    so the indirect block is made too, creates a file **by name**, writes
    several hundred blocks into it, deletes it, and flushes with
-   `update()`/`bflush()`. 315 -> 368 cases; the tree is **1763 across 17
+   `update()`/`bflush()`. 315 -> 372 cases; the tree is **1767 across 17
    suites**.
 
    The instrument is the superblock's own `s_tfree`/`s_tinode` rather than a
@@ -2823,9 +2823,9 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-| 8a.5 v8fs | **done, less a mount** | V8's own filesystem code RUNS. Step 5c reads: `mkfs(8)` writes an image and Bell Labs' kernel walks `namei → fsnami → dsearch → iget → bmap → readi → bread` to a driver, with `cmp` confirming 28000 bytes two directories down and 28 blocks long — so a subdirectory and `bmap`'s **indirect** arm. Step 5d writes: `writei`, `bmap`'s **allocating** arm, `alloc()`/`free()` including the **free-list chain**, `ialloc()`/`ifree()`, `itrunc`, and `namei` with `NI_CREAT`/`NI_DEL` — a file created by name, grown past the superblock's cached free list, deleted, and the accounting exactly restored. The acceptance test is **icheck, dcheck and fsck**, three programs that know nothing about the probe. `streams` 111 → 368. Six imported files, one new stand-in (`shim/kern/sys/main.c`, for `sys/main.c` + `machdep.c` + `param.c`). **No MOUNT yet**: everything is reached by calling the kernel directly, so a fourth type in `vfs.c` is the next step. See S8a step 5 |
+| 8a.5 v8fs | **done, less a mount** | V8's own filesystem code RUNS. Step 5c reads: `mkfs(8)` writes an image and Bell Labs' kernel walks `namei → fsnami → dsearch → iget → bmap → readi → bread` to a driver, with `cmp` confirming 28000 bytes two directories down and 28 blocks long — so a subdirectory and `bmap`'s **indirect** arm. Step 5d writes: `writei`, `bmap`'s **allocating** arm, `alloc()`/`free()` including the **free-list chain**, `ialloc()`/`ifree()`, `itrunc`, and `namei` with `NI_CREAT`/`NI_DEL` — a file created by name, grown past the superblock's cached free list, deleted, and the accounting exactly restored. The acceptance test is **icheck, dcheck and fsck**, three programs that know nothing about the probe. `streams` 111 → 372. Six imported files, one new stand-in (`shim/kern/sys/main.c`, for `sys/main.c` + `machdep.c` + `param.c`). **No MOUNT yet**: everything is reached by calling the kernel directly, so a fourth type in `vfs.c` is the next step. See S8a step 5 |
 
-`make test` runs everything — seventeen suites, **1763 cases**.
+`make test` runs everything — seventeen suites, **1767 cases**.
 
 ### What actually works today
 

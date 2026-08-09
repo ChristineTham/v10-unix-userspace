@@ -1635,8 +1635,8 @@ external import resolves to **libv8c**, so the memcpy is V8's own.
 Step 5c drove `namei -> fsnami -> dsearch -> iget -> bmap -> readi -> bread`
 and left every one of their siblings unexecuted. Step 5d runs them: `writei`,
 **`bmap`'s allocating arm**, `alloc()` and `free()`, `ialloc()` and `ifree()`,
-`itrunc`, and `nami.c`'s `NI_CREAT` and `NI_DEL`. `streams` 315 -> 368; the
-tree is 1763 cases across 17 suites.
+`itrunc`, and `nami.c`'s `NI_CREAT` and `NI_DEL`. `streams` 315 -> 372; the
+tree is 1767 cases across 17 suites.
 
 **AND IT NEEDED NO CHANGE TO ONE LINE OF BELL LABS' CODE.** The whole step is
 `shim/` and `tests/`: `git diff --stat` touches five shim files, three test
@@ -1829,3 +1829,71 @@ deadline, and the command substitution holding its output killed bash with
 bounded in *time* by their deadlines and in *volume* by nothing. All three
 captures are `| head -200` now; on a healthy image they print six lines. A
 suite that cannot report a failure it caused is not reporting.
+
+### The auditor on step 5d: the dominant class clean, and five things wrong anyway
+
+`.claude/agents/lp64-auditor.md` was run on the step-5d diff, per CLAUDE.md's
+note that it earns its keep on the *shim code written to support an import*
+rather than on the import. It came back **clean on every hazard it exists
+for** — widths and signedness at the u-area seam, the 16-bit ranges, symbol
+collisions, out-of-bounds in the probe — with the measurements rather than the
+verdicts, and the two worth keeping are:
+
+- **`writei`'s over-limit test is stricter here than on a VAX, in the safe
+  direction.** `u.u_offset + u.u_count > u.u_limit[LIM_FSIZE]` was 32-bit
+  *unsigned* arithmetic upstream (`off_t` and `unsigned int` both four bytes,
+  unsigned winning the conversions) and therefore wrapped. Here `off_t` is
+  64-bit signed and `u_count` widens into it, so it cannot. The two differ only
+  above 4 GB, which `INFINITY` forbids.
+- **`u_error` is one signed byte**, and the largest errno the imported sources
+  can assign to it is `ELOOP` = 62. Sixty-five to spare.
+
+What it *did* find was five defects of a different kind, and the shape is worth
+naming: **four of the five were sentences rather than code.**
+
+- **`tfreeA` read uninitialised** on the path where `/hello` is missing *and*
+  `NI_CREAT` fails — so the strongest case in the section reported an arbitrary
+  1 or 0 on exactly the run that needs a diagnosis. `-Wconditional-uninitialized`
+  says so and is not in `-Wall`. Seeded with `tfree0`, which also makes it mean
+  something there: nothing allocated, so nothing to free.
+- **The probe's own `bflush(NODEV)` was dead.** `update()` *ends* with
+  `bflush(NODEV)` (`alloc.c:530`), so the call after it flushed nothing —
+  and both this file's comment and `run.sh`'s described the two as a sequence.
+  Deleted; the case measures `update()`'s own flush, which is what it always
+  measured.
+- **"These three programs are bounded in time by their deadlines" was false for
+  two of them.** `head -200` bounds *volume* and kills a runaway that prints;
+  only `fsck` had a deadline. A V8 checker on a damaged image can live-lock with
+  an empty stdout — this tree has seen it — so the bound that matters was
+  missing on the two programs a free-list mutation is aimed at. All three go
+  through one `fsdeadline` helper now.
+- **"THREE OF THESE ARE SPELLED v8k_" — one is.** The comment was counting the
+  renamed *names* (`free`, `ialloc`, `time`) and describing the *declarations*
+  below it. Two of those declarations, `itrunc()` and `v8k_free()`, had no call
+  site at all: an unconsumed declaration standing in for a trap instead of
+  defending against one.
+
+### AND ONE THAT WAS NOT A DEFECT UNTIL IT WAS MADE ONE
+
+The auditor's sharpest observation was that **the restored `s_ronly` arm could
+never be taken**. `iinit` sets `fp->s_ronly = 0` and nothing else ever sets it,
+so every create *read* the field and fell through. Faithful to upstream, and a
+guard that has never been seen to fail.
+
+Making it fire needed the superblock field set by hand — legitimate for the
+same reason `v8k_bdconf` stands in for `config(8)`: `mount(2)` is what would
+normally set it and `smount` is not imported. Three cases now: a create refused
+with **EROFS**, which is the only arm root cannot pass (`u.u_uid == 0`
+short-circuits the rest); the same create *succeeding* once the flag is
+cleared, without which the pair would pass against an `access()` that refused
+everything; and the cleanup.
+
+**And the cleanup is where it got interesting.** The first draft removed the
+file it had just made with `nip->i_nlink = 0; iput(nip)` — which frees the
+inode and leaves the directory entry in `/` pointing at it. The three new cases
+went green. `fsck` did not: *"FILE SYSTEM WAS MODIFIED"*, plus a `cmp`
+difference at byte 180289. So within an hour of being written for the kernel,
+the acceptance test caught a bug in the probe — which is the same argument as
+M3, arriving from the other direction.
+
+`streams` 368 → 372.

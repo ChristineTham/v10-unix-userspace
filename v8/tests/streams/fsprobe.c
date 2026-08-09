@@ -102,16 +102,24 @@ int	bhinit(), ihinit(), binit(), iinit();
 daddr_t	bmap();
 
 /*
- * §8a step 5d, the write half.  THREE OF THESE ARE SPELLED v8k_ AND THAT IS
- * NOT A SHIM FUNCTION -- it is Bell Labs' own, reached by the name param.h
- * renames it to.  hostok.h:44-52 #undefs the redirects so this file can have
- * <stdlib.h> as well, which means the plain names `free', `ialloc' and `time'
- * belong to the HOST here.  Calling free(dev, bno) would compile (the host's
- * takes one pointer, and this is K&R) and hand a device number to the C
- * library's allocator.  The file's own header comment already records the
- * same trap for `mount'.
+ * §8a step 5d, the write half.  ONE OF THESE IS SPELLED v8k_ AND IT IS NOT A
+ * SHIM FUNCTION -- it is Bell Labs' ialloc(), reached by the name param.h
+ * renames it to.  hostok.h:43-52 #undefs the redirects so this file can have
+ * <stdlib.h> as well, and the three names that costs us are `free', `ialloc'
+ * and `time', which belong to the HOST in this translation unit.  Calling
+ * free(dev, bno) would compile -- the host's takes one pointer, and this is
+ * K&R -- and hand a device number to the C library's allocator.  The file's
+ * header comment records the same trap for `mount'.
+ *
+ * THE COUNT ABOVE SAID THREE, AND IT WAS COUNTING THE RENAMED NAMES RATHER
+ * THAN THE DECLARATIONS BELOW.  Only ialloc is declared here; free and time
+ * are never called from this file.  It also declared itrunc() and v8k_free()
+ * that nothing calls -- an unconsumed declaration standing in for a trap
+ * instead of defending against one, which is the unconsumed-component rule
+ * applied to a line rather than to a file.  Both removed, found by the
+ * lp64-auditor.
  */
-int	writei(), update(), bflush(), itrunc(), v8k_free();
+int	writei(), update(), bflush();
 struct inode	*v8k_ialloc();
 
 int	v8k_bdconf(struct bdevsw *bd);
@@ -589,6 +597,20 @@ main(int argc, char **argv)
 
 		tfree0 = (long)fp->s_tfree;
 		tinode0 = (long)fp->s_tinode;
+		/*
+		 * tfreeA IS THE BASELINE THE ROUND-TRIP CASE COMPARES
+		 * AGAINST, and it is set here as well as in 8b/8c/8f because
+		 * both of those live inside `if (... != NULL)'.  With
+		 * /hello missing AND NI_CREAT failing it was read
+		 * uninitialised -- so on exactly the run that needs a
+		 * diagnosis, the strongest case in this section reported an
+		 * arbitrary 1 or 0.  Seeding it with tfree0 also makes it
+		 * MEAN something in that case: nothing was allocated, so
+		 * nothing should have been freed.  clang says so under
+		 * -Wconditional-uninitialized, which is not in -Wall and so
+		 * not in KFLAGS; found by the lp64-auditor.
+		 */
+		tfreeA = tfree0;
 		printf("w-tfree-start-positive %d\n", tfree0 > 0 ? 1 : 0);
 		printf("w-tinode-start-positive %d\n", tinode0 > 0 ? 1 : 0);
 
@@ -963,11 +985,98 @@ main(int argc, char **argv)
 		    (long)fp->s_tfree == tfreeA ? 1 : 0);
 
 		/* -----------------------------------------------------
-		 * 8i. Flush.  update() is sync(2)'s internal name: it writes
-		 * back every modified superblock and every modified inode,
-		 * then bflush(NODEV) pushes every B_DELWRI buffer at the
-		 * driver.  Until this runs, most of the work above is in a
-		 * 32-buffer cache and the image on disk is a lie.
+		 * 8h-bis. THE s_ronly ARM, MADE TO FIRE.
+		 *
+		 * §8a step 5d restored upstream's read-only check to
+		 * v8fs.c's access() -- and the lp64-auditor pointed out that
+		 * restoring it is not the same as exercising it: iinit sets
+		 * fp->s_ronly = 0 and nothing ever sets it otherwise, so the
+		 * arm was READ on every create and could never be TAKEN.
+		 * "A guard that has never been seen to fail is not a guard."
+		 *
+		 * Setting the field by hand is legitimate rather than a
+		 * cheat: s_ronly is a superblock field, mount(2) is what
+		 * would normally set it, and smount is not imported -- so
+		 * this is the same shape as v8k_bdconf standing in for
+		 * config(8).  It is put BACK immediately, because everything
+		 * after it writes.
+		 *
+		 * EROFS rather than EACCES is the whole point: uid is 0
+		 * here, so every other arm of access() short-circuits at
+		 * `u.u_uid == 0' and this is the only one that can refuse a
+		 * root create at all.
+		 */
+		fp->s_ronly = 1;
+		arg.flag = NI_CREAT;
+		arg.ino = 0;
+		arg.idev = 0;
+		arg.mode = 0644;
+		strncpy(pathbuf, "/onro", sizeof(pathbuf) - 1);
+		pathbuf[sizeof(pathbuf) - 1] = '\0';
+		u.u_dirp = pathbuf;
+		u.u_error = 0;
+		nip = namei(schar, &arg, 1);
+		printf("w-ronly-refused %d\n", nip == NULL ? 1 : 0);
+		printf("w-ronly-err %d\n", u.u_error);
+		if (nip != NULL)
+			iput(nip);
+		fp->s_ronly = 0;
+
+		/* And it really was the flag: the same create now works. */
+		arg.flag = NI_CREAT;
+		arg.ino = 0;
+		arg.idev = 0;
+		arg.mode = 0644;
+		strncpy(pathbuf, "/onro", sizeof(pathbuf) - 1);
+		pathbuf[sizeof(pathbuf) - 1] = '\0';
+		u.u_dirp = pathbuf;
+		u.u_error = 0;
+		nip = namei(schar, &arg, 1);
+		printf("w-ronly-cleared %d\n", nip != NULL ? 1 : 0);
+		if (nip != NULL)
+			iput(nip);
+
+		/*
+		 * AND IT HAS TO GO BACK THROUGH NI_DEL, not by hand.  The
+		 * first draft did `nip->i_nlink = 0; iput(nip)', which frees
+		 * the inode and leaves the DIRECTORY ENTRY in / pointing at
+		 * it -- and fsck said so, twice: "FILE SYSTEM WAS MODIFIED"
+		 * and a cmp difference at byte 180289.  Which is the
+		 * acceptance test doing its job on the probe rather than on
+		 * the kernel, and a small demonstration of why it is there:
+		 * three probe cases went green on an image the checkers
+		 * rejected.
+		 */
+		arg.flag = NI_DEL;
+		arg.ino = 0;
+		arg.idev = 0;
+		arg.mode = 0;
+		strncpy(pathbuf, "/onro", sizeof(pathbuf) - 1);
+		pathbuf[sizeof(pathbuf) - 1] = '\0';
+		u.u_dirp = pathbuf;
+		u.u_error = 0;
+		nip = namei(schar, &arg, 1);
+		printf("w-ronly-cleaned %d\n", u.u_error == 0 ? 1 : 0);
+		if (nip != NULL)
+			iput(nip);
+
+		/* -----------------------------------------------------
+		 * 8i. Flush.  update() is sync(2)'s internal name and it does
+		 * the whole job: modified superblocks by bwrite, modified
+		 * inodes by iupdat, and then -- its own last statement, at
+		 * alloc.c:530 -- bflush(NODEV), which pushes every remaining
+		 * B_DELWRI buffer at the driver.  Until it runs, most of the
+		 * work above is in a 32-buffer cache and the image on disk is
+		 * a lie.
+		 *
+		 * THERE WAS A bflush(NODEV) OF OUR OWN HERE AND IT WAS DEAD.
+		 * The comment described update() and bflush as a sequence, in
+		 * this file and in run.sh, and update() had already called it
+		 * -- so deleting the line changed nothing, which is the
+		 * vacuous shape CLAUDE.md names.  Found by the lp64-auditor,
+		 * confirmed by deleting it and re-running.  What
+		 * `w-flush-wrote' measures is update()'s own flush, which is
+		 * the property worth having and was never the one described.
 		 *
 		 * The suite's real acceptance test comes after the probe
 		 * exits: icheck, dcheck and fsck -- three programs of Bell
@@ -976,7 +1085,6 @@ main(int argc, char **argv)
 		 */
 		w0 = nwrite;
 		update();
-		bflush(NODEV);
 		printf("w-flush-wrote %d\n", nwrite > w0 ? 1 : 0);
 		printf("w-writes-total-positive %d\n", nwrite > 0 ? 1 : 0);
 	}

@@ -1484,9 +1484,38 @@ check "with ENOENT"				"2"	"$(f w-del-gone-err)"
 check "every inode taken came back"		"1"	"$(f w-roundtrip-tinode)"
 check "and every block"				"1"	"$(f w-roundtrip-tfree)"
 
-# 8i. update() is sync(2)'s internal name and bflush(NODEV) pushes every
-# B_DELWRI buffer at the driver.  Until they run, most of the work above is in a
-# 32-buffer cache and the image on disk is a lie.
+# 8h-bis. THE s_ronly ARM, MADE TO FIRE.  Restoring upstream's read-only check
+# is not the same as exercising it: iinit sets s_ronly = 0 and nothing else ever
+# sets it, so the arm was read on every create and could never be taken -- "a
+# guard that has never been seen to fail is not a guard", pointed out by the
+# lp64-auditor.  The probe sets the superblock field by hand, which is what
+# mount(2) would do if smount were imported, and puts it back.
+#
+# EROFS (30) rather than EACCES is the point: uid is 0, so every other arm of
+# access() short-circuits at `u.u_uid == 0' and this is the only one that can
+# refuse a create to root.  The pair is what makes it a measurement -- the same
+# create with the flag cleared has to SUCCEED, or the case would pass against an
+# access() that refused everything.
+check "a create on a read-only filesystem is refused" "1" "$(f w-ronly-refused)"
+check "with EROFS, the only arm root cannot pass"     "30" "$(f w-ronly-err)"
+check "and the same create works once it is cleared"  "1" "$(f w-ronly-cleared)"
+# The file it just made has to go back through NI_DEL rather than by hand.  The
+# first draft freed the inode and left the directory entry pointing at it; the
+# three cases above stayed green and FSCK caught it -- "FILE SYSTEM WAS
+# MODIFIED" plus a cmp difference.  The acceptance test finding a bug in the
+# probe is the same argument as it finding one in the kernel.
+check "and the probe cleaned up after itself"         "1" "$(f w-ronly-cleaned)"
+
+# 8i. update() is sync(2)'s internal name and it does the whole job -- modified
+# superblocks, modified inodes, and then its own last statement, bflush(NODEV)
+# at alloc.c:530, which pushes every remaining B_DELWRI buffer at the driver.
+# Until it runs, most of the work above is in a 32-buffer cache and the image on
+# disk is a lie.
+#
+# This comment used to say "update() ... and bflush(NODEV)" as though the probe
+# called both, and the probe did -- a second, DEAD bflush that changed nothing
+# because update() had already flushed.  Deleted; the lp64-auditor found it and
+# deleting it moved no case, which is what dead means.
 check "the flush reached the driver"		"1"	"$(f w-flush-wrote)"
 check "and the run wrote something overall"	"1"	"$(f w-writes-total-positive)"
 
@@ -1500,13 +1529,22 @@ check "and the run wrote something overall"	"1"	"$(f w-writes-total-positive)"
 # dcheck walks the directory tree and recomputes the link counts; fsck does both
 # and REPAIRS, so its silence is the strongest of the three.
 # ---------------------------------------------------------------------------
-# EVERY CAPTURE HERE IS BOUNDED, and that is not tidiness.  A mutation that
-# corrupted the free list made fsck print for forty seconds and the SHELL died
-# -- `xrealloc: cannot allocate 18446744071562067968 bytes' -- so the run
-# produced no summary and no diagnosis.  These three programs are bounded in
-# time by their deadlines and were not bounded in volume by anything; on a
-# healthy image they print six lines.
-icout=$(V8ROOT=$ROOT/rootfs "$ROOT/rootfs/etc/icheck" "$FSTMP/img" 2>&1 | head -200)
+# EVERY CAPTURE HERE IS BOUNDED IN BOTH DIRECTIONS, and that is not tidiness.
+# A mutation that corrupted the free list made fsck print for forty seconds and
+# the SHELL died -- `xrealloc: cannot allocate 18446744071562067968 bytes' -- so
+# the run produced no summary and no diagnosis.
+#
+# TWO BOUNDS, BECAUSE THEY CATCH DIFFERENT FAILURES.  `head -200' bounds VOLUME
+# and kills a runaway that prints, by SIGPIPE; the deadline bounds TIME and is
+# the only thing that catches one that loops silently -- which is not
+# hypothetical for a V8 checker on a damaged image, since CLAUDE.md records
+# fsck live-locking with an empty stdout on exactly that.  The first draft of
+# this block gave the deadline to fsck alone and then claimed in this comment
+# that all three had one; the lp64-auditor read the sentence against the code.
+# On a healthy image they print six lines and finish instantly.
+fsdeadline() { perl -e 'alarm 40; exec @ARGV' env V8ROOT=$ROOT/rootfs "$@"; }
+
+icout=$(fsdeadline "$ROOT/rootfs/etc/icheck" "$FSTMP/img" 2>&1 | head -200)
 # `missing' is icheck's count of blocks that are in neither a file nor the free
 # list -- exactly what a leak in alloc/free/itrunc produces, and the reason this
 # is the first line to look at.
@@ -1527,7 +1565,7 @@ check "and used+free accounts for every block" \
 # at all is also silent -- the "a case that silently disappears is worse than
 # one that asserts a host property" rule.  dcheck names the image it checked
 # whatever it finds, so that line is the proof it ran.
-dcraw=$(V8ROOT=$ROOT/rootfs "$ROOT/rootfs/etc/dcheck" "$FSTMP/img" 2>&1 | head -200)
+dcraw=$(fsdeadline "$ROOT/rootfs/etc/dcheck" "$FSTMP/img" 2>&1 | head -200)
 dcout=$(printf '%s\n' "$dcraw" | grep -v "^$FSTMP/img" | grep -v '^$')
 check "dcheck ran on the image" "1" \
     "$(printf '%s\n' "$dcraw" | grep -c "^$FSTMP/img")"
@@ -1537,8 +1575,8 @@ check "and found no link-count disagreement" "" "$dcout"
 # fails rather than waits, and a deadline because a checker that repairs can
 # loop.  tests/mkfs uses the same shape and says why.
 cp "$FSTMP/img" "$FSTMP/img.prefsck"
-fsout=$(perl -e 'alarm 40; exec @ARGV' env V8ROOT=$ROOT/rootfs \
-        "$ROOT/rootfs/etc/fsck" -y "$FSTMP/img" </dev/null 2>&1 | head -200)
+fsout=$(fsdeadline "$ROOT/rootfs/etc/fsck" -y "$FSTMP/img" </dev/null 2>&1 |
+        head -200)
 # fsck's own three numbers, arrived at by a different walk from icheck's.
 check "fsck agrees with icheck's three numbers" \
     "$(printf '%s\n' "$icout" | awk '$1=="files"{print $2}') files $icused blocks $icfree free" \

@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1763 cases, 1762 on a host whose $TMPDIR
+make test             # all 17 suites (1767 cases, 1766 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -352,6 +352,30 @@ generalise, and the first two are about *notes* rather than about code:
   `xrealloc: cannot allocate 18446744071562067968 bytes`, so the suite could not
   report the failure it had caused. The three checker captures are `| head -200`
   now.
+
+**AND THE AUDITOR CAME BACK CLEAN ON EVERY HAZARD IT EXISTS FOR AND FOUND FIVE
+THINGS ANYWAY — FOUR OF THEM SENTENCES.** Run on the step-5d diff: widths at
+the u-area seam, the 16-bit ranges, symbol collisions and out-of-bounds all
+clean, measured. What it found instead was a comment describing `update()` and
+a `bflush()` as a sequence when `update()` *ends* with `bflush` — so the second
+call was dead and the sentence named it; a claim that three checkers were
+"bounded in time by their deadlines" when only one had one; a count of three
+that was one, because it counted renamed *names* while describing
+*declarations*; two declarations with no call site; and one real defect, a
+`long` read uninitialised on a double-failure path (`-Wconditional-uninitialized`,
+which is **not** in `-Wall`).
+
+**Its best finding was not a defect at all: the guard restored that same day
+could never be taken.** `access()`'s `s_ronly` arm is read on every create and
+`iinit` sets `s_ronly = 0`, so restoring it and exercising it are two different
+things. Making it fire needed the superblock field set by hand — legitimate for
+the reason `v8k_bdconf` stands in for `config(8)` — and the pair matters: the
+same create must *succeed* with the flag cleared, or the case passes against an
+`access()` that refuses everything. **And the cleanup for it created a dangling
+directory entry that all three new cases were blind to and `fsck` caught within
+the hour.** The acceptance test found a bug in the probe, which is M3's
+argument arriving from the other direction. So: send the auditor at new shim
+code, and read its report for the sentences as well as the code.
 
 `libv8kern.a` is separate from `libv8sys.a` for libkmemu's reason plus a
 storage one: **240.7 KB** of zero-initialised storage, and `qinit()` dirties
