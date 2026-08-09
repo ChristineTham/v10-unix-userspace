@@ -76,15 +76,39 @@ s() { awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}' "$TMP/sio"; }
 
 # And the line discipline gets a third, for the reason the first two are two:
 # probe.c is the stream engine, sioprobe.c the syscall side, ttyprobe.c a module
-# riding on both.  No deadline -- nothing here sleeps.
+# riding on both.
+#
+# A DEADLINE, and this line used to say "no deadline -- nothing here sleeps".
+# That was true of the open path and stopped being true the moment a driver went
+# under the discipline: every stioctl below sends an M_IOCTL down and tsleeps on
+# the acknowledgement for FIFTEEN SECONDS, and every stread with an empty queue
+# sleeps until the driver sends something up.  So a driver that forgets to ack,
+# or a discipline that swallows a block, fails as a HANG rather than as a wrong
+# answer -- and an unbounded hang in suite 17 of 17 reads as a broken machine.
 if ! clang $KFLAGS -o "$TMP/ttyprobe" "$ROOT/tests/streams/ttyprobe.c" \
      "$KERN" "$SETJMP" > "$TMP/ttybuild.log" 2>&1; then
 	grep -qv 'reducing alignment' "$TMP/ttybuild.log" &&
 		{ echo "ttyprobe build failed:"; head -5 "$TMP/ttybuild.log"; exit 1; }
 fi
-"$TMP/ttyprobe" > "$TMP/tty" 2>"$TMP/ttyerr" ||
+perl -e 'alarm 60; exec @ARGV' "$TMP/ttyprobe" > "$TMP/tty" 2>"$TMP/ttyerr" ||
 	bad "ttyprobe exited nonzero" "$(head -3 "$TMP/ttyerr")"
 t() { awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}' "$TMP/tty"; }
+
+# A DUPLICATED KEY IS SILENT, AND IT COST A ROUND WHILE THE TRAFFIC CASES WERE
+# BEING WRITTEN.  These readers print EVERY matching line, so two probe lines
+# with one key make $(t k) a two-line string -- which never equals the wanted
+# value, and whose diagnostic is a `got' field containing both answers with no
+# hint that the cause is the key rather than the code.  It happened here for
+# real: the open-path section already printed `erase 8' and `kill 64', and the
+# canonical-input cases printed `erase' and `kill' again.
+#
+# So assert the property instead of remembering it.  This is cheap, it covers
+# all three probes, and it is the kind of guard that can only ever fire on a
+# case someone is in the middle of adding.
+for f in out sio tty; do
+	dup=$(awk '{print $1}' "$TMP/$f" | sort | uniq -d | tr '\n' ' ')
+	[ -z "$dup" ] || bad "$f: probe key printed twice, so \$(t k) is two lines" "$dup"
+done
 
 # --- qinit built one freelist per size class ------------------------------
 # From src/sys/research/sparam.h, which is Bell Labs' own configuration for the
@@ -502,9 +526,10 @@ nm -u "$KERN" 2>/dev/null | grep -q '_v8s_' &&
 # THE TTY LINE DISCIPLINE -- src/sys/dev/ttyld.c, imported byte-identical.
 #
 # It is line discipline 0 (conf/devices:75), not a device, and on a real V8 it
-# is pushed onto a terminal's stream by init.c:377.  Nothing is under it here,
-# which bounds the traffic paths and NOT the open path -- ttyopen never
-# dereferences q->next.  See ttyprobe.c's header.
+# is pushed onto a terminal's stream by init.c:377.  Two stacks are driven here
+# and ttyprobe.c's header says why: a bare queue pair for the open path, which
+# ttyopen can run on because it never dereferences q->next, and -- since step
+# 1c -- a real stream head / ttyld / driver stack for everything below it.
 # ---------------------------------------------------------------------------
 
 # NTTY is the one number in this machinery that V8's shipped tree does not
@@ -571,6 +596,166 @@ check "close releases the slot"         "1" "$(t closed)"
 check "exactly NTTY disciplines fit"    "128" "$(t nopen)"
 check "the refusal is at slot NTTY"     "128" "$(t firstfail)"
 check "and it is 0, never negative"     "0"   "$(t negative)"
+
+# ---------------------------------------------------------------------------
+# THE TRAFFIC PATHS -- step 1c, and the half step 1b could not reach.
+#
+# ttyldin, ttyinsrv, ttyosrv, outconv, ttysig and ttldioc compiled and linked
+# from the day ttyld.c was imported, and NOTHING DROVE THEM.  They all reach
+# past their own queue, and ttyldin reaches both ways in one function -- data
+# up through q->next, flow control down through WR(q)->next -- so exercising
+# them needed a bottom end, which is what a driver is and a module is not.
+#
+# Everything below runs against a real three-layer stack, built the way
+# init.c:368-382 builds one: stopen the driver, then FIOPUSHLD the discipline
+# between it and the stream head.  Only the driver is this port's; the stream
+# head is streamio.c and the discipline is ttyld.c, both authentic.
+# ---------------------------------------------------------------------------
+
+check "the driver's stream opens"       "0" "$(t drvopenerr)"
+# NULL is SUCCESS here -- stopen returns an inode only for a cloning driver
+# (streamio.c:131, `if ((long)nip != 1)').  sioprobe.c asserts the same thing
+# for the loopback driver, and it is the shape a reader gets backwards.
+check "...and stopen returns NULL to say so" "1" "$(t drvopenret)"
+check "...and the inode is streaming"   "1" "$(t drvattached)"
+check "the discipline registers"        "1" "$(t ttyldnum)"
+check "FIOPUSHLD pushes it"             "0" "$(t pusherr)"
+# Pushed BETWEEN, not beside: ttyopen ran (so the stream head's write queue now
+# leads to a ttyld with a slot), and there is still something under it.
+check "...and ttyopen ran on the pushed queue" "1" "$(t pushedptr)"
+check "...with a tty[] slot taken"      "1" "$(t pushedttuse)"
+check "...and the driver is still below it" "1" "$(t pushedbelow)"
+
+# --- the read path: ttyldin queues, ttyinsrv canonicalises ----------------
+# One read needs BOTH.  ttyldin puts each byte on the queue and, on the
+# newline, enqueues an M_DELIM and qenables; ttyinsrv then runs at splx(0) and
+# gathers the line.  Values are printed with non-graphic bytes as \NNN, so the
+# delivered newline is asserted rather than swallowed by the shell.
+check "a typed line arrives"            "hi\\012" "$(t canon)"
+check "...with the newline counted"     "3"       "$(t canonn)"
+check "...and no error"                 "0"       "$(t canonerr)"
+# ECHO is on by default, so the same bytes went back out the write side as they
+# arrived -- ttyldin putd's them onto WR(q), ttyosrv drains them, the driver
+# sees them.  A terminal shows you what you typed because the KERNEL sends it
+# back, and this is that loop closing through 1985 code.
+check "...and were echoed, CRMOD'd, to the device" "hi\\015\\012" "$(t echo1)"
+
+# Erase and kill are ttyinsrv's work, not ttyldin's: ttyldin queues \010
+# verbatim and only the canonicaliser backs up over it.
+check "erase backs over a character"    "hi\\012" "$(t canonerase)"
+check "kill discards the line so far"   "hi\\012" "$(t canonkill)"
+check "CRMOD makes a typed CR a NL"     "cr\\012" "$(t crmodin)"
+check "...and the program reads 3 bytes" "3"      "$(t crmodinn)"
+
+# --- the write path: ttyosrv and outconv ----------------------------------
+# THE TAB DOES NOT EXPAND, and this case exists to say so.  outconv's
+# expansion loop is guarded by (t_flags&TBDELAY)==XTABS (ttyld.c:385) and
+# ttyopen sets ECHO|CRMOD only -- XTABS means "this terminal cannot do tabs
+# itself", a property of the hardware.  A first draft of this case expected
+# `a       b' from reading the loop and not its guard.
+check "outconv passes a tab through"    "a\\011b\\015\\012" "$(t outconv)"
+# 0 is the CR/LF dance, not a reset: `a' takes t_col to 1, the tab to 8, `b' to
+# 9, the injected \r zeroes it, and the \n leaves it alone because CRMOD is set.
+check "...and t_col ends where the CR left it" "0" "$(t outcol)"
+
+# And now the loop, with the flag that unlocks it.  XTABS alone: no ECHO adding
+# bytes from the other direction, no CRMOD adding a \r.  `a' leaves t_col at 1
+# and the loop writes spaces until (t_col & 07) == 0, which is seven.
+check "XTABS expands a tab to the next multiple of 8" \
+      "a\\040\\040\\040\\040\\040\\040\\040b" "$(t xtabs)"
+check "...leaving t_col at 9"           "9" "$(t xtabscol)"
+
+# --- ttysig: a byte becomes a real signal ---------------------------------
+# The end-to-end one, and the only case in this suite whose assertion is that a
+# HANDLER RAN.  DEL is t_intrc, ttyldin recognises it, ttysig flushes both
+# queues and sends M_SIGNAL up, streamio.c:379 turns that into gsignal, and the
+# shim's gsignal is a real kill(2) to this process.  Six layers, one keystroke.
+check "pgrp is set, or gsignal goes nowhere" "1" "$(t pgrpset)"
+check "DEL from the terminal delivers SIGINT" "1" "$(t intsig)"
+check "...and FS delivers SIGQUIT"      "1" "$(t quitsig)"
+check "...and the device was told to flush" "1" "$(t intflush)"
+check "...and the delimiter count was reset" "0" "$(t intdelct)"
+# Not cosmetic: the three characters typed before the DEL are gone.
+check "...and the typed-ahead line was discarded" "0" "$(t intdropped)"
+
+# --- ttldioc from the process side (fromdev 0) ----------------------------
+# stioctl packages an M_IOCTL, sends it down, and sleeps on the ack.  ttyosrv
+# picks it off and calls ttldioc(q, bp, RD(q), 0) -- and for TIOCSETP the zero
+# matters: the block goes FURTHER DOWN, so the ack that wakes stioctl is the
+# driver's.  That is why the driver has to acknowledge and not free.
+check "TIOCSETP completes"              "0"  "$(t setperr)"
+check "...and sets RAW"                 "1"  "$(t setpraw)"
+check "...and the erase character"      "35" "$(t setperase)"
+check "...and the kill character"       "37" "$(t setpkill)"
+check "...and the DEVICE saw the ioctl" "1"  "$(t setpioc)"
+# ttldioc's last act: RAW clears QDELIM|QNOENB on the reader, because a raw
+# stream has no delimiters to promise.
+check "...and RAW clears QDELIM on the reader" "0" "$(t setpqdelim)"
+
+# RAW traffic really is raw: ttyldin's RAW branch and ttyinsrv's (CBREAK|RAW)
+# branch, neither of which the canonical cases reach.
+check "RAW passes 4 bytes through"      "4"  "$(t rawn)"
+check "...with the CR unconverted"      "13" "$(t rawbyte3)"
+check "...and no echo"                  "0"  "$(t rawecho)"
+
+check "TIOCGETP completes"              "0"  "$(t getperr)"
+check "...and reads back the erase"     "35" "$(t getperase)"
+check "...and the kill"                 "37" "$(t getpkill)"
+check "...and the flags"                "1"  "$(t getpraw)"
+
+# THE BEHAVIOURAL DIFFERENCE WORTH A CASE.  ttldioc's TIOCSETP arm passes the
+# block down to the device; its TIOCSETC arm is `qreply(q, bp)' with fromdev 0,
+# which turns it round AT THE DISCIPLINE.  So one command reaches the hardware
+# and the other does not -- invisible from the syscall's return value, which is
+# 0 either way, and visible only by asking the driver.
+check "TIOCSETC completes"              "0" "$(t setcerr)"
+check "...and sets the interrupt character" "3" "$(t setcintrc)"
+check "...WITHOUT the device ever seeing it" "0" "$(t setcioc)"
+check "TIOCGETC reads it back"          "3" "$(t getcintrc)"
+check "...with no error"                "0" "$(t getcerr)"
+
+# --- CBREAK, the third mode -----------------------------------------------
+# ttyldin has three branches and RAW plus canonical is two.  CBREAK is the
+# middle: no line gathering, so a character is readable the instant it arrives
+# -- but special characters are still interpreted and ECHO still happens, and
+# neither is true in RAW.  Those three together are what separate it.
+check "CBREAK is settable"              "0"  "$(t cbreakerr)"
+check "...and reads without a newline typed" "2" "$(t cbreakn)"
+check "...returning what was typed"     "ab" "$(t cbreak)"
+check "...still echoing, unlike RAW"    "2"  "$(t cbreakecho)"
+check "...and still signalling, unlike RAW" "1" "$(t cbreaksig)"
+
+check "TIOCSETP restores canonical mode" "1" "$(t recanon)"
+check "...and QDELIM comes back"        "1" "$(t recanonqdelim)"
+
+# --- flow control: the direction only a driver can see --------------------
+# t_stopc sets TTSTOP and sends M_STOP DOWN to the device -- WR(q)->next, not
+# q->next -- and t_startc clears it and sends M_START.  A second module stacked
+# above would never see either, which is the argument for a driver in one line.
+check "^S stops the line"               "1" "$(t stopstate)"
+check "...and the device is told"       "1" "$(t stopsent)"
+check "^Q starts it again"              "1" "$(t startstate)"
+check "...and the device is told that too" "1" "$(t startsent)"
+# And the characters are consumed, not delivered: ttyldin `continue's past them.
+check "...and neither reaches the program" "xyz\\012" "$(t flowline)"
+
+# --- ttldioc from the DEVICE side (fromdev 1) -----------------------------
+# The other arm, and the only one a driver can reach: an M_IOCTL sent UP
+# arrives at ttyldin, which calls ttldioc(WR(q), bp, q, 1).  With fromdev set
+# every arm ends in qreply(rdq, bp) -- back DOWN as an M_IOCACK -- so a modem
+# that asks the discipline for the line settings is answered without the
+# process being involved.  Nothing in this port had taken that arm before.
+check "an ioctl from the device is acked back to it" "1" "$(t devioc)"
+
+# M_BREAK in canonical mode is an interrupt: a line break and a DEL key reach
+# ttysig by different routes, which is a claim about the switch at the top of
+# ttyldin rather than about signals.
+check "a line break raises SIGINT"      "1" "$(t breaksig)"
+# The last arm of that switch goes THROUGH rather than being consumed.
+check "M_HANGUP is passed up to the stream head" "1" "$(t hungup)"
+# And the slot comes back, which is what lets the exhaustion case above still
+# measure NTTY rather than NTTY-1.
+check "stclose releases the tty[] slot" "1" "$(t stclosed)"
 
 echo "streams: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1762,17 +1762,52 @@ Ordered so that value lands before risk, and so each step is testable alone.
    refused, and the refusal is 0. Mutating `return(0)` to `return(-1)` turns it
    red, and mutating `NTTY` to 64 turns four others red.
 
+   **STEP 1c IS DONE TOO, AND THE PARAGRAPH BELOW SAYING IT IS "the next
+   increment" IS KEPT ONLY BECAUSE IT NAMES THE FIVE FUNCTIONS.** The same
+   probe now carries a ~60-line driver and builds the real thing the way
+   `init.c:368-382` does -- `stopen` the driver, `v8k_stconf` the discipline,
+   `FIOPUSHLD` to push it between -- so `streamio.c`'s stream head sits on top,
+   `ttyld.c` in the middle, and only the bottom layer is ours. **60 new cases,
+   streams 140 -> 200.** All five functions run, plus `outconv`.
+
+   Three results worth carrying:
+
+   - **A driver, not a module, and one line says why.** `ttyldin` sends data
+     UP through `q->next` and flow control DOWN through `WR(q)->next` in the
+     same loop. A module stacked above sees the first and never the second.
+     Mutating `putctl(wrq->next, M_STOP)` to `putctl(q->next, M_STOP)` turns
+     exactly one case red, and that case is unreachable from above.
+   - **`ttysig` ends in a real `kill(2)`.** DEL -> `ttyldin` -> `ttysig` ->
+     `M_SIGNAL` -> `streamio.c:379` `gsignal` -> the shim's `psignal` ->
+     `rawsys2(SYS_kill)`. The assertion is that a handler ran.
+   - **Two ioctl arms that `stioctl`'s return value cannot tell apart.**
+     `TIOCSETP` passes the block down and the driver's ack is what wakes the
+     sleeper; `TIOCSETC` is `qreply` at the discipline and the device never
+     sees it. Both return 0. Only the driver can distinguish them, and the
+     `fromdev`-1 arm had never been taken by anything in this port.
+
+   And **the tab does not expand by default** -- `outconv`'s loop is behind
+   `(t_flags&TBDELAY)==XTABS` and `ttyopen` sets `ECHO|CRMOD` only. The first
+   draft of that case expected `a       b` from reading the loop and not its
+   guard one line above it. Both cases are now in: the literal tab a default
+   terminal gets, and the seven spaces once the flag is set.
+
    **Writing `max()` found `min()` misdeclared in two places**, both saying
    upstream had "no declared return type"; `rdwri.c:249` is the word `unsigned`
    on its own line. Nothing observable changed, which is why it survived --
    and it would have been copied straight into `max`. Adding the sibling is
    what forced the declaration to be read.
 
-   **What is NOT exercised is everything below the open**: `ttyldin`,
+   ~~**What is NOT exercised is everything below the open**: `ttyldin`,
    `ttyinsrv`, `ttyosrv`, `ttysig` and `ttldioc` compile and link and nothing
    drives them, because driving them needs something under the discipline to
    send to. That is the next increment, and it is a driver rather than a
-   module. `src/sys/PORTING.md` has the whole account.
+   module.~~ **Done -- see the step 1c block above.** The prediction held
+   exactly: it was a driver and not a module, and the reason is `ttyldin`
+   reaching both ways in one loop. `src/sys/PORTING.md` has the whole account,
+   including the four flag-gated arms that are still dark (`LCASE` through
+   `maptab[]`, escape handling, `TANDEM` back-pressure, and `outconv`'s delay
+   computations for the tty 37, vt05, tn 300 and ti 700).
 
    Three things the survey settled that were not asked:
 

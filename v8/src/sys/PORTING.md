@@ -710,9 +710,94 @@ functions — identical to `streamio.c`'s case and spelled as its own
 `TTYLDFLAGS` rather than folded into `KERNFLAGS`, because `stream.c` compiles
 clean without it.
 
+### The traffic paths — DONE, and it took a driver rather than a module
+
+This section used to say the five functions below the open were compiled,
+linked and undriven, and that reaching them needed "something under the
+discipline to send to". That is now built. `tests/streams/ttyprobe.c` carries a
+~60-line driver and drives **two** stacks, because the open path and the
+traffic paths want different ones:
+
+| stack | for | why |
+|---|---|---|
+| a bare queue pair | `ttyopen`, `ttyclose` | `ttyopen` never dereferences `q->next`, and exhaustion needs `NTTY+4` opens — 132 whole streams would be absurd |
+| stream head / `ttyld` / driver | everything else | every other function reaches past its own queue |
+
+The real stack is built the way `init.c:368-382` builds one — `stopen()` the
+driver, `v8k_stconf()` the discipline, `FIOPUSHLD` to push it between them —
+so the only new code is the bottom layer. The middle is `ttyld.c`
+byte-identical and the top is `streamio.c`.
+
+**Why one function needs both ends, which is the whole argument for a driver.**
+`ttyldin` sends data **up** through `q->next` and flow control **down**
+through `WR(q)->next`, in the same loop. A second module stacked above would
+see the first and never the second, so it cannot distinguish a discipline that
+sends `M_STOP` downstream from one that does not. Mutating
+`putctl(wrq->next, M_STOP)` to `putctl(q->next, M_STOP)` turns exactly one case
+red — *"and the device is told"* — and that case is unreachable without a
+bottom end.
+
+60 new cases. What they cover, and the three worth knowing about:
+
+- **The read path needs `ttyldin` AND `ttyinsrv` for one read.** `ttyldin`
+  queues bytes and, on the newline, enqueues an `M_DELIM` and `qenable`s;
+  `ttyinsrv` runs at `splx(0)` and gathers the line. Erase and kill are
+  `ttyinsrv`'s alone — `ttyldin` queues `\010` verbatim.
+- **ECHO closes a loop through 1985 code.** The bytes go back out the write
+  side as they arrive, through `ttyosrv` and `outconv`, and the driver sees
+  them CRMOD'd. A terminal shows you what you typed because the kernel sends
+  it back, and that is now measured rather than assumed.
+- **`ttysig` ends in a real signal.** DEL is `t_intrc`, `ttyldin` recognises
+  it, `ttysig` flushes both queues and sends `M_SIGNAL` up, `streamio.c:379`
+  turns that into `gsignal`, and the shim's `gsignal` is a `kill(2)` to the
+  probe. The assertion is that a **handler ran**. Six layers, one keystroke.
+
+**THE TAB DOES NOT EXPAND BY DEFAULT, AND THE FIRST DRAFT OF THAT CASE READ THE
+LOOP WITHOUT ITS GUARD.** `outconv`'s expansion is behind
+`(tp->t_flags&TBDELAY)==XTABS` (`:385`) and `ttyopen` sets `ECHO|CRMOD` only —
+`XTABS` means *this terminal cannot do tabs itself*, a fact about hardware
+rather than a default. So there are two cases: the literal tab that a default
+terminal gets, and `a` + seven spaces once the flag is set. Same shape as
+`min()` being found by writing `max()`: the expected value was wrong, the
+measured one was right, and the guard was one line above the code being read.
+
+**The ioctl arms differ in a way the return value cannot show.** `ttldioc`'s
+`TIOCSETP` passes the block **down to the device** and the acknowledgement that
+wakes `stioctl` is the *driver's*; its `TIOCSETC` arm is `qreply(q, bp)` with
+`fromdev` 0, which turns the block round **at the discipline**. Both make
+`stioctl` return 0. The only way to tell them apart is to ask the driver
+whether it saw anything, which is what the pair of cases does. Mutating the
+`TIOCSETC` arm to pass down turns exactly one case red.
+
+And the `fromdev` **1** arm had never been taken by anything in this port: an
+`M_IOCTL` sent *up* reaches `ttyldin`, which calls `ttldioc(WR(q), bp, q, 1)`,
+and every arm then ends in `qreply(rdq, bp)` — back down as an `M_IOCACK`. A
+modem asking the discipline for the line settings is answered without the
+process being involved.
+
+**The driver's one hard requirement is the one that hangs.** `stioctl`
+(`streamio.c:759-786`) sends an `M_IOCTL` down and then `tsleep`s on
+`stq->iocblk` for **fifteen seconds**. A driver that frees an `M_IOCTL` instead
+of acknowledging it does not fail — it stalls. Measured by mutation: 30
+failures and the probe killed by its 60-second alarm. That is also why
+`ttyprobe` now runs under a deadline; the comment saying it needed none was
+true of the open path and stopped being true the moment a driver went under.
+
+### Where the driver lives, and why it is not in `shim/kern/`
+
+With the probe. Nothing in the port consumes a tty driver: PLAN.md §8a step 1b
+costed a host-fd driver to sit under `/dev/tty`, and that was measured wrong
+four ways — V8's `/dev/tty` is a hard link to `/dev/fd/3` and opening it is
+`dup(2)`. A driver in `shim/kern/` would therefore be a component with no
+caller, which is the mirror of this port's recurring lesson: an unexercised
+rule cannot be seen to be incomplete, and an **unconsumed component invents a
+difference the kernel does not have**. `sioprobe.c`'s loopback and pipe drivers
+are the precedent — scaffolding lives with the probe.
+
 ### What is still not exercised
 
-Everything below the open: `ttyldin`, `ttyinsrv`, `ttyosrv`, `ttysig` and
-`ttldioc` are compiled and linked and no test drives them, because driving
-them needs something under the discipline to send to. That is the next
-increment, and it is a driver rather than a module.
+`ttyinsrv`'s `LCASE` mapping through `maptab[]`, the escape (`\`) handling, the
+`TANDEM` back-pressure arm, and `outconv`'s delay computations for the tty 37,
+vt05, tn 300 and ti 700 — four terminals whose timing V8 still carried in 1985.
+All are flag-gated arms of functions now driven, so they are cases to add
+rather than machinery to build.

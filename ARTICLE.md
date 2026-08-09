@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **1482 tests across 17 suites** guard it.
+assembly. **1542 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -1043,6 +1043,66 @@ the note survived for months. It would have been copied straight into `max`.
 **Adding the second instance is what forces a declaration to be read instead of
 recalled**, and that generalises well beyond this file.
 
+### One keystroke, six layers, and why it had to be a driver
+
+Importing the discipline was not the same as running it. Its open path worked
+on a bare pair of queues, but the five functions that do the actual work —
+input processing, line gathering, output conversion, signal generation, the
+ioctl handler — compiled, linked, and had nothing driving them. A line
+discipline is the *middle* of a stream. It needs a stream head above and a
+device below, and it had neither.
+
+The tempting shortcut is to stack a second module on top and watch what comes
+out. It does not work, and one line of upstream says why: the input routine
+sends data **upward** through its own `q->next` and flow control **downward**
+through the write queue's, in the same loop. Anything sitting above sees the
+first and is structurally blind to the second. So the missing piece was a
+*driver* — a bottom end — and about sixty lines of it.
+
+With that, the stack is built exactly the way `init` builds one: open the
+driver, register the discipline, push it between. Three layers, of which only
+the bottom is ours. The stream head is Bell Labs', the discipline is Bell Labs'
+and byte-identical, and what runs between them is 1985 code doing what it was
+written to do.
+
+The case worth keeping is a single keystroke. Press DEL on the terminal, and:
+the driver delivers the byte upward as a message; the discipline recognises it
+as the interrupt character; it flushes both queues and sends a signal message
+up the stream; the stream head turns that into a process-group signal; the
+shim's signal routine turns *that* into a real `kill(2)`; and a handler in the
+test process runs. Six layers, three of them authentic, and the assertion is
+not that a flag was set but that **the handler ran**.
+
+Two smaller findings came with it, and both are the same shape as everything
+else in this project.
+
+The first: two `ioctl` commands that the return value cannot tell apart. Setting
+the terminal parameters passes the request *down to the device*, and the
+acknowledgement that wakes the sleeping system call is the driver's. Setting the
+special characters is answered *by the discipline itself* and the device never
+sees it. Both return zero. The only way to observe the difference is to ask the
+far end whether it saw anything — which is a test you cannot write until there
+is a far end to ask.
+
+The second: an expectation that was wrong because the guard sits one line above
+the loop. The output converter expands tabs into spaces, and the first version
+of that test expected a tab to come out as seven spaces. It came out as a tab.
+The expansion is conditional on a flag meaning *this terminal cannot do tabs
+itself* — a fact about 1970s hardware, not a default. The measured answer was
+right and the expected one was wrong, so the fix was two tests instead of one:
+the literal tab a default terminal gets, and the expansion once the flag is set.
+That is the same lesson as `max()` finding `min()`, arriving from the other
+direction: **the answer that surprises you is the one to go and read the guard
+for.**
+
+Where the driver *lives* was the last decision, and it went against the obvious
+one. It is test scaffolding, not part of the shim — because nothing in the port
+consumes a tty driver. `/dev/tty` had already turned out to be a hard link to a
+file descriptor rather than a device. Putting a driver in the shim would have
+created a component with no caller, and that is the mirror of this project's
+most repeated lesson: an unexercised rule cannot be seen to be incomplete, and
+an unconsumed component invents a difference the kernel does not have.
+
 ### A filesystem image, and checkers that cannot check each other
 
 `mkfs` writes a real V7 image; `icheck`, `dcheck`, `ncheck`, `clri`, `quot`,
@@ -1075,13 +1135,12 @@ in.
 
 What remains, in rough order:
 
-- **A driver under the line discipline.** Its open path is exercised; its five
-  traffic functions compile and link with nothing driving them, because driving
-  them needs something underneath to send to. That is a new piece of layer-2
-  code rather than an import — the one V8 candidate is structurally impossible
-  in a per-binary shim, because its two ends exchange a pointer by direct
-  function call and every object involved is process-private, so it can only
-  ever wire a process to itself.
+- **The rest of the line discipline.** The driver landed and the five traffic
+  functions run, but four flag-gated arms inside them are still dark:
+  upper-case mapping for terminals that had no lower case, backslash escaping,
+  the flow-control back-pressure path, and the output delays for four specific
+  1970s terminals whose timing V8 still carried in 1985. Those are tests to
+  write, not machinery to build.
 - **The V8 filesystem server over the raw image**, which is what turns the image
   from something the tools inspect into something the world can mount.
 - **The SIMH cross-check** — described below, and still the best test available.

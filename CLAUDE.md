@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1482 cases, 1481 on a host whose $TMPDIR
+make test             # all 17 suites (1542 cases, 1541 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -156,6 +156,45 @@ fall-through delivers it with **no edit to Bell Labs' source** — which is
 exactly what keeps the hash guard available. Derived, not picked: 128 =
 `NSTREAM`, because a slot is one discipline *attached to a stream* and a
 process cannot hold more streams than that. `src/sys/PORTING.md`.
+
+**AND EXERCISING IT NEEDED A DRIVER RATHER THAN A MODULE, WHICH IS ONE LINE OF
+SOURCE AND NOT A PREFERENCE.** `ttyldin` sends data **up** through `q->next`
+and flow control **down** through `WR(q)->next`, in the same loop — so a second
+module stacked above sees the first and can never see the second, and a
+discipline with one end is a discipline that cannot be driven.
+`tests/streams/ttyprobe.c` now builds the real thing the way `init.c:368-382`
+does — `stopen` the driver, `v8k_stconf` the discipline, `FIOPUSHLD` between —
+with `streamio.c` on top, `ttyld.c` in the middle, and **only the bottom layer
+ours**. Streams went 140 → 200 cases. Three things generalise:
+
+- **The driver is in the probe, not `shim/kern/`, and that is the rule rather
+  than laziness.** Nothing in the port consumes a tty driver — `/dev/tty` is
+  `/dev/fd/3` — so one in the shim would be a component with no caller. That
+  is the **mirror** of this file's most repeated lesson: an unexercised rule
+  cannot be seen to be incomplete, and an *unconsumed component invents a
+  difference the kernel does not have*. `sioprobe.c`'s loopback and pipe
+  drivers are the precedent.
+- **A return value cannot distinguish two paths, so ask the far end.**
+  `ttldioc`'s `TIOCSETP` passes the block down and the *driver's* ack wakes
+  `stioctl`; its `TIOCSETC` is `qreply` at the discipline and the device never
+  sees it. Both make `stioctl` return 0. The pair of cases asks the driver
+  whether it saw anything, which is the only observable difference.
+- **The failure mode of the thing under it is a HANG.** `stioctl` tsleeps on
+  the acknowledgement for **fifteen seconds**; a driver that frees an
+  `M_IOCTL` instead of acking stalls rather than failing. Measured by
+  mutation: 30 failures and the probe killed by its alarm. `ttyprobe` runs
+  under a deadline now, and the comment saying it needed none was true of the
+  open path and stopped being true the moment a driver went under it.
+
+**AND THE EXPECTED VALUE WAS WRONG BECAUSE THE GUARD IS ONE LINE ABOVE THE
+LOOP.** `outconv` expands a tab only when `(t_flags&TBDELAY)==XTABS`
+(`ttyld.c:385`), and `ttyopen` sets `ECHO|CRMOD` — `XTABS` means *this terminal
+cannot do tabs itself*, a fact about hardware, not a default. A case written
+from the loop expected `a` + seven spaces and measured a literal tab. Same
+shape as `min()` being found by writing `max()`: **the answer that surprises
+you is the one to go and read the guard for**, and the fix is two cases rather
+than one — the default terminal's literal tab, and the expansion with the flag
+set.
 
 **And writing `max()` found `min()` misdeclared in two places.** Both
 `param.h` and `subr.c` said upstream's `min` has "no declared return type, so
@@ -1668,6 +1707,19 @@ not testable until it is installed.
   wavea runs `rootfs/bin/ls` and only a *full* build relinks it. Both errors are
   in the safe direction, and both cost a round. Before trusting a rebuild
   check, read the rule that builds the thing the suite runs.
+
+  **AND THE ARTEFACT CAN BE WRONG BY BEING NONDETERMINISTIC, WHICH IS THE SAME
+  ERROR MAKING THE OPPOSITE NOISE.** A harness for the `ttyld` traffic cases
+  hashed `libv8kern.a` to decide whether a mutation had been compiled — and
+  `ar rcs` embeds timestamps, so **two builds of byte-identical objects differ**
+  (measured: the archive changed, `ttyld.o` did not). The rebuild check
+  therefore passed always, and the *restore* check cried wolf on a restore that
+  was perfect. Both readings are useless in opposite directions from one bad
+  choice of artefact. Hash the **object**; it is deterministic here, and it is
+  also what the compile actually produced. And when the restore check does
+  fire, confirm against the **backup**, not `git diff` — a file holding
+  uncommitted work is dirty against HEAD no matter how clean the restore was,
+  which produced a third false alarm in the same session.
 
   **AND THE TRAP RUNS THE OTHER WAY TOO: THE RESTORE CAN BE THE THING THAT DOES
   NOT COMPILE.** Measured — `hunt1.o` and `hunt1.c` ended up with the same
