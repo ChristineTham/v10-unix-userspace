@@ -2326,6 +2326,162 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `dumpmain.c:18`, which was invisible for three independent reasons at once.
 5. **`v8fs` as the third server** -- V8's own `alloc.c`, `iget.c`, `nami.c`,
    `rdwri.c` over that image. Then `mklost+found`, and the other nine.
+
+   **SURVEYED, the same way steps 1 and 1b were, and the four files named in
+   that sentence are NOT the unit.** Costing by external-name count before
+   importing anything is what made `stream.c`, `streamio.c` and `ttyld.c`
+   tractable, so it was done here first. Every number below was measured
+   against `third_party/`.
+
+   The four files call **47** names they do not define between them. Six are
+   already in `libv8kern.a`. The rest resolve to eleven other kernel files, and
+   **following them transitively converges at 42 files and 17,393 lines** --
+   `vmmem.c`, `vmpt.c`, `vmdrum.c`, `vmswap.c`, `vmpage.c`, `vmsched.c`,
+   `trap.c`, `vaxtrap.c`, `uba.c`, `main.c`, down to the M780/M750
+   memory-controller registers. That is not an import; that is the VAX kernel.
+
+   **But the explosion comes through exactly two functions.** The dominant
+   callee group is the **buffer cache**, `dev/bio.c`, which supplies ten of the
+   47 -- `bread breada bwrite bdwrite bawrite brelse getblk geteblk clrbuf
+   bflush`. Classifying all 23 of its functions by VAX-VM contact, the way
+   `proca.c` was classified above:
+
+   | | functions | VAX-VM names |
+   |---|---|---|
+   | the cache | 21, incl. every name above | none -- only `spl0`/`spl6`/`splx` |
+   | dead here | `swap` (:523), `physio` (:675) | `vtopte btop ctob btoc dptopte useracc vslock vsunlock` |
+
+   `vtopte` is at `:555`, inside `swap`; `useracc` `:684`, `vslock` `:715`,
+   `vsunlock` `:720`, all inside `physio`. **Nothing else in `bio.c` touches
+   the VAX at all**, and `pte.h` is included by `bio.c` alone, for `swap`. So
+   the eight are dead code that must *link* and never run -- panic stubs -- and
+   the closure collapses.
+
+   **The real unit is six files and 2743 lines**: the four, plus `sys/subr.c`
+   (239, for `bmap`) and `dev/bio.c` (783). They define 58 names and need 59,
+   which split:
+
+   | | count | |
+   |---|---|---|
+   | already in `libv8kern.a` | 9 | `copyin copyout panic spl6 splx stread stwrite tsleep wakeup` |
+   | macros from authentic headers | 23 | `BSIZE BMASK BSHIFT NINDIR INOPB itod itoo BITFS MIN ...` |
+   | already redirected in `shim/kern/h/param.h` | 3 | `bcopy printf psignal` |
+   | defined *inside* the files themselves | 2 | `BUFHASH` (`bio.c:42`), `INOHASH` (`iget.c:18`) |
+   | scan artefacts | 3 | `int unsigned dp` |
+   | **genuinely new** | **19** | below |
+
+   The 19 are `access findmount fubyte fuibyte fustrlen mfind munhash sleep
+   spl0 subyte suibyte suser tablefull uprintf useracc vslock vsunlock vtopte
+   xrele`. Four (`useracc vslock vsunlock vtopte`) are the panic stubs above.
+   Three (`fuibyte subyte suibyte`) are reached only from `subr.c:162,188`,
+   the character-at-a-time user I/O. The rest are ordinary kernel services of
+   the kind `shim/kern/sys/` already holds fifteen of.
+
+   **`mfind` is the one that is not a stub, and answering it honestly is the
+   interesting part.** `rdwri.c:182-183` calls `mfind(dev, bn)` then
+   `munhash(dev, bn)` in the **live** write path -- before overwriting a file
+   block, invalidate any in-core mapping of it. Upstream searches `cmap[]`, the
+   VAX core map. There is no core map here and no V8 process maps a file block,
+   so `mfind` returning `(struct cmap *)0` is **correct** rather than a stub,
+   and `munhash` is then unreachable by construction.
+
+   **The headers cost 20, and only one is a VAX document.** Three are already
+   imported (`dir.h`, `inode.h`, `inline.h`); `pte.h` (85 lines, 21 VAX
+   references) is the only one that describes the machine, and only `bio.c`
+   wants it. The other sixteen are 1286 lines of ordinary structure.
+
+   **Two things the import RETIRES, which the sentence in step 5 does not
+   suggest.** `shim/kern/sys/subr.c` hand-writes `min`, `max` **and `iomove`**
+   -- and `rdwri.c` defines all three (`:236`, `:250`, `:266`), so the import
+   replaces three stand-ins with the authentic source that the shim's own
+   comments already cite. And `shim/kern/h/buf.h` is a 30-line stand-in whose
+   header comment reads *"There is no buffer cache here and no disk driver, so
+   importing it would put a description of hardware in the tree to obtain two
+   constants."* That was true when it was written for `streamio.c` and step 5
+   is precisely the thing that falsifies it: the authentic 107-line `h/buf.h`
+   becomes required, and it has **zero** VAX references -- the prediction was
+   wrong about the header as well as about the cache.
+
+   **A caution carried from step 4a.** `h/param.h` is where `DIRSIZ` is
+   decided, and this port raises it 14 -> 254 in the *userland* copy while
+   `mkfs` is compiled `-DDIRSIZ=14` because what it writes is a disk image. A
+   kernel-side `src/sys/h/param.h` is a third spelling of that number and must
+   be settled deliberately, not inherited.
+
+   **AND THE `lp64-auditor` WAS RUN OVER ALL SIX BEFORE ANY OF THIS IS BUILT,
+   WHICH IS WHERE THE SURVEY STOPS BEING ARITHMETIC.** Its central claims were
+   re-read at source rather than taken on report. Four findings change the
+   plan, and the first two are the kind that make a build fail in a way that
+   reads like a port bug:
+
+   - **`nami.c:145-148` breaks path resolution outright, and it is `NOLONG`
+     again.** Under `#if DIRSIZ == 14` upstream hand-unrolls the name compare
+     as `*(long *)&nm[0]`, `&nm[4]`, `&nm[8]`, `*(short *)&nm[12]` -- exactly
+     4+4+4+2 = 14 **because V8's `long` is 32 bits** (`ccom/vax/macdefs.h:20`,
+     `# define NOLONG`, which §4a already records). Here it is 8+8+8+2, reading
+     two bytes past both fields, so `dsearch()` fails to match a name that is
+     present and every `namei()` returns ENOENT. The arm *is* the one selected:
+     `src/sys/h/dir.h` is already imported at `DIRSIZ 14`, and 14 is right
+     there because it describes a disk record. The fix is `int` for `long` in
+     those four lines -- a recorded deviation that reproduces the VAX exactly.
+     The **wrong** fix is `-DDIRSIZ=254` to reach the `strncmp` arm, which
+     makes the symptom vanish by changing the on-disk format.
+   - **`-DKERNEL` is required, and the Makefile comment that says otherwise is
+     about a different file.** `h/buf.h:62`, `h/inode.h:56`, `h/mount.h:20` and
+     `h/filsys.h:40` each open an `#ifdef KERNEL` that guards *every*
+     pointer-returning declaration these files use -- `getblk`, `geteblk`,
+     `bread`, `breada`, `alloc`, `baddr`, `ialloc`, `iget`, `namei`,
+     `findmount`, `getfs`. Without it, `-Wno-implicit-function-declaration`
+     makes each an implicit `int` at ~30 call sites and truncates the address.
+     Upstream compiles with it (`conf/makefile:23`, `COPTS= ${IDENT}
+     -DKERNEL`). `$(KERNFLAGS)` has neither `-DKERNEL` nor `-fcommon`; only
+     `$(STREAMIOFLAGS)` adds them, and its comment says `-DKERNEL` "buys
+     exactly one thing", which is true of `streamio.c` and false here.
+     `h/systm.h` has **no** `#ifdef KERNEL` at all, which is why some
+     declarations are unconditional and the gap is easy to miss.
+   - **Three names collide with libc, and `free` is the live one.**
+     `alloc.c:156` defines `free(dev, bno)`; `src/libc/gen/malloc.c:143`
+     defines `free(ap)`. Two definitions with incompatible signatures in one
+     world -- loud if both members are pulled, and **silent** if only the
+     kernel one is, at which point the block allocator is handed a heap pointer
+     and reads a superblock out of it. `h/systm.h:12`'s `time_t time;` is a
+     tentative definition of libc's `time`, latent only because nothing in
+     `shim/` calls `time()` today and armed the day `libkmemu` does -- and it
+     is invisible to `tests/kmemu`'s `nm -u` sweep, because the name is
+     *defined* here rather than imported. `h/mount.h:21`'s `mount[]` is the
+     same shape, and arrives precisely when `-DKERNEL` does.
+   - **Two of the three stand-ins this import "retires" do not go quietly.**
+     `min`/`max` agree exactly -- upstream puts `unsigned` on its own line at
+     `rdwri.c:235` and `:249`, and `h/systm.h:61-62` declares them `unsigned`
+     independently, so the shim's re-recorded note is right and deleting it
+     loses nothing. But `iomove` **conflicts**: the shim prototypes
+     `void iomove(void *cp, unsigned n, int flag)` and upstream is
+     `register caddr_t cp`, which is a hard error against a visible prototype
+     -- and the `void *` was deliberate, because `streamio.c` passes a
+     `u_char *`. And upstream's `nulldev() { }` (`subr.c:212`) falls off the
+     end where the shim's returns 0 on purpose, which is the `qopen` register
+     litter its own comment records. So the import *reinstates* a
+     nondeterminism the port had already removed.
+
+   Two smaller things it measured that the shim has to answer: `clrbuf`
+   unconditionally zeroes `BUFSIZE/sizeof(int)` = **4096** bytes regardless of
+   `BSIZE(dev)` being 1024, so the buffer allocator must hand out 4096-byte
+   buffers; and `shim/kern/h/user.h` has **no `u_dbuf` or `u_dent`**, both of
+   which `nami.c` needs -- and `u_dbuf`'s placement in `struct user` decides
+   whether the two-byte overread above is merely wrong or faults.
+
+   Clean, and said out loud because a survey that only lists hazards cannot be
+   audited: **the `urcvfile` class is absent.** Every implicit-`int` K&R
+   parameter across the six was enumerated, and not one holds a pointer -- each
+   is an `fstyp` index, a 0/1, a `B_READ`/`B_WRITE` flag, a char or a `dev_t`.
+   The narrowed-field-address class is clean in both directions:
+   `iupdat(ip, &time, &time, w)` passes the address of the *full-width* global
+   and the narrowing happens at the assignment into the `v8_i32` field, which
+   is where it belongs. And the `di_addr[40]` three-byte pack/unpack in
+   `iexpand` and `iupdat` is correct -- but *only* because `daddr_t` is 4
+   bytes, which is what makes §4a's global narrowing load-bearing rather than
+   cosmetic.
+
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
 7. **FSKit host client**, with Phase 5. Public API since macOS 15.4, no kernel
    extension; lets the host mount a V8 image in Finder and disposes of the
