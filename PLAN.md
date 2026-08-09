@@ -2402,6 +2402,35 @@ Ordered so that value lands before risk, and so each step is testable alone.
      `libv8c.a`. Plus `SIGKILL` and `SIGXFSZ` missing from
      `shim/kern/h/param.h`.
 
+   **BUILT, AND THE FOUR COLLISIONS ARE NINE.** `src/sys/PORTING.md` has the
+   account; the three that change the shape of the claim:
+
+   - **`alloc.c` is a SECOND deviation, and it came as a warning.** `:34` is
+     `register long *p` over `s_bfree`, the superblock free-block bit map that
+     §8a step 4a narrowed to `v8_i32` because it is on disk. The array
+     narrowed and the pointer did not, so the bit-clear is an 8-byte
+     read-modify-write on a 4-byte word and the scan strides eight, covering
+     half the map and then 961 words past the buffer. Same `NOLONG` cause as
+     `nami.c`'s -- and upstream states it five lines below, in a comment
+     reading `BITS PER LONG`. `nami.c`'s stopped every path lookup; this one
+     would have corrupted a free map and been blamed on `mkfs`.
+   - **Nine collisions, and the five nobody costed split by KIND.** Six are
+     function-against-function and the linker catches those. Three are a
+     **variable against a function** -- `time`, `timezone`, `mount` -- where
+     a K&R tentative definition is a COMMON symbol and resolving a common
+     against a text definition is what a linker is *supposed* to do. Silent.
+     Only `nm -g` sees them, and `tests/kmemu`'s pairwise sweep had been
+     reading three archives when the build makes five -- and the first
+     correction to that said four, missing `libkmemu.a`.
+   - **`dev/conf.c` is vestigial and Bell Labs say so.** Its `fstypsw[0]`
+     names `rnami`, defined nowhere; `nami.c:167` says *"USED TO BE rnami"*
+     above `fsnami`, and `conf/config_diff:11` is *"dev/conf.c is no more.
+     config makes a conf.c for each machine"*. The live source is
+     `conf/devices:70-73`, which gives `fsnami`. `nfstyp` is **1** here.
+
+   17 suites, 1614 passed, 0 failed. `libv8kern.a` imports exactly
+   `_longjmp _memcpy _setjmp`.
+
    **`mfind` is the one that is not a stub, and answering it honestly is the
    interesting part.** `rdwri.c:182-183` calls `mfind(dev, bn)` then
    `munhash(dev, bn)` in the **live** write path -- before overwriting a file

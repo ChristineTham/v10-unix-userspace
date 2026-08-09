@@ -1247,14 +1247,33 @@ adefs() { nm -g "$1" 2>/dev/null | awk '$2 ~ /^[TDBSC]$/ {print substr($3,2)}' |
 KERNA=$ROOT/build/stage0/kern/libv8kern.a
 LIBCA=$ROOT/build/stage0/libc/libv8c.a
 SYSA=$ROOT/build/stage0/v8sys/libv8sys.a
-# FOUR ARCHIVES, NOT THREE.  libv8stubs.a was missing from this sweep and it is
-# the one holding the SYSCALL STUBS -- access(2), time(2), and every other name
-# a V8 program reaches the kernel by.  §8a step 5 found two collisions there
-# (access, inverted in polarity from the kernel's, and time, a function against
-# the kernel's clock VARIABLE), and this block could not have reported either,
-# because it never opened the file.  A pairwise sweep is only as good as its
-# population -- the crash probe learned the same thing about $ROOT/usr/lib.
+# FIVE ARCHIVES, NOT THREE -- AND THE FIRST CORRECTION SAID FOUR, WHICH IS THE
+# JOKE THIS BLOCK IS ABOUT.
+#
+# The sweep read kern, libc and sys.  libv8stubs.a was missing and it is the one
+# holding the SYSCALL STUBS -- access(2), time(2), and every other name a V8
+# program reaches the kernel by, i.e. exactly the names a kernel also defines.
+# §8a step 5 found two collisions there (access, inverted in polarity from the
+# kernel's, and time, a function against the kernel's clock VARIABLE) and this
+# block could not have reported either, because it never opened the file.
+#
+# THEN THE FIX ITSELF WAS INCOMPLETE, in a sentence about completeness.  It
+# said "four archives, not three" -- measured, the build produces FIVE, and the
+# missed one is libkmemu.a.  Counted rather than recalled this time:
+#
+#	find build/stage0 -name '*.a'
+#
+# A pairwise sweep is only as good as its population, and the crash probe
+# learned the identical lesson about $ROOT/usr/lib -- where the fix that added
+# /etc and /usr/lib/refer STOPPED ONE DIRECTORY SHORT.  Same shape, and the
+# second correction was as necessary as the first.
+#
+# libm.a is the sixth archive and is DELIBERATELY EXCLUDED.  It is this port's
+# 216-byte reproduction of V8's own empty libm -- one member, one symbol, the
+# name `_________'.  It would trip the vacuity check below for a reason that is
+# the whole point of the file, and it defines nothing that can collide.
 STUBA=$ROOT/build/stage0/v8sys/libv8stubs.a
+KMEMUA=$ROOT/build/stage0/kmemu/libkmemu.a
 
 # DUPOK IS NOW EMPTY, and the way it emptied is the point.
 #
@@ -1288,22 +1307,36 @@ STUBA=$ROOT/build/stage0/v8sys/libv8stubs.a
 #			nm -g, and §8a step 5 found three (time, timezone,
 #			mount), all renamed in shim/kern/h/param.h
 #	C against C	deliberate sharing.  Only errno, and it is right.
-DUPOK="errno"
+#
+# kmemu_procfs and kmemu_synth are T against T -- a REAL duplicate, and correct.
+# shim/v8sys/noprocfs.c and nokmemu.c hold the fallback definitions and
+# libkmemu.a the working ones; the two live in SEPARATE OBJECTS so that a link
+# pulls only the one it needs.  noprocfs.c:10 quotes the duplicate-symbol error
+# that forced that arrangement -- so the port already hit this and solved it,
+# and what it never did was assert it.  Now a future merge of those objects
+# into one file goes red instead of going quiet.
+DUPOK="errno kmemu_procfs kmemu_synth"
 
 if [ -f "$KERNA" ] && [ -f "$LIBCA" ] && [ -f "$SYSA" ] && [ -f "$STUBA" ]; then
 	adefs "$KERNA" > "$TMP/d.kern"
 	adefs "$LIBCA" > "$TMP/d.libc"
 	adefs "$SYSA"  > "$TMP/d.sys"
 	adefs "$STUBA" > "$TMP/d.stub"
+	adefs "$KMEMUA" > "$TMP/d.kmemu"
 	# every archive defines something, or the comm results below are
-	# vacuously empty and this whole block passes while measuring nothing
-	for p in kern libc sys stub; do
-		[ "$(wc -l < "$TMP/d.$p" | tr -d ' ')" -gt 20 ] && ok ||
+	# vacuously empty and this whole block passes while measuring nothing.
+	# The floor is PER ARCHIVE because libkmemu is genuinely small -- ten
+	# names, the sanctioned fact-readers and their two entry points -- and a
+	# single threshold would either wave it through or fail it forever.
+	for pf in kern:20 libc:20 sys:20 stub:20 kmemu:8; do
+		p=${pf%:*}; floor=${pf#*:}
+		[ "$(wc -l < "$TMP/d.$p" | tr -d ' ')" -ge "$floor" ] && ok ||
 			bad "libv8$p defines almost nothing -- the sweep is vacuous"
 	done
 	dup=""
 	for pair in "kern libc" "kern sys" "libc sys" \
-	            "kern stub" "libc stub" "sys stub"; do
+	            "kern stub" "libc stub" "sys stub" \
+	            "kern kmemu" "libc kmemu" "sys kmemu" "stub kmemu"; do
 		set -- $pair
 		for n in $(comm -12 "$TMP/d.$1" "$TMP/d.$2"); do
 			case " $DUPOK " in *" $n "*) continue ;; esac
@@ -1319,7 +1352,7 @@ if [ -f "$KERNA" ] && [ -f "$LIBCA" ] && [ -f "$SYSA" ] && [ -f "$STUBA" ]; then
 	# vacuously on a name that had stopped being duplicated anywhere.
 	for n in $DUPOK; do
 		c=0
-		for p in kern libc sys stub; do
+		for p in kern libc sys stub kmemu; do
 			grep -qx "$n" "$TMP/d.$p" && c=$((c + 1))
 		done
 		[ "$c" -ge 2 ] && ok ||

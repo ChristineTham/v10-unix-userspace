@@ -831,6 +831,34 @@ doubled here. `daddr_t` is narrowed globally (nothing hands one to macOS);
 `time_t` and `off_t` are narrowed per *field* in `sys/ino.h` and `sys/filsys.h`,
 because they cross the shim seam everywhere else. `src/include/PORTING.md`.
 
+**AND A NARROWED ARRAY NEEDS ITS POINTERS NARROWED TOO, WHICH IS THE SAME BUG
+ARRIVING A YEAR LATER AS A WARNING.** §8a step 4a narrowed the on-disk records;
+§8a step 5 imported the kernel code that walks them, and `alloc.c:34` is
+`register long *p` over `s_bfree`, the superblock's free-block bit map that
+step 4a had made `v8_i32[961]`. The array narrowed and the pointer did not, so
+`*p &= ~(1 << (j&31))` is an 8-byte read-modify-write on a 4-byte word and
+`p++` strides eight — scanning half the map and then running 961 words past the
+end of the buffer. Same one line of cause as `nami.c`'s name compare
+(`NOLONG`), and **upstream states the assumption five lines below in a
+comment**: `for(j = 0; j < 32; j++) /* BITS PER LONG */`.
+
+The pair is the lesson. `nami.c`'s deviation was an ERROR and stopped every
+path lookup dead; `alloc.c`'s was two `-Wincompatible-pointer-types` warnings
+in a build that **succeeded**, and it would have corrupted a free map on the
+first write and been blamed on `mkfs`. So: **after narrowing a field, sweep for
+pointers declared at the old width**, and treat a pointer-type warning on
+imported source as the on-disk class until proven otherwise —
+
+```bash
+grep -rnE '\b(long|int)[[:blank:]]*\*[a-z_]+;' src/sys | grep -v '\.md:'
+```
+
+Three hits today and all three are benign, which is worth recording so the next
+run has a baseline: `buf.h:45`'s `int *b_words` is a union arm for clearing a
+buffer a word at a time, and `int` is four bytes on both machines; `swpf`
+(`buf.h:69`, `bio.c:82`) is indexed by a swap-buffer number rather than walking
+a record. Agrees under `/usr/bin/grep`.
+
 **AND THE WIDTHS ARE NOW SAID OUT LOUD, BECAUSE THE MODEL CANNOT MOVE.**
 `int di_size` did not mean "an int"; it meant "exactly four bytes, because a
 VAX wrote four bytes there" — true only by coincidence of LP64, with the
@@ -1091,6 +1119,24 @@ clears the top bit after the first iteration, and every later digit was right.
 One wrong digit reads as an off-by-one in a buffer, and is not. When a value is
 wrong in exactly one place, stop reasoning about the source and read what was
 emitted: `cc -S`, then look for an `sdiv` or `asr` where the C says unsigned.
+
+**AND A VESTIGIAL FILE HAS NOW COST A SECOND TIME, WITH BELL LABS' OWN NOTE
+SAYING SO.** The `syopen` case below says a dead file that answers your question
+is the worst kind of evidence. `dev/conf.c` is the second: it holds
+`struct fstypsw fstypsw[]` and `nfstyp = 4`, the obvious source for the kernel's
+filesystem switch, and its row 0 names **`rnami`, which is defined nowhere in
+the tree**. `sys/nami.c:167` is a comment reading *"USED TO BE rnami"* directly
+above `fsnami`. `conf/config_diff:11` settles it in one sentence —
+*"dev/conf.c is no more. config makes a conf.c for each machine"* — and `:13-14`
+lists the files "changed a little to make names regular", `nami.c` among them.
+`dev/param.c` is a third instance, stale against `sys/param.c`.
+
+**The live source is `conf/devices`**, which this file already cites for
+`ttyld` (`:75`) and `/dev/tty` (`:55`), and whose `:70-73` are the filesystem
+handlers. So the rule is sharper than "read the source": **when two upstream
+files disagree, find out which one the BUILD reads** — `conf/files`,
+`conf/makefile` and `conf/config_diff` are where V8 says so, and a `dev/` file
+not named by any of them is a candidate for dead.
 
 **Read the program before deciding how to port it — THREE times now the plan
 was wrong about what a program talks to, and the third was wrong about a
@@ -1517,6 +1563,47 @@ That file is this port's C rewrite of `doprnt.S`, so the bug is ours. Nothing ha
 reached it in 32 `printf` cases. The diagnostic that makes it testable without
 arranging a guard page is `prec = 0`: `printf("%.0s", (char *)1)` faults on the
 old loop and dereferences nothing on the new one.
+
+**AND THE MIRROR OF IT IS A DUPLICATE DEFINITION, WHICH SPLITS IN TWO AND ONLY
+ONE HALF IS LOUD.** §8a step 5 linked libv8kern against libv8c and libv8stubs
+for the first time and produced **nine** collisions where four were costed.
+Six are function-against-function: the linker refuses, and you find them the
+first time you link. Three are a **variable against a function** — the
+kernel's `time` (`systm.h:12`) against libv8stubs' `time(2)`, `int timezone`
+against libc's `char *timezone(zone, dst)`, and `struct mount mount[NMOUNT]`
+against the `mount(2)` stub — and those are **silent**, because a K&R tentative
+definition is a COMMON symbol and resolving a common against a text definition
+is what a linker is supposed to do. The kernel's clock would have become the
+address of `time()`, and `iget.c:276`'s `dp->di_ctime = time` would write a
+code address into an inode as a timestamp.
+
+Two rules. **`nm -u` cannot see this class at all** — it is about what an
+archive DEFINES — so the sweep is `nm -g` filtered to `T`/`D`/`S`/`C`, pairwise
+between our own archives. And the verdict is **three-way, not two**: `T` vs `T`
+is a collision the linker catches, `C` vs `T` is the silent one, `C` vs `C` is
+deliberate sharing (only `errno`, which must be one object so a syscall stub
+and `perror()` agree). `tests/kmemu` asserts it, and getting there found that
+**the sweep had been reading three archives when the build makes five** — and
+the first correction to that sentence said *four*, which is the shape worth
+keeping. The one that mattered most was `libv8stubs.a`, the syscall stubs, i.e.
+exactly the names a kernel is most likely to also define; the one the
+correction then missed was `libkmemu.a`, which turned out to share two names
+with `libv8sys.a` by a deliberate arrangement `noprocfs.c:10` documents and
+nothing asserted. **A fix to a population bug is itself a population claim** —
+count with `find`, do not recall. Same shape as the crash probe's fix that
+added `/etc` and `/usr/lib/refer` and stopped one directory short.
+
+**AND A SUPPRESSION ARGUED FOR ONE THING COVERS A DIFFERENT THING: FOURTEEN
+MACROS WERE COMPILED AS CALLS TO UNDEFINED FUNCTIONS.** `KERNFLAGS` carries
+`-Wno-implicit-function-declaration` because the imported half is 1985 K&R and
+the diagnostic would fire on every line. That was argued for *declarations*.
+It also covers a missing **macro** — and `BSIZE(dev)` with no macro in scope is
+not an error and not a warning, it is a call to a function named `BSIZE`. The
+build was clean. `BITFS BMASK BSHIFT BSIZE INOPB MIN NINDIR NMASK NSHIFT
+dbtofsb fsbtodb itod itoo major`, all fourteen, found by subtracting what
+`libv8kern.a` defines from what it undefines — the only instrument that could,
+because we had told the compiler not to speak. A missing declaration changes
+what is *checked*; a missing macro changes what the code **means**.
 
 **A missing libc function does not fail the link — it resolves from `-lSystem`.**
 For a non-variadic function that silently works and hides the gap. For a

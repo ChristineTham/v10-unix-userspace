@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **1599 tests across 17 suites** guard it.
+assembly. **1614 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -1417,6 +1417,87 @@ trap, one of them the sentence *"grep over it yields exactly those two plus the
 word SIGNAL"*. The sweep matched a comment warning that the sweep matches
 comments. Knowing the rule does not filter the output. Only filtering it does.
 
+### Then it built, and the build had opinions
+
+Compiling those six files was supposed to be the mechanical part. It found the
+second-worst bug of the phase and it found it as a *warning*.
+
+`alloc.c:34` declares `register long *p`, and `p` walks `s_bfree` — the
+superblock's free-block bit map. A year earlier, a different phase of this port
+had narrowed that array to four-byte words, because it is written to a disk and
+a VAX wrote four bytes there. The array narrowed. The pointer did not. So
+clearing one block's bit is an eight-byte read-modify-write over a four-byte
+word, which rewrites the next thirty-two blocks' word with whatever it read;
+and the scan loop strides eight, covering half the map before running nine
+hundred and sixty-one words past the end of the buffer.
+
+It is the same one line of cause as the name-compare bug — Bell Labs' own
+compiler defining `NOLONG`, "map longs to ints" — and Bell Labs say so five
+lines below the declaration, in a comment reading `BITS PER LONG`. The
+difference between the two is only how loudly each announced itself. The name
+compare was an error and nothing worked. This one was two warnings in a build
+that succeeded, and it would have corrupted a free-block map on the first write
+and been blamed on the program that made the filesystem.
+
+Then the linking. The plan costed four name collisions between the kernel and
+the C library. There are nine, and the five extra ones split cleanly by kind.
+Six are function-against-function, and the linker catches those the first time
+you link — that is what a duplicate symbol *is*. Three are a **variable against
+a function**: the kernel's clock variable `time` against the `time(2)` stub, an
+`int timezone` against a function returning the zone's *name*, a mount table
+against the call that fills one. In C, a variable declared the 1985 way is a
+"common" symbol, and resolving a common against a real definition is exactly
+what a linker is supposed to do. So those three are silent. The kernel's clock
+would simply have become the address of the `time()` function, and every
+timestamp written to disk would have been a code address.
+
+Nothing in the build could have told me. `nm -g` on the archives did.
+
+And the same instrument caught something worse, which I had caused myself. The
+build flags turn off "implicit function declaration" warnings, because the
+imported code is 1985 C and every line would trip them. That suppression was
+argued for *declarations*. It also covers a missing **macro** — so when I gave
+the header its constants and forgot its geometry macros, `BSIZE(dev)` did not
+fail to compile. It became a call to a function named `BSIZE`. Fourteen of
+them, sitting in the object file as undefined symbols, in a build with no
+errors and no warnings. I found them by subtracting what the archive defines
+from what it undefines, which is the only instrument left when you have told
+the compiler not to speak.
+
+There is a lesson in the shape of that and it is not "be careful". It is that a
+suppression is a *scope*, and the scope you argued for is not the scope you
+get.
+
+### A file that answers your question, and has been dead for years
+
+The kernel's filesystem switch is a table of function pointers, one row per
+filesystem type, and its obvious source is a file called `dev/conf.c`. Row zero
+names a function called `rnami`.
+
+`rnami` is not defined anywhere in the V8 kernel. Not in that directory, not in
+the tree, nowhere. What *is* there is a comment in `nami.c`, directly above a
+function called `fsnami`, reading: `USED TO BE rnami`.
+
+I went looking for how the file could still name it, and found Bell Labs had
+written the answer down. There is a note in the configuration directory listing
+the differences between the old build system and the new one, and its eleventh
+line is: *"dev/conf.c is no more. config makes a conf.c for each machine."* Two
+lines later it lists the source files "changed a little to make names regular"
+when that happened, and `nami.c` is on the list.
+
+So `dev/conf.c` is a fossil. It predates the rename, it is generated per-machine
+now, and every citation to it — including the one in my own plan — is a
+citation to dead code. The live description is a different file entirely, one
+this project already relies on for the terminal driver, and reading its
+filesystem section gives `fsnami`, which is the name that exists.
+
+This is the second fossil to cost me. There is a V7 device driver still sitting
+in the kernel source that cannot compile and is in no build list, and the note
+I wrote about it a while ago says a vestigial file that answers the question you
+are asking is the worst kind of evidence. It was right, and the rule needed
+sharpening rather than repeating: when two upstream files disagree, do not
+reason about which looks more current. **Find out which one the build reads.**
+
 
 ## What is left
 
@@ -1431,9 +1512,11 @@ What remains, in rough order:
 
 - **The V8 filesystem server over the raw image**, which is what turns the image
   from something the tools inspect into something the world can mount. The six
-  authentic files are imported and the headers are settled; what is left is the
-  twenty kernel services under them, and every one of the twenty now has a
-  specification read at source rather than an estimate.
+  authentic files are imported, the headers are settled, the twenty services
+  are written and the whole thing compiles and links — `libv8kern.a` imports
+  exactly the three symbols that are V8's own. What is left is the part that
+  cannot be faked: putting a real image under it and reading a file back
+  through `namei`, `iget`, `bmap` and `readi` rather than through the shim.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.

@@ -1257,3 +1257,218 @@ which reads *"`grep -oE SIG[A-Z]+' over it yields exactly those two plus the
 word SIGNAL"*. **The sweep matched a comment warning that the sweep matches
 comments.** The rule was already written down; running it again still
 produced the noise it predicts.
+
+## The build: nine link collisions, fourteen phantom functions, and a second NOLONG
+
+§8a step 5's six files now compile and link. `libv8kern.a` has seven new
+members and imports exactly `_longjmp _memcpy _setjmp` — V8's own three.
+`tests/streams` went 247 → 262 and `tests/kmemu` 133 → 136.
+
+The import was the easy half and it was done in the previous session. This is
+what the *build* found, and almost none of it was in the survey.
+
+### alloc.c is the SECOND deviation, and it arrived as a warning
+
+The import landed with one recorded deviation, `nami.c`'s hand-unrolled name
+compare, whose cause is one line of Bell Labs' compiler: `# define NOLONG`,
+"map longs to ints" (`cmd/ccom/vax/macdefs.h:20`). A VAX `long` was 32 bits.
+
+`alloc.c` has the same bug and it is worse, because it did not stop the build.
+`alloc.c:34` is `register long *p`, and `p` walks `s_bfree` — the superblock's
+**free-block bit map**, which upstream declares `long S_bfree[BITMAP]`
+(`h/filsys.h:31`) and which §8a step 4a narrowed to `v8_i32 S_bfree[961]`
+(`src/include/sys/filsys.h:47`) precisely because a VAX wrote four bytes per
+word there. The array narrowed; the pointer that walks it did not.
+
+Four uses, wrong three different ways:
+
+| site | what it does | what goes wrong |
+|---|---|---|
+| `:70`, `:96` | `*p &= ~(1 << (j&31))` | an 8-byte read-modify-write on a 4-byte word, so clearing one block's bit rewrites the *next* 32 blocks' word |
+| `:83` | `for(i = 0; i < BITMAP && !*p; i++, p++)` | strides **eight** bytes for BITMAP iterations — scans half the map, then runs 961 words past the end of the superblock buffer |
+| `:89` | `*p & (1 << j)`, `j < 32` | reads the right bits of an 8-byte load: right by accident, and only here |
+
+Upstream states the assumption five lines below the declaration, and that
+comment is the tell — `:88` is `for(j = 0; j < 32; j++)` with the trailing
+comment `BITS PER LONG`. Bell Labs wrote down that a long is 32 bits, in a
+comment, next to the loop that depends on it.
+
+Three things generalise:
+
+- **The loud one and the quiet one are the same bug.** `nami.c`'s deviation
+  made `namei()` return ENOENT for every path — nothing worked. `alloc.c`'s is
+  two `-Wincompatible-pointer-types` warnings in a build that *succeeded*, and
+  it would have corrupted a free-block map on the first write and been blamed
+  on `mkfs`. The survey found neither; the compiler found both, and only
+  because one of them was an error.
+- **The guard is shaped to the deviation, not copied from the other one.**
+  `nami.c` lost three lines and gained three casts; `alloc.c` loses exactly one
+  declaration and gains one. Counting removals and additions separately is what
+  lets the two be different.
+- **The guard asserts what the deviation DEPENDS on.** If
+  `src/include/sys/filsys.h` ever widened `S_bfree` back to `long`, this
+  deviation would become the bug instead of the fix — so `tests/streams` checks
+  the *narrowed field* as well as the changed line.
+
+### Nine link collisions, and the three nobody predicted are one class
+
+The task was costed at four. `nm -g` over the archives found seven; extending
+`tests/kmemu`'s cross-archive sweep to the archives it had never opened
+found two more.
+
+| name | the other definition | the kernel's |
+|---|---|---|
+| `free` | `libv8c.a(malloc.o)` | `alloc.c:156` frees a disk block |
+| `ialloc` | `libv8c.a(malloc.o)` | `alloc.c:232` allocates an inode |
+| `min`, `max` | `libv8c.a(min.o, max.o)` | `rdwri.c:250, :236` |
+| `sleep` | `libv8c.a(sleep.o)` | the kernel's, `v8fs.c` |
+| `access` | `libv8stubs.a(access.o)` | inverted polarity: 0 = permitted |
+| **`time`** | `libv8stubs.a(time.o)` — a **function** | `systm.h:12` — a **variable** |
+| **`timezone`** | `libv8c.a(timezone.o)` — a **function** | `systm.h:7` — a **variable** |
+| **`mount`** | `libv8stubs.a(mount.o)` — a **function** | `mount.h:21` — an **array** |
+
+**Six are function-against-function and three are variable-against-function,
+and that split is the whole reason the count kept moving.** A duplicate
+function is a duplicate-symbol error — the linker refuses and you find it the
+first time you link. A **common** symbol resolving against a text definition is
+what a linker is *supposed* to do, so it happens in silence. Every one of the
+three nobody predicted is in that class:
+
+- the kernel's clock variable would have become the address of `time()`, and
+  `iget.c:276`'s `dp->di_ctime = time` would write a code address into an inode
+  as a timestamp — no diagnostic, wrong dates on disk;
+- `timezone` is not even the same idea twice: `int timezone` (minutes west) against
+  `char *timezone(zone, dst)` (the zone's *name*);
+- `findmount()` would have walked the text segment.
+
+All nine get the `psignal` treatment — a macro in `shim/kern/h/param.h`
+renaming both definition and calls, so Bell Labs' source keeps its spelling.
+
+Two things came out of it for the test suite. **`tests/kmemu`'s pairwise sweep
+was reading three archives and the build makes five** — and the first
+correction to that sentence said *four*, which is the more useful half of the
+story. The archive that mattered most was `libv8stubs.a`, holding the syscall
+stubs, i.e. exactly the names a kernel is most likely to also define: it
+structurally could not have reported `access` or `time`. The one the correction
+itself then missed was `libkmemu.a`, and adding it found `kmemu_procfs` and
+`kmemu_synth` duplicated against `libv8sys.a` — deliberately, by an arrangement
+`shim/v8sys/noprocfs.c:10` documents (it quotes the duplicate-symbol error that
+forced it) and which nothing had ever asserted. `libm.a` is the sixth and is
+excluded on purpose: one member, one symbol named `_________`, V8's own empty
+math library reproduced.
+
+**So a fix to a population bug is itself a population claim.** The crash probe
+learned this exactly once already — the fix that added `/etc` and
+`/usr/lib/refer` to its scan stopped one directory short — and the answer both
+times is to *derive* the population (`find build/stage0 -name '*.a'`) rather
+than extend a list by hand. And extending it turned `DUPOK` into a **three-way** distinction
+rather than a list: `T`-against-`T` is a real collision, `C`-against-`T` is the
+silent class, and `C`-against-`C` is deliberate sharing — only `errno`, which
+*must* be one object so that a syscall stub and `perror()` agree.
+
+### Fourteen macros compiled as calls to undefined functions
+
+`shim/kern/h/param.h` gained the three CLSIZE==2 constants and stopped, on the
+reasoning that a header owes constants and the macros would follow if anything
+wanted them. Everything compiled. Everything was wrong.
+
+`KERNFLAGS` carries `-Wno-implicit-function-declaration`, because the imported
+half is 1985 K&R and the diagnostic would fire on every line. So `BSIZE(dev)`
+with no macro in scope is not an error and not a warning — it is a **call to an
+undefined function named BSIZE**, left as an undefined symbol in the object.
+Fourteen of them: `BITFS BMASK BSHIFT BSIZE INOPB MIN NINDIR NMASK NSHIFT
+dbtofsb fsbtodb itod itoo major`.
+
+Found by subtracting what `libv8kern.a` defines from what it undefines — the
+same instrument `tests/streams` already uses for libc leaks, and **the only one
+that could see this, because the compiler had been told by us not to speak.**
+
+That is the sharpest instance yet of a rule this tree already states:
+**a suppression argued for once covers code nobody argued about.**
+`-Wno-implicit-function-declaration` was argued for K&R *declarations*, and it
+silently also covers a missing *macro* — which is a different thing, because a
+missing declaration changes what the compiler checks and a missing macro
+changes what the code **means**.
+
+### dev/conf.c is vestigial, and Bell Labs say so
+
+The obvious source for `fstypsw[]` is `dev/conf.c:602-611`, four rows and
+`nfstyp = 4`. Row 0 is `{ 0,…,0, rnami, smount, 0}` — and **`rnami` is not
+defined anywhere in the V8 kernel.** The only three occurrences of the name are
+that row, the `extern int rnami()` above it, and a comment at `sys/nami.c:167`
+reading *"USED TO BE rnami"*, immediately above the definition of `fsnami`.
+
+`conf/config_diff:11` explains it in Bell Labs' own words — *"dev/conf.c is no
+more. config makes a conf.c for each machine"* — and `:13-14` lists the files
+"changed a little to make names regular" when that happened. `nami.c` is on the
+list.
+
+So every citation to `dev/conf.c` is a citation to dead code, and this port has
+met the shape before: V7's `syopen` driver still sits in `sys/sys/sys.c`, dead
+and uncompilable, and CLAUDE.md already calls a vestigial file that answers your
+question the worst kind of evidence. `dev/param.c` is a third instance.
+
+**The live source is `conf/devices`**, which `config_diff:20-21` names as
+config(8)'s input and which this port already cites for the tty line discipline
+and for `/dev/tty`. Its lines 70-73 are the filesystem handlers:
+
+```
+file-system 0	fs  fs  nami mount
+file-system 1	na  na  put get free updat read write trunc stat nami mount
+file-system 2	pr  pr  … ioctl
+file-system 3	mp  mp  … ioctl
+```
+
+Type 0's prefix is `fs`, its two members are `fsnami` and `fsmount` — and
+`fsnami` is exactly what `src/sys/sys/nami.c:202` defines. `nfstyp` is **1**
+here, not 4: types 1–3 are `neta.c`, Killian's `proca.c` and `mp.c`, none
+imported. Keeping four rows with a null `t_nami` would turn `nami.c:78`'s
+`panic("namei nfstyp")` — a guard against a corrupt `i_fstyp` — into a null
+call one line later.
+
+### The twenty services, and the two the survey got wrong
+
+`shim/kern/sys/v8fs.c` implements nineteen; `spl0` is the twentieth and lives in
+`machdep.c`, because `splevel` is static there and lowering the level must go
+through `splx()` so a deferred `queuerun()` actually runs.
+
+Three kinds, and which kind a name gets is a claim about this port: **REAL**
+(thirteen), **ANSWER** (`mfind`, `xrele` — the value V8's own code would produce
+here), **PANIC** (five, all VAX virtual memory). A panic is a better stub than a
+zero: this port has already counted 42 of `primes`' garbage exit statuses as
+signal deaths, and read a qopen's `-1` as an inode pointer of `0xffffffff`.
+
+Two contracts are load-bearing in ways a plausible stub would break:
+
+- **`fubyte` zero-extends** (`locore.s:776`, `movzbl`), and a sign-extending
+  version breaks *both* consumers, differently. `subr.c:188` tests `< 0`, so
+  every byte ≥ 0x80 would read as EFAULT; `nami.c:571` tests `== -1` **exactly**,
+  so byte 0xFF alone would — in a pathname.
+- **`subyte` returns exactly 0**, because `subr.c:162` is
+  `if(id?suibyte(u.u_base,c):subyte(u.u_base,c) < 0)` and `?:` binds looser than
+  `<`. On the I-space arm the **raw** return value is the truth value, so any
+  nonzero success return sets EFAULT on every successful store down that arm —
+  and only that arm.
+
+And `plock` is the twentieth name the survey missed, for a reason worth keeping:
+it is a **macro** in `h/inline.h` and a **function** in `pipe.c:105`. `iget.c`
+includes `inline.h` and never calls it; `nami.c` does not include it and calls
+it three times. So the macro is dead here and the out-of-line function is
+load-bearing — the exact opposite of what reading `inline.h` first suggests.
+
+### Two of three "deliberately minimal" header designs were falsified by the build
+
+`shim/kern/h/pte.h` left `struct pte` **incomplete on purpose**, arguing that a
+pointer can be returned and compared while any field access becomes a compile
+error naming the file. `bio.c:557` reads `pg_pfnum` and `pg_fod`.
+
+`shim/kern/h/vmparam.h` was written as **intentionally empty**, having checked
+what the six files "are about". `bio.c:553` needs `KLMAX`, which is
+`vmparam.h:77`. `vmmac.h` claimed one macro was reachable; `bio.c:554` needed a
+second.
+
+All three were reasoned from a survey and refuted within the minute by a
+compile. That is the same failure at a smaller scale as the header estimate this
+step opened with — **a survey of what a file is *about* undercounts what it
+*references*, every time** — and the corrections are left in the files rather
+than smoothed away, because the reasoning was the good kind and still wrong.
