@@ -2016,6 +2016,22 @@ not testable until it is installed.
     *and SIGBUS*, which would have hidden 48 genuine crashes. SIGKILL is never
     a program bug; SIGBUS very much can be.
 
+  **AND THE FLOOR IS 54, WHICH NOTHING SAID UNTIL NOW.** Re-measured on the
+  installed rootfs: **4187 invocations, 54 signal deaths, all SIGSEGV — 53
+  `lex` and 1 `bcd`**, and every one of them is already argued somewhere as
+  upstream's defect on upstream's hardware (`src/cmd/lex/PORTING.md:175-255`
+  for the 53, PLAN.md:3044 for `bcd`). `lex`'s 53 is *exactly* the number that
+  file predicts, and it explains why fixing the first of its three faults moved
+  the count by zero: the probe feeds every program `/dev/null`, so all 53
+  invocations also reach the empty-spec path and the 40 that used to die in
+  `warning()` now die further along in `ctail()`.
+
+  The number is recorded here because its absence cost a run and a diagnosis:
+  `54 died on a signal` reads as a regression, and establishing that it was not
+  meant excavating two other files. **A prober whose expected output is nonzero
+  needs its floor written down beside it**, or every future run starts with a
+  scare. If this ever reads 55, the new one is the finding.
+
   Validate a prober against a **known crasher and a known-clean program**
   before believing any number from it. And note what survived all four runs
   unchanged: the *set* of programs, which is what the fixes were driven from.
