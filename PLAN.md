@@ -2557,7 +2557,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
      `h/systm.h` has **no** `#ifdef KERNEL` at all, which is why some
      declarations are unconditional and the gap is easy to miss.
    - **Three names collide with libc, and `free` is the live one.**
-     `alloc.c:156` defines `free(dev, bno)`; `src/libc/gen/malloc.c:143`
+     `alloc.c:205` defines `free(dev, bno)`; `src/libc/gen/malloc.c:143`
      defines `free(ap)`. Two definitions with incompatible signatures in one
      world -- loud if both members are pulled, and **silent** if only the
      kernel one is, at which point the block allocator is handed a heap pointer
@@ -2635,6 +2635,43 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `iexpand` and `iupdat` is correct -- but *only* because `daddr_t` is 4
    bytes, which is what makes §4a's global narrowing load-bearing rather than
    cosmetic.
+
+   **STEP 5c IS DONE, AND IT IS THE FIRST TIME ANY OF THIS CODE HAS RUN.**
+   The six files compiled and linked in step 5b; nothing had executed a line of
+   them. `tests/streams/fsprobe.c` now drives `namei -> fsnami -> dsearch ->
+   iget -> bmap -> readi -> bread` over an image `mkfs(8)` wrote, and `cmp`
+   confirms the 28000 bytes that come back are the file mkfs was handed. The
+   file is two directory levels down and 28 blocks long, so the walk covers a
+   subdirectory and `bmap`'s **indirect** arm as well as its direct one.
+   262 -> 315 cases; `src/sys/PORTING.md` has the account. Three pieces had to
+   exist first and each went where upstream put its equivalent:
+
+   - a **block driver**, in the probe rather than `shim/kern/`, because nothing
+     in the port consumes one -- the unconsumed-component rule, with
+     `sioprobe.c` as precedent -- registered through a new `v8k_bdconf()` in
+     `shim/kern/sys/ioconf.c`, the file already named for the switch tables
+     `config(8)` generates;
+   - **`shim/kern/sys/main.c`**, new, standing in for `sys/main.c` (the startup:
+     `binit`, `iinit`), `sys/machdep.c` (the storage `valloc` carves) and
+     `sys/param.c` (the size formulae). Two of those three describe a VAX, and
+     `param.c`'s formulae are unevaluable here because **MAXUSERS was never
+     shipped** -- the `NTTY` situation again, so `NINODE` is *derived* from Bell
+     Labs' own inode:file ratio and this port's `NFILE`, not picked;
+   - **`allocmount()`**, beside `findmount` in `v8fs.c`, transcribed including
+     upstream's `!mp->m_flags & M_MOUNTED` precedence quirk, which is correct
+     only because `M_MOUNTED` is 1 and is the structure's only flag.
+
+   Three findings worth carrying past this step. **`shim/kern/h/buf.h` was dead
+   and nothing said so** -- bio.c's import brought the authentic `buf.h` into
+   the tree and the includer's-directory-first rule silently redirected
+   `streamio.c` to it, while a `tests/deps` case named for our copy stayed
+   green. **Bell Labs' own comment at `alloc.c:414` is stale against their code
+   twelve lines below it** (`panic: no fs` versus `panic("getfs")`), and this
+   port had copied the comment down as behaviour -- the recorded-diagnosis rule
+   reaching the one place the fidelity contract guarantees we never read
+   critically. And a subagent audit found **sixteen stale line citations** across
+   the tree, eight of them caused by inserting one PORT comment; the `alloc.c`
+   self-citations are now a test rather than prose.
 
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
 7. **FSKit host client**, with Phase 5. Public API since macOS 15.4, no kernel

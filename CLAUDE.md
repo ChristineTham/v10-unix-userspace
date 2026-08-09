@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1578 cases, 1577 on a host whose $TMPDIR
+make test             # all 17 suites (1707 cases, 1706 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -265,14 +265,71 @@ be read instead of recalled.
   to the host, because there is no layout to protect and claiming it would give
   the shim's own raw syscalls a 32-bit `time_t`.
 
+**AND IT ALL RUNS NOW, WHICH IS A DIFFERENT CLAIM FROM "IT BUILDS".** §8a step
+5c: `mkfs(8)` writes an image, V8's kernel opens a file in it by name through
+`namei → fsnami → dsearch → iget → bmap → readi → bread` and a block driver,
+and `cmp` says the 28000 bytes match the file mkfs was given. The file is two
+directories down and 28 blocks long, so the walk covers a subdirectory and
+`bmap`'s **indirect** arm. The driver is in `tests/streams/fsprobe.c` and not in
+`shim/kern/`, by the unconsumed-component rule; `v8k_bdconf()` in
+`shim/kern/sys/ioconf.c` registers it, under the same dense-prefix invariant
+`v8k_stconf` has, because `bio.c:352` range-checks a major number and then five
+`d_strategy` sites dereference the slot unguarded. `shim/kern/sys/main.c` is new
+and holds what `sys/main.c`, `sys/machdep.c` and `sys/param.c` hold upstream.
+Four things generalise:
+
+- **A HEADER CAN DIE WITHOUT BEING EDITED, and a make-edge test will not
+  notice.** `shim/kern/h/buf.h` existed to give `streamio.c` two constants.
+  `bio.c`'s import brought the authentic `src/sys/h/buf.h` into the tree, and
+  because a quoted include tries the includer's directory first,
+  `streamio.c:4`'s unchanged line silently started resolving to the authentic
+  header. Nothing in either file changed; a **third** file arriving did it.
+  `tests/deps` had a case `our buf.h -> streamio.o` that stayed green
+  throughout, because the *make* edge was real while the header named in the
+  case was no longer the one the compile opens. Measure with `clang -M`, which
+  is the only instrument that can see it — the `#include` line is identical
+  either way. Both its remaining includers used neither constant; it is deleted.
+- **BELL LABS' OWN COMMENTS GO STALE TOO, and the fidelity contract guarantees
+  nobody checks them.** `v8fs.c` recorded that `getfs()` "panics with `no fs`".
+  The code says `panic("getfs")`. "no fs" is upstream's own words at
+  `alloc.c:414`, in the comment block **twelve lines above** the code
+  contradicting it, and this port copied the comment down as behaviour. The
+  recorded-diagnosis rule applies to imported prose, and imported prose is the
+  one thing we are forbidden to edit and therefore never read critically.
+- **A LINE CITATION INSIDE THE FILE IT CITES IS SELF-INVALIDATING.** Writing
+  `alloc.c`'s PORT comment pushed the four lines it cites down by 43, so `:70`
+  pointed into the middle of the comment doing the citing. A subagent audit
+  found **sixteen** stale citations tree-wide, eight from that one comment, plus
+  five places where the *description* was wrong independently of the number.
+  Correcting it moved them twice more and only the third measurement converged.
+  So they are a **test** now (`tests/streams`, five cases, mutation-verified),
+  and each is written `ours (upstream)` — the form `src/sys/PORTING.md:1186` had
+  already got right for a different file.
+- **AN INCREMENTAL BUILD HIDES WARNINGS, AND THIS ONE HID 21.** The tree looked
+  warning-clean; it is not. Seven objects include the authentic `systm.h` and
+  each emits three — one `-Wincompatible-library-redeclaration` for
+  `caddr_t calloc()` against the builtin, two `-Wtentative-definition-array` for
+  `version[]` and `vmmap[]`. They only appear on a *clean* rebuild of those
+  objects. Deliberately **not** suppressed: all three names have zero callers,
+  measured, and for `calloc` the warning is the only thing that would speak if
+  that changed.
+
 `libv8kern.a` is separate from `libv8sys.a` for libkmemu's reason plus a
-storage one: **95.8 KB** of zero-initialised storage (measured: 98124 bytes of
-common symbols, `_blkdata` 36736 and `_queue` 28672 the largest two), and
-`qinit()` dirties ~60 KB of pages. That figure said 85 KB, then 94 KB; it grew
-when `streamio.c` brought `_streams`, `_u` and `_file`, and again by exactly
-1792 when `ttyld.c` brought `tty[NTTY]` — which is a count a correct import
-increases, so **re-measure it after every import rather than carrying it
-forward**. `cat` does not
+storage one: **240.7 KB** of zero-initialised storage, and `qinit()` dirties
+~60 KB of pages. That figure said 85 KB, then 94 KB, then 95.8 KB; it grew when
+`streamio.c` brought `_streams`, `_u` and `_file`, again by exactly 1792 when
+`ttyld.c` brought `tty[NTTY]`, and now by **145 KB** when §8a step 5c gave the
+buffer cache and the inode table real storage — which is a count a correct
+import increases, so **re-measure it after every import rather than carrying it
+forward**.
+
+**AND IT IS NOW TWO NUMBERS, NOT ONE, WHICH THE OLD MEASUREMENT WOULD HAVE
+MISSED ENTIRELY.** Commons are 104242 bytes (`_blkdata` 36736, `_queue` 28672,
+`_cblock` 23232 the largest three) — but `shim/kern/sys/main.c` holds another
+**142208 bytes of static `__bss`**, which is `NBUF * BUFSIZE` plus
+`inode[NINODE]`, and a sweep of `nm`'s `C` symbols cannot see a `static` array.
+Measure both: `nm -g` for the commons and `size -m` on `main.o` for the rest.
+`cat` does not
 carry it. Its externals are `_memcpy`, `_setjmp` and `_longjmp`, all three
 V8's own — and `tests/streams` gets that list by **subtracting what the archive
 defines from what it undefines** rather than by grepping away a hand-written

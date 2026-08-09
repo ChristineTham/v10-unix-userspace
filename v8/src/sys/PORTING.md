@@ -1235,9 +1235,9 @@ Measured with `nm -g` against the built archives rather than by reading:
 | name | ours | theirs | why it matters |
 |---|---|---|---|
 | `access` | `alloc`'s caller -- `fio.c:174` defines the kernel one | **`libv8stubs.a`**, the userland `access(2)` | signatures differ AND the returns are inverted: kernel is **0 permitted / 1 denied**, access(2) is 0/-1. A link resolving the wrong way gives a `namei` that mis-decides permission |
-| `free` | `alloc.c:156` `free(dev, bno)` | **`libv8c.a`** `free(ap)` | a block allocator handed a heap pointer |
+| `free` | `alloc.c:205` `free(dev, bno)` | **`libv8c.a`** `free(ap)` | a block allocator handed a heap pointer |
 | `sleep` | the kernel primitive, `sleep(chan, pri)` | **`libv8c.a`** `sleep(unsigned)` | a program calling `sleep(3)` would `tsleep` on channel 1 |
-| `ialloc` | `alloc.c:232` `ialloc(dev)` | **`libv8c.a`**/`malloc.o` | pure intra-port; not a libSystem name at all |
+| `ialloc` | `alloc.c:281` `ialloc(dev)` | **`libv8c.a`**/`malloc.o` | pure intra-port; not a libSystem name at all |
 
 That is the shape `PLAN.md`'s `min`/`max` note found and the pairwise
 archive-overlap guard in `tests/kmemu` was written for -- and note it is
@@ -1247,11 +1247,11 @@ records.
 **And two signal names are missing from `shim/kern/h/param.h`**: `SIGKILL`
 (`bio.c:628`) and `SIGXFSZ` (`rdwri.c:166`). That file's own rule is to keep
 the list minimal rather than complete, so both need adding *and* need the
-`_Static_assert` in `shim/kern/sys/subr.c:46-53`.
+`_Static_assert` in `shim/kern/sys/subr.c:51-58`.
 
 **A footnote, because it is the funniest instance of a class this file
 collects.** Sweeping the six with `grep -oE 'SIG[A-Z]+'` returns a fifth hit,
-`SIGNAL` at `alloc.c:141` -- the word in an English comment. It also returns
+`SIGNAL` at `alloc.c:190` -- the word in an English comment. It also returns
 two hits inside `shim/kern/h/param.h` itself, and one of them is `:231`,
 which reads *"`grep -oE SIG[A-Z]+' over it yields exactly those two plus the
 word SIGNAL"*. **The sweep matched a comment warning that the sweep matches
@@ -1318,8 +1318,8 @@ found two more.
 
 | name | the other definition | the kernel's |
 |---|---|---|
-| `free` | `libv8c.a(malloc.o)` | `alloc.c:156` frees a disk block |
-| `ialloc` | `libv8c.a(malloc.o)` | `alloc.c:232` allocates an inode |
+| `free` | `libv8c.a(malloc.o)` | `alloc.c:205` frees a disk block |
+| `ialloc` | `libv8c.a(malloc.o)` | `alloc.c:281` allocates an inode |
 | `min`, `max` | `libv8c.a(min.o, max.o)` | `rdwri.c:250, :236` |
 | `sleep` | `libv8c.a(sleep.o)` | the kernel's, `v8fs.c` |
 | `access` | `libv8stubs.a(access.o)` | inverted polarity: 0 = permitted |
@@ -1472,3 +1472,156 @@ compile. That is the same failure at a smaller scale as the header estimate this
 step opened with — **a survey of what a file is *about* undercounts what it
 *references*, every time** — and the corrections are left in the files rather
 than smoothed away, because the reasoning was the good kind and still wrong.
+
+## §8a step 5c: it RUNS — a file read back through Bell Labs' own path
+
+Everything above this heading is a statement about a build. Hashes, diff
+shapes, what the archive imports, which header a quoted include resolves to —
+not one of them would have changed if `alloc.c`, `iget.c`, `nami.c`, `rdwri.c`,
+`subr.c` and `bio.c` had never executed an instruction. **They never had.**
+
+They do now. `mkfs(8)` writes a 2000-block image containing a 28000-byte file
+two directory levels down; V8's kernel opens it by name and hands back the
+bytes:
+
+```
+namei -> fsnami -> dsearch -> bread -> the driver
+      -> iget  -> bread -> iexpand
+      -> readi -> bmap  -> bread
+```
+
+`cmp` says the 28000 bytes are identical to the file mkfs was given. The writer
+is 1985 code compiled here; the reader is different 1985 code compiled here;
+neither knows about the other. `tests/streams` went 262 → 315.
+
+### What had to exist first, and where each piece went
+
+| what | where | why there |
+|---|---|---|
+| a block driver | `tests/streams/fsprobe.c` | nothing in the port consumes one, so the shim would hold a component with no caller |
+| `bdevsw[]`, `nblkdev`, `v8k_bdconf()` | `shim/kern/sys/ioconf.c` | that file is named for `conf/ioconf.c`, which is where `config(8)` emits exactly these tables |
+| `binit`, `iinit`, the buffer and inode tables | `shim/kern/sys/main.c` (new) | `sys/main.c` is where the startup lives and this port has no `main()` |
+| `allocmount()` | `shim/kern/sys/v8fs.c` | beside `findmount`, its sibling from `sys3.c` |
+
+**`main.c` stands in for three upstream files and two of them describe a machine
+that does not exist.** `sys/param.c` holds the size formulae — and is compiled
+`-DMAXUSERS=xx`, a number **not in the shipped tree** (`grep -rn MAXUSERS conf/`
+finds nothing), so every formula there is unevaluable. That is the `NTTY`
+situation exactly: a per-configuration constant `config(8)` derived from a
+machine description Bell Labs did not ship, which makes it a layer-2 decision
+under the rule *derive it, do not pick it*. `sys/machdep.c` holds the storage,
+carved out of the VAX's kernel virtual address space by `valloc` at `:102-121`
+with `nbuf` computed from `physmem` at `:81-84`. `sys/main.c` holds the code.
+
+- **`NINODE` is 80, derived from Bell Labs' own two formulae.** `param.c:29-30`
+  sizes the inode and file tables off one quantity, and although the quantity is
+  unknown the **ratio survives**: `ninode - 32 = 3/2 * (nfile - 32)`. This port
+  fixed `NFILE` at 64 long ago (`shim/kern/sys/fio.c:90`), so the number follows
+  and moves only if `NFILE` moves. Do **not** substitute this port's `NPROC`
+  into the formula — that 4 is because slot 0 is `pfind`'s chain terminator and
+  slot 2 is the pagedaemon's address, which has nothing to do with process
+  count. Mixing them would be numerology.
+- **`NBUF` is 32, which is upstream's own floor** (`machdep.c:83-84`), because
+  the formula above it needs `physmem` in VAX pages. Feeding it this host's
+  memory would size a cache for a machine that is neither.
+
+### Two omissions from `binit` that are required rather than tidy
+
+Upstream's `binit` ends with two tails this port must not transcribe:
+
+- **the `bdevsw` counting loop** (`main.c:218-219`) derives `nblkdev` from the
+  generated table. Here `v8k_bdconf()` maintains it as drivers register, so
+  running the loop as well would count each driver **twice** and put `nblkdev`
+  past the populated prefix — creating precisely the hole `ioconf.c` argues
+  nothing may create.
+- **the swap tail**, which contains `if (nswdev == 0) panic("binit")`. A
+  faithful transcription would abort every run. This is V8's buffer cache
+  without V8's pager, which is what §8a step 5 imported.
+
+### `bdevsw` needs the same dense-prefix invariant `streamtab` does
+
+`bio.c:352` range-checks a major number, but **five** `d_strategy` calls and
+`iinit`'s `d_open` dereference the slot with no null check. So a hole below
+`nblkdev` is a null call — the FIOLOOKLD shape again. `v8k_bdconf()` appends and
+refuses a row with a null `d_open` or `d_strategy`, and **that rule is
+upstream's own**: `main.c:218` ends the table on a null `d_open`, so every row
+`config(8)` emitted had one.
+
+### `shim/kern/h/buf.h` died without being edited
+
+It existed to give `streamio.c` `B_READ` and `B_WRITE` without importing 107
+lines about a VAX buffer cache, and its header comment said so. Then **bio.c's
+import brought the authentic `src/sys/h/buf.h` into the tree**, and because a
+quoted include tries the includer's directory first, `streamio.c:4`'s unchanged
+`#include "../h/buf.h"` silently started resolving to the authentic header
+instead. Measured with `clang -M`; the source line is identical either way. Its
+two remaining includers used neither constant, measured too.
+
+`tests/deps` had a case named **`our buf.h -> streamio.o`** pointing at the dead
+file. It stayed green throughout, because the *make* edge was real — the
+Makefile listed our header as a prerequisite — while the header named in the
+case was no longer the one the compile opens. A test whose label and whose check
+name different files audits nothing, and here neither the label nor the check
+was edited: **a third file arriving made both wrong.**
+
+### The mutation that did not fire, and the case it bought
+
+Seven mutations were run against the new guards and six went red. The seventh
+shrank `NINODE` from 80 to 3 and changed nothing — **308 passed either way**. So
+did 2. Only `NINODE 1` failed. The read path needs exactly **two** inode slots,
+because `rootdir` and `u_cdir` are two `iget`s of the same `(dev, ROOTINO)` and
+the second gets the same structure with `i_count` 2 rather than a second slot,
+while `fsnami` releases each parent as it descends.
+
+The right reading is not "the mutation was too weak". It is that **no test
+constrains the table's size**, which means the derivation above is the only
+justification there is — correct for a configuration constant, and now said out
+loud rather than implied. What the mutation bought is a better case: the probe
+counts inodes still held when it finishes, which catches a **missing `iput`** —
+a real bug class that no table size would ever have exposed. Verified by
+mutation: dropping one `iput` gives `root-count-final 3` where 2 is required.
+
+And a second reading, from the mutation that broke `bmap`'s indirect arm: the
+three scalar checks (`bmap-0-valid`, `bmap-10-valid`, `bmap-differs`) **all
+passed** under it, because `i_addr[10]` holds the indirect block's own address —
+valid, and different from block 0. Only reading the bytes caught it. That is why
+the central claim is a `cmp` against the file mkfs was handed and not a checksum
+this port invented.
+
+### Bell Labs' comment was stale against Bell Labs' code
+
+`v8fs.c` recorded that `getfs()` "panics with `no fs`". The source says
+`panic("getfs")`. **"no fs" is not invented** — it is upstream's own words at
+`alloc.c:414`, in the comment block twelve lines above the code that contradicts
+it. This port read the comment and wrote it down as the behaviour.
+
+CLAUDE.md already holds the rule that a recorded diagnosis is a hypothesis until
+re-measured. What is new is that it applies to **the imported half's own
+comments**, which is the one place the fidelity contract guarantees nobody will
+have checked them: we are forbidden from editing them, so they are never read
+with a critical eye.
+
+### A line citation inside the file it cites is self-invalidating
+
+The `alloc.c` PORT comment names the four uses of `p` by line. Writing that
+comment pushed every one of them down by 43, so the first draft's `:70` pointed
+**into the middle of the comment doing the citing**. A subagent audit of the
+whole tree found **sixteen** stale citations of this shape, eight caused by that
+one comment, plus five description errors where the sentence was wrong
+independently of the number.
+
+Correcting it moved them **twice more**, because the correction added lines, and
+only the third measurement converged. So the citations are now a **test**
+(`tests/streams`, five cases) rather than prose — the same move the deviation
+list above already makes — and each is written `ours (upstream)`, the form
+`PORTING.md:1186` had already got right for a different file.
+
+### `_memcpy` in the import set was correct, and now it is explained
+
+The task list asked whether tolerating `_memcpy` was deliberate or coincidence.
+Measured: **three** archive members import it — `stream.o`, `ioconf.o` (since
+this step, from `bdevsw[nblkdev] = *bd`) and **`iget.o`**, which needs it for
+`itmp = *ip` at `iget.c:314`. The `bcopy -> v8k_bcopy` redirect does not cover a
+compiler-generated structure copy. It is safe anyway, and for a reason the
+aggregate guard already asserts rather than one that depends on the list: every
+external import resolves to **libv8c**, so the memcpy is V8's own.

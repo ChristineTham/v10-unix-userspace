@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **1614 tests across 17 suites** guard it.
+assembly. **1707 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -1498,6 +1498,84 @@ are asking is the worst kind of evidence. It was right, and the rule needed
 sharpening rather than repeating: when two upstream files disagree, do not
 reason about which looks more current. **Find out which one the build reads.**
 
+### And then it ran
+
+The six files compiled and linked, and that felt like the end of something. It
+was not. A build proves the declarations line up. It says nothing about whether
+`bmap` can walk an indirect block, or whether `namei` can find a name — and
+until this week not one line of that code had executed.
+
+Making it execute needed three things. A block driver, which went into the test
+probe rather than the shim, because nothing in the port consumes one and a
+component with no caller invents a difference the kernel does not have. A place
+for the kernel's tables and its startup, which upstream splits across three
+files — one holding size formulae compiled with a `MAXUSERS` that was never
+shipped, one carving storage out of a VAX's virtual address space, and one
+holding the code. And a mount, which meant transcribing `allocmount` from a
+system-call file, including a line where Bell Labs wrote `!mp->m_flags &
+M_MOUNTED` and got the precedence backwards — correct only because the flag they
+meant is 1 and it is the only flag the structure has.
+
+Then `mkfs(8)` wrote a 2000-block image with a 28000-byte file two directories
+down, and V8's kernel opened it by name and handed back the bytes. `cmp` says
+they are identical to the file mkfs was given. Twenty-eight blocks is past the
+ten addresses that fit in an inode, so the walk went through the indirect block
+too. The writer is 1985 code; the reader is different 1985 code; neither knows
+the other exists.
+
+### A header died and nothing said so
+
+While wiring that up I went looking for `struct buf` and found two headers with
+the same name — the authentic one, and a small one this project wrote to give
+the stream code two constants without importing a hundred lines about a VAX
+buffer cache. Its comment explained itself clearly and named its consumer.
+
+The comment was false, and had been for exactly one commit. When `bio.c` was
+imported it brought the real `buf.h` into the tree — and a quoted include tries
+the including file's own directory first, so the stream code's unchanged
+`#include "../h/buf.h"` silently began resolving to the authentic header
+instead. No line in either file changed. A **third** file arriving did it.
+
+What makes this one worth telling is that there was a test. A dependency case
+named `our buf.h -> streamio.o`, green every run. It was green because the
+*build* edge was real — the makefile did list our header as a prerequisite — and
+the case never checked that the header it named was the header the compiler
+opens. The only instrument that can tell the difference is `clang -M`, because
+the source line reads the same either way. Both remaining includers turned out
+to use neither constant. The file was dead, and the guard over it was
+auditing nothing.
+
+### Bell Labs' comment was stale against Bell Labs' code
+
+There was a note in this project's own shim saying that `getfs()` panics with
+the message `no fs`. The code says `panic("getfs")`.
+
+I assumed I had invented the wrong string. I had not. `no fs` is upstream's
+own words, in the comment block twelve lines above the function, listing the
+panics it can raise — a comment that stopped matching the code beneath it
+somewhere between V7 and V8, and that this project read and wrote down as
+behaviour.
+
+The rule about recorded diagnoses being hypotheses is one I already had. What I
+did not have is that it applies to the imported half's comments as well, and
+that those are the *most* dangerous instance of it: the fidelity contract
+forbids editing them, so they are the one body of prose in the tree that nobody
+ever reads with an eye to whether it is true.
+
+### The citation that invalidates itself
+
+The same day, a subagent audit turned up sixteen stale line-number citations
+across the tree. Eight had one cause. When I documented the free-map bug in
+`alloc.c` I wrote a forty-three-line comment above the declaration — and every
+line I had cited moved down by forty-three. The first draft's `:70` now pointed
+into the middle of the comment doing the citing.
+
+Correcting it moved them twice more, because each correction added lines, and
+only the third measurement converged. Which is the tell that prose was the wrong
+container: a line number written inside the file it describes is invalidated by
+the act of writing it. Those five citations are a test now, mutation-verified —
+insert a line anywhere above the code and all five go red.
+
 
 ## What is left
 
@@ -1511,12 +1589,16 @@ in.
 What remains, in rough order:
 
 - **The V8 filesystem server over the raw image**, which is what turns the image
-  from something the tools inspect into something the world can mount. The six
-  authentic files are imported, the headers are settled, the twenty services
-  are written and the whole thing compiles and links — `libv8kern.a` imports
-  exactly the three symbols that are V8's own. What is left is the part that
-  cannot be faked: putting a real image under it and reading a file back
-  through `namei`, `iget`, `bmap` and `readi` rather than through the shim.
+  from something the tools inspect into something the world can mount. The
+  reading half is done and it is the part that could not be faked: `mkfs(8)`
+  writes an image, and V8's own kernel opens a file in it by name — `namei` to
+  `fsnami` to `dsearch` to `iget` to `bmap` to `readi` to `bread` to a block
+  driver — and hands back 28000 bytes that `cmp` says are identical to the file
+  mkfs was given. The file sits two directories down and spans 28 blocks, so the
+  walk crosses a subdirectory and goes through the indirect block, not just the
+  ten addresses in the inode. What remains is the *writing* half and the mount:
+  `namei` with a create flag, `writei`, `ialloc`, and the shim's `vfs.c` gaining
+  a fourth filesystem type that dispatches to this code instead of to the host.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.
