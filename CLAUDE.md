@@ -165,7 +165,7 @@ discipline with one end is a discipline that cannot be driven.
 `tests/streams/ttyprobe.c` now builds the real thing the way `init.c:368-382`
 does — `stopen` the driver, `v8k_stconf` the discipline, `FIOPUSHLD` between —
 with `streamio.c` on top, `ttyld.c` in the middle, and **only the bottom layer
-ours**. Streams went 140 → 200 cases. Three things generalise:
+ours**. Streams went 140 → 220 cases. Three things generalise:
 
 - **The driver is in the probe, not `shim/kern/`, and that is the rule rather
   than laziness.** Nothing in the port consumes a tty driver — `/dev/tty` is
