@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **1562 tests across 17 suites** guard it.
+assembly. **1578 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -1144,6 +1144,68 @@ file descriptor rather than a device. Putting a driver in the shim would have
 created a component with no caller, and that is the mirror of this project's
 most repeated lesson: an unexercised rule cannot be seen to be incomplete, and
 an unconsumed component invents a difference the kernel does not have.
+
+### Writing down what is still dark, and finding the list wrong
+
+With all eight functions running, the honest thing was to write down which
+*arms inside them* still were not — six of them, flag-gated paths that a normal
+terminal never takes. Writing the list paid for itself immediately, because two
+of its six entries were wrong.
+
+One claimed an arm was unreachable and cited the exact line that reaches it.
+The note said a particular flush path "needs an ioctl the system call handles
+itself" — as though handling it were the obstacle. Handling it *is* the
+mechanism: the system call's own line puts the message straight onto the
+discipline's queue. Accurate citation, reverse inference. That is the third
+time this project has hit that specific shape, and the tell is always the same:
+a sentence that cites something true and then draws the opposite conclusion
+from it.
+
+The other listed a delay flag that the file does not mention at all — a name
+copied out of a header into a list of things supposedly in the source. One
+`grep` settled it.
+
+The four real ones were worth the trip. **A function written for this import
+had never once executed.** It was the single name the discipline needed that
+the shim did not have, and writing it is what caught a wrong comment about its
+sibling. It has exactly one call site in the entire tree, inside a padding
+delay for a Teletype Model 37, and nothing had ever taken that branch. It has
+two cases now, because the function picks between two values and the terminal's
+column decides which.
+
+**And a delay flag named for the vertical tab is not triggered by a vertical
+tab.** The parity table classifies that character as merely non-printing; it is
+the *form feed* that gets the treatment — 127 ticks of silence, the largest
+number in the file, because ejecting a page is the slowest thing a printer does.
+
+### The bug that was three cases deep
+
+The last of the six produced the most useful mistake of the whole exercise, and
+it was mine twice over.
+
+The case was meant to prove that an internal 256-byte buffer is invisible to a
+program reading a longer line. The first version expected more than 255 bytes
+from one read. It got 145. So the second version concluded the line must arrive
+in *pieces*, and asserted that instead.
+
+145 was not a piece. It was the leftover from a *different case*, three sections
+earlier, which had sent a 401-character line and read it into a 256-byte buffer.
+The 145 bytes it never collected sat in the stream until the next case read
+them — which then reported a plausible wrong answer, and made the case after
+*that* look broken for reasons that had nothing to do with it.
+
+This project already knew this lesson in another form: an earlier tool that ran
+every program in one directory kept "finding" crashes that were really programs
+tripping over files their predecessors had left behind. A test has to be a pure
+function of its own inputs. The same thing happens between cases inside a single
+process when they share a stream, and it is harder to see, because there is no
+directory to look in.
+
+The fix was a helper that reads whole lines rather than buffers-full. With it,
+the answer is 498 characters in a single read — which is the property the case
+was after all along, and a better one than either guess: the buffer really is
+invisible, because the read loops on the line delimiter rather than on message
+boundaries.
 
 ### A filesystem image, and checkers that cannot check each other
 
