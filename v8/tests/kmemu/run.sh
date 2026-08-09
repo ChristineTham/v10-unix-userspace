@@ -1230,6 +1230,61 @@ for a in $ALLOWED; do
 	esac
 done
 
+# --- the OTHER half of that class, which nm -u structurally cannot see ---
+#
+# Everything above asks what a binary IMPORTS.  A symbol collision is about
+# what an archive DEFINES, so none of it can see two archives defining the same
+# name -- and the import that §8a step 5 is surveyed for brings sys/alloc.c,
+# whose `free(dev, bno)' meets src/libc/gen/malloc.c's `free(ap)'.  Measured:
+# with both members pulled the link says "duplicate symbol"; with only the
+# kernel one pulled it is SILENT, and the block allocator gets handed a heap
+# pointer and reads a superblock out of it.
+#
+# A blanket "no archive may define a libSystem name" is impossible -- libv8c.a
+# overlaps libSystem on 153 of its 196 names, which is what being a libc means.
+# So the assertion is PAIRWISE between our own archives.
+adefs() { nm -g "$1" 2>/dev/null | awk '$2 ~ /^[TDBSC]$/ {print substr($3,2)}' | sort -u; }
+KERNA=$ROOT/build/stage0/kern/libv8kern.a
+LIBCA=$ROOT/build/stage0/libc/libv8c.a
+SYSA=$ROOT/build/stage0/v8sys/libv8sys.a
+
+# min and max are the known pair and they are EXPLAINED, not tolerated:
+# src/libc/gen/min.c is `min(a,b) { return (a<b? a: b); }' with an implicit int
+# return, and shim/kern/sys/subr.c's are unsigned, which upstream's rdwri.c:235
+# and h/systm.h:61-62 independently agree the kernel's should be.  Two
+# different functions, one name.  Nothing links both archives today, so it is
+# latent -- but it is the free(3) shape, and the difference is signedness.
+DUPOK="max min"
+
+if [ -f "$KERNA" ] && [ -f "$LIBCA" ] && [ -f "$SYSA" ]; then
+	adefs "$KERNA" > "$TMP/d.kern"
+	adefs "$LIBCA" > "$TMP/d.libc"
+	adefs "$SYSA"  > "$TMP/d.sys"
+	# every archive defines something, or the comm results below are
+	# vacuously empty and this whole block passes while measuring nothing
+	for p in kern libc sys; do
+		[ "$(wc -l < "$TMP/d.$p" | tr -d ' ')" -gt 20 ] && ok ||
+			bad "libv8$p defines almost nothing -- the sweep is vacuous"
+	done
+	dup=""
+	for pair in "kern libc" "kern sys" "libc sys"; do
+		set -- $pair
+		for n in $(comm -12 "$TMP/d.$1" "$TMP/d.$2"); do
+			case " $DUPOK " in *" $n "*) continue ;; esac
+			dup="$dup $1/$2:$n"
+		done
+	done
+	check "no two of our archives define the same name" "" "$dup"
+
+	# ...and the known pair is not stale, the same way ALLOWED is checked.
+	for n in $DUPOK; do
+		if grep -qx "$n" "$TMP/d.kern" && grep -qx "$n" "$TMP/d.libc"; then ok
+		else bad "'$n' is no longer defined by both archives -- drop it from DUPOK"; fi
+	done
+else
+	bad "archives missing -- cannot sweep for duplicate definitions"
+fi
+
 # --- the stub really is what the others get ------------------------------
 # Both halves define kmemu_synth, so `is it defined' proves nothing. What
 # distinguishes them is that only one pulls libSystem in with it.
