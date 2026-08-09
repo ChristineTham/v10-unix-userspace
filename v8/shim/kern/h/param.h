@@ -165,6 +165,50 @@ typedef long		v8k_time_t;	/* h/types.h:28 -- renamed; see below */
 typedef long		label_t[14];	/* h/types.h:29 -- see hazard 4 */
 
 /*
+ * time_t AFTER ALL, AND THE NOTE BELOW SAYING WHY NOT IS STILL RIGHT -- what
+ * changed is that §8a step 5 imported a file that spells the name.
+ *
+ * src/sys/h/systm.h:12-13 are `time_t time;' and `time_t bootime;', authentic
+ * and now in the tree, so the type has to exist for the kernel side.  The
+ * reason it was deferred was NOT "no file uses it"; it was that claiming
+ * Darwin's _TIME_T guard would hand this directory's own raw syscalls a
+ * 32-bit time_t.  That argument was about a 32-bit typedef, and it does not
+ * apply to this one:
+ *
+ *	__darwin_time_t is `long'	(SDK arm/_types.h:119)
+ *	ours is `long'			(the line below)
+ *
+ * -- so claiming _TIME_T makes the host's typedef a no-op that would have
+ * produced the identical type.  Measured, not assumed.  Contrast dev_t and
+ * ino_t above, where claiming the guard genuinely changes the width and the
+ * #error exists to catch include order.  time_t is not added to that #error
+ * for exactly that reason: a file that gets Darwin's first is unharmed.
+ *
+ * IT IS 64 BITS WHERE THE VAX'S WAS 32, AND THAT IS THE SEAM RULE RATHER THAN
+ * A LAPSE.  `time' crosses nothing: it is a kernel global, not a member of any
+ * record.  The on-disk times ARE narrowed, per field, in src/include/sys/ino.h
+ * and filsys.h -- `v8_i32 di_mtime' -- so iget.c:274-276's `dp->di_atime =
+ * *ta' truncates on assignment exactly where 1985's four bytes are wanted, and
+ * nowhere else.  The hazard CLAUDE.md records is the ADDRESS of a narrowed
+ * field being taken as a time_t*, and the five sites here go the safe way:
+ * `iupdat(ip, &time, &time, 0)' takes the address of the WIDE global and reads
+ * it through iget.c:235's `time_t *ta'.  Swept over all of src/sys -- zero
+ * hits for the ctime/localtime/gmtime/asctime/time-of-& pattern.
+ *
+ * swblk_t exists for one declaration and no definition: systm.h:67 is
+ * `swblk_t vtod();', a swap-map function nothing in the six imported files
+ * calls.  It is `int' rather than `long' for daddr_t's reason -- upstream's
+ * h/types.h:26 says `long', which is 32 bits under NOLONG, and it names a
+ * block number.  Nothing can observe the choice today; making it agree with
+ * daddr_t means the day something does, it agrees with the disk.
+ */
+#ifndef _TIME_T
+#define _TIME_T
+typedef long		time_t;		/* h/types.h:28; == __darwin_time_t */
+#endif
+typedef int		swblk_t;	/* h/types.h:26 `long'; see daddr_t */
+
+/*
  * The four width names, and they are NOT upstream's -- they are this port's,
  * from src/include/sys/types.h:78-81, added by §8a step 4a when it turned out
  * that `int di_size' did not mean "an int" but "exactly four bytes, because a
@@ -216,6 +260,151 @@ typedef unsigned int	v8_u32;		/* :81 */
 #define	TS_SIG	2		/* asynchronous signal wakeup */
 
 /*
+ * THE FILESYSTEM TUNABLES -- §8a step 5.  Values are upstream's, with the
+ * h/param.h line, by this file's standing policy.
+ *
+ * NICINOD AND NICFREE ARE DEFINED THREE TIMES UPSTREAM AND THE THREE DISAGREE,
+ * which is worth saying because picking the wrong one is silent.  h/param.h
+ * has a `#if CLSIZE==1' block (:102-103, NICFREE 50), a `#if CLSIZE==2' block
+ * (:116-117, NICFREE 178) and a `#if CLSIZE==4' block (:132-133, NICFREE 434).
+ * They are the superblock's free-block cache, whose length is a function of
+ * the block size, so a wrong choice changes sizeof(struct filsys) -- an
+ * ON-DISK RECORD.
+ *
+ * This port is CLSIZE==2, and that is not a decision taken here: it is already
+ * committed in src/include/sys/param.h:110, which is the USERLAND half that
+ * mkfs, icheck, dcheck, fsck, ncheck, dump and restor all compile against, and
+ * whose src/include/sys/filsys.h:42 sizes S_free[NICFREE].  The kernel side
+ * has to agree with it or the two halves of this port would describe the same
+ * superblock differently.
+ *
+ * AND THAT AGREEMENT IS ASSERTED RATHER THAN CLAIMED.  shim/kern/sys/v8fs.c
+ * carries a _Static_assert on sizeof(struct filsys), which is the quantity
+ * that actually has to be right -- a transcription check on the number 178
+ * would pass while the two headers still disagreed about something else.
+ * Same discipline as making the header test compare NMASK(0) against the
+ * sizeof-derived NINDIR rather than against a typed-in constant.
+ */
+#define	NMOUNT	62		/* h/param.h:10 -- mountable file systems */
+#define	MSWAPX	15		/* h/param.h:11 -- pseudo mount index, swapdev */
+#define	CANBSIZ	256		/* h/param.h:21 -- max typewriter line */
+#define	NODEV	(dev_t)(-1)	/* h/param.h:72 */
+#define	ROOTINO	((ino_t)2)	/* h/param.h:73 -- i number of all roots */
+#define	SUPERB	((daddr_t)1)	/* h/param.h:74 -- block no. of the superblock */
+#define	NICINOD	100		/* h/param.h:116 -- CLSIZE==2; see above */
+#define	NICFREE	178		/* h/param.h:117 -- CLSIZE==2; see above */
+#define	BUFSIZE	4096		/* h/param.h:109 -- CLSIZE==2 */
+
+/*
+ * THE BLOCK-GEOMETRY MACROS, AND LEAVING THEM OUT WAS SILENT.
+ *
+ * These are the rest of upstream's CLSIZE==2 block (h/param.h:107-122).  The
+ * first draft of this section added the three constants above and stopped,
+ * on the reasoning that a constant is what a header owes and the macros would
+ * follow if anything wanted them.  Everything compiled.  Everything was wrong:
+ *
+ *	KERNFLAGS carries -Wno-implicit-function-declaration, because the
+ *	imported half is 1985 K&R and that diagnostic would fire on every
+ *	line.  So `BSIZE(dev)' with no macro in scope is not an error and not
+ *	even a warning -- it is a CALL to an undefined function named BSIZE,
+ *	compiled without complaint, left as an undefined symbol in the object.
+ *
+ * FOURTEEN OF THEM.  Found with `nm -u' on libv8kern.a, subtracting what the
+ * archive defines from what it undefines -- the same instrument tests/streams
+ * uses for libc leaks, and the only one that could see this, because the
+ * compiler had been told by us not to speak.  The list was BITFS BMASK BSHIFT
+ * BSIZE INOPB MIN NINDIR NMASK NSHIFT dbtofsb fsbtodb itod itoo major.
+ *
+ * That is the sharpest instance yet of a rule this file already states for
+ * src/sys/: A SUPPRESSION ARGUED FOR ONCE COVERS CODE NOBODY ARGUED ABOUT.
+ * -Wno-implicit-function-declaration was argued for K&R declarations and it
+ * silently also covers a missing macro, which is a different thing entirely --
+ * and unlike a missing declaration, a missing macro changes what the code
+ * MEANS.  `itod(dev, ino)' is address arithmetic; as a function call it is a
+ * link error at best and a call to something else's itod at worst.
+ *
+ * The values are upstream's CLSIZE==2 arm verbatim, which is the arm this port
+ * is on for the reason NICFREE above gives at length.  BITFS(dev) is the bit
+ * that selects 4096-byte blocks over 1024, so every one of these is a function
+ * of the device rather than a constant -- that parameterisation is exactly why
+ * they are macros upstream and why the 1024/4096 pair cannot be flattened.
+ */
+#define BITFS(dev)	((dev) & 64)			/* h/param.h:108 */
+#define	BSIZE(dev)	(BITFS(dev)? 4096: 1024)	/* :110 */
+#define	INOPB(dev)	(BITFS(dev)? 64: 16)		/* :111 */
+#define	BMASK(dev)	(BITFS(dev)? 07777: 01777)	/* :112 */
+#define	BSHIFT(dev)	(BITFS(dev)? 12: 10)		/* :113 */
+#define	NMASK(dev)	(BITFS(dev)? 01777: 0377)	/* :114 */
+#define	NSHIFT(dev)	(BITFS(dev)? 10: 8)		/* :115 */
+#define itod(dev, x)	((daddr_t)((((unsigned)(x)+2*INOPB(dev)-1)/INOPB(dev))))
+#define itoo(dev, x)	((int)(((x)+2*INOPB(dev)-1)%INOPB(dev)))
+#define fsbtodb(dev, b)	(BITFS(dev)? (b)*8: (b)*CLSIZE)	/* :120 */
+#define dbtofsb(dev, b)	(BITFS(dev)? (b)/8: (b)/CLSIZE)	/* :121 */
+#define NINDIR(dev)	(BSIZE(dev)/sizeof(daddr_t))	/* :122 */
+
+#define	MIN(a,b) (((a)<(b))?(a):(b))	/* h/param.h:149 */
+#define	MAX(a,b) (((a)>(b))?(a):(b))	/* h/param.h:150 */
+
+/*
+ * major/minor/makedev -- h/types.h:9,12,15.  They are in TYPES rather than in
+ * param upstream, and they are here because this file is where the kernel side
+ * spells its types (dev_t is narrowed a few lines below for the same reason).
+ * A dev_t is `major<<8 | minor', 16 bits, and that packing is on disk in every
+ * IFCHR and IFBLK inode -- so these three are on-disk arithmetic, not
+ * convenience, and they must not be replaced by the host's <sys/types.h>
+ * versions, which unpack Darwin's 32-bit dev_t at a different shift.
+ */
+#define	major(x)	((int)(((unsigned)(x)>>8)&0377))	/* h/types.h:9 */
+#define	minor(x)	((int)((x)&0377))		/* h/types.h:12 */
+#define	makedev(x,y)	((dev_t)(((x)<<8) | (y)))	/* h/types.h:15 */
+
+/*
+ * Sleep priorities.  h/param.h:30,31,34.  PZERO is the boundary: a sleep at a
+ * priority ABOVE it is interruptible and longjmps out of the system call, one
+ * at or below it is not.  shim/kern/sys/v8fs.c's sleep() is where that split
+ * is implemented, and it is the whole reason PZERO is here rather than only
+ * PINOD -- a sleep() that ignored the priority would turn every interruptible
+ * inode wait into an uninterruptible one.
+ */
+#define	PSWP	0		/* h/param.h:30 */
+#define	PINOD	10		/* h/param.h:31 */
+#define	PZERO	25		/* h/param.h:34 -- the interruptible boundary */
+
+/*
+ * Page size.  h/param.h:65,67 -- upstream keeps these in param.h and NOT in
+ * vmparam.h, and shim/kern/h/vmparam.h records that split rather than
+ * duplicating them.  One number per layer; see CLAUDE.md's DIRSIZ account for
+ * what happens when that slips.
+ *
+ * 512 is the VAX's page, not this host's (16384).  It is right anyway, because
+ * the only two readers are arithmetic on quantities that are already in VAX
+ * terms: bio.c:479 divides a buffer's byte count by NBPG to bump a paging
+ * counter nothing reads, and vmmac.h's btop feeds vtopte, which panics.
+ * Substituting the host's page size would make those two lines describe a
+ * machine that is neither one.
+ */
+#define	NBBY	8		/* h/param.h:63 -- bits in a byte */
+#define	NBPG	512		/* h/param.h:65 -- VAX page size */
+#define	PGSHIFT	9		/* h/param.h:67 -- LOG2(NBPG) */
+
+/*
+ * CLSIZE -- the cluster, in pages.  h/param.h:86.
+ *
+ * It is 2 here for the reason the NICINOD/NICFREE block above gives at length:
+ * src/include/sys/param.h:110 already commits this port to CLSIZE 2, and the
+ * on-disk superblock is sized from it.  Spelled again on this side because the
+ * kernel half cannot include that file (its daddr_t is `long'), and the two
+ * are checked against each other by sizeof rather than by transcription.
+ *
+ * Its readers here are not the filesystem, though: bio.c:553 uses it through
+ * shim/kern/h/vmparam.h's KLMAX, in a swap path that panics.  The filesystem
+ * uses it only implicitly, through the CLSIZE==2 constants above.
+ */
+#define	CLSIZE	2		/* h/param.h:86 -- see NICFREE above */
+#define	ctob(x)	((x)<<9)			/* h/param.h:163 */
+#define	btoc(x)	((((unsigned)(x)+511)>>9))	/* h/param.h:166 */
+
+/*
  * The signals the imported kernel source raises, and only those.
  *
  * Upstream's param.h says `#include <signal.h>' and takes all 31.  Including
@@ -244,6 +433,36 @@ typedef unsigned int	v8_u32;		/* :81 */
 #define	SIGPIPE	13
 
 /*
+ * §8a step 5 brought two more, and the sweep that found them matched a third
+ * that is not a signal -- which is this block's own documented trap firing
+ * again, in the paragraph that documents it.
+ *
+ * `grep -oE SIG[A-Z]+' over the six imported files yields SIGKILL, SIGXFSZ and
+ * SIGNAL.  The third is alloc.c:141, an upstream comment in capitals --
+ * "SHOULD RATHER SEND A SIGNAL AND SUSPEND THE PROCESS" -- and it is the
+ * fourth time in this port that a sweep has counted prose as an instance.  The
+ * filter that separates them is to grep the RAISE, not the name:
+ *
+ *	rdwri.c:166	psignal(u.u_procp, SIGXFSZ)	writei past u_limit
+ *	bio.c:628	psignal(p, SIGKILL)		swkill, out of swap
+ *
+ * Both numbers are V8's own -- usr/include/signal.h:19 and :36, reached by
+ * h/param.h:47-49's `#include <signal.h>' rather than defined in param.h
+ * itself, which is where this port's own note had them.  shim/kern/sys/subr.c
+ * asserts each against the host's, as it does for the four above.
+ *
+ * SIGKILL IS THE ONE TO BE CAREFUL WITH, because v8k_psignal delivers by
+ * calling kill(2) on a real host pid.  bio.c's swkill() only runs when the
+ * swap map is exhausted, and this port has no swapper, so the site is
+ * unreachable -- but it is unreachable by topology rather than by the number
+ * being wrong, and if it ever were reached it would kill a live process for
+ * real.  shim/kern/sys/v8fs.c does not weaken it; bio.c's swap paths panic
+ * before they get there.
+ */
+#define	SIGKILL	9	/* usr/include/signal.h:19 */
+#define	SIGXFSZ	25	/* usr/include/signal.h:36 */
+
+/*
  * Interrupt priority level.  See shim/kern/dev/machdep.c -- these are a nesting
  * counter here rather than a write to the VAX's IPL, and the counter is not
  * decoration: setqsched() consults it, so a qenable() inside a critical section
@@ -252,6 +471,8 @@ typedef unsigned int	v8_u32;		/* :81 */
  */
 int	spl6(void);
 void	splx(int s);
+int	spl0(void);			/* §8a step 5; machdep.c says why it is there */
+void	kvprintf(const char *fmt, __builtin_va_list ap);
 
 void	panic(const char *fmt, ...);
 
@@ -322,10 +543,36 @@ unsigned min(unsigned a, unsigned b);
 unsigned max(unsigned a, unsigned b);
 int	ufalloc(void);
 void	gsignal(int pgrp, int sig);
-void	iomove(void *cp, unsigned n, int flag);
 void	selwakeup(struct proc *p, int coll);
 void	closef(struct file *fp);
-void	iput(struct inode *ip);
+int	iput(struct inode *ip);
+
+/*
+ * THREE OF THE ABOVE CHANGED WHEN §8a step 5 LANDED, AND THE TWO THAT WENT
+ * ARE MORE INTERESTING THAN THE ONE THAT STAYED.
+ *
+ * min, max, iomove, nulldev and iput were all OURS, written for streamio.c
+ * because sys/rdwri.c and sys/iget.c were not in the tree.  Now they are, and
+ * a shim spelling of a function whose authentic file is imported is a second
+ * definition of it -- so all five were retired and the imports supply them.
+ * shim/kern/sys/subr.c and fio.c record what each one cost.
+ *
+ * iomove's PROTOTYPE had to go too, not just the body.  It stood here as
+ * `void iomove(void *cp, ...)' and upstream's rdwri.c:266 is
+ * `iomove(cp, n, flag) register caddr_t cp;' -- implicit int return, char*
+ * first argument.  Against a visible prototype that is a hard error twice
+ * over, and neither half can move: the void* was deliberate (streamio.c hands
+ * it a `u_char *', and a caddr_t prototype would emit
+ * -Wincompatible-pointer-types on authentic code), and the definition is
+ * Bell Labs'.  So the declaration is deleted rather than reconciled.  Nothing
+ * modern C calls iomove -- measured, the only caller is streamio.c:241,459 --
+ * and K&R reaches it implicitly, which is how it reached it in 1985.
+ *
+ * iput kept its declaration and changed its RETURN TYPE, `void' to `int',
+ * because iget.c:176 is `iput(ip)' with no type on the line above it.  Nothing
+ * reads the value; the type still has to match or the definition and the
+ * declaration disagree.
+ */
 
 /*
  * KERNEL psignal, AND LIBC HAS TAKEN THE NAME.
@@ -459,5 +706,108 @@ void	v8k_stunconf(void);	/* forget them all; for tests */
  * a real bus address this stops compiling, which is the right way to find out.
  */
 #define uballoc(uban, addr, size, flags)	((long)1)
+
+/*
+ * §8a step 5: SEVEN NAMES THE KERNEL AND THE C LIBRARY BOTH DEFINE.
+ *
+ * libv8kern is linked into V8 programs alongside libv8c and libv8stubs, so a
+ * kernel function and a library function of the same name are two definitions
+ * in one link.  These get the psignal treatment above -- a macro, renaming both
+ * the definition and every call uniformly, so Bell Labs' source keeps its
+ * spelling and the archive exports a name nothing else claims.
+ *
+ * THE LIST IS SEVEN AND WAS COSTED AS FOUR, and the way to find them is the
+ * point.  `nm -u' -- the sweep tests/kmemu runs over the whole rootfs -- sees
+ * what an object IMPORTS, and a collision is about what it DEFINES.  So the
+ * measurement is `nm -g' on the archives, filtered to T and D:
+ *
+ *	free	libv8c.a(malloc.o)	alloc.c:156 defines free(dev, bno)
+ *	ialloc	libv8c.a(malloc.o)	alloc.c:232 defines ialloc(dev)
+ *	min	libv8c.a(min.o)		rdwri.c:250
+ *	max	libv8c.a(max.o)		rdwri.c:236
+ *	sleep	libv8c.a(sleep.o)	shim/kern/sys/v8fs.c
+ *	access	libv8stubs.a(access.o)	shim/kern/sys/v8fs.c
+ *	time	libv8stubs.a(time.o)	src/sys/h/systm.h:12
+ *	timezone libv8c.a(timezone.o)	src/sys/h/systm.h:7
+ *	mount	libv8stubs.a(mount.o)	src/sys/h/mount.h:21
+ *
+ * -- NINE, and the count went four, then seven, then eight, then nine as the
+ * INSTRUMENT improved rather than as the code changed.  Four was the survey's.
+ * Seven came from `nm -g' over the archives.  The eighth and ninth came from
+ * tests/kmemu's cross-archive sweep, once it was extended to a fourth archive
+ * -- libv8stubs.a, which it had never opened, and which holds the syscall
+ * stubs, i.e. exactly the names a kernel is most likely to also define.
+ *
+ * SIX ARE FUNCTION-AGAINST-FUNCTION.  THREE ARE A VARIABLE AGAINST A FUNCTION,
+ * AND THAT SPLIT IS THE WHOLE REASON THE COUNT KEPT MOVING.  A duplicate
+ * function is a duplicate-symbol error: the linker refuses and you find it the
+ * first time you link.  A COMMON symbol resolving against a text definition is
+ * what a linker is SUPPOSED to do, so it happens in silence -- which means the
+ * variable-versus-function class is invisible to the build and visible only to
+ * `nm -g'.  Both of the ones nobody predicted are in that class.
+ *
+ * The first is `time'.  The
+ * kernel's `time' is systm.h:12, `time_t time;' -- a K&R tentative definition,
+ * so a COMMON symbol.  libv8stubs' is the time(2) stub, a text symbol.  A
+ * linker resolves a common against a definition by taking the definition, so
+ * the kernel's clock variable would quietly become the ADDRESS OF time() --
+ * and `dp->di_ctime = time' (iget.c:276) would write a code address into an
+ * inode as a timestamp.  No diagnostic, no crash, wrong dates on disk.
+ *
+ * The third is `mount', found last and the plainest of the three: the kernel's
+ * is `struct mount mount[NMOUNT]' (mount.h:21, a tentative definition, so a
+ * common in alloc.o, iget.o and nami.o) and libv8stubs' is the mount(2)
+ * SYSCALL STUB.  A mount table against the call that fills one -- related in
+ * meaning, unrelated as objects, and the common would have resolved to the
+ * stub's entry point.  findmount() would then have walked the text segment.
+ *
+ * The second is `timezone', and it is the same shape with the roles further
+ * apart: systm.h:7 is `int timezone;', minutes west of Greenwich, while
+ * src/libc/gen/timezone.c:24 is `char *timezone(zone, dst)' -- a FUNCTION
+ * returning the local zone's NAME.  Not two spellings of one idea, two
+ * unrelated things, exactly like the kernel's psignal against BSD's
+ * psignal(3).  Nothing in the six reads the variable, so today the only
+ * casualty would be a future reader getting a code address; the rename costs
+ * one line and removes the question.
+ *
+ * That is why the rename is applied to `time' and `timezone' even though
+ * nothing forced either: the other six fail loudly at link time, and these two
+ * do not fail at all.
+ *
+ * free and ialloc are the two whose DEFINITIONS are in authentic source, which
+ * is the case the macro form exists for -- alloc.c includes this header, so
+ * `free(dev, bno)' at :156 is compiled as v8k_free and Bell Labs' file is
+ * untouched.  Its blob hash still matches PROVENANCE.
+ */
+#define	free	v8k_free
+#define	ialloc	v8k_ialloc
+#define	min	v8k_min
+#define	max	v8k_max
+#define	sleep	v8k_sleep
+#define	access	v8k_access
+#define	time	v8k_time
+#define	timezone v8k_timezone
+#define	mount	v8k_mount
+
+/*
+ * §8a step 5 services.  Prototypes for the ones modern C in this directory
+ * calls or defines; the K&R half reaches them through src/sys/h/systm.h,
+ * mount.h, cmap.h and inode.h, which are AUTHENTIC and already declare
+ * min, max, findmount, mfind, iget and ialloc.  Nothing here respells one of
+ * those -- see shim/kern/sys/v8fs.c, which says which declaration each
+ * definition answers to.
+ */
+int	fubyte(caddr_t addr);
+int	fuibyte(caddr_t addr);
+int	subyte(caddr_t addr, int c);
+int	suibyte(caddr_t addr, int c);
+int	fustrlen(caddr_t addr);
+int	spl0(void);
+void	sleep(caddr_t chan, int pri);
+void	plock(struct inode *ip);
+void	tablefull(char *tab);
+void	uprintf(const char *fmt, ...);
+void	xrele(struct inode *ip);
+int	suser(void);
 
 #endif /* V8KERN_PARAM_H */

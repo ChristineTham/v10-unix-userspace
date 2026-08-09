@@ -681,11 +681,28 @@ STREAMIOFLAGS = $(KERNFLAGS) -DKERNEL -fcommon \
 # the four, and widening a flag set for one file's sake is how a suppression
 # that was argued for once ends up covering code nobody argued about.
 
+# §8a step 5 -- V8's filesystem, six imported files plus the services they call.
+#
+# THEY GO IN A SUBDIRECTORY AND THAT IS NOT TIDINESS.  src/sys/sys/subr.c and
+# shim/kern/sys/subr.c are two different files with the same basename, and the
+# flat $(BUILD)/kern/%.o naming the rules above use would give them one object.
+# Make would not warn: it would compile whichever rule it matched and the other
+# file would silently not be in the archive.  $(BUILD)/kern/v8fs/ mirrors the
+# source split instead, and the group is named for what it is.
+#
+# ONE FLAG BEYOND STREAMIOFLAGS, for the imported half: nothing.  All six
+# compile under exactly the flags streamio.c needed, which is the useful
+# measurement -- the dialect was already right and step 5 added no suppression.
+V8FS_OBJ = $(BUILD)/kern/v8fs/alloc.o $(BUILD)/kern/v8fs/iget.o \
+           $(BUILD)/kern/v8fs/nami.o $(BUILD)/kern/v8fs/rdwri.o \
+           $(BUILD)/kern/v8fs/subr.o $(BUILD)/kern/v8fs/bio.o \
+           $(BUILD)/kern/v8fs/v8fs.o
+
 KERN_LIB = $(BUILD)/kern/libv8kern.a
 KERN_OBJ = $(BUILD)/kern/stream.o $(BUILD)/kern/machdep.o \
            $(BUILD)/kern/streamio.o $(BUILD)/kern/slp.o \
            $(BUILD)/kern/fio.o $(BUILD)/kern/subr.o $(BUILD)/kern/ioconf.o \
-           $(BUILD)/kern/ttyld.o $(BUILD)/kern/partab.o
+           $(BUILD)/kern/ttyld.o $(BUILD)/kern/partab.o $(V8FS_OBJ)
 
 # The headers streamio.c reaches, split by who wrote them.  Six are AUTHENTIC
 # and live in src/sys/h/, so a quoted "../h/x.h" from src/sys/sys/ finds them
@@ -756,6 +773,76 @@ $(BUILD)/kern/ttyld.o: $(SRC)/sys/dev/ttyld.c $(SRC)/sys/h/stream.h \
 $(BUILD)/kern/partab.o: $(SRC)/sys/sys/partab.c
 	@mkdir -p $(BUILD)/kern
 	$(HOSTCC) $(KERNFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# §8a step 5's imported half.  Two rules rather than one because the sources
+# are in two upstream directories, and the prerequisite list is $(V8FS_H) --
+# the headers step 5 added on top of what streamio.c already needed.
+V8FS_H = $(ROOT)shim/kern/h/pte.h $(ROOT)shim/kern/h/vmmac.h \
+         $(ROOT)shim/kern/h/vmparam.h $(ROOT)shim/kern/h/vmmeter.h \
+         $(ROOT)shim/kern/h/vmsystm.h $(ROOT)shim/kern/h/filsys.h \
+         $(ROOT)shim/kern/h/ino.h $(ROOT)shim/kern/h/fblk.h \
+         $(SRC)/sys/h/systm.h $(SRC)/sys/h/mount.h $(SRC)/sys/h/cmap.h \
+         $(SRC)/sys/h/acct.h $(SRC)/sys/h/vlimit.h $(SRC)/sys/h/vm.h \
+         $(SRC)/sys/h/seg.h $(SRC)/sys/h/trace.h $(SRC)/sys/h/inline.h
+
+$(BUILD)/kern/v8fs/%.o: $(SRC)/sys/sys/%.c $(KERN_AUTH_H) $(KERN_SHIM_H) $(V8FS_H)
+	@mkdir -p $(BUILD)/kern/v8fs
+	$(HOSTCC) $(STREAMIOFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# bio.c gets THREE FLAGS THE OTHER FIVE DO NOT, and they are spelled here
+# rather than folded into STREAMIOFLAGS for ttyld's reason: a suppression
+# argued for once should not quietly cover code nobody argued about.  All
+# three fire only in swap(), the VAX paging path:
+#
+#   -Wno-pointer-to-int-cast   :555 `vtopte(p, btop(addr))' -- btop is
+#   -Wno-int-to-pointer-cast   `((unsigned)(x)) >> PGSHIFT', so an 8-byte
+#                              caddr_t is truncated to 4; :561 casts the
+#                              result back.  THESE ARE REAL LP64 TRUNCATIONS
+#                              IN AUTHENTIC SOURCE and they are suppressed
+#                              rather than fixed because the line between them
+#                              -- :556's vtopte() -- PANICS.  A deviation here
+#                              would be editing Bell Labs' source to correct
+#                              arithmetic that cannot execute.  If a pager ever
+#                              lands, these two lines are the first to fix, and
+#                              src/sys/PORTING.md says so.
+#   -Wno-unused-but-set-variable  :643, swkill()'s `s' -- upstream saves an spl
+#                              level it never restores, in the process-killing
+#                              path.  Upstream's own dead store.
+$(BUILD)/kern/v8fs/bio.o: $(SRC)/sys/dev/bio.c $(KERN_AUTH_H) $(KERN_SHIM_H) \
+                          $(V8FS_H)
+	@mkdir -p $(BUILD)/kern/v8fs
+	$(HOSTCC) $(STREAMIOFLAGS) -Wno-pointer-to-int-cast \
+	    -Wno-int-to-pointer-cast -Wno-unused-but-set-variable \
+	    $(DEPFLAGS) -c $< -o $@
+
+$(BUILD)/kern/v8fs/%.o: $(SRC)/sys/dev/%.c $(KERN_AUTH_H) $(KERN_SHIM_H) $(V8FS_H)
+	@mkdir -p $(BUILD)/kern/v8fs
+	$(HOSTCC) $(STREAMIOFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# v8fs.c is OURS -- the twenty services and the switch tables -- so it is
+# modern C like slp.c and fio.c.  It needs three flags they do not, and each
+# one is because this is the only modern C here that has to satisfy AUTHENTIC
+# K&R declarations of functions IT DEFINES:
+#
+#   -DKERNEL   src/sys/h/mount.h:21's `struct mount mount[NMOUNT]' is inside
+#              #ifdef KERNEL, and findmount walks it.  Same for inode.h's
+#              inode/ninode/rootdir block.  Upstream's own flag; conf/makefile:23.
+#   -fcommon   because those are TENTATIVE definitions -- the K&R idiom where
+#              forty objects name the same array and the linker merges the
+#              commons.  Identical to STREAMIOFLAGS' reason.
+#   -Wno-deprecated-non-prototype
+#              findmount and mfind are DEFINED old-style here, matching
+#              mount.h:22 and cmap.h:36.  A prototyped definition conflicts
+#              with those `()' declarations -- and not only by C99's rule, but
+#              in C89 too, because dev_t is u_short and a u_short parameter is
+#              affected by the default argument promotions.  v8fs.c says so at
+#              the definition.
+V8FSFLAGS = $(SHIMFLAGS) -DKERNEL -fcommon -Wno-deprecated-non-prototype \
+            -Wno-extra-tokens
+$(BUILD)/kern/v8fs/v8fs.o: $(ROOT)shim/kern/sys/v8fs.c $(KERN_AUTH_H) \
+                           $(KERN_SHIM_H) $(V8FS_H) $(ROOT)shim/v8sys/rawsys.h
+	@mkdir -p $(BUILD)/kern/v8fs
+	$(HOSTCC) $(V8FSFLAGS) $(DEPFLAGS) -I$(ROOT)shim/kern/dev -c $< -o $@
 
 $(BUILD)/kern/machdep.o: $(ROOT)shim/kern/dev/machdep.c \
                          $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \

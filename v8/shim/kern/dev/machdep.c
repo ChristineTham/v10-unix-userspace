@@ -68,6 +68,43 @@ spl6(void)
 	return (splevel++);
 }
 
+/*
+ * spl0 -- §8a step 5, and it is HERE rather than in shim/kern/sys/v8fs.c with
+ * the other nineteen services for one reason: splevel is static to this file.
+ *
+ * IT RETURNS THE PREVIOUS LEVEL, and that was an open question the survey left
+ * as "void or int?".  asm.sed:2-3 settles it -- upstream's spl0 is
+ *
+ *	mfpr $18,r0		read PR$_IPL into r0 FIRST
+ *	mtpr $0,$18		then set it to zero
+ *
+ * -- so r0 survives holding the old IPL, exactly as spl6 above returns it.
+ * All eight of bio.c's call sites discard the value as `(void) spl0()', so
+ * nothing here would notice a void version today.  It returns the level anyway
+ * because splx() takes one back, and an spl0 that was the odd one out is how a
+ * later `s = spl0(); ... splx(s)' silently restores garbage.
+ *
+ * It goes THROUGH splx rather than assigning splevel = 0, and that is the part
+ * that matters at run time: splx is what drains a deferred queuerun(), so a
+ * qenable() issued inside a critical section runs when the section ends.
+ * Assigning the counter directly would lower the level and leave the work
+ * sitting -- the VAX's software interrupt never fired.
+ *
+ * NOTE IT IS NOT spl6's INVERSE.  spl6 is `splevel++', a nesting counter, and
+ * spl0 slams the level to zero regardless of depth.  That asymmetry is
+ * upstream's -- an IPL is a level, not a stack -- and bio.c relies on it:
+ * every one of its eight sites is a bare `(void) spl0()' with no matching
+ * raise, releasing whatever depth the caller arrived with.
+ */
+int
+spl0(void)
+{
+	int s = splevel;
+
+	splx(0);
+	return (s);
+}
+
 void
 splx(int s)
 {
@@ -171,7 +208,15 @@ kputn(unsigned long v, int base, int sgn)
  * output as `%o' instead of silently consuming an argument and shifting every
  * later one.
  */
-static void
+/*
+ * NOT static since §8a step 5.  It was, and the comment below already called
+ * it "the shared core" for printf and panic; uprintf in shim/kern/sys/v8fs.c
+ * is the third consumer and the first outside this file.  It has to be this
+ * one rather than printf, because uprintf is genuinely variadic (upstream's
+ * `prf(fmt, &x1, 2)' idiom cannot survive AAPCS64) and forwarding a va_list
+ * needs a v-form.  Declared in shim/kern/h/param.h beside splx.
+ */
+void
 kvprintf(const char *fmt, __builtin_va_list ap)
 {
 	const char *p, *run;

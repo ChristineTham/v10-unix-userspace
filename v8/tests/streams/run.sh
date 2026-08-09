@@ -353,14 +353,12 @@ check "so the shim hands it an id in a VAX pid's range" "1" "$(s pidrange)"
 sigcase() {	# name, ioctl-or-action snippet, expected message
 	cat > "$ROOT/tests/streams/.sig.c" <<EOF
 #include "../../shim/kern/h/param.h"
-#undef printf
-#undef bcopy
-#undef psignal
-#undef longjmp
+#include "../../shim/kern/h/hostok.h"
 #include <stdio.h>
 #include <signal.h>
 #include "../../src/sys/h/stream.h"
 #include "../../shim/kern/h/proc.h"
+#include "../../src/sys/h/dir.h"
 #include "../../shim/kern/h/user.h"
 #include "../../src/sys/h/inode.h"
 #include "../../shim/kern/h/conf.h"
@@ -909,12 +907,22 @@ check "M_HANGUP is passed up to the stream head" "1" "$(t hungup)"
 check "stclose releases the tty[] slot" "1" "$(t stclosed)"
 
 # --- §8a step 5: the six imported files, and the seam they brought with them
-# alloc.c, iget.c, nami.c, rdwri.c, subr.c and bio.c are imported but not yet
-# built.  Five are pristine and get the hash guard the three files above get;
-# nami.c carries one target-forced deviation and therefore gets the DIFF guard
-# streamio.c gets, for the reason recorded there -- a file with a deviation
-# cannot be hashed, and "it has a PORTING.md" is not a guard.
-for f in sys/alloc.c sys/iget.c sys/rdwri.c sys/subr.c dev/bio.c; do
+# alloc.c, iget.c, nami.c, rdwri.c, subr.c and bio.c are imported AND NOW BUILT
+# -- they are $(V8FS_OBJ) in the Makefile and members of libv8kern.a.
+#
+# FOUR ARE PRISTINE AND TWO CARRY A DEVIATION, and the second one is why this
+# comment changed.  It said "five are pristine"; alloc.c stopped being pristine
+# when the build produced two -Wincompatible-pointer-types warnings on it, and
+# both were the SAME NOLONG cause as nami.c's -- a `long *' walking an array
+# that §8a step 4a narrowed to v8_i32 because it is on disk.
+#
+# So the two deviations in this import are one bug class found twice, and the
+# difference between them is only how loudly it announced itself: nami.c's
+# stopped every path lookup dead, alloc.c's was a warning in a build that
+# succeeded.  Each gets the DIFF guard rather than the hash, for the reason
+# recorded at streamio.c's -- a file with a deviation cannot be hashed, and
+# "it has a PORTING.md" is not a guard.
+for f in sys/iget.c sys/rdwri.c sys/subr.c dev/bio.c; do
 	d=$(dirname "$f")
 	prov=$(awk -v p="v8/usr/sys/$f" '$2 == p {print $1}' "$ROOT/src/sys/$d/PROVENANCE")
 	here=$(git -C "$ROOT" hash-object "src/sys/$f")
@@ -942,6 +950,106 @@ if [ -f "$UPNAMI" ]; then
 	check "...and the strncmp arm is still the #else" "1" \
 		"$(grep -c 'strncmp(nm, dp->d_name, DIRSIZ)' "$ROOT/src/sys/sys/nami.c")"
 else bad "upstream nami.c not found for the diff guard"; fi
+
+# alloc.c's deviation is the SAME CLASS as nami.c's and a DIFFERENT SHAPE, so
+# the guard is shaped to it rather than copied.  nami.c lost three lines and
+# gained three casts; alloc.c loses exactly ONE declaration -- `register long
+# *p' -- and gains one `register v8_i32 *p' plus a comment block.  Counting
+# removals and additions separately is what makes that difference expressible,
+# and it is the lesson streamio.c's guard already paid for.
+UPALLOC=$ROOT/../third_party/Research-Unix-v8/v8/usr/sys/sys/alloc.c
+if [ -f "$UPALLOC" ]; then
+	gone=$(diff "$UPALLOC" "$ROOT/src/sys/sys/alloc.c" | grep -c '^<')
+	check "alloc.c: upstream lost exactly one line" "1" "$gone"
+	check "...and it is the long-pointer declaration" "1" \
+		"$(diff "$UPALLOC" "$ROOT/src/sys/sys/alloc.c" |
+		   grep '^<' | grep -c 'register long \*p;')"
+	check "...replaced by exactly one v8_i32 pointer" "1" \
+		"$(diff "$UPALLOC" "$ROOT/src/sys/sys/alloc.c" |
+		   grep '^>' | grep -c 'register v8_i32 \*p;')"
+	# THE DEVIATION IS ONLY CORRECT WHILE s_bfree IS FOUR BYTES WIDE, and
+	# that is declared in a different file by a different layer.  If
+	# src/include/sys/filsys.h ever widened S_bfree back to `long', this
+	# deviation would become the bug instead of the fix -- so the guard
+	# asserts the thing it DEPENDS on, not just its own text.
+	check "...and s_bfree is still the narrowed on-disk type" "1" \
+		"$(grep -c 'v8_i32.*S_bfree\[BITMAP\]' "$ROOT/src/include/sys/filsys.h")"
+	# Upstream states the assumption in a comment five lines below the
+	# declaration, and that comment is what made the class recognisable.
+	# THIS GUARD MATCHED ITS OWN DOCUMENTATION ON ITS FIRST RUN -- the PORT
+	# comment added directly above quotes the phrase "BITS PER LONG", so a
+	# bare grep -c returned 2 where upstream has 1.  Third instance of the
+	# prose-matching instrument fault in this session alone, and it fired
+	# inside a guard written by someone who had just written the other two
+	# up.  Anchor on the CODE -- upstream's line is a for-loop with the
+	# comment trailing it -- not on the phrase.
+	check "...and upstream's BITS PER LONG line survives" "1" \
+		"$(grep -c 'j < 32; j++).*BITS PER LONG' "$ROOT/src/sys/sys/alloc.c")"
+else bad "upstream alloc.c not found for the diff guard"; fi
+
+# --- param.h's redirects and hostok.h's undefs are DERIVED FROM EACH OTHER ---
+# shim/kern/h/hostok.h exists because the redirect list reached thirteen and a
+# thirteen-line list copied into every consumer decays independently in each
+# copy.  Its own header comment claims this suite keeps the two in step -- and
+# when that sentence was first written the check did not exist, which is the
+# failure mode this whole file is built against: A CLAIM ABOUT A GUARD IS NOT
+# A GUARD.  So it is derived rather than counted.
+#
+# Every plain `#define NAME v8k_NAME' in param.h must have an `#undef NAME' in
+# hostok.h.  uballoc is deliberately excluded and the pattern excludes it for
+# free: it is a function-like macro, not a host name, so it has no v8k_ target
+# and nothing would #undef it.
+PH=$ROOT/shim/kern/h/param.h
+HO=$ROOT/shim/kern/h/hostok.h
+if [ -f "$PH" ] && [ -f "$HO" ]; then
+	grep -hE '^#define[[:blank:]]+[a-z_]+[[:blank:]]+v8k_' "$PH" |
+		awk '{print $2}' | sort -u > "$TMP/redir"
+	grep -hE '^#undef[[:blank:]]+[a-z_]+' "$HO" |
+		awk '{print $2}' | sort -u > "$TMP/undone"
+	# the sweep must not be vacuous -- an empty redirect list would make
+	# both comm results empty and this block pass while measuring nothing
+	n=$(wc -l < "$TMP/redir" | tr -d ' ')
+	[ "$n" -ge 10 ] && ok ||
+		bad "only $n redirects found in param.h -- the pattern has drifted"
+	check "every param.h redirect is undone by hostok.h" "" \
+		"$(comm -23 "$TMP/redir" "$TMP/undone" | tr '\n' ' ' | sed 's/ $//')"
+	check "and hostok.h undoes nothing param.h does not redirect" "" \
+		"$(comm -13 "$TMP/redir" "$TMP/undone" | tr '\n' ' ' | sed 's/ $//')"
+else bad "param.h or hostok.h missing -- cannot check the redirect list"; fi
+
+# --- §8a step 5: the six are BUILT, and what the archive imports ------------
+# A hash guard says a file is upstream's.  It says nothing about whether the
+# build ever reads it, and for a whole release the answer here was "no".
+KERNA=$ROOT/build/stage0/kern/libv8kern.a
+if [ -f "$KERNA" ]; then
+	for o in alloc.o iget.o nami.o rdwri.o bio.o v8fs.o; do
+		check "libv8kern.a contains $o" "1" \
+			"$(ar t "$KERNA" 2>/dev/null | grep -c "^$o\$")"
+	done
+	# TWO subr.o, and that is the assertion rather than an accident.
+	# src/sys/sys/subr.c and shim/kern/sys/subr.c share a basename; the
+	# Makefile puts their objects in different directories for exactly this
+	# reason.  If that ever collapsed, ONE WOULD SILENTLY REPLACE THE OTHER
+	# -- ar would take the second and say nothing -- and this count drops
+	# to one.  Same shape as $(IMGBIN) and $(V8BIN) having to be disjoint.
+	check "both subr.o objects are in the archive" "2" \
+		"$(ar t "$KERNA" 2>/dev/null | grep -c '^subr\.o$')"
+
+	# THE EXTERNAL IMPORTS, BY SUBTRACTION -- what the archive undefines
+	# minus what it defines.  Not an allow list: CLAUDE.md records why, and
+	# tests/kmemu's ALLOWED going stale is the precedent.
+	#
+	# THIS IS THE ONLY INSTRUMENT THAT COULD SEE STEP 5'S WORST BUG.
+	# KERNFLAGS carries -Wno-implicit-function-declaration, argued for the
+	# K&R dialect -- so a MISSING MACRO (BSIZE(dev), itod(), NINDIR()) was
+	# compiled as a call to an undefined FUNCTION, in silence.  Fourteen of
+	# them.  The build was clean and only the symbol table knew.
+	nm -u "$KERNA" 2>/dev/null | grep -v '^$' | grep -v ':' | sort -u > "$TMP/k.u"
+	nm -g "$KERNA" 2>/dev/null |
+	    awk '$2=="T"||$2=="D"||$2=="S"||$2=="C"{print $3}' | sort -u > "$TMP/k.d"
+	check "libv8kern imports only V8's own three" "_longjmp _memcpy _setjmp" \
+		"$(comm -23 "$TMP/k.u" "$TMP/k.d" | tr '\n' ' ' | sed 's/ $//')"
+else bad "libv8kern.a not built -- cannot check the step 5 objects"; fi
 
 # --- the width names are declared TWICE, so the two are compared ------------
 # shim/kern/h/param.h and src/include/sys/types.h both declare v8_i16, v8_u16,

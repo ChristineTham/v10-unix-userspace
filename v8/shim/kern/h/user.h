@@ -90,6 +90,29 @@
  * u_eosys clause dropped because nothing here restarts a system call.
  */
 
+/*
+ * struct vtimes -- TWO members, and it is declared HERE rather than in a
+ * shim/kern/h/vtimes.h of its own.
+ *
+ * Upstream's user.h gets it from h/vtimes.h, and the reason not to copy that
+ * arrangement is the /dev/fd rule: a header nothing includes is an unconsumed
+ * component.  Measured -- NOT ONE of the six imported files includes
+ * "../h/vtimes.h", so a file by that name would be reached by nothing and
+ * would exist only to look like upstream.  Contrast shim/kern/h/vmmeter.h,
+ * which IS reached, because the authentic src/sys/h/vm.h:9 includes it.
+ *
+ * The two members are the two that are written: rdwri.c bumps vm_inblk on
+ * every readi and vm_oublk on every writei, four sites and two sites.  Both
+ * are upstream `int' (h/vtimes.h:17,18).  Nothing reads them back here --
+ * vtimes(2) is not ported -- but the writes are in authentic source and the
+ * contract says compile Bell Labs' statement rather than a version with the
+ * bookkeeping removed.
+ */
+struct vtimes {
+	int	vm_inblk;		/* h/vtimes.h:17 -- block reads */
+	int	vm_oublk;		/* h/vtimes.h:18 -- block writes */
+};
+
 struct user {
 	char	u_segflg;		/* 0: user D; 1: system */
 	char	u_error;		/* return error code */
@@ -112,6 +135,41 @@ struct user {
 	ino_t	u_ttyino;
 	struct	file *u_ofile[NOFILE];	/* open file table */
 	jmp_buf	u_qsav;			/* non-local goto on interrupt */
+	/*
+	 * §8a step 5 -- the filesystem half of the u-area.  TEN members, and
+	 * the count is measured over alloc.c, iget.c, nami.c, rdwri.c,
+	 * sys/subr.c and bio.c rather than taken from upstream's ninety.
+	 * Types and order are upstream's, with the h/user.h line on each.
+	 *
+	 * u_dbuf IS THE ONE WITH A HAZARD, and it is not its width -- it is
+	 * that nami.c reads it with a hand-unrolled compare rather than with
+	 * strncmp.  nami.c:179-182 is
+	 *
+	 *	*(int *)&nm[0] == ... && *(short *)&nm[12] == ...
+	 *
+	 * where nm is u.u_dbuf -- four-byte reads at offsets 0, 4 and 8 and a
+	 * two-byte read at 12, covering bytes 0..13 exactly.  That is in
+	 * bounds only while DIRSIZ is 14, and it is: src/sys/h/dir.h:2 is
+	 * upstream's 14 and CLAUDE.md's rule is that it must stay 14 here,
+	 * because src/sys/ describes a DISK RECORD.  Measured through this
+	 * header's own include path rather than assumed -- DIRSIZ=14,
+	 * sizeof(struct direct)=16.
+	 *
+	 * So declaring it `char u_dbuf[DIRSIZ]' is not a formality: any
+	 * smaller array turns a compare into a read past the member, and the
+	 * value read would be whichever field followed.  shim/kern/sys/v8fs.c
+	 * asserts the size and the alignment rather than this comment.
+	 */
+	struct	inode *u_cdir;		/* h/user.h:52 -- current directory */
+	struct	inode *u_rdir;		/* :53 -- this process's root */
+	char	u_dbuf[DIRSIZ];		/* :54 -- current pathname component */
+	caddr_t	u_dirp;			/* :55 -- pathname pointer */
+	struct	direct u_dent;		/* :56 -- current directory entry */
+	char	u_acflag;		/* :102 -- accounting flags */
+	short	u_cmask;		/* :104 -- mask for file creation */
+	struct	vtimes u_vm;		/* :108 -- stats for this proc */
+	int	u_limit[8];		/* :116 -- see src/sys/h/vlimit.h */
+	int	u_nbadio;		/* :117 -- IO on hungup streams */
 };
 
 /*

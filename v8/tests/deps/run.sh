@@ -608,6 +608,83 @@ dep 'our conf.h -> streamio.o'   shim/kern/h/conf.h        $B/kern/streamio.o
 # in any authentic file, which is precisely why it is written down.
 dep 'V8 setjmp.h -> streamio.o'  src/include/setjmp.h      $B/kern/streamio.o
 
+# --- §8a step 5: the six imported filesystem files, and the seven new headers
+#
+# THE OBJECTS ARE IN A SUBDIRECTORY AND THAT IS AN ASSERTION, not tidiness.
+# src/sys/sys/subr.c and shim/kern/sys/subr.c share a basename, so the flat
+# $B/kern/%.o naming above would give them ONE object -- make would compile
+# whichever rule it matched and the other file would silently not be in the
+# archive.  These cases pin both paths, so a collapse back to flat naming
+# breaks a test rather than losing a translation unit.
+dep 'alloc.c -> its object'   src/sys/sys/alloc.c  $B/kern/v8fs/alloc.o
+dep 'iget.c -> its object'    src/sys/sys/iget.c   $B/kern/v8fs/iget.o
+dep 'nami.c -> its object'    src/sys/sys/nami.c   $B/kern/v8fs/nami.o
+dep 'rdwri.c -> its object'   src/sys/sys/rdwri.c  $B/kern/v8fs/rdwri.o
+dep 'imported subr.c -> its object' src/sys/sys/subr.c $B/kern/v8fs/subr.o
+dep 'bio.c -> its object'     src/sys/dev/bio.c    $B/kern/v8fs/bio.o
+dep 'v8fs.c -> its object'    shim/kern/sys/v8fs.c $B/kern/v8fs/v8fs.o
+dep 'v8fs objects -> archive' src/sys/sys/nami.c   $B/kern/libv8kern.a
+
+# The seven headers §8a step 5 added.  Every one is reached by a quoted
+# "../h/x.h" that resolves against a directory the source is not in -- the
+# shape a scanner gets wrong and a hand-written rule forgets.
+#
+# FOUR OF THE SEVEN EXIST ONLY BECAUSE AN AUTHENTIC HEADER INCLUDES THEM:
+# src/sys/h/vm.h is Bell Labs' and its lines 7-10 name vmparam.h, vmmac.h,
+# vmmeter.h and vmsystm.h.  Two of those are empty files.  An empty header
+# still has to be a prerequisite, because the day it stops being empty the
+# object must recompile -- and vmparam.h stopped being empty within a minute
+# of being written (KLMAX, bio.c:553).
+dep 'our pte.h -> bio.o'      shim/kern/h/pte.h      $B/kern/v8fs/bio.o
+dep 'our vmmac.h -> bio.o'    shim/kern/h/vmmac.h    $B/kern/v8fs/bio.o
+dep 'our vmparam.h -> bio.o'  shim/kern/h/vmparam.h  $B/kern/v8fs/bio.o
+dep 'our vmmeter.h -> bio.o'  shim/kern/h/vmmeter.h  $B/kern/v8fs/bio.o
+dep 'our vmsystm.h -> bio.o'  shim/kern/h/vmsystm.h  $B/kern/v8fs/bio.o
+dep 'authentic vm.h -> bio.o' src/sys/h/vm.h         $B/kern/v8fs/bio.o
+dep 'authentic seg.h -> bio.o' src/sys/h/seg.h       $B/kern/v8fs/bio.o
+
+# systm.h reaches ALL SIX and is the one that carries time, lbolt and the
+# device-switch counts -- so a re-import of it must recompile every one.
+for o in alloc iget nami rdwri subr bio; do
+	dep "systm.h -> $o.o" src/sys/h/systm.h $B/kern/v8fs/$o.o
+done
+
+# The three FORWARDING headers, which are one line each and point at the
+# patched on-disk records in src/include/sys/.  §8a step 4a's whole lesson is
+# that a record written to a disk gets exactly ONE declaration, so the edge
+# that has to hold is from the record to the object, THROUGH the forwarder.
+dep 'our filsys.h -> alloc.o'  shim/kern/h/filsys.h        $B/kern/v8fs/alloc.o
+dep 'the real filsys.h -> alloc.o' src/include/sys/filsys.h $B/kern/v8fs/alloc.o
+dep 'our ino.h -> iget.o'      shim/kern/h/ino.h           $B/kern/v8fs/iget.o
+dep 'our fblk.h -> alloc.o'    shim/kern/h/fblk.h          $B/kern/v8fs/alloc.o
+dep 'mount.h -> nami.o'        src/sys/h/mount.h           $B/kern/v8fs/nami.o
+dep 'cmap.h -> rdwri.o'        src/sys/h/cmap.h            $B/kern/v8fs/rdwri.o
+dep 'vlimit.h -> rdwri.o'      src/sys/h/vlimit.h          $B/kern/v8fs/rdwri.o
+dep 'acct.h -> alloc.o'        src/sys/h/acct.h            $B/kern/v8fs/alloc.o
+dep 'inline.h -> iget.o'       src/sys/h/inline.h          $B/kern/v8fs/iget.o
+
+# param.h reaches v8fs.o, and this case was WRITTEN WRONG THE FIRST TIME in a
+# way worth keeping: its label said "our hostok.h -> v8fs.o" while the path it
+# checked was param.h.  v8fs.c does not include hostok.h at all -- measured,
+# zero occurrences -- so the label described an edge that does not exist while
+# the assertion tested one that does.  A green case with a lying label is worse
+# than no case: it is a claim nothing audits, which is this suite's own subject.
+dep 'our param.h -> v8fs.o'    shim/kern/h/param.h         $B/kern/v8fs/v8fs.o
+
+# WHY THE HEADER CASES ABOVE SURVIVE A MUTATION OF THE MAKEFILE, which is not
+# obvious and was found by running one.  Removing $(V8FS_H) from the bio.o rule
+# changed nothing: 323 passed either way.  The reason is $(DEPFLAGS) -- clang's
+# -MMD writes build/stage0/kern/v8fs/bio.d, and THAT supplies the header edges.
+# So the explicit prerequisite list is belt-and-braces over the generated one.
+#
+# The cases are not vacuous -- they assert the edge EXISTS, which is what has
+# to be true -- but they are testing the .d mechanism, not the rule's text.
+# Both are worth having: a .d file is only written by a successful compile, so
+# it cannot describe a header that was added since, and the explicit list is
+# what covers the first build after an import.  The case below is the one that
+# can only pass through the explicit list, because $(SRCTREE)-staged sources
+# have no .d at all.
+
 # --- ttyld.c, the tty line discipline, and the generated header it needs ----
 #
 # Five of its six includes are edges like streamio.c's.  The sixth is the one

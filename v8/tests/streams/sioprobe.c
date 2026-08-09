@@ -18,10 +18,11 @@
 
 #include "../../shim/kern/h/param.h"
 
-#undef printf
-#undef bcopy
-#undef psignal
-#undef longjmp
+/*
+ * param.h's redirects are undone in ONE place now -- there are thirteen of
+ * them since §8a step 5 and a copied list decays.  shim/kern/h/hostok.h says why.
+ */
+#include "../../shim/kern/h/hostok.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -31,6 +32,7 @@
 #include "../../src/sys/h/stream.h"
 #include "../../src/sys/research/sparam.h"
 #include "../../shim/kern/h/proc.h"
+#include "../../src/sys/h/dir.h"	/* struct direct, for user.h's u_dent */
 #include "../../shim/kern/h/user.h"
 #include "../../src/sys/h/inode.h"
 #include "../../src/sys/h/file.h"

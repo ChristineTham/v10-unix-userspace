@@ -73,6 +73,7 @@
 
 #include "../../../src/sys/h/stream.h"
 #include "../h/proc.h"
+#include "../../../src/sys/h/dir.h"	/* struct direct, for user.h's u_dent */
 #include "../h/user.h"		/* jmp_buf, u, and <errno.h> for EINTR */
 
 /*

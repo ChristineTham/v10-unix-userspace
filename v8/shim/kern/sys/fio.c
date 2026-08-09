@@ -61,6 +61,7 @@
  */
 #include "../../../src/sys/h/stream.h"
 #include "../h/proc.h"
+#include "../../../src/sys/h/dir.h"	/* struct direct, for user.h's u_dent */
 #include "../h/user.h"
 #include "../../../src/sys/h/inode.h"
 #include "../../../src/sys/h/file.h"
@@ -233,18 +234,35 @@ ufalloc(void)
  * The two callers are stopen:77 and :133, both on the device-cloning path
  * where a driver's qopen returns a different inode and the original is handed
  * back, and closef below.
+ *
+ * ---------------------------------------------------------------------------
+ * §8a step 5 RETIRED IT, AND THE PARAGRAPH ABOVE PREDICTED THE EVENT AND GOT
+ * THE MECHANISM EXACTLY BACKWARDS.
+ *
+ * It says: "When PLAN.md section 8a step 5 puts a v8fs server behind the
+ * switch, iput acquires the rest of its body -- and it acquires it HERE,
+ * because streamio.c will still be calling this name."
+ *
+ * Step 5 arrived and iput did acquire the rest of its body -- the unlock, the
+ * i_nlink check, itrunc, ifree, iupdat and the t_free dispatch -- but not
+ * here.  src/sys/sys/iget.c:176 is imported byte-identical and IS the full
+ * function, so this one was deleted rather than grown.  The premise was right
+ * (streamio.c still calls the name) and the conclusion did not follow from it:
+ * a name being called here says nothing about where it should be DEFINED, and
+ * the authentic file was always going to win that.
+ *
+ * Worth keeping as written, because the shape recurs: a comment that correctly
+ * anticipates a future change and misdescribes it reads, at the moment of the
+ * change, exactly like a comment that was right.
+ *
+ * One consequence is live rather than editorial.  Upstream's iput really does
+ * touch the disk -- itrunc and ifree -- so the omission this note recorded is
+ * now closed, and closef's `iput(fp->f_inode)' below can reach real
+ * filesystem work for the first time.  The declaration in param.h changed
+ * return type from void to int to match iget.c:176, which has no type on the
+ * line above the name.
+ * ---------------------------------------------------------------------------
  */
-void
-iput(struct inode *ip)
-{
-	if (ip == NULL)
-		return;
-	if (ip->i_count == 0) {
-		printf("iput: count already 0, inode %x\n", ip);
-		return;
-	}
-	ip->i_count--;
-}
 
 /*
  * closef -- upstream sys/fio.c, reduced the same way and for the same reason.

@@ -52,8 +52,11 @@
  */
 #include "../../shim/kern/h/param.h"
 
-#undef printf
-#undef bcopy
+/*
+ * param.h's redirects are undone in ONE place now -- there are thirteen of
+ * them since §8a step 5 and a copied list decays.  shim/kern/h/hostok.h says why.
+ */
+#include "../../shim/kern/h/hostok.h"
 /*
  * And two more than the bare-queue-pair half needed, for the same reason
  * sioprobe.c undefs them: param.h aims these names at the shim's kernel
@@ -61,8 +64,6 @@
  * then conflicts.  The kernel objects were compiled with the macros in force;
  * this translation unit is a caller, not part of the kernel.
  */
-#undef psignal
-#undef longjmp
 
 /*
  * Then ttyld.c's own five, in ttyld.c's own order, because it is load-bearing
@@ -91,6 +92,7 @@
  * takes a struct inode by the same rule stread and stwrite take a u-area.
  */
 #include "../../shim/kern/h/proc.h"
+#include "../../src/sys/h/dir.h"	/* struct direct, for user.h's u_dent */
 #include "../../shim/kern/h/user.h"
 #include "../../src/sys/h/inode.h"
 #include "../../src/sys/h/file.h"

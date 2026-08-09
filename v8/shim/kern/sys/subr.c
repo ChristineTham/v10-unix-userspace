@@ -40,6 +40,7 @@ enum {
 #include "../h/param.h"
 #include "../../../src/sys/h/stream.h"
 #include "../h/proc.h"
+#include "../../../src/sys/h/dir.h"	/* struct direct, for user.h's u_dent */
 #include "../h/user.h"		/* brings <errno.h> in, as upstream's does */
 #include "../h/buf.h"
 
@@ -94,22 +95,26 @@ long	v8k_hostof(int v8pid);
  * would mean taking all of it.  Same judgement as the printf/bcopy/uballoc
  * redirections in param.h, and recorded for the same reason: this is our
  * spelling of Bell Labs' function, not Bell Labs' file.
+ *
+ * ---------------------------------------------------------------------------
+ * AND §8a step 5 RETIRED THEM BOTH, which is what the paragraph above was
+ * waiting for without knowing it.
+ *
+ * It says these are "here rather than imported because sys/rdwri.c is the file
+ * I/O layer ... and taking sixteen lines of arithmetic would mean taking all
+ * of it."  Step 5 took all of it.  src/sys/sys/rdwri.c:236 and :250 are now in
+ * the tree, byte-identical to upstream and hash-guarded, so a shim spelling of
+ * either would be a second definition of a function whose authentic file is
+ * imported -- and the reasoning above, which was correct about the types and
+ * about why not to "improve" them to int(int,int), is now just the reason the
+ * imported ones are right.
+ *
+ * The declarations in shim/kern/h/param.h stay, and they still say `unsigned',
+ * because src/sys/h/systm.h:61-62 says `unsigned max(); unsigned min();' and
+ * the two must agree.  param.h also renames both to v8k_min/v8k_max: libv8c.a
+ * has a min.o and a max.o of its own, which `nm -g' finds and `nm -u' cannot.
+ * ---------------------------------------------------------------------------
  */
-unsigned
-min(unsigned a, unsigned b)
-{
-	if (a < b)
-		return (a);
-	return (b);
-}
-
-unsigned
-max(unsigned a, unsigned b)
-{
-	if (a > b)
-		return (a);
-	return (b);
-}
 
 /*
  * nulldev -- upstream sys/subr.c:212 is `nulldev() { }', which falls off the
@@ -139,12 +144,34 @@ max(unsigned a, unsigned b)
  * with HUNGUP and ENXIO.  Failing closed and deterministically is right --
  * upstream's would have been unpredictable -- but a driver that wants to open
  * must supply a qopen that returns 1.
+ *
+ * ---------------------------------------------------------------------------
+ * §8a step 5 RETIRED IT, AND THE DELIBERATE DEVIATION ABOVE WENT WITH IT.
+ *
+ * src/sys/sys/subr.c:212 is now imported, byte-identical, so `nulldev() { }'
+ * -- upstream's empty body -- is the one that links.  The `return (0)' this
+ * file argued for is gone, and with it the determinism it bought.
+ *
+ * THAT IS THE RIGHT TRADE ONLY BECAUSE THE SECOND PARAGRAPH ABOVE IS TRUE.
+ * The first reason given here for the deviation being safe was measured false:
+ * "every call site discards the result" -- they do not, all three qopen sites
+ * consume it.  What actually makes it safe is the topology fact, that strdata
+ * is installed on the stream HEAD's read queue and qopen is only invoked on a
+ * queue below the head, so strdata.qopen is unreachable.  Topology does not
+ * care which body is compiled, so retiring ours costs the belt and keeps the
+ * braces.
+ *
+ * There was no choice in any case, and it is worth saying why: subr.c is
+ * hash-guarded against PROVENANCE by tests/streams, so the alternative to
+ * retiring ours was editing Bell Labs' file.  A deviation this port had argued
+ * for lost to a claim it values more.
+ *
+ * The live consequence in the last paragraph stands unchanged and is now
+ * upstream's problem as well as ours: NULLDEV IS NOT A USABLE qopen FOR A
+ * DRIVER.  With upstream's body the return is whatever was in x0, so it is not
+ * even reliably 0 -- a driver must supply a qopen that returns 1.
+ * ---------------------------------------------------------------------------
  */
-int
-nulldev(void)
-{
-	return (0);
-}
 
 /*
  * copyin / copyout -- upstream's are VAX assembly (sys/vax/locore.s), moving
@@ -203,32 +230,30 @@ copyout(caddr_t from, caddr_t to, unsigned long n)
  * (istread's caller, or a v8fs server) sets it for exactly that reason.  An
  * arm that is currently indistinguishable is not the same thing as an arm that
  * is wrong.
+ *
+ * ---------------------------------------------------------------------------
+ * §8a step 5 RETIRED IT, AND THE PROTOTYPE HAD TO GO TOO -- which is the one
+ * retirement of the five that could not be done by deleting a body.
+ *
+ * The paragraph above calls this "a transcription rather than a reduction",
+ * and src/sys/sys/rdwri.c:266 is now in the tree with the original.  But
+ * upstream's signature is
+ *
+ *	iomove(cp, n, flag) register caddr_t cp;
+ *
+ * -- implicit int return, `char *' first argument -- and shim/kern/h/param.h
+ * declared `void iomove(void *cp, unsigned n, int flag)'.  Against a visible
+ * prototype that is a hard error on BOTH counts, and neither side could move:
+ * the void* was chosen deliberately, because streamio.c hands it a `u_char *'
+ * and a caddr_t prototype would emit -Wincompatible-pointer-types on authentic
+ * code; the definition is Bell Labs'.
+ *
+ * So the declaration was deleted rather than reconciled.  Measured first --
+ * the only callers are streamio.c:241 and :459, both K&R, which reach it
+ * implicitly exactly as they did in 1985; no modern C in this directory calls
+ * iomove at all.  param.h records the same thing at the point of deletion.
+ * ---------------------------------------------------------------------------
  */
-void
-iomove(void *vcp, unsigned n, int flag)
-{
-	caddr_t cp = (caddr_t)vcp;	/* the one cast param.h's void* costs */
-	int t;
-
-	if (n == 0)
-		return;
-	if (u.u_segflg != 1) {
-		if (flag == B_WRITE)
-			t = copyin(u.u_base, cp, n);
-		else
-			t = copyout(cp, u.u_base, n);
-		if (t) {
-			u.u_error = EFAULT;
-			return;
-		}
-	} else if (flag == B_WRITE)
-		bcopy(u.u_base, cp, n);
-	else
-		bcopy(cp, u.u_base, n);
-	u.u_base += n;
-	u.u_offset += n;
-	u.u_count -= n;
-}
 
 /*
  * psignal -- upstream sys/sig.c posts the bit in p->p_sig and lets issig()

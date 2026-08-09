@@ -1247,27 +1247,63 @@ adefs() { nm -g "$1" 2>/dev/null | awk '$2 ~ /^[TDBSC]$/ {print substr($3,2)}' |
 KERNA=$ROOT/build/stage0/kern/libv8kern.a
 LIBCA=$ROOT/build/stage0/libc/libv8c.a
 SYSA=$ROOT/build/stage0/v8sys/libv8sys.a
+# FOUR ARCHIVES, NOT THREE.  libv8stubs.a was missing from this sweep and it is
+# the one holding the SYSCALL STUBS -- access(2), time(2), and every other name
+# a V8 program reaches the kernel by.  §8a step 5 found two collisions there
+# (access, inverted in polarity from the kernel's, and time, a function against
+# the kernel's clock VARIABLE), and this block could not have reported either,
+# because it never opened the file.  A pairwise sweep is only as good as its
+# population -- the crash probe learned the same thing about $ROOT/usr/lib.
+STUBA=$ROOT/build/stage0/v8sys/libv8stubs.a
 
-# min and max are the known pair and they are EXPLAINED, not tolerated:
-# src/libc/gen/min.c is `min(a,b) { return (a<b? a: b); }' with an implicit int
-# return, and shim/kern/sys/subr.c's are unsigned, which upstream's rdwri.c:235
-# and h/systm.h:61-62 independently agree the kernel's should be.  Two
-# different functions, one name.  Nothing links both archives today, so it is
-# latent -- but it is the free(3) shape, and the difference is signedness.
-DUPOK="max min"
+# DUPOK IS NOW EMPTY, and the way it emptied is the point.
+#
+# It held max and min, explained rather than tolerated: src/libc/gen/min.c is
+# `min(a,b) { return (a<b? a: b); }' with an implicit int return, while the
+# kernel's is unsigned, which upstream's rdwri.c:235 and h/systm.h:61-62
+# independently agree it should be.  Two different functions, one name, latent
+# because nothing linked both archives.
+#
+# §8a step 5 made something link both, so it stopped being latent and got the
+# psignal treatment instead -- shim/kern/h/param.h renames the kernel's to
+# v8k_min and v8k_max along with six other names.  The staleness check below
+# then fired, which is the only reason this comment is being rewritten rather
+# than quietly kept: an entry on an allow list is a CLAIM, and nothing else
+# audits one.  Same as ALLOWED, which is also empty.
+#
+# IT IS NOT EMPTY, THOUGH -- opening the fourth archive put ONE name on it, and
+# it is the one case in this sweep that is correct rather than tolerated.
+#
+# `errno' is a COMMON in both libv8c.a (perror.o and every math object) and
+# libv8stubs.a (errno.o).  Common against common is not a collision at all: the
+# linker merges them into ONE four-byte object, which is exactly what a program
+# must have -- a syscall stub setting errno and perror() reading it have to be
+# talking about the same storage.  It is the K&R tentative-definition idiom
+# doing its job, and it is why -fcommon is in the flag set.
+#
+# The distinction this sweep now draws is therefore three-way, not two:
+#	T against T	a real collision; the linker will refuse
+#	C against T	a SILENT collision; the common resolves to the text
+#			symbol's address.  This is the class that needed
+#			nm -g, and §8a step 5 found three (time, timezone,
+#			mount), all renamed in shim/kern/h/param.h
+#	C against C	deliberate sharing.  Only errno, and it is right.
+DUPOK="errno"
 
-if [ -f "$KERNA" ] && [ -f "$LIBCA" ] && [ -f "$SYSA" ]; then
+if [ -f "$KERNA" ] && [ -f "$LIBCA" ] && [ -f "$SYSA" ] && [ -f "$STUBA" ]; then
 	adefs "$KERNA" > "$TMP/d.kern"
 	adefs "$LIBCA" > "$TMP/d.libc"
 	adefs "$SYSA"  > "$TMP/d.sys"
+	adefs "$STUBA" > "$TMP/d.stub"
 	# every archive defines something, or the comm results below are
 	# vacuously empty and this whole block passes while measuring nothing
-	for p in kern libc sys; do
+	for p in kern libc sys stub; do
 		[ "$(wc -l < "$TMP/d.$p" | tr -d ' ')" -gt 20 ] && ok ||
 			bad "libv8$p defines almost nothing -- the sweep is vacuous"
 	done
 	dup=""
-	for pair in "kern libc" "kern sys" "libc sys"; do
+	for pair in "kern libc" "kern sys" "libc sys" \
+	            "kern stub" "libc stub" "sys stub"; do
 		set -- $pair
 		for n in $(comm -12 "$TMP/d.$1" "$TMP/d.$2"); do
 			case " $DUPOK " in *" $n "*) continue ;; esac
@@ -1277,9 +1313,17 @@ if [ -f "$KERNA" ] && [ -f "$LIBCA" ] && [ -f "$SYSA" ]; then
 	check "no two of our archives define the same name" "" "$dup"
 
 	# ...and the known pair is not stale, the same way ALLOWED is checked.
+	# ...and the known pair is not stale.  The staleness check now has to say
+	# WHICH two archives, because DUPOK's one entry is a libc/stubs pair and
+	# the old check only ever looked at kern/libc -- it would have passed
+	# vacuously on a name that had stopped being duplicated anywhere.
 	for n in $DUPOK; do
-		if grep -qx "$n" "$TMP/d.kern" && grep -qx "$n" "$TMP/d.libc"; then ok
-		else bad "'$n' is no longer defined by both archives -- drop it from DUPOK"; fi
+		c=0
+		for p in kern libc sys stub; do
+			grep -qx "$n" "$TMP/d.$p" && c=$((c + 1))
+		done
+		[ "$c" -ge 2 ] && ok ||
+			bad "'$n' is no longer defined by two archives -- drop it from DUPOK"
 	done
 else
 	bad "archives missing -- cannot sweep for duplicate definitions"

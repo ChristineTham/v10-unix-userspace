@@ -31,7 +31,50 @@ daddr_t prev;
 	register struct filsys *fp;
 	register struct buf *bp;
 	register int i, j;
-	register long *p;
+	/*
+	 * PORT: upstream is `register long *p'.  This is the SECOND deviation
+	 * in the §8a step 5 import and it has exactly the same one-line cause
+	 * as nami.c's -- cmd/ccom/vax/macdefs.h:20, `# define NOLONG', "map
+	 * longs to ints".  A VAX long was 32 bits.
+	 *
+	 * p walks s_bfree, the superblock's free-block BIT MAP, and that is an
+	 * ON-DISK RECORD: upstream declares it `long S_bfree[BITMAP]'
+	 * (h/filsys.h:31) and §8a step 4a narrowed this port's copy to
+	 * `v8_i32 S_bfree[961]' (src/include/sys/filsys.h:47) precisely because
+	 * a VAX wrote four bytes per word there.  So the array narrowed and the
+	 * pointer that walks it did not, and the two disagree by a factor of
+	 * two.
+	 *
+	 * FOUR USES, AND EVERY ONE IS WRONG IN A DIFFERENT WAY:
+	 *
+	 *	:70, :96	`*p &= ~(1 << ...)' is an 8-byte
+	 *			read-modify-write on a 4-byte word, so clearing
+	 *			one block's bit rewrites the NEXT 32 blocks'
+	 *			word with whatever was read
+	 *	:83		`for(i = 0; i < BITMAP && !*p; i++, p++)'
+	 *			strides EIGHT bytes for BITMAP iterations --
+	 *			it scans half the map and then runs 961 words
+	 *			past the end of the superblock buffer
+	 *	:89		`*p & (1 << j)' for j < 32 reads the right bits
+	 *			but of an 8-byte load, so the answer is right
+	 *			by accident and only here
+	 *
+	 * UPSTREAM STATES THE ASSUMPTION FIVE LINES BELOW, at :88, and it is
+	 * the tell: `for(j = 0; j < 32; j++)' carries the trailing comment
+	 * "BITS PER LONG".  Bell Labs wrote down that a long is 32 bits, in a
+	 * comment, next to the loop that depends on it.
+	 *
+	 * v8_i32 rather than int, because src/include/sys/types.h:80 is where
+	 * this port says "exactly four bytes, because a VAX wrote four bytes
+	 * there", and s_bfree is spelled in that name one header away.
+	 *
+	 * NOT FOUND BY THE SURVEY, AND NOT AN ERROR EITHER -- clang reports it
+	 * as -Wincompatible-pointer-types, two warnings in a build that
+	 * otherwise succeeded.  nami.c's deviation stopped every path lookup
+	 * dead; this one would have corrupted a free-block map on the first
+	 * write and been blamed on mkfs.  src/sys/PORTING.md.
+	 */
+	register v8_i32 *p;
 	int sn;
 	static saveprev;
 
