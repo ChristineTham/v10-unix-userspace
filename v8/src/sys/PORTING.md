@@ -978,7 +978,7 @@ header, because the patches were made for the userland layer:
 | header | the port's local copy | what the kernel needs |
 |---|---|---|
 | `filsys.h` `ino.h` `fblk.h` | `src/include/sys/`, **patched** to `v8_i32`/`v8_u16` per field (§8a step 4a) | the SAME patch -- it reads the same disk |
-| `dir.h` | two copies already, deliberately: `src/include/sys/dir.h` at DIRSIZ 254, `src/sys/h/dir.h` at 14 | 14, and it is already there |
+| `dir.h` | both sides already present: `src/sys/h/dir.h` **pristine** (upstream says 14), `src/include/sys/dir.h` patched to 254 | 14, and it is already there |
 | `param.h` | `src/include/sys/param.h`, patched to DIRSIZ 254 + an `#ifndef` guard | 14 -- see below |
 | `inode.h` | `src/include/sys/inode.h`, **pristine** | the same; `src/sys/h/inode.h` is already imported |
 
@@ -992,24 +992,44 @@ kernel the pristine one. The survey did not flag it because it counted the
 headers by line and by VAX-reference, and an on-disk record has neither
 property.
 
-### And `param.h` is settled the way `dir.h` already was, one layer down
+### And `param.h`: the DIRSIZ worry evaporates, and a different file decides it
 
 The survey's caution was that a kernel-side `param.h` would be *"a third
-spelling"* of DIRSIZ. Measured, it is not a third spelling: it is **the same
-blob** as the userland one, which this port patched to 254. The tree already
-contains that situation once -- `src/sys/h/dir.h` says 14 and
-`src/include/sys/dir.h` says 254, two locally-divergent copies of one upstream
-blob, split exactly on the layer boundary, with a header comment saying why.
+spelling"* of DIRSIZ. There is no third spelling, and the reason is simpler
+than the blob identity above: **upstream's `param.h` already says 14**
+(`h/param.h:75`), which is exactly what the kernel side wants. A pristine
+import would have been correct on the number the caution was about.
 
-So the precedent permits importing it. What rules it out is a different file:
-`shim/kern/h/param.h` holds the `_OFF_T`/`_INO_T`/`_DEV_T` guards that stop
-Darwin's typedefs from silently redefining `struct inode`'s layout, and the
-`printf`/`bcopy`/`uballoc` redirections that keep `stream.c` byte-identical.
-An authentic `src/sys/h/param.h` **wins the quoted include** and takes all of
-that away from `stream.c`, `streamio.c` and `ttyld.c`, which compile against
-it today. Upstream's `param.h` also opens `"Tunable variables"` and carries
-`NBPG`, `PGSHIFT`, `CLSIZE`, `CLOFSET`, `UPAGES`, `clbase`, `clrnd` -- it is a
-machine description by this tree's own test.
+The precedent is likewise not the obstacle, and the first draft of this
+section got it wrong in a way worth correcting rather than deleting. It said
+`src/sys/h/dir.h` and `src/include/sys/dir.h` are *"two locally-divergent
+copies"* -- implying both are patched. Measured, `diff` against upstream:
+**the kernel copy is byte-identical and only the userland copy is patched.**
+That is a *better* precedent than the one claimed, and the same is true of
+`inode.h`. The rule the tree actually follows is **kernel side pristine,
+userland side patched where the port had to widen something.**
+
+What rules `param.h` out is neither of those. It is two concrete things:
+
+- **`param.h:169-171` includes `"../h/types.h"` under `#ifdef KERNEL`,** and
+  upstream's `h/types.h:23` is `typedef long daddr_t;`. Importing `param.h`
+  therefore drags in a pristine `src/sys/h/types.h` with an **8-byte
+  `daddr_t`** -- the `filsys.h` hazard above arriving by a second route, and
+  this time through a header nobody would have thought to inspect, because
+  the file being imported is `param.h`. (`:48` also pulls `<signal.h>`, which
+  in a kernel compile with no `-Isrc/include` is the host's.)
+- **`shim/kern/h/param.h` holds the `_OFF_T`/`_INO_T`/`_DEV_T` guards** that
+  stop Darwin's typedefs silently redefining `struct inode`'s layout, plus
+  the `printf`/`bcopy`/`uballoc` redirections that keep `stream.c`
+  byte-identical. An authentic `src/sys/h/param.h` **wins the quoted
+  include** and takes all of that away from `stream.c`, `streamio.c` and
+  `ttyld.c`, which compile against it today.
+
+Upstream's `param.h` is also headed `"Tunable variables"` and carries `NBPG`,
+`PGSHIFT`, `CLSIZE`, `CLOFSET`, `UPAGES`, `clbase`, `clrnd` -- a machine
+description by this tree's own test. But that was the weakest of the three
+arguments and it is worth saying so: `CLSIZE 2` is what selects the 1024/4096
+geometry, so it is as much a disk fact as a machine one.
 
 So: **not imported.** The filesystem geometry it holds (`BSIZE(dev)`,
 `INOPB(dev)`, `BMASK`, `BSHIFT`, `NMASK`, `NSHIFT`, `itod`, `itoo`, `fsbtodb`,
@@ -1084,3 +1104,72 @@ grep -nE '(^|[^_a-zA-Z])(unsigned[[:blank:]]+)?long[[:blank:]]+[a-z_]' ...
   (`:410`) are inside `#ifdef CHAOS` (`:182-184`, `:408-422`), and `CHAOS` is
   not defined here. So it is neither a hazard nor an external name to supply
   -- which a `long` sweep flags and a reader has to go and check.
+
+### What the six actually need, compiled rather than surveyed
+
+The survey costed step 5 by counting external names. That is the right first
+measure and it is not the last one: a name the linker will want is not the
+same set as a name the *compiler* will want, and only the second stops a
+build. So the six were probe-compiled with `$(KERNFLAGS) -DKERNEL -fcommon`
+before any shim code was written.
+
+**Two instrument faults first, because both produced a confident wrong
+number and one of them is in this project's own memory.**
+
+- `clang $KF -c ...` under **zsh does not word-split `$KF`**, so the whole
+  flag string arrived as one argument to `-std=`. Every one of the six
+  reported *"1 error"* -- a uniform, plausible, entirely fictional result.
+  Re-run under `sh`. This is the identical fault as passing a
+  newline-separated symbol list unquoted to a probe, which is already
+  written down; **one instance recorded is one instance fixed.**
+- clang's **default `-ferror-limit=20`**. Five of the six then reported
+  exactly 19 or 20, which reads like a shared cause and is an artefact of
+  the cap. `-ferror-limit=0` turned 20 into 45 for `alloc.c` and 49 for
+  `nami.c`. A number that clusters at a round value is a number to distrust.
+
+Measured properly: **231 errors across the six.** `struct buf` incomplete
+accounted for 39 of them directly, plus 18 more as implicit-`int` returns
+being assigned to `struct buf *` -- because the declarations that fix those
+live in `h/buf.h` under `#ifdef KERNEL`, and the `buf.h` in scope was the
+30-line stand-in.
+
+**So the authentic `h/buf.h` is imported, and the stand-in's retirement is
+verified rather than assumed.** The survey predicted this and was right on
+both counts: the file has **zero** VAX references, and its own header comment
+-- *"there is no buffer cache here and no disk driver, so importing it would
+put a description of hardware in the tree to obtain two constants"* -- was a
+prediction that step 5 falsifies.
+
+Verifying it needed care, and the shape is one this file has recorded twice.
+`src/sys/h/buf.h` is a **new** file that now wins the quoted include for
+`stream.c`, `streamio.c` and `ttyld.c` -- so it appears in no `.d` file, make
+has no reason to rebuild those three, and a plain `make` reports success
+having compiled nothing. **A stale object does not look like a build
+problem.** The three sources were touched and rebuilt explicitly: all clean.
+
+231 -> **164**. What is left is a precise shopping list rather than a risk,
+and it is four things:
+
+| | count | where it goes |
+|---|---|---|
+| `fstypsw` (13), `cdevsw`, `nfstyp` | 16 | the filesystem switch, into `shim/kern/h/conf.h` |
+| `ROOTINO NICINOD NICFREE CANBSIZ NMOUNT PINOD SUPERB NODEV MSWAPX BUFSIZE` | 43 | geometry and tunables, into `shim/kern/h/param.h` at upstream's values |
+| ten `struct user` members | 43 | `shim/kern/h/user.h` |
+| `proc`, `pidhash`, `p_idhash`; `swblk_t`, `time_t`, `SIGXFSZ` | ~12 | `shim/kern/h/proc.h`, and the `time` collision below |
+
+**AND THE `struct user` ROW IS THE SURVEY'S THIRD CORRECTION.** It said
+*"`shim/kern/h/user.h` has no `u_dbuf` or `u_dent`, both of which `nami.c`
+needs"*. Measured, the six want **ten** members that are not there:
+`u_acflag u_cdir u_cmask u_dbuf u_dent u_dirp u_limit u_nbadio u_rdir u_vm`.
+The survey found the two that `nami.c` needs because it was reading `nami.c`;
+`alloc.c`, `iget.c` and `rdwri.c` want the other eight. Same shape as the
+`atol(argv[1])` loop that existed three times and was fixed once: **a finding
+filed under the file it was found in is not filed under its shape.**
+
+The remaining `v8_i16`/`v8_u16`/`v8_i32` errors were **ours**, not upstream's
+-- introduced an hour earlier by the three forwarding headers, which point at
+`src/include/sys/` copies spelled in this port's width names. Closed by
+declaring the four in `shim/kern/h/param.h`, with `tests/streams` comparing
+their `sizeof` against `src/include/sys/types.h` rather than against a number
+typed into a comment, because that is now the same name declared in two
+files.

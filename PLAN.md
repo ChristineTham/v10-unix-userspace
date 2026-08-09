@@ -2412,9 +2412,11 @@ Ordered so that value lands before risk, and so each step is testable alone.
      the kernel the pristine one. Neither line count nor VAX-reference count
      is capable of noticing that an ordinary-looking struct is an on-disk
      record.
-   - `dir.h` is already split deliberately: `src/sys/h/dir.h` 14,
-     `src/include/sys/dir.h` 254, two divergent copies of one blob on the
-     layer boundary.
+   - `dir.h` is already split, and the split states the rule the tree
+     follows: `src/sys/h/dir.h` is **pristine** (upstream says 14) and only
+     `src/include/sys/dir.h` is patched, to 254. Kernel side pristine,
+     userland side patched where the port had to widen something. `inode.h`
+     is the same.
    - `param.h` is settled below, and the settlement is *not* the third
      spelling the caution expected.
 
@@ -2439,19 +2441,30 @@ Ordered so that value lands before risk, and so each step is testable alone.
    kernel-side `src/sys/h/param.h` is a third spelling of that number and must
    be settled deliberately, not inherited.
 
-   **SETTLED, AND IT IS NOT A THIRD SPELLING -- IT IS THE SAME FILE.**
-   `sys/h/param.h` and `include/sys/param.h` are one upstream blob, so a
-   kernel-side copy would be a second local divergence of a file the port has
-   already patched to 254. The tree permits that shape -- `dir.h` is exactly
-   it -- so the precedent is not what rules it out. **What rules it out is
-   `shim/kern/h/param.h`**, which holds the `_OFF_T`/`_INO_T`/`_DEV_T` guards
-   that stop Darwin redefining `struct inode`'s layout, and the
-   `printf`/`bcopy`/`uballoc` redirections that keep `stream.c`
-   byte-identical. An authentic `src/sys/h/param.h` **wins the quoted
-   include** and takes all of that from `stream.c`, `streamio.c` and
-   `ttyld.c`, which compile against it today. Upstream's is also headed
-   `"Tunable variables"` and carries `NBPG PGSHIFT CLSIZE CLOFSET UPAGES
-   clbase clrnd`, so it is a machine description by this tree's own test.
+   **SETTLED, AND THERE IS NO THIRD SPELLING -- upstream's `h/param.h:75`
+   already says `DIRSIZ 14`,** which is exactly what the kernel side wants.
+   A pristine import would have been *correct* on the number the caution was
+   about, and the precedent permits it too (see `dir.h` above). Two other
+   things rule it out, and the first is the one nobody would look for in a
+   file called `param.h`:
+
+   - **`param.h:169-171` includes `"../h/types.h"` under `#ifdef KERNEL`,**
+     and upstream's `h/types.h:23` is `typedef long daddr_t;`. So importing
+     `param.h` drags in a pristine `types.h` with an **8-byte `daddr_t`** --
+     the `filsys.h` hazard above, arriving by a second route. (`:48` also
+     pulls `<signal.h>`, which in a kernel compile is the host's.)
+   - **`shim/kern/h/param.h` holds the `_OFF_T`/`_INO_T`/`_DEV_T` guards**
+     that stop Darwin redefining `struct inode`'s layout, and the
+     `printf`/`bcopy`/`uballoc` redirections that keep `stream.c`
+     byte-identical. An authentic `src/sys/h/param.h` **wins the quoted
+     include** and takes all of that from `stream.c`, `streamio.c` and
+     `ttyld.c`, which compile against it today.
+
+   Upstream's is also headed `"Tunable variables"` and carries `NBPG PGSHIFT
+   CLSIZE CLOFSET UPAGES clbase clrnd`. That reads like a machine description
+   by this tree's own test, but it is the weakest of the three arguments and
+   should not be leaned on: `CLSIZE 2` is what selects the 1024/4096
+   geometry, so it is as much a disk fact as a machine one.
 
    Not imported. The filesystem geometry goes into `shim/kern/h/param.h` at
    upstream's values -- which is what that file's header comment already says

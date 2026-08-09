@@ -908,5 +908,99 @@ check "M_HANGUP is passed up to the stream head" "1" "$(t hungup)"
 # measure NTTY rather than NTTY-1.
 check "stclose releases the tty[] slot" "1" "$(t stclosed)"
 
+# --- §8a step 5: the six imported files, and the seam they brought with them
+# alloc.c, iget.c, nami.c, rdwri.c, subr.c and bio.c are imported but not yet
+# built.  Five are pristine and get the hash guard the three files above get;
+# nami.c carries one target-forced deviation and therefore gets the DIFF guard
+# streamio.c gets, for the reason recorded there -- a file with a deviation
+# cannot be hashed, and "it has a PORTING.md" is not a guard.
+for f in sys/alloc.c sys/iget.c sys/rdwri.c sys/subr.c dev/bio.c; do
+	d=$(dirname "$f")
+	prov=$(awk -v p="v8/usr/sys/$f" '$2 == p {print $1}' "$ROOT/src/sys/$d/PROVENANCE")
+	here=$(git -C "$ROOT" hash-object "src/sys/$f")
+	check "src/sys/$f still hashes to pristine V8" "$prov" "$here"
+done
+
+# nami.c's deviation is the NOLONG name compare, and the guard asserts its
+# SHAPE rather than its size: exactly three lines left, and each of them is a
+# `*(long *)' that became a `*(int *)'.  Counting removals and additions
+# separately is the lesson streamio.c's guard already paid for -- a first
+# draft that assumes "N changed lines" fails on a deviation that adds a
+# comment.
+UPNAMI=$ROOT/../third_party/Research-Unix-v8/v8/usr/sys/sys/nami.c
+if [ -f "$UPNAMI" ]; then
+	gone=$(diff "$UPNAMI" "$ROOT/src/sys/sys/nami.c" | grep -c '^<')
+	check "nami.c: upstream lost exactly three lines" "3" "$gone"
+	longs=$(diff "$UPNAMI" "$ROOT/src/sys/sys/nami.c" |
+		grep '^<' | grep -c '\*(long \*)')
+	check "...and all three are the long-cast name compare" "3" "$longs"
+	ints=$(diff "$UPNAMI" "$ROOT/src/sys/sys/nami.c" |
+		grep '^>' | grep -c '\*(int \*)')
+	check "...replaced by exactly three int casts" "3" "$ints"
+	# The wrong fix would have been -DDIRSIZ=254 to reach the strncmp arm.
+	# That arm must stay unreached, so the compare stays a compare.
+	check "...and the strncmp arm is still the #else" "1" \
+		"$(grep -c 'strncmp(nm, dp->d_name, DIRSIZ)' "$ROOT/src/sys/sys/nami.c")"
+else bad "upstream nami.c not found for the diff guard"; fi
+
+# --- the width names are declared TWICE, so the two are compared ------------
+# shim/kern/h/param.h and src/include/sys/types.h both declare v8_i16, v8_u16,
+# v8_i32 and v8_u32.  The kernel side cannot include the userland types.h --
+# it re-typedefs daddr_t, ino_t, dev_t and off_t, three at widths the kernel
+# side deliberately narrows -- so the duplication is forced, and a forced
+# duplication is a thing to measure rather than to promise in a comment.
+#
+# Two programs, one per header, printing sizeof and signedness.  Comparing the
+# OUTPUT rather than the text is what makes this a check on the types and not
+# on how they happen to be spelled.
+WP=$TMP/width
+cat > "$WP-k.c" <<'KEOF'
+#include "../h/param.h"
+/*
+ * param.h:152-157 says this out loud and names the file it applies to:
+ * `#define printf v8k_printf' rewrites stdio's own declaration into a
+ * conflicting prototype, so the #undefs have to come BEFORE <stdio.h>.
+ * probe.c:23-24 does the same two.  Written from the comment after the
+ * probe hit the error the comment predicts.
+ */
+#undef printf
+#undef bcopy
+#include <stdio.h>
+int main(){ printf("%zu %zu %zu %zu %d %d\n",
+	sizeof(v8_i16), sizeof(v8_u16), sizeof(v8_i32), sizeof(v8_u32),
+	(int)((v8_i16)-1 < 0), (int)((v8_i32)-1 < 0)); return 0; }
+KEOF
+> "$WP-u.c" cat <<'UEOF'
+#include <sys/types.h>
+main(){ printf("%d %d %d %d %d %d\n",
+	(int)sizeof(v8_i16), (int)sizeof(v8_u16),
+	(int)sizeof(v8_i32), (int)sizeof(v8_u32),
+	(int)((v8_i16)-1 < 0), (int)((v8_i32)-1 < 0)); }
+UEOF
+# THE USERLAND HALF IS COMPILED BY v8cc, NOT BY THE HOST'S clang, and that is
+# forced rather than stylistic: src/include/sys/types.h includes
+# src/include/sys/param.h, which includes <signal.h>, and under the host SDK
+# that redefines size_t against V8's own typedef.  Those headers are compiled
+# by V8's compiler in this port -- so compiling them any other way would be
+# measuring a configuration nothing uses.  Measured, not assumed: the first
+# draft used host clang and died on exactly that redefinition.
+#
+# A missing compiler is a FAILURE and not a skip.  tests/cpp is the precedent
+# for why: it wrapped its most valuable case in `if [ -d ... ]' and reported
+# 12 passed from outside the repo root.
+V8CC=$ROOT/rootfs/bin/cc
+if [ ! -x "$V8CC" ]; then
+	bad "width seam: $V8CC not built (run make first)"
+elif clang -w -std=gnu89 -I"$ROOT/shim/kern/dev" -o "$WP-k" "$WP-k.c" 2>/dev/null &&
+     V8ROOT=$ROOT/rootfs "$V8CC" -o "$WP-u" "$WP-u.c" 2>/dev/null; then
+	kw=$("$WP-k"); uw=$("$WP-u")
+	check "the width names agree across the kernel/userland seam" "$uw" "$kw"
+	# And they are the widths the on-disk records were narrowed TO, which is
+	# the fact the forwarding headers depend on.  Named, not inferred from
+	# agreement -- two files can agree and both be wrong.
+	check "...and they are 2 2 4 4, signed where they say signed" \
+		"2 2 4 4 1 1" "$kw"
+else bad "width-typedef seam probe (compile)"; fi
+
 echo "streams: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

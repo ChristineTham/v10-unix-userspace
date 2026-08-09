@@ -11,3 +11,12 @@ f28ec73e371ab6404b95b036d1b9b3dc528c1b6e  v8/usr/sys/h/ioctl.h
 7335d37bec240a6f6ae89425b719028134aa31cf  v8/usr/sys/h/ttyld.h
 2a2652b30876d0ac3bca4e676e60eef55723e2f5  v8/usr/sys/h/file.h
 3d28063ef4756e6f59316af1313c139cb8bb120b  v8/usr/sys/h/inline.h
+57e67ec1618521e66b1a6b5329f9fdee34a31e40  v8/usr/sys/h/acct.h
+651b357d97199da3a4bca4c7fa6f7d712904e9a9  v8/usr/sys/h/cmap.h
+6d6de0a2faa57aa7c886401fa98b20fdb9ce7e98  v8/usr/sys/h/mount.h
+ab0437d5a9774aaf068a360dbe5e3043d3bfb456  v8/usr/sys/h/seg.h
+9ae48f0c6a6393767667d8102fc624ec67f1760c  v8/usr/sys/h/systm.h
+b7026653ad13ba76a38324d47b24780ed5be8227  v8/usr/sys/h/trace.h
+8b3b764e776307ff28c2348bed9738e6d0ecb74f  v8/usr/sys/h/vlimit.h
+8c92c87b03f2589071f09dcd372ffdd7de7747bd  v8/usr/sys/h/vm.h
+87f60c94d676d67dc3e3dbbf8199cd85f9c1570d  v8/usr/sys/h/buf.h

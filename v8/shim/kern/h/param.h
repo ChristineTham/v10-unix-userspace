@@ -165,6 +165,32 @@ typedef long		v8k_time_t;	/* h/types.h:28 -- renamed; see below */
 typedef long		label_t[14];	/* h/types.h:29 -- see hazard 4 */
 
 /*
+ * The four width names, and they are NOT upstream's -- they are this port's,
+ * from src/include/sys/types.h:78-81, added by §8a step 4a when it turned out
+ * that `int di_size' did not mean "an int" but "exactly four bytes, because a
+ * VAX wrote four bytes there", with the declaration and the reason in
+ * different files.
+ *
+ * They are here because shim/kern/h/{filsys,ino,fblk}.h forward to the
+ * patched src/include/sys/ copies of three ON-DISK RECORDS -- one record,
+ * one declaration -- and those copies are spelled in these names.  The
+ * alternative was to include src/include/sys/types.h itself, which cannot be
+ * done: it re-typedefs daddr_t, ino_t, dev_t and off_t, three of them at
+ * widths this file deliberately narrows for the kernel side.
+ *
+ * SO THE SAME NAME IS NOW DECLARED IN TWO FILES, WHICH IS THE THING THIS
+ * PORT KEEPS GETTING CAUGHT BY.  It is safe only if the two agree, and
+ * "safe" is not a property to assert in a comment: tests/streams compares
+ * the sizeof of every one of them against src/include/sys/types.h rather
+ * than against a number typed here.  Same discipline as making the header
+ * test compare NMASK(0) against the sizeof-derived NINDIR.
+ */
+typedef short		v8_i16;		/* src/include/sys/types.h:78 */
+typedef unsigned short	v8_u16;		/* :79 */
+typedef int		v8_i32;		/* :80 -- a VAX `long' */
+typedef unsigned int	v8_u32;		/* :81 */
+
+/*
  * time_t is NOT typedef'd here, and it is the one name where deferring beats
  * claiming.  Nothing in libv8kern needs a kernel time_t -- no field of any
  * struct these headers declare has that type -- so there is no layout to
