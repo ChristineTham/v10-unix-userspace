@@ -739,6 +739,84 @@ check "...and the device is told that too" "1" "$(t startsent)"
 # And the characters are consumed, not delivered: ttyldin `continue's past them.
 check "...and neither reaches the program" "xyz\\012" "$(t flowline)"
 
+# --- LCASE and maptab[]: a Model 33 with no lower case and no braces ------
+# The most 1970s thing in the file, and the only reader of maptab[]'s 128
+# bytes.  Two functions share the work: ttyldin marks an escaped character by
+# setting bit 7 and never consults the map; ttyinsrv sees the marked byte and
+# does the lookup.  So `A\a\(' is a plain A folded DOWN to a, an escaped a
+# mapped UP to A, and an escaped ( mapped to a brace the keyboard cannot type.
+check "LCASE folds and maptab unfolds"  "0"        "$(t lcaseerr)"
+check "...so A\\a\\( reads back aA{"      "aA{\\012" "$(t lcase)"
+
+# With LCASE off, the same else-arm has two outcomes and only one is obvious:
+# an ordinary character KEEPS its backslash, but one that IS the erase, kill or
+# eof character is emitted alone -- dropping the backslash is how you type a
+# literal one.  `@' is the default kill, so `\@' is a bare @ and `\z' is not.
+check "an escaped ordinary character keeps its backslash, an escaped kill does not" \
+      "\\134z@\\012" "$(t escape)"
+# MEASURED, NOT PREDICTED.  ttyldin:171-175 strips bit 7 off an escaped
+# backslash and SETS TTESC AGAIN, so the literal \ is queued unmarked and the
+# NEXT character is treated as escaped though no second backslash was typed.
+# That is upstream's behaviour; the case records it so a future reader meets
+# the behaviour rather than the intention.
+check "a doubled backslash leaves the escape latched" \
+      "\\134\\134z\\012" "$(t dblesc)"
+
+# --- TANDEM: the flow control that runs the other way ---------------------
+# ^S from the terminal stops OUTPUT.  TANDEM is the discipline noticing its own
+# INPUT queue filling and sending a stop character BACK so the sender pauses.
+# The threshold is upstream's own arithmetic on ttrinit's numbers --
+# (limit + lolimit) / 2 with ttrinit {..., 600, 60} (ttyld.c:34), so 330 --
+# which is why this needs hundreds of bytes with no newline rather than a line.
+check "400 bytes with no newline reach the queue" "400" "$(t tandemcount)"
+check "...so TANDEM blocks"              "1"  "$(t tandemblocked)"
+check "...and one character goes to the device" "1" "$(t tandemstopped)"
+check "...and it is t_stopc, ^S"         "19" "$(t tandemstopc)"
+# The release is ttyinsrv's tail, not ttyldin's -- it only happens because
+# something READ.  256 is this probe's buffer, not a property of the stream.
+check "a read drains it"                 "256" "$(t tandemread)"
+check "...and TANDEM releases"           "1"   "$(t tandemunblocked)"
+check "...with t_startc, ^Q"             "17"  "$(t tandemstartc)"
+
+# --- outconv's delays, for four terminals that existed ---------------------
+# V8 still carried padding for the tty 37, vt05, tn 300 and ti 700 in 1985: a
+# carriage return on a tn 300 took longer than the next character took to
+# arrive, so the discipline emits an M_DELAY the driver turns into silence.
+# The algorithm lives in bits 12-13 of the flag word, which is why that word is
+# worth more than a boolean.
+check "CR1 selects the tn 300 algorithm" "0" "$(t crdelayerr)"
+check "...and a CR emits one M_DELAY"    "1" "$(t crdelayn)"
+check "...whose count is 5"              "5" "$(t crdelayval)"
+check "...and the carriage is back at column 0" "0" "$(t crdelaycol)"
+# The negative control: the same CR with the delay bits clear emits nothing, so
+# the case above measures the ALGORITHM and not the presence of a return.
+check "...but with the bits clear, no delay at all" "0" "$(t nodelayn)"
+
+# --- the ack a driver must SHORTEN, and the one it must refuse ------------
+# TIOCHPCL is in neither switch, so ttldioc's default arm passes it down and
+# the DRIVER is what answers.  cons.c:64-67 answers with an M_IOCNAK carrying
+# no payload byte, and streamio.c:803-809 turns exactly that into ENOTTY -- so
+# a driver that acked everything would report success for an unimplemented
+# command.
+check "an unimplemented ioctl reaches the driver" "1" "$(t naked)"
+check "...and comes back ENOTTY"        "25" "$(t nakerr)"
+
+# AND THE LENGTH OF AN ACK IS PART OF THE ACK.  stioctl builds every M_IOCTL 20
+# bytes long; ttldioc's TIOCSETP arm does not touch wptr; streamio.c:793-798
+# copies `wptr - rptr' back to the caller.  So an unshortened ack writes 16
+# bytes into a 6-byte struct sgttyb -- ten past the object, on every set.
+# Bell Labs' drivers each spend one line on it (cons.c:56-58, dz.c:229), and
+# the first draft of this port's driver did not, which the lp64-auditor found.
+#
+# A VALUE SENTINEL CANNOT SEE THIS: the ten bytes written are the ten copyin
+# read from that address moments earlier, so the write round-trips and memory
+# ends up correct.  The only observable is the fault, so the probe arranges one
+# -- sg at the last six bytes of a writable page with the next page READABLE
+# but not writable, so the authentic 20-byte over-READ still succeeds and only
+# the write can fail.  Measured: 0 with the line, SIGBUS (10) without it.
+check "a shortened ack writes nothing past the caller's sgttyb" "0" "$(t guardsig)"
+check "...and the ioctl itself still succeeds" "0" "$(t guardexit)"
+
 # --- ttldioc from the DEVICE side (fromdev 1) -----------------------------
 # The other arm, and the only one a driver can reach: an M_IOCTL sent UP
 # arrives at ttyldin, which calls ttldioc(WR(q), bp, q, 1).  With fromdev set

@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1542 cases, 1541 on a host whose $TMPDIR
+make test             # all 17 suites (1562 cases, 1561 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -185,6 +185,34 @@ ours**. Streams went 140 → 200 cases. Three things generalise:
   mutation: 30 failures and the probe killed by its alarm. `ttyprobe` runs
   under a deadline now, and the comment saying it needed none was true of the
   open path and stopped being true the moment a driver went under it.
+
+**AND THE AUDITOR FOUND A LIVE BUG IN THE DRIVER THAT NO BEHAVIOURAL TEST COULD
+SEE, WITH V8's OWN FIX SITTING IN TWO UPSTREAM FILES.** The length of an
+acknowledgement is part of the acknowledgement: `stioctl` builds every
+`M_IOCTL` with `wptr += sizeof(union stmsg)` — **20 bytes, whatever the
+command** — `ttldioc`'s `TIOCSETP` arm does not touch `wptr`, and
+`streamio.c:793-798` copies `wptr - rptr` back to the caller. So an ack passed
+through unchanged writes **16 bytes into a 6-byte `struct sgttyb`**. Bell Labs
+spend one line on it in each of two drivers — `dev/cons.c:56-58` resets `wptr`
+for `TIOCSETP`/`TIOCSETN` and *falls through* to `TIOCGETP`, which must not
+reset it; `dev/dz.c:229` likewise — and their default arms are `M_IOCNAK` with
+no payload, which `streamio.c:803-809` turns into `ENOTTY`.
+
+- **A VALUE SENTINEL CANNOT SEE THIS CLASS.** The ten bytes written are the ten
+  `copyin` read from that address moments earlier, so the write round-trips and
+  memory ends up correct. 216 cases were green throughout. The only observable
+  is the fault.
+- **So the guard is a page, and it must be `PROT_READ` rather than
+  `PROT_NONE`** — the authentic 20-byte over-*read* has to keep succeeding, so
+  that the only thing which can fail is the write. Put the object at
+  `page_end - sizeof(object)`, run it in a child, assert the signal is 0.
+  Measured: 0 with Bell Labs' line, **SIGBUS without it**. That is how a
+  convention becomes a test instead of a comment.
+- **The comment recorded the wrong conclusion.** It said "streamio.c copies
+  `wptr - rptr` either way" — true, and the reason *to* shorten the ack,
+  written as though it were the reason not to. Same shape as the recorded
+  constraint that blocked the inode fix for months: **accurate, cited, and
+  pointing the opposite way from what it concludes.**
 
 **AND THE EXPECTED VALUE WAS WRONG BECAUSE THE GUARD IS ONE LINE ABOVE THE
 LOOP.** `outconv` expands a tab only when `(t_flags&TBDELAY)==XTABS`

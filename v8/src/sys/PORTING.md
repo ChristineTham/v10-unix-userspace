@@ -794,10 +794,87 @@ rule cannot be seen to be incomplete, and an **unconsumed component invents a
 difference the kernel does not have**. `sioprobe.c`'s loopback and pipe drivers
 are the precedent — scaffolding lives with the probe.
 
-### What is still not exercised
+### The four flag-gated arms — also done, and one of them is pure 1970s
 
-`ttyinsrv`'s `LCASE` mapping through `maptab[]`, the escape (`\`) handling, the
-`TANDEM` back-pressure arm, and `outconv`'s delay computations for the tty 37,
-vt05, tn 300 and ti 700 — four terminals whose timing V8 still carried in 1985.
-All are flag-gated arms of functions now driven, so they are cases to add
-rather than machinery to build.
+`LCASE`/`maptab[]`, escape handling, `TANDEM`, and `outconv`'s delays were
+listed here as "cases to add rather than machinery to build", and they were.
+16 more cases; streams 200 → 216.
+
+- **`maptab[]` is a Model 33 Teletype.** No lower case and no braces, so V8
+  lets you type them: `\a` is `A`, `\(` is `{`, and a bare `A` is folded
+  *down* to `a`. The split between the two functions is the interesting part —
+  `ttyldin` marks an escaped character by setting bit 7 and never consults the
+  map; `ttyinsrv` sees the marked byte and does the lookup. So the map is
+  applied one queue later than the escape that asked for it. `A\a\(` reads
+  back `aA{`, and this is the only thing in the port that reads those 128
+  bytes.
+- **The escape arm has three outcomes and only one is obvious.** With `LCASE`
+  off, an ordinary escaped character *keeps* its backslash (`\z` is two
+  characters) but one that **is** the erase, kill or eof character is emitted
+  alone — dropping the backslash is how you type a literal `@`.
+- **A doubled backslash leaves the escape latched, and that is measured.**
+  `ttyldin:171-175` strips bit 7 off an escaped backslash and **sets `TTESC`
+  again**, so `\\z` yields `\` then an escaped `z`. Recorded as behaviour, not
+  intention.
+- **`TANDEM` is XON/XOFF seen from the receiving end** — the discipline
+  noticing its *own input queue* filling and sending a stop character back.
+  The threshold is upstream's arithmetic on `ttrinit`'s own numbers,
+  `(600+60)/2` = 330, and the release is `ttyinsrv`'s tail rather than
+  `ttyldin`'s, so it only happens because something *read*.
+- **`outconv`'s delays are padding for four terminals that existed.** A
+  carriage return on a tn 300 took longer than the next character took to
+  arrive, so the discipline emits an `M_DELAY` the driver turns into silence.
+  `CR1` selects it, the count is 5, and a negative control with the bits clear
+  emits nothing — so the case measures the *algorithm* and not the presence of
+  a return.
+
+### THE AUDITOR FOUND A LIVE BUG IN THE DRIVER, AND V8 SHIPPED THE FIX
+
+Run on the new code per CLAUDE.md's rule — *on the shim code written to make
+that program build, which is where it has actually found things.* It came back
+clean on width narrowing, K&R argument slots, `qopen` return values and address
+0, and found this:
+
+**The length of an acknowledgement is part of the acknowledgement.** `stioctl`
+builds every `M_IOCTL` with `wptr += sizeof(union stmsg)` — **20 bytes,
+unconditionally, whatever the command** (`streamio.c:755`). `ttldioc`'s
+`TIOCSETP` arm does not touch `wptr`. And `streamio.c:793-798` bumps `rptr`
+past the 4-byte command and copies `wptr - rptr` back to the caller's `arg`.
+So an ack passed through unchanged copies **16 bytes into a `struct sgttyb`
+that is 6 bytes long** — ten bytes past the caller's object, on every set.
+
+**Bell Labs spend one line on it, in two drivers.** `dev/cons.c:56-58` is
+`case TIOCSETP: case TIOCSETN: bp->wptr = bp->rptr;` and then **falls
+through** to `TIOCGETP`, which must *not* reset it because it has a payload to
+return; `dev/dz.c:229` is the same. Their default arms are `M_IOCNAK` with
+`wptr = rptr`, which `streamio.c:803-809` turns into `ENOTTY`. The driver here
+now reproduces that switch exactly, including the fall-through.
+
+Three things worth carrying:
+
+- **A value sentinel cannot see this class.** The ten bytes written are the ten
+  `copyin` read from that same address moments earlier, so the write
+  round-trips and every byte of memory ends up correct. The suite was green
+  throughout. **The only observable is the fault.**
+- **So the guard has to be a page, and it has to be `PROT_READ`.** `sg` sits at
+  the last six bytes of a writable page with the next page readable but not
+  writable — readable because `copyin`'s authentic 20-byte over-*read* must
+  still succeed, so that the only thing which can fail is the write. In a
+  child, because the failure is a signal. Measured: **0 with Bell Labs' line,
+  SIGBUS without it.** That makes the convention a test rather than a comment.
+- **The comment recorded the wrong conclusion.** It said "streamio.c copies
+  `wptr - rptr` either way", which is true and is the reason **to** shorten the
+  ack, written as though it were a reason not to. Same shape as the recorded
+  constraint that blocked the inode fix for months: a sentence that is
+  *accurate* and points the opposite way from what it concludes.
+
+The `TIOCGETP` ack still copies 8 bytes into the same 6-byte struct, and that
+one **is upstream's** — `cons.c` leaves `wptr` alone there too, so a VAX did
+exactly this. Reproduced, not repaired.
+
+One latent finding was taken as well: `allocb(n)` answers a request above 64
+with a **64-byte** block when class 3's freelist is empty and class 2's is not
+(`stream.c:44-46`), so the argument bounds the *request* and not the
+*capacity*. Unreachable here — the largest call is eight bytes — and bounded
+anyway, because this driver is the port's only worked example of one and a
+missing bound is what the next driver would inherit.

@@ -1767,8 +1767,12 @@ Ordered so that value lands before risk, and so each step is testable alone.
    probe now carries a ~60-line driver and builds the real thing the way
    `init.c:368-382` does -- `stopen` the driver, `v8k_stconf` the discipline,
    `FIOPUSHLD` to push it between -- so `streamio.c`'s stream head sits on top,
-   `ttyld.c` in the middle, and only the bottom layer is ours. **60 new cases,
-   streams 140 -> 200.** All five functions run, plus `outconv`.
+   `ttyld.c` in the middle, and only the bottom layer is ours. **80 new cases,
+   streams 140 -> 220.** All five functions run, plus `outconv`, and the four
+   flag-gated arms with them: `LCASE` through `maptab[]` (a Model 33 with no
+   lower case -- `\a` is `A`, `\(` is `{`), escape handling, `TANDEM`
+   back-pressure at upstream's own `(600+60)/2`, and `outconv`'s padding
+   delays for the tty 37, vt05, tn 300 and ti 700.
 
    Three results worth carrying:
 
@@ -1785,6 +1789,20 @@ Ordered so that value lands before risk, and so each step is testable alone.
      sleeper; `TIOCSETC` is `qreply` at the discipline and the device never
      sees it. Both return 0. Only the driver can distinguish them, and the
      `fromdev`-1 arm had never been taken by anything in this port.
+
+   **AND THE AUDITOR FOUND A LIVE BUG IN THE DRIVER, WITH V8's FIX IN TWO
+   UPSTREAM FILES.** `stioctl` builds every `M_IOCTL` 20 bytes long whatever
+   the command, `ttldioc`'s `TIOCSETP` arm does not touch `wptr`, and
+   `streamio.c:793-798` copies `wptr - rptr` back -- so an ack passed through
+   unchanged writes **16 bytes into a 6-byte `struct sgttyb`**.
+   `dev/cons.c:56-58` and `dev/dz.c:229` each spend one line resetting `wptr`
+   for the SET commands and falling through to `TIOCGETP`, which must not. No
+   behavioural test could see it: the ten out-of-bounds bytes are the ten
+   `copyin` read from that address moments earlier, so the write round-trips
+   and memory ends up correct. The guard is a PAGE -- `PROT_READ`, so the
+   authentic over-READ still succeeds and only the write can fault -- and it
+   measures 0 with the line and SIGBUS without. The 8-into-6 that `TIOCGETP`
+   still does IS upstream's; reproduced, not repaired.
 
    And **the tab does not expand by default** -- `outconv`'s loop is behind
    `(t_flags&TBDELAY)==XTABS` and `ttyopen` sets `ECHO|CRMOD` only. The first
@@ -1805,9 +1823,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
    module.~~ **Done -- see the step 1c block above.** The prediction held
    exactly: it was a driver and not a module, and the reason is `ttyldin`
    reaching both ways in one loop. `src/sys/PORTING.md` has the whole account,
-   including the four flag-gated arms that are still dark (`LCASE` through
-   `maptab[]`, escape handling, `TANDEM` back-pressure, and `outconv`'s delay
-   computations for the tty 37, vt05, tn 300 and ti 700).
+   including the four flag-gated arms, which are now driven too.
 
    Three things the survey settled that were not asked:
 

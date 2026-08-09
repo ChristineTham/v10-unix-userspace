@@ -75,6 +75,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 #include "../../src/sys/h/stream.h"
 #include "../../src/sys/h/ioctl.h"
 #include "../../src/sys/h/ttyld.h"
@@ -145,12 +148,14 @@ static int	drvlen;
 static int	drvioc;			/* M_IOCTLs acknowledged */
 static int	drvstop, drvstart;	/* flow control seen from above */
 static int	drvflush, drvbreak, drvdelim, drvack;
+static int	drvdelay, drvdelayval;	/* M_DELAY, outconv's 1970s timing */
+static int	drvnak;			/* ioctls refused, cons.c's default arm */
 
 static void
 drvreset()
 {
 	drvlen = drvstop = drvstart = drvflush = drvbreak = drvdelim = 0;
-	drvack = drvioc = 0;
+	drvack = drvioc = drvdelay = drvdelayval = drvnak = 0;
 	memset(drvbuf, 0, sizeof drvbuf);
 }
 
@@ -174,14 +179,50 @@ struct block *bp;
 		break;
 
 	case M_IOCTL:
-		/* The acknowledgement stioctl is asleep on.  wptr is left
-		 * exactly as ttldioc set it: TIOCGETP advanced it to cover
-		 * the sgttyb it filled in, TIOCSETP did not, and streamio.c's
-		 * M_IOCACK arm copies out `wptr - rptr' either way. */
-		drvioc++;
-		bp->type = M_IOCACK;
-		qreply(q, bp);
-		return (0);
+		/*
+		 * The acknowledgement stioctl is asleep on -- and the ONE
+		 * PLACE THIS DRIVER HAS TO COPY V8's, because the reply's
+		 * length is the reply.  streamio.c:793-798 copies
+		 * `wptr - rptr' back to the caller's `arg', and stioctl built
+		 * the block with `wptr += sizeof(union stmsg)' -- 20 bytes,
+		 * unconditionally, whatever the command.  ttldioc's TIOCSETP
+		 * arm does not touch wptr, so an ack left as-is copies 16
+		 * bytes (20 less the 4-byte com) into a `struct sgttyb' that
+		 * is SIX bytes long.  Ten bytes past the caller's object.
+		 *
+		 * A first draft of this driver acked everything unchanged,
+		 * and the comment here recorded "streamio.c copies wptr-rptr
+		 * either way" as though that were a reason not to care.  It
+		 * is the reason TO care, and Bell Labs' own drivers say so in
+		 * one line: dev/cons.c:56-58 resets wptr for TIOCSETP and
+		 * TIOCSETN and FALLS THROUGH to TIOCGETP, which must not
+		 * reset it because it has a payload to return; dev/dz.c:229
+		 * is the same. The default arm is theirs too -- an M_IOCNAK
+		 * with no payload byte, which streamio.c:803-809 turns into
+		 * ENOTTY.
+		 *
+		 * The 8-into-6 that TIOCGETP still does IS upstream's, since
+		 * cons.c leaves wptr alone there as well.  Reproduce it; do
+		 * not repair it.
+		 */
+		switch (((union stmsg *)bp->rptr)->ioc0.com) {
+
+		case TIOCSETP:
+		case TIOCSETN:
+			bp->wptr = bp->rptr;
+		case TIOCGETP:
+			drvioc++;
+			bp->type = M_IOCACK;
+			qreply(q, bp);
+			return (0);
+
+		default:
+			drvnak++;
+			bp->type = M_IOCNAK;
+			bp->wptr = bp->rptr;
+			qreply(q, bp);
+			return (0);
+		}
 
 	case M_STOP:	drvstop++;	break;
 	case M_START:	drvstart++;	break;
@@ -189,6 +230,20 @@ struct block *bp;
 	case M_BREAK:	drvbreak++;	break;
 	case M_DELIM:	drvdelim++;	break;
 	case M_IOCACK:	drvack++;	break;
+
+	/*
+	 * A padding delay.  outconv computes one from the delay bits in
+	 * t_flags and sends it as a one-byte M_DELAY, which on a real V8 the
+	 * device driver turns into that many clock ticks of silence -- the
+	 * carriage of a tn 300 physically could not get back before the next
+	 * character arrived.  Recording the VALUE and not just the count,
+	 * because the four algorithms differ only in the number.
+	 */
+	case M_DELAY:
+		drvdelay++;
+		if (bp->wptr > bp->rptr)
+			drvdelayval = *bp->rptr & 0377;
+		break;
 	}
 	freeb(bp);
 	return (0);
@@ -221,6 +276,17 @@ char *s;
 
 	if (drvwq == 0 || (bp = allocb(n)) == NULL)
 		return;
+	/*
+	 * THE BOUND IS WHAT WAS DELIVERED, NOT WHAT WAS ASKED FOR.  allocb
+	 * (stream.c:44-46) answers a request above 64 with a SIXTY-FOUR byte
+	 * block when class 3's freelist is empty and class 2's is not, so
+	 * `n' is an upper bound on the request and not on the capacity.
+	 * Unreachable here -- the largest call is eight bytes -- and kept
+	 * because this driver is the port's only worked example of one, and
+	 * a missing bound is exactly what gets inherited by the next.
+	 */
+	if (n > bp->lim - bp->wptr)
+		n = bp->lim - bp->wptr;
 	bp->type = M_DATA;
 	memcpy(bp->wptr, s, (size_t)n);
 	bp->wptr += n;
@@ -643,6 +709,210 @@ traffic()
 	drvinput("x\023y\021z\n", 6);
 	n = uread(buf, sizeof buf);
 	show("flowline", buf, n);
+
+	/* ============ LCASE and maptab[]: a Model 33 with no lower case ==== */
+	/*
+	 * The most 1970s thing in the file.  A Teletype 33 has no lower case
+	 * and no braces, so V8 lets you type them: `\a' for A, `\(' for {,
+	 * and a bare A is folded DOWN to a.  Two functions share the work and
+	 * the split is the interesting part -- ttyldin marks the escaped
+	 * character by setting bit 7 (`c |= 0200') and never consults
+	 * maptab[]; ttyinsrv sees the marked byte and does the lookup.  So
+	 * the map is applied at canonicalisation, one queue later than the
+	 * escape that requested it.
+	 *
+	 * `A\a\(' therefore comes back `aA{': the plain A folded down, the
+	 * escaped a mapped up, the escaped ( mapped to a brace it cannot
+	 * type.  maptab is 128 bytes of authentic data (ttyld.c:14-32) and
+	 * this is the only thing in the port that reads it.
+	 */
+	sg.sg_erase = CERASE;
+	sg.sg_kill  = CKILL;
+	sg.sg_flags = LCASE;		/* no ECHO: keep the device side clean */
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	printf("lcaseerr %d\n", u.u_error);
+	drvreset();
+	drvinput("A\\a\\(\n", 6);
+	n = uread(buf, sizeof buf);
+	show("lcase", buf, n);
+
+	/* --- and the same escape with LCASE off keeps the backslash ------- */
+	/*
+	 * ttyinsrv's else-arm has three outcomes for a marked byte and only
+	 * the middle one is obvious.  With no LCASE: an ordinary character
+	 * keeps its backslash (`\z' is two characters), but a character that
+	 * IS the erase, kill or eof character is emitted ALONE -- dropping
+	 * the backslash, because escaping it is how you type a literal one.
+	 * `@' is the default kill, so `\@' is a bare @ and `\z' is not.
+	 */
+	sg.sg_flags = 0;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	drvreset();
+	drvinput("\\z\\@\n", 5);
+	n = uread(buf, sizeof buf);
+	show("escape", buf, n);
+
+	/*
+	 * And a doubled backslash, which is measured rather than predicted.
+	 * ttyldin:171-175 clears TTESC, notices the byte is an escaped
+	 * backslash, strips bit 7 -- and SETS TTESC AGAIN.  So the literal
+	 * backslash is queued unmarked (and survives canonicalisation), and
+	 * the character after it is treated as escaped even though no second
+	 * backslash was typed.  That is upstream's, whatever one thinks of
+	 * it; recorded here so a future reader meets the behaviour rather
+	 * than the intention.
+	 */
+	drvreset();
+	drvinput("\\\\z\n", 4);
+	n = uread(buf, sizeof buf);
+	show("dblesc", buf, n);
+
+	/* ================= TANDEM: back-pressure to the device ============ */
+	/*
+	 * The flow control that runs the other way.  ^S from the terminal
+	 * stops OUTPUT; TANDEM is the discipline noticing its own INPUT queue
+	 * filling and sending a stop character back so the sender pauses --
+	 * XON/XOFF as seen from the receiving end.
+	 *
+	 * The threshold is upstream's and derived from ttrinit's own numbers:
+	 * (limit + lolimit) / 2, and ttrinit is {..., 600, 60} (ttyld.c:34),
+	 * so 330.  Below it, and above ttyhog's hard stop at 512, this arm
+	 * never runs -- which is why a test has to send hundreds of bytes
+	 * with no newline rather than a line.
+	 */
+	sg.sg_flags = TANDEM;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	printf("tandemerr %d\n", u.u_error);
+	drvreset();
+	for (n = 0; n < 400; n++)
+		drvinput("x", 1);
+	printf("tandemcount %d\n", ttq->count);
+	printf("tandemblocked %d\n", (tp->t_state & TTBLOCK) != 0);
+	printf("tandemstopped %d\n", drvlen);	/* the stop char went out */
+	printf("tandemstopc %d\n", drvlen > 0 ? (drvbuf[0] & 0377) : -1);
+
+	/*
+	 * And it releases.  ttyinsrv's tail (ttyld.c:285-289) clears TTBLOCK
+	 * and sends t_startc once the queue has drained to lolimit -- so the
+	 * unblock is the SERVICE procedure's, not the put procedure's, and it
+	 * only happens because something read.
+	 */
+	drvreset();
+	drvinput("\n", 1);
+	n = uread(buf, sizeof buf);
+	printf("tandemread %d\n", n);
+	printf("tandemunblocked %d\n", (tp->t_state & TTBLOCK) == 0);
+	printf("tandemstartc %d\n", drvlen > 0 ? (drvbuf[0] & 0377) : -1);
+
+	/* ================= outconv's delays, for four real terminals ====== */
+	/*
+	 * V8 still carried padding for the tty 37, vt05, tn 300 and ti 700 in
+	 * 1985.  A carriage return on a tn 300 took longer than the next
+	 * character took to arrive, so the discipline emits an M_DELAY the
+	 * driver turns into silence.  CR1 selects it and the count is 5
+	 * (ttyld.c:466-468); the algorithm lives in bits 12-13, which is why
+	 * the flag word is worth more than a boolean.
+	 *
+	 * No CRMOD here, or the \r would be manufactured rather than written.
+	 */
+	sg.sg_flags = CR1;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	printf("crdelayerr %d\n", u.u_error);
+	drvreset();
+	uwrite("\r", 1);
+	printf("crdelayn %d\n", drvdelay);
+	printf("crdelayval %d\n", drvdelayval);
+	printf("crdelaycol %d\n", tp->t_col);
+
+	/* A negative control: the same \r with the delay bits clear emits no
+	 * M_DELAY at all, so the case above is measuring the algorithm and
+	 * not merely the presence of a carriage return. */
+	sg.sg_flags = 0;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
+	drvreset();
+	uwrite("\r", 1);
+	printf("nodelayn %d\n", drvdelay);
+
+	/* ============ the ack the driver must SHORTEN, and the NAK ======== */
+	/*
+	 * TIOCHPCL is in neither switch -- not stioctl's, not ttldioc's -- so
+	 * ttldioc's default arm passes it down and the driver is the thing
+	 * that has to answer.  cons.c:64-67 answers with an M_IOCNAK carrying
+	 * no payload byte, and streamio.c:803-809 turns exactly that into
+	 * ENOTTY.  A driver that acked everything would report success for a
+	 * command nothing implements.
+	 */
+	u.u_error = 0;
+	stioctl(&tino, TIOCHPCL, (caddr_t)0);
+	printf("nakerr %d\n", u.u_error);
+	printf("naked %d\n", drvnak);
+
+	/*
+	 * AND THE LENGTH OF AN ACK IS PART OF THE ACK, which is testable only
+	 * against a page boundary.  stioctl builds every M_IOCTL 20 bytes
+	 * long, ttldioc's TIOCSETP arm does not touch wptr, and
+	 * streamio.c:793-798 copies `wptr - rptr' back -- so an unshortened
+	 * ack writes 16 bytes into a 6-byte struct sgttyb.  Ten bytes past
+	 * the caller's object, on every set.
+	 *
+	 * A VALUE SENTINEL CANNOT SEE IT: the ten bytes written are the ten
+	 * bytes copyin read from that same address moments earlier, so the
+	 * write round-trips and every byte in memory ends up correct.  The
+	 * only observable is the fault, so the case arranges one -- sg at the
+	 * last six bytes of a writable page, with the next page READABLE but
+	 * not writable.  Readable matters: copyin's authentic 20-byte
+	 * over-READ must still succeed, so that what faults is the write and
+	 * nothing else.
+	 *
+	 * In a child, because the failure is a signal.  Remove
+	 * `bp->wptr = bp->rptr' from the driver and this goes red.
+	 */
+	{
+		char *pg;
+		long psz = (long)getpagesize();
+		struct sgttyb *gsg;
+		int st;
+		pid_t kid;
+
+		pg = (char *)mmap((void *)0, (size_t)(2*psz),
+		    PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE, -1, 0);
+		if (pg == MAP_FAILED)
+			printf("guardsig MMAPFAILED\n");
+		else if (mprotect(pg + psz, (size_t)psz, PROT_READ) != 0)
+			printf("guardsig MPROTECTFAILED\n");
+		else {
+			gsg = (struct sgttyb *)(pg + psz - sizeof(struct sgttyb));
+			gsg->sg_ispeed = gsg->sg_ospeed = 0;
+			gsg->sg_erase = CERASE;
+			gsg->sg_kill  = CKILL;
+			gsg->sg_flags = ECHO|CRMOD;
+			fflush(stdout);
+			if ((kid = fork()) == 0) {
+				alarm(10);	/* never inherit a hang */
+				u.u_error = 0;
+				stioctl(&tino, TIOCSETP, (caddr_t)gsg);
+				_exit(u.u_error ? 1 : 0);
+			}
+			if (kid < 0)
+				printf("guardsig FORKFAILED\n");
+			else {
+				waitpid(kid, &st, 0);
+				printf("guardsig %d\n", st & 0177);
+				printf("guardexit %d\n", (st >> 8) & 0377);
+			}
+			munmap((void *)pg, (size_t)(2*psz));
+		}
+	}
+
+	/* --- back to canonical for the last three cases ------------------- */
+	sg.sg_flags = ECHO|CRMOD;
+	u.u_error = 0;
+	stioctl(&tino, TIOCSETP, (caddr_t)&sg);
 
 	/* ================= ttldioc from the DEVICE side (fromdev 1) ======= */
 	/*

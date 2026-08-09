@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **1542 tests across 17 suites** guard it.
+assembly. **1562 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -1094,6 +1094,46 @@ the literal tab a default terminal gets, and the expansion once the flag is set.
 That is the same lesson as `max()` finding `min()`, arriving from the other
 direction: **the answer that surprises you is the one to go and read the guard
 for.**
+
+### The bug a passing test cannot see
+
+Running the LP64 auditor over the new driver — the project's habit of auditing
+freshly written scaffolding, not just freshly imported source — turned up
+something the 216 green tests could not.
+
+An `ioctl` on a stream is a message sent down and an acknowledgement sent back,
+and the system call copies the reply into the caller's buffer using *the reply's
+own length*. The stream head builds every such message at a fixed twenty bytes
+whatever the command. The discipline's "set the terminal parameters" path
+doesn't change that length. So the acknowledgement my driver sent back said
+"sixteen bytes" for a structure that is six bytes long — a ten-byte write past
+the end of the caller's object, on every single call.
+
+Bell Labs spend one line on this, in each of two drivers: reset the reply length
+before acknowledging a *set*, and deliberately fall through to the *get* case,
+which must not reset it because it has something to return. I had not written
+that line. The comment where it should have been even recorded the mechanism
+correctly — "the system call copies the reply's length either way" — and treated
+it as a reason not to care, when it is the reason to.
+
+The part worth keeping is why no test caught it. The ten bytes written past the
+end are *the same ten bytes* the system call read from that address moments
+earlier, so the overwrite round-trips: memory ends up byte-for-byte correct and
+every value anyone could check is right. A sentinel cannot see it. The only
+observable is the fault — which only happens if the object sits within ten bytes
+of the end of a mapping.
+
+So the test arranges exactly that: the structure at the last six bytes of a
+writable page, with the next page **readable but not writable**. Readable
+matters, and it is the whole trick — the authentic twenty-byte over-*read* has
+to keep working, so that the only thing which can fail is the write. It runs in
+a child process, because the failure is a signal rather than a value. With Bell
+Labs' line: clean exit. Without it: SIGBUS.
+
+That turns a convention into a guard. And there is a coda: the *get* path still
+copies eight bytes into the same six-byte structure — and that one is upstream's,
+because their drivers leave the length alone there too. A VAX did exactly this.
+Reproduced, not repaired.
 
 Where the driver *lives* was the last decision, and it went against the obvious
 one. It is test scaffolding, not part of the shim — because nothing in the port
