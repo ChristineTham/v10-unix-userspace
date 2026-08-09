@@ -1661,9 +1661,18 @@ Ordered so that value lands before risk, and so each step is testable alone.
    Paren-matching its calls and subtracting its own eight definitions gives
    **15** distinct callees, not 28 — the old figure counted variables. Fourteen
    of the fifteen are already in `libv8kern.a`, checked with `nm`; the one
-   missing is `max()`, eight lines at `sys/rdwri.c:235`, beside the `min()`
+   missing is `max()`, eight lines at `sys/rdwri.c:236`, beside the `min()`
    already in `shim/kern/sys/subr.c`. `partab[]` is data, not a name to
-   implement: `sys/partab.c` is 51 lines and imports whole.
+   implement: `sys/partab.c` — note **`sys/`, not `dev/`** — is 51 lines and
+   imports whole.
+
+   **Re-verified a third time, and the count survives with one subtraction
+   that the figure had already made.** `outconv` looks like a sixteenth callee
+   and is not: `ttyld.c:351` defines it. So the honest tally is 16 names
+   called, 8 of them its own, 15 external, 14 present. Two numbers in this
+   section were nonetheless wrong and are corrected above and below — the
+   `max()` line, which this paragraph gave as `:235` and the paragraph four
+   below gives as `:236` (236 is right), and the header count.
 
    **The sixth header is not a header.** `ttyld.c:6` includes `"tty.h"`, and
    `h/tty.h` is **zero bytes** — the only zero-length header in `h/`.
@@ -1689,7 +1698,23 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `NTTY` here is a **layer-2 decision and must be spelled as one**, the way
    `libkmemu`'s `u_ssize`/`NSTACK` is. The `64` this section used to give has no
    source: `proto-dev` has 8 hardware ttys and 64 `spipe` `pt` nodes, which
-   makes it a plausible guess and nothing more.
+   makes it a plausible guess and nothing more. Re-measured wider than last
+   time: there is no `#define NTTY` anywhere in **`third_party/` at all**, not
+   merely in `usr/sys`, and the two occurrences are both array bounds. The
+   other three `grep` hits are different symbols — `NNTTY` (`nttyld.c`'s own
+   count) and `NTTYDISC` (`chtty.c:62`, a line-discipline *number*) — so a
+   pattern of `NTTY` without a word boundary overcounts this three-fold.
+
+   **AND THE DECISION HAS A HOME THE PORT ALREADY SPECIFIES, which is the part
+   this survey never said.** `ttyld.c:6` is `#include "tty.h"` — a *quoted*
+   include, so it tries the includer's directory first and then the `-I` path.
+   That is exactly the mechanism `"../h/param.h"` uses to reach the authentic
+   header while `"../h/param.h"` from elsewhere falls through to
+   `-Ishim/kern/dev`. So `shim/kern/dev/tty.h` is where this port's `NTTY`
+   belongs: machine facts in `shim/kern/`, never in `src/sys/`, and the
+   generated-header slot filled by the layer that is allowed to decide. No
+   edit to `ttyld.c` is needed to carry it, which is what keeps the import
+   byte-identical.
 
    **`spipe` is structurally impossible, and not by a small margin.** It is the
    64 `/dev/pt/pt00`-`pt63` nodes -- odd minor master, even slave -- and its two
@@ -1702,11 +1727,14 @@ Ordered so that value lands before risk, and so each step is testable alone.
    diverges) and `exec` clears `fdtyp[]` (`vfs.c:136-143`).
 
    **`ttyld.c` is astonishingly cheap and is the reason to do the host-fd
-   driver first.** Three of its six headers are already in -- `ttyld.h` came in
-   with `streamio.c` and is **unused today** -- all twelve stream primitives it
-   calls exist, and the three missing names are an 8-line `max()` from
-   `rdwri.c:236` beside the `min()` already in `subr.c`, a 51-line pure-data
-   `partab.c` that imports whole, and one `#define NTTY 64`. `conf/devices:75`
+   driver first.** ~~Three~~ **Five** of its six headers are already in, which
+   is what the table above says and what this sentence contradicted: `param.h`
+   and `conf.h` in `shim/kern/h/`, `stream.h`, `ioctl.h` and `ttyld.h` in
+   `src/sys/h/` -- and `ttyld.h` came in with `streamio.c` and is **unused
+   today**. All twelve stream primitives it calls exist, and the three missing
+   names are an 8-line `max()` from `rdwri.c:236` beside the `min()` already in
+   `subr.c`, a 51-line pure-data `sys/partab.c` that imports whole, and one
+   `#define NTTY`. `conf/devices:75`
    -- `standard line-discipline 0	tty	tty	info` -- makes it
    **line-discipline 0, not a device**, and `init.c:377` is what pushes it:
    `ioctl(0, FIOPUSHLD, &tty_ld)` on the terminal, immediately before the three
