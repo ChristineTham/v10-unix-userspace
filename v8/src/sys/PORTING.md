@@ -1173,3 +1173,87 @@ declaring the four in `shim/kern/h/param.h`, with `tests/streams` comparing
 their `sizeof` against `src/include/sys/types.h` rather than against a number
 typed into a comment, because that is now the same name declared in two
 files.
+
+### The nineteen names are TWENTY, and five of them are not C functions
+
+The survey listed 19 external names to be written in `shim/kern/`. A
+subagent was set to specify each one against upstream; its central claims
+were then re-read at source rather than taken on report, which is this
+project's rule and which the report itself invited by citing everything.
+Six were checked and all six held. The findings that change the plan:
+
+**`plock` is a twentieth name, and the reason it was missed is a header.**
+`nami.c` calls it three times (`:74`, `:389`, `:433` after this port's
+comment; `:74`, `:355`, `:399` upstream) and upstream defines it at
+`sys/pipe.c:105-115`. It was invisible to the survey because `h/inline.h`
+defines it as a **macro** under `#ifndef UNFAST` (`:6`, `:8`) -- and
+`iget.c:13` includes `inline.h` while **`nami.c` does not**. So the same
+name is a macro in one of the six and a real call in another, and a survey
+reading `iget.c` first sees no symbol. It appears **zero** times in PLAN.md
+and zero times in this file. (`prele` is a twenty-first the day anyone
+defines `UNFAST`, which nothing does.)
+
+**Five of the twenty are inlined by `sed` before the assembler sees them.**
+`sys/asm.sed` is a peephole pass in the kernel build (`conf/makefile:103`,
+`${C2} ioconf.s | sed -f ../sys/asm.sed | ${AS}`) that rewrites
+`calls $N,_name` into VAX instructions. `fubyte`, `fuibyte`, `subyte`,
+`suibyte` and `spl0` are never C calls on a real V8, and `fuibyte` **has no
+definition anywhere in the archive** -- it exists only as `asm.sed:36`,
+which sends it to the same `jsb _Fubyte` as `fubyte`. Two consequences the
+shim must honour, both measured:
+
+- **`fubyte` zero-extends.** `locore.s:773-777` is `prober` / `beql fserr` /
+  **`movzbl (r0),r0`** / `rsb`. So it returns 0..255, and failure is `-1`.
+  A sign-extending implementation turns byte `0xFF` into `-1`, and
+  `subr.c:188`'s `if((c = ...) < 0)` reads that as EFAULT -- a write that
+  silently truncates at the first high byte. Same class as `sed -n l`'s
+  `trans[*p1]`, on the return side instead of the index.
+- **`subyte` must return exactly 0 on success, because of a precedence
+  quirk in upstream.** `subr.c:162` is
+  `if(id?suibyte(u.u_base, c):subyte(u.u_base, c) < 0)`, and `?:` binds
+  looser than `<`, so it parses `id ? suibyte(...) : (subyte(...) < 0)`.
+  For `id != 0` the condition is the **raw return value**. Upstream is
+  correct because that value is 0 or -1; a shim returning 1 for success
+  gives a spurious EFAULT on every `passc` in kernel-space mode. Do not
+  reparenthesise it -- the convention is what to preserve.
+
+**`mfind` must be declared returning `struct cmap *`.** The survey's claim
+that returning NULL is *correct* rather than a stub holds -- `vmmem.c:418`
+is upstream saying so -- but the width analysis inverts: `h/cmap.h:36`
+declares `struct cmap *mfind();` inside `#ifdef KERNEL` (`:32`), and
+`rdwri.c:10` includes it. **The prototype is in scope**, so the pointer
+survives and an `int mfind()` in the shim would conflict with the header its
+caller reads. `pte.h` carries the same shape for `vtopte` and is the one
+header `bio.c` needs that exists in neither `src/sys/h/` nor
+`shim/kern/h/` -- so whoever writes it must carry that declaration, or a
+pointer is truncated in dead code that comes alive the day a raw device
+lands.
+
+**Four names collide at link time, and this is the largest unrecorded item.**
+Measured with `nm -g` against the built archives rather than by reading:
+
+| name | ours | theirs | why it matters |
+|---|---|---|---|
+| `access` | `alloc`'s caller -- `fio.c:174` defines the kernel one | **`libv8stubs.a`**, the userland `access(2)` | signatures differ AND the returns are inverted: kernel is **0 permitted / 1 denied**, access(2) is 0/-1. A link resolving the wrong way gives a `namei` that mis-decides permission |
+| `free` | `alloc.c:156` `free(dev, bno)` | **`libv8c.a`** `free(ap)` | a block allocator handed a heap pointer |
+| `sleep` | the kernel primitive, `sleep(chan, pri)` | **`libv8c.a`** `sleep(unsigned)` | a program calling `sleep(3)` would `tsleep` on channel 1 |
+| `ialloc` | `alloc.c:232` `ialloc(dev)` | **`libv8c.a`**/`malloc.o` | pure intra-port; not a libSystem name at all |
+
+That is the shape `PLAN.md`'s `min`/`max` note found and the pairwise
+archive-overlap guard in `tests/kmemu` was written for -- and note it is
+`nm -g`, not `nm -u`, that sees any of it, for the reason that guard
+records.
+
+**And two signal names are missing from `shim/kern/h/param.h`**: `SIGKILL`
+(`bio.c:628`) and `SIGXFSZ` (`rdwri.c:166`). That file's own rule is to keep
+the list minimal rather than complete, so both need adding *and* need the
+`_Static_assert` in `shim/kern/sys/subr.c:46-53`.
+
+**A footnote, because it is the funniest instance of a class this file
+collects.** Sweeping the six with `grep -oE 'SIG[A-Z]+'` returns a fifth hit,
+`SIGNAL` at `alloc.c:141` -- the word in an English comment. It also returns
+two hits inside `shim/kern/h/param.h` itself, and one of them is `:231`,
+which reads *"`grep -oE SIG[A-Z]+' over it yields exactly those two plus the
+word SIGNAL"*. **The sweep matched a comment warning that the sweep matches
+comments.** The rule was already written down; running it again still
+produced the noise it predicts.

@@ -2377,6 +2377,31 @@ Ordered so that value lands before risk, and so each step is testable alone.
    the character-at-a-time user I/O. The rest are ordinary kernel services of
    the kind `shim/kern/sys/` already holds fifteen of.
 
+   **THE 19 ARE 20, AND FIVE OF THEM ARE NOT C FUNCTIONS.** Specified
+   name-by-name against upstream and re-read at source; `src/sys/PORTING.md`
+   has it all. The four that change the plan:
+
+   - **`plock` is missing from the list**, called three times by `nami.c`
+     and defined at `sys/pipe.c:105`. It was invisible because `h/inline.h`
+     makes it a **macro** under `#ifndef UNFAST` and `iget.c:13` includes
+     `inline.h` while `nami.c` does not -- so the same name is a macro in
+     one of the six and a real call in another.
+   - **`fubyte fuibyte subyte suibyte spl0` are inlined by `sys/asm.sed`**
+     before the assembler sees them (`conf/makefile:103`), and `fuibyte` has
+     no definition anywhere. `fubyte` **zero-extends** (`locore.s:776`,
+     `movzbl`), so a sign-extending shim turns byte `0xFF` into EFAULT; and
+     `subr.c:162`'s `?:` binds looser than `<`, so for `id != 0` the raw
+     return value **is** the error test and success must be exactly 0.
+   - **`mfind` must be declared `struct cmap *`** -- `h/cmap.h:36` inside
+     `#ifdef KERNEL`, and `rdwri.c:10` includes it. The returning-NULL claim
+     holds; the width claim inverts. `pte.h` carries the same shape for
+     `vtopte` and is the last header with no home.
+   - **Four names collide at link time**, measured with `nm -g`: `access`
+     against `libv8stubs.a`'s userland `access(2)` (**and the returns are
+     inverted, 0/1 against 0/-1**), and `free`, `sleep`, `ialloc` against
+     `libv8c.a`. Plus `SIGKILL` and `SIGXFSZ` missing from
+     `shim/kern/h/param.h`.
+
    **`mfind` is the one that is not a stub, and answering it honestly is the
    interesting part.** `rdwri.c:182-183` calls `mfind(dev, bn)` then
    `munhash(dev, bn)` in the **live** write path -- before overwriting a file
