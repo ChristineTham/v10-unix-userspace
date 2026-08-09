@@ -1764,7 +1764,8 @@ Ordered so that value lands before risk, and so each step is testable alone.
 
    **STEP 1c IS DONE TOO, AND THE PARAGRAPH BELOW SAYING IT IS "the next
    increment" IS KEPT ONLY BECAUSE IT NAMES THE FIVE FUNCTIONS.** The same
-   probe now carries a ~60-line driver and builds the real thing the way
+   probe now carries a driver (83 lines of code, measured) and builds the real
+   thing the way
    `init.c:368-382` does -- `stopen` the driver, `v8k_stconf` the discipline,
    `FIOPUSHLD` to push it between -- so `streamio.c`'s stream head sits on top,
    `ttyld.c` in the middle, and only the bottom layer is ours. **80 new cases,

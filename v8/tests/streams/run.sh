@@ -799,6 +799,11 @@ check "...but with the bits clear, no delay at all" "0" "$(t nodelayn)"
 # a driver that acked everything would report success for an unimplemented
 # command.
 check "an unimplemented ioctl reaches the driver" "1" "$(t naked)"
+# 25 is V8's number, not the host's, and that is already proved one layer down:
+# shim/kern/sys/subr.c:69-72 _Static_asserts eleven codes against V8's own
+# rootfs/usr/include/errno.h, ENOTTY among them.  So this is a value the BUILD
+# guarantees rather than a property of whatever machine the suite runs on --
+# which is the distinction tests/kmemu's nice and pid cases exist to make.
 check "...and comes back ENOTTY"        "25" "$(t nakerr)"
 
 # AND THE LENGTH OF AN ACK IS PART OF THE ACK.  stioctl builds every M_IOCTL 20

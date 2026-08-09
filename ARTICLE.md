@@ -1057,7 +1057,7 @@ out. It does not work, and one line of upstream says why: the input routine
 sends data **upward** through its own `q->next` and flow control **downward**
 through the write queue's, in the same loop. Anything sitting above sees the
 first and is structurally blind to the second. So the missing piece was a
-*driver* — a bottom end — and about sixty lines of it.
+*driver* — a bottom end — and 83 lines of it.
 
 With that, the stack is built exactly the way `init` builds one: open the
 driver, register the discipline, push it between. Three layers, of which only
@@ -1099,7 +1099,9 @@ for.**
 
 Running the LP64 auditor over the new driver — the project's habit of auditing
 freshly written scaffolding, not just freshly imported source — turned up
-something the 216 green tests could not.
+something no test in the suite could have caught. Not because the suite was
+thin, but because this bug is of a kind a passing test cannot distinguish from
+correctness.
 
 An `ioctl` on a stream is a message sent down and an acknowledgement sent back,
 and the system call copies the reply into the caller's buffer using *the reply's

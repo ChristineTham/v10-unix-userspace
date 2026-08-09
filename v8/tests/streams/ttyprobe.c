@@ -29,7 +29,7 @@
  *                    |                    (AUTHENTIC, 2 recorded deviations)
  *                  ttyld                  ttyld.c
  *                    |                    (AUTHENTIC, byte-identical)
- *                 ttydrv                  this file, ~60 lines
+ *                 ttydrv                  this file, under 100 lines
  *
  *      stopen() the driver, v8k_stconf() the discipline, FIOPUSHLD to push it
  *      between them.  Only the bottom layer is ours, and it is the smallest

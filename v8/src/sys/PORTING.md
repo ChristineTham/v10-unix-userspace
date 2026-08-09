@@ -715,7 +715,8 @@ clean without it.
 This section used to say the five functions below the open were compiled,
 linked and undriven, and that reaching them needed "something under the
 discipline to send to". That is now built. `tests/streams/ttyprobe.c` carries a
-~60-line driver and drives **two** stacks, because the open path and the
+driver — 83 lines of code, measured — and drives **two** stacks, because the
+open path and the
 traffic paths want different ones:
 
 | stack | for | why |
