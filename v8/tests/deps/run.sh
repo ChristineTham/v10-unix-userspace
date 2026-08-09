@@ -599,7 +599,17 @@ dep 'sparam.h -> streamio.o'     src/sys/research/sparam.h $B/kern/streamio.o
 dep 'our param.h -> streamio.o'  shim/kern/h/param.h       $B/kern/streamio.o
 dep 'our user.h -> streamio.o'   shim/kern/h/user.h        $B/kern/streamio.o
 dep 'our proc.h -> streamio.o'   shim/kern/h/proc.h        $B/kern/streamio.o
-dep 'our buf.h -> streamio.o'    shim/kern/h/buf.h         $B/kern/streamio.o
+# THIS CASE USED TO SAY `our buf.h' AND POINT AT shim/kern/h/buf.h, AND IT WAS
+# GREEN WHILE AUDITING NOTHING.  streamio.c:4 has always said
+# `#include "../h/buf.h"'; that used to resolve to ours because src/sys/h/ had
+# no buf.h, and bio.c's import in §8a step 5 put the authentic one there --
+# which wins, because a quoted include tries the includer's directory first.
+# The make edge stayed real (the Makefile listed our file as a prerequisite) so
+# nothing went red, while the header named in the case was no longer the header
+# the compile opens.  Measured with `clang -M', which is the only instrument
+# that can see it: the #include line is identical either way.  Our copy used
+# neither of its two constants anywhere and is deleted.
+dep 'authentic buf.h -> streamio.o' src/sys/h/buf.h        $B/kern/streamio.o
 dep 'our conf.h -> streamio.o'   shim/kern/h/conf.h        $B/kern/streamio.o
 
 # setjmp.h is the twelfth and it is not one of the eleven: it arrives through
@@ -624,6 +634,21 @@ dep 'imported subr.c -> its object' src/sys/sys/subr.c $B/kern/v8fs/subr.o
 dep 'bio.c -> its object'     src/sys/dev/bio.c    $B/kern/v8fs/bio.o
 dep 'v8fs.c -> its object'    shim/kern/sys/v8fs.c $B/kern/v8fs/v8fs.o
 dep 'v8fs objects -> archive' src/sys/sys/nami.c   $B/kern/libv8kern.a
+
+# §8a step 5c's own file.  main.c is OURS and it is in the v8fs GROUP rather
+# than with slp/fio/subr/ioconf, because it needs -DKERNEL and -fcommon to see
+# the tentative definitions it then defines strongly.  Its object path is what
+# says which rule matched: $B/kern/main.o would mean the generic shim rule ran
+# and the tables were compiled without KERNEL -- which links, and gives the
+# kernel a null inode table.
+dep 'main.c -> its object'    shim/kern/sys/main.c $B/kern/v8fs/main.o
+dep 'main.o -> archive'       shim/kern/sys/main.c $B/kern/libv8kern.a
+# main.c is the one file that includes the AUTHENTIC buf.h by full path, for
+# struct buf and the B_ flags binit weaves the free lists with.
+dep 'authentic buf.h -> main.o' src/sys/h/buf.h    $B/kern/v8fs/main.o
+dep 'inode.h -> main.o'       src/sys/h/inode.h    $B/kern/v8fs/main.o
+dep 'mount.h -> main.o'       src/sys/h/mount.h    $B/kern/v8fs/main.o
+dep 'our filsys.h -> main.o'  shim/kern/h/filsys.h $B/kern/v8fs/main.o
 
 # The seven headers §8a step 5 added.  Every one is reached by a quoted
 # "../h/x.h" that resolves against a directory the source is not in -- the

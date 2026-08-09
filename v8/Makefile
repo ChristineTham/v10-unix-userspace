@@ -295,7 +295,13 @@ test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
 # V8's stream machinery.  libv8c is a prerequisite because one case asserts that
 # the compiler-emitted memcpy in allocq() resolves to V8's own rather than
 # Apple's, and that is a fact about libv8c's symbol table.
-test-streams: libv8kern libv8c
+# imgbin SINCE §8a STEP 5c, because the suite now needs an actual filesystem to
+# read: tests/streams/fsprobe.c drives namei/iget/bmap/readi over an image that
+# mkfs(8) writes here, and a probe that built its own image would be comparing
+# this port against itself.  It is the phony rather than $(BINDIR)/mkfs for the
+# reason test-mkfs gives above -- BINDIR is defined hundreds of lines below and
+# would expand to nothing here.
+test-streams: libv8kern libv8c imgbin
 	@$(ROOT)tests/streams/run.sh
 # The on-disk formats, and the image mkfs writes from them.  It asserts widths
 # from the V8 side -- a _Static_assert in the shim would see only clang, and
@@ -693,10 +699,18 @@ STREAMIOFLAGS = $(KERNFLAGS) -DKERNEL -fcommon \
 # ONE FLAG BEYOND STREAMIOFLAGS, for the imported half: nothing.  All six
 # compile under exactly the flags streamio.c needed, which is the useful
 # measurement -- the dialect was already right and step 5 added no suppression.
+#
+# main.o IS OURS AND IT IS IN THIS GROUP RATHER THAN WITH slp/fio/subr/ioconf,
+# because it needs -DKERNEL and -fcommon exactly as v8fs.o does: it writes the
+# STRONG definitions for inode/ninode/inodeNINODE/buf/buffers/nbuf that the
+# authentic headers declare as tentative inside #ifdef KERNEL, and it needs
+# struct mount and struct filsys from behind the same guard.  Compiling it with
+# bare SHIMFLAGS would hide those declarations and it would define six globals
+# nothing had declared.
 V8FS_OBJ = $(BUILD)/kern/v8fs/alloc.o $(BUILD)/kern/v8fs/iget.o \
            $(BUILD)/kern/v8fs/nami.o $(BUILD)/kern/v8fs/rdwri.o \
            $(BUILD)/kern/v8fs/subr.o $(BUILD)/kern/v8fs/bio.o \
-           $(BUILD)/kern/v8fs/v8fs.o
+           $(BUILD)/kern/v8fs/v8fs.o $(BUILD)/kern/v8fs/main.o
 
 KERN_LIB = $(BUILD)/kern/libv8kern.a
 KERN_OBJ = $(BUILD)/kern/stream.o $(BUILD)/kern/machdep.o \
@@ -704,17 +718,28 @@ KERN_OBJ = $(BUILD)/kern/stream.o $(BUILD)/kern/machdep.o \
            $(BUILD)/kern/fio.o $(BUILD)/kern/subr.o $(BUILD)/kern/ioconf.o \
            $(BUILD)/kern/ttyld.o $(BUILD)/kern/partab.o $(V8FS_OBJ)
 
-# The headers streamio.c reaches, split by who wrote them.  Six are AUTHENTIC
+# The headers streamio.c reaches, split by who wrote them.  Seven are AUTHENTIC
 # and live in src/sys/h/, so a quoted "../h/x.h" from src/sys/sys/ finds them
-# first; five are OURS in shim/kern/h/, reached only because the authentic ones
+# first; four are OURS in shim/kern/h/, reached only because the authentic ones
 # are absent and -Ishim/kern/dev turns "../h/" into that directory.  Nothing in
 # the include syntax says which is which, which is the property the seam wants.
+#
+# BUF.H CHANGED SIDES IN §8a STEP 5c WITHOUT ANY FILE BEING EDITED, which is
+# the property this split exists to make visible and the one time it has
+# actually moved.  streamio.c:4 has always said `#include "../h/buf.h"'.  It
+# used to reach shim/kern/h/buf.h -- ours, two constants -- because src/sys/h/
+# had none.  bio.c's import brought the authentic src/sys/h/buf.h into the tree,
+# and the includer's-directory-first rule silently handed streamio.c that one
+# instead.  Measured with `clang -M', which is the only way to see it: the
+# source line is identical either way.  Our copy is deleted; nothing that
+# included it used either constant.
 KERN_AUTH_H = $(SRC)/sys/h/stream.h $(SRC)/sys/h/dir.h $(SRC)/sys/h/inode.h \
               $(SRC)/sys/h/ioctl.h $(SRC)/sys/h/ttyld.h $(SRC)/sys/h/file.h \
-              $(SRC)/sys/h/inline.h $(SRC)/sys/research/sparam.h
+              $(SRC)/sys/h/inline.h $(SRC)/sys/h/buf.h \
+              $(SRC)/sys/research/sparam.h
 KERN_SHIM_H = $(ROOT)shim/kern/h/param.h $(ROOT)shim/kern/h/mtpr.h \
               $(ROOT)shim/kern/h/conf.h $(ROOT)shim/kern/h/user.h \
-              $(ROOT)shim/kern/h/proc.h $(ROOT)shim/kern/h/buf.h \
+              $(ROOT)shim/kern/h/proc.h \
               $(SRC)/include/setjmp.h
 
 libv8kern: $(KERN_LIB)
@@ -839,8 +864,32 @@ $(BUILD)/kern/v8fs/%.o: $(SRC)/sys/dev/%.c $(KERN_AUTH_H) $(KERN_SHIM_H) $(V8FS_
 #              the definition.
 V8FSFLAGS = $(SHIMFLAGS) -DKERNEL -fcommon -Wno-deprecated-non-prototype \
             -Wno-extra-tokens
+# ONE FLAG BEYOND V8FSFLAGS, on this object alone rather than in the group's
+# variable, for ttyld.o's reason: a suppression argued for once should not
+# quietly cover code nobody argued about.
+#
+#   -Wno-logical-not-parentheses   allocmount is sys3.c:239-259 TRANSCRIBED,
+#   and :247 is `if(!mp->m_flags&M_MOUNTED)'.  `!' binds tighter than `&', so
+#   the expression is `(m_flags == 0) & M_MOUNTED' rather than the
+#   `!(m_flags & M_MOUNTED)' it reads as -- and the two agree, because
+#   M_MOUNTED is 1 and it is the only flag `struct mount' has.  Upstream's
+#   quirk, correct by a coincidence between a precedence and a bit value.  It
+#   is transcribed rather than repaired so the body still diffs against
+#   sys3.c, and v8fs.c argues that at the definition, including which way it
+#   would fail if a second flag were ever added.
 $(BUILD)/kern/v8fs/v8fs.o: $(ROOT)shim/kern/sys/v8fs.c $(KERN_AUTH_H) \
                            $(KERN_SHIM_H) $(V8FS_H) $(ROOT)shim/v8sys/rawsys.h
+	@mkdir -p $(BUILD)/kern/v8fs
+	$(HOSTCC) $(V8FSFLAGS) -Wno-logical-not-parentheses $(DEPFLAGS) \
+	    -I$(ROOT)shim/kern/dev -c $< -o $@
+
+# main.o -- the tables and the startup.  Same flags as v8fs.o and the same
+# reason; V8FS_OBJ above says which.  It is the one file here that includes the
+# AUTHENTIC buf.h by full path, so that edge is named explicitly: $(KERN_AUTH_H)
+# carries it since §8a step 5c, when shim/kern/h/buf.h was found to be dead and
+# deleted.
+$(BUILD)/kern/v8fs/main.o: $(ROOT)shim/kern/sys/main.c $(KERN_AUTH_H) \
+                           $(KERN_SHIM_H) $(V8FS_H)
 	@mkdir -p $(BUILD)/kern/v8fs
 	$(HOSTCC) $(V8FSFLAGS) $(DEPFLAGS) -I$(ROOT)shim/kern/dev -c $< -o $@
 

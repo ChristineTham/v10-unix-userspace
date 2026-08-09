@@ -1279,7 +1279,8 @@ KMEMUA=$ROOT/build/stage0/kmemu/libkmemu.a
 #
 # It held max and min, explained rather than tolerated: src/libc/gen/min.c is
 # `min(a,b) { return (a<b? a: b); }' with an implicit int return, while the
-# kernel's is unsigned, which upstream's rdwri.c:235 and h/systm.h:61-62
+# kernel's is unsigned, which upstream's rdwri.c:249 (min; :235 is max's) and
+# h/systm.h:61-62
 # independently agree it should be.  Two different functions, one name, latent
 # because nothing linked both archives.
 #

@@ -42,7 +42,11 @@ enum {
 #include "../h/proc.h"
 #include "../../../src/sys/h/dir.h"	/* struct direct, for user.h's u_dent */
 #include "../h/user.h"		/* brings <errno.h> in, as upstream's does */
-#include "../h/buf.h"
+/*
+ * `#include "../h/buf.h"' stood here and was removed in §8a step 5c: this file
+ * used NEITHER of the two constants that header carried, measured, and the
+ * header itself is gone -- shim/kern/sys/main.c has the account of how it died.
+ */
 
 _Static_assert(SIGHUP == HOST_SIGHUP,
     "SIGHUP must be the host's, because psignal delivers with kill(2)");

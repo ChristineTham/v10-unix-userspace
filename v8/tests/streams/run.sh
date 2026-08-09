@@ -866,7 +866,7 @@ check "...which passes the flush to the device" "1" "$(t flushtodev)"
 # command.
 check "an unimplemented ioctl reaches the driver" "1" "$(t naked)"
 # 25 is V8's number, not the host's, and that is already proved one layer down:
-# shim/kern/sys/subr.c:69-72 _Static_asserts eleven codes against V8's own
+# shim/kern/sys/subr.c:74-77 _Static_asserts eleven codes against V8's own
 # rootfs/usr/include/errno.h, ENOTTY among them.  So this is a value the BUILD
 # guarantees rather than a property of whatever machine the suite runs on --
 # which is the distinction tests/kmemu's nice and pid cases exist to make.
@@ -985,6 +985,44 @@ if [ -f "$UPALLOC" ]; then
 	# comment trailing it -- not on the phrase.
 	check "...and upstream's BITS PER LONG line survives" "1" \
 		"$(grep -c 'j < 32; j++).*BITS PER LONG' "$ROOT/src/sys/sys/alloc.c")"
+
+	# A LINE-NUMBER CITATION INSIDE THE FILE IT CITES IS SELF-INVALIDATING,
+	# and this port has now paid for that twice in one afternoon.
+	#
+	# The PORT comment above the declaration names the four uses of `p' by
+	# line.  Writing that comment pushed every one of them down by 43, so
+	# the first draft's `:70' pointed into the middle of the comment doing
+	# the citing.  Correcting it moved them again -- twice, because the
+	# correction itself added lines -- and only the third measurement
+	# converged.  A subagent audit of the whole tree found sixteen stale
+	# citations of exactly this shape, eight of them caused by this one
+	# comment.
+	#
+	# So the citations are a TEST rather than prose, which is the same move
+	# the deviation list above already makes.  Each cited line must contain
+	# the code the comment says is there.  It costs four greps and it goes
+	# red the moment anyone adds a line to this file without re-measuring.
+	A=$ROOT/src/sys/sys/alloc.c
+	cite() {	# label, cited line, pattern the line must contain
+		check "alloc.c PORT comment: $1" "1" \
+			"$(sed -n "$2p" "$A" | grep -c -- "$3")"
+	}
+	# The four numbers the comment gives as `ours', read back out of it so
+	# the test cannot drift from the comment either -- it reads the comment
+	# and then checks the comment.
+	cn=$(sed -n 's/^[[:blank:]]*\*[[:blank:]]*:\([0-9]*\), :\([0-9]*\)[[:blank:]].*/\1 \2/p' "$A" | head -1)
+	set -- $cn
+	cite "the first read-modify-write is where it says"  "$1" '\*p &= ~(1 << (j&31))'
+	cite "and so is the second"                          "$2" '\*p &= ~(1 << j)'
+	cite "the scan loop is where it says"  \
+		"$(sed -n 's/^[[:blank:]]*\*[[:blank:]]*:\([0-9]*\) (:83).*/\1/p' "$A")" \
+		'for(i = 0; i < BITMAP'
+	cite "the bit test is where it says"   \
+		"$(sed -n 's/^[[:blank:]]*\*[[:blank:]]*:\([0-9]*\) (:89).*/\1/p' "$A")" \
+		'if(\*p & (1 << j))'
+	cite "and BITS PER LONG is where it says" \
+		"$(sed -n 's/^[[:blank:]]*\* :\([0-9]*\) (upstream :88).*/\1/p' "$A")" \
+		'BITS PER LONG'
 else bad "upstream alloc.c not found for the diff guard"; fi
 
 # --- param.h's redirects and hostok.h's undefs are DERIVED FROM EACH OTHER ---
@@ -1109,6 +1147,202 @@ elif clang -w -std=gnu89 -I"$ROOT/shim/kern/dev" -o "$WP-k" "$WP-k.c" 2>/dev/nul
 	check "...and they are 2 2 4 4, signed where they say signed" \
 		"2 2 4 4 1 1" "$kw"
 else bad "width-typedef seam probe (compile)"; fi
+
+# --- §8a step 5c: THE FILESYSTEM RUNS -----------------------------------------
+#
+# Everything above this line is a statement about a BUILD -- hashes, diff
+# shapes, what the archive imports, which header the seam resolves to.  Not one
+# of them would have changed if alloc.c, iget.c, nami.c, rdwri.c, subr.c and
+# bio.c had never executed an instruction, and until now they had not.
+#
+# The cases below drive Bell Labs' own path -- namei -> fsnami -> dsearch ->
+# iget -> bmap -> readi -> bread -> a block driver -- over an image mkfs(8)
+# wrote, and compare the bytes that come out against the bytes that went in.
+# tests/streams/fsprobe.c is the harness and says why the driver lives there.
+#
+# THE WRITER AND THE READER ARE INDEPENDENT AND THAT IS THE WHOLE POINT.
+# tests/mkfs already asks whether the image matches what this port believes a
+# V8 filesystem is -- but mkfs and that suite's arithmetic were written from the
+# same headers, so a shared misunderstanding satisfies both.  V8's kernel was
+# written in 1985 against the real thing.
+FSTMP=$TMP/fsdir
+mkdir -p "$FSTMP"
+
+MKFS=$ROOT/rootfs/etc/mkfs
+if [ ! -x "$MKFS" ]; then
+	# A missing input is a FAILURE, not a skip -- tests/cpp is the precedent
+	# for why: it wrapped its best case in `if [ -d ... ]' and reported 12
+	# passed from outside the repo root.
+	bad "filesystem: $MKFS not built (run make first)"
+else
+
+# Two files, and the SIZES ARE THE ARGUMENT.  hello.txt is one block, so it
+# exercises only bmap's direct arm; big.txt is 28000 bytes = 28 blocks, and
+# blocks 0..9 are the NADDR-3 direct addresses in the inode while 10..27 are
+# reached through the single indirect block.  A one-block test cannot tell a
+# correct bmap from one whose indirect arm is broken, and the indirect walk is
+# `daddr_t *bap' over a bread'd buffer -- the same shape as the free-map walk
+# where this import's second NOLONG deviation was found.
+printf 'hello from a V8 filesystem\n' > "$FSTMP/hello.txt"
+awk 'BEGIN{for(i=0;i<1000;i++) printf "line %04d abcdefghijklmnopq\n", i}' \
+	> "$FSTMP/big.txt"
+
+printf '/dev/null\n2000 1280\nd--777 0 0\nhello\n---644 0 0 %s\nsub\nd--755 0 0\ndeep\n---644 0 0 %s\n$\n$\n' \
+	"$FSTMP/hello.txt" "$FSTMP/big.txt" > "$FSTMP/proto"
+
+if ! (cd "$FSTMP" && V8ROOT=$ROOT/rootfs "$MKFS" "$FSTMP/img" "$FSTMP/proto") \
+     >"$FSTMP/mkfs.log" 2>&1; then
+	bad "filesystem: mkfs failed" "$(head -3 "$FSTMP/mkfs.log")"
+else
+
+# -DKERNEL IS NOT OPTIONAL FOR THIS PROBE and fsprobe.c says why at length:
+# inode.h and buf.h declare namei, iget, bread and geteblk -- all
+# pointer-returning -- inside #ifdef KERNEL, and KFLAGS carries
+# -Wno-implicit-function-declaration for the imported half's sake.  Without the
+# flag every one of those calls is an implicit int and the returned pointer is
+# TRUNCATED to 32 bits, which is this port's ps -T bug exactly.  fsprobe.c has
+# an #error so the flag cannot be dropped silently.
+if ! clang $KFLAGS -DKERNEL -fcommon -o "$TMP/fsprobe" \
+     "$ROOT/tests/streams/fsprobe.c" "$KERN" "$SETJMP" \
+     > "$TMP/fsbuild.log" 2>&1; then
+	grep -qv 'reducing alignment' "$TMP/fsbuild.log" &&
+		{ echo "fsprobe build failed:"; head -5 "$TMP/fsbuild.log"; exit 1; }
+fi
+# A DEADLINE, for ttyprobe's reason plus one of its own: getblk sleeps on
+# bfreelist[0] when no buffer is free and only brelse wakes it, so a leaked
+# buffer is an unbounded hang rather than an error.
+perl -e 'alarm 60; exec @ARGV' "$TMP/fsprobe" "$FSTMP/img" "$FSTMP/readback" \
+	> "$TMP/fsout" 2>"$TMP/fserr" ||
+	bad "fsprobe exited nonzero" "$(head -3 "$TMP/fserr")"
+f() { awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print}' "$TMP/fsout"; }
+
+# 1. Registration.  nblkdev 0 before anything registers is the state §8a step 5
+# shipped, and it is what makes bio.c:352 reject a device rather than index an
+# empty table.  The two rejections are ioconf.c's dense-prefix invariant: a row
+# with a null d_open is a row upstream's own counter (main.c:218) would stop at,
+# and a null d_strategy is what bread:115 dereferences without checking.
+check "no block device before one registers"	"0"	"$(f nblkdev-before)"
+check "bdconf refuses a null d_open"		"-1"	"$(f bdconf-rejects-nullopen)"
+check "bdconf refuses a null d_strategy"	"-1"	"$(f bdconf-rejects-nullstrat)"
+check "and a refused row does not count"	"0"	"$(f nblkdev-after-rejects)"
+check "the driver gets major 0"			"0"	"$(f bdconf-major)"
+check "and nblkdev is then 1"			"1"	"$(f nblkdev-after)"
+
+# THE MINOR NUMBER IS THE BLOCK SIZE, which is easy to get wrong invisibly:
+# param.h's BITFS(dev) is `dev & 64', so bit 6 selects a 4096-byte filesystem.
+# mkfs writes 1024 here.  A minor with that bit set would make every
+# BSIZE/BMASK/itod in the kernel describe a different disk, and the first
+# symptom would be a garbage superblock.
+check "minor 0 means a 1024-byte filesystem"	"0"	"$(f bitfs)"
+check "so BSIZE(dev) is 1024"			"1024"	"$(f bsize)"
+
+# 2. Startup.  v8k_kinit is the line that first executes bio.c and iget.c.
+check "the kernel comes up"			"0"	"$(f kinit)"
+# TWO reads and not one, which is the assertion: iinit breads the superblock,
+# and the two igets of ROOTINO bread the ilist block -- the second iget finds
+# the inode already in core and does no I/O.  A number other than 2 means the
+# buffer cache is either missing a hit or doing a read nobody asked for.
+check "and it took exactly two block reads"	"2"	"$(f reads-after-kinit)"
+
+# getfs() PANICS with "getfs" when nothing is mounted, so reaching these lines
+# at all is the mount assertion; the numbers say it is the right superblock.
+# 2000 is the size given to mkfs.  83 is upstream's proto path adding three
+# where its numeric path adds two -- tests/mkfs asserts the same number from
+# the bytes, so the two suites agree by independent routes.
+check "getfs finds the filesystem's size"	"2000"	"$(f fs-fsize)"
+check "and its ilist size"			"83"	"$(f fs-isize)"
+check "iinit named the mount point /"		"/"	"$(f fs-fsmnt)"
+check "and the superblock carries a date"	"1"	"$(f fs-time-nonzero)"
+# B_LOCKED is what stops the superblock buffer from ever being reused.  Without
+# it the free-block map could be silently re-read from disk mid-allocation.
+check "the superblock buffer is pinned"		"1"	"$(f superb-locked)"
+
+# 3. The root inode, read out of the ilist by iget.
+check "the root is inode 2"			"2"	"$(f root-ino)"
+check "and it is a directory"			"1"	"$(f root-isdir)"
+# TWO igets of the same inode, so i_count is 2 -- main.c:92-95 does this
+# deliberately, so that releasing the current directory cannot free the root.
+check "held twice, by rootdir and u_cdir"	"2"	"$(f root-count)"
+# . .. and sub.  A link count of 2 would mean mkfs's subdirectory never landed,
+# which would make the /sub/deep case below fail for an unrelated reason.
+check "with three links: . .. and sub"		"3"	"$(f root-nlink)"
+check "u_cdir is the root too"			"1"	"$(f cdir-is-root)"
+
+# 4. namei.  "/" is fsnami's null-name arm and must give back the root rather
+# than an error -- the one path with no component in it at all.
+check "namei / is the root"			"2"	"$(f nami-slash)"
+
+check "namei /hello finds inode 3"		"3"	"$(f hello-ino)"
+check "a plain file, mode 0644"			"100644" "$(f hello-mode)"
+check "27 bytes, as the inode says"		"27"	"$(f hello-size)"
+check "and readi returned 27"			"27"	"$(f hello-n)"
+check "with the bytes that went in"  "hello from a V8 filesystem." "$(f hello-text)"
+
+# Two components, so fsnami loops and dsearch runs against a subdirectory
+# rather than against the root it was handed.
+check "namei /sub/deep walks two components"	"5"	"$(f deep-ino)"
+check "and finds a 28000-byte file"		"28000"	"$(f deep-size)"
+
+# bmap's two arms.  Logical block 0 is a direct address in the inode; logical
+# block 10 is the first that must be fetched from the single indirect block,
+# because blocks 0..NADDR-4 are direct.  Both valid AND different is the pair:
+# an indirect arm that fell through to the direct one would return the same
+# address twice, and either check alone would pass.
+check "bmap resolves a direct block"		"1"	"$(f bmap-0-valid)"
+check "and an indirect one"			"1"	"$(f bmap-10-valid)"
+check "and they are different blocks"		"1"	"$(f bmap-differs)"
+
+check "readi returns the whole file"		"28000"	"$(f deep-n)"
+check "starting with the first line"	"line 0000 abcdef" "$(f deep-head)"
+# The tail is the case the indirect block can fail: a wrong indirect address
+# gives a right beginning and a wrong end.
+check "and ending with the last"	"cdefghijklmnopq." "$(f deep-tail)"
+check "the probe wrote what it read"		"1"	"$(f deep-written)"
+
+# THE CENTRAL CLAIM, and it is a cmp rather than a hash.  fsprobe.c also prints
+# a rolling sum, but a sum agreeing proves only that two implementations of an
+# invented hash agree; this compares V8's kernel's answer against the actual
+# file mkfs was handed.
+if cmp -s "$FSTMP/big.txt" "$FSTMP/readback"; then pass=$((pass+1))
+else bad "the bytes V8's kernel read back differ from the file mkfs was given" \
+	 "$(cmp "$FSTMP/big.txt" "$FSTMP/readback" 2>&1 | head -2)"; fi
+
+# 5. The failure paths.  Both are namei returning NULL and they differ ONLY in
+# u_error, so a lookup failing for the wrong reason is invisible without the
+# pair.  2 is ENOENT and 20 is ENOTDIR.
+check "a missing name returns null"		"1"	"$(f enoent-null)"
+check "with ENOENT"				"2"	"$(f enoent-err)"
+check "a name under a plain file returns null"	"1"	"$(f notdir-null)"
+check "with ENOTDIR"				"20"	"$(f notdir-err)"
+
+# 6. The buffer cache, asked directly, with its negative control.  Every case
+# above would pass identically against a cache that never hit -- and the hit
+# case alone would pass against one that never did any I/O at all.
+check "a second bread of a cached block hits"	"1"	"$(f cache-b-cache)"
+check "and reaches no driver"			"1"	"$(f cache-no-io)"
+check "while an uncached block does one read"	"1"	"$(f cache-miss-io)"
+
+# 7. Hermetic.  This probe reads; a write would modify an image tests/mkfs
+# validated, and make a later suite's answer depend on this one having run.
+# That is the cross-suite form of the litter problem tests/crash-probe.sh
+# records.
+check "the probe wrote nothing to the image"	"0"	"$(f writes)"
+check "and it did reach the driver"		"1"	"$(f reads-total-positive)"
+
+# 8. No inode leaked.  ONE held at the end -- the root -- with i_count 2,
+# because rootdir and u_cdir are two igets of the same (dev, ROOTINO) and the
+# second finds it in the hash rather than taking a second slot.  This is the
+# only case here that constrains the inode table, and it exists because
+# mutation showed nothing else did: NINODE 80 -> 3 -> 2 all passed 308, and
+# only NINODE 1 failed.  A missing iput would otherwise be invisible.
+check "exactly one inode is still held"		"1"	"$(f inodes-held)"
+check "and it is the root, held twice"		"2"	"$(f root-count-final)"
+# Reaching the last line means none of v8fs.c's five PANIC services ran and
+# neither getfs nor namei panicked, since panic() does not return.
+check "no panic service was reached"		"1"	"$(f completed)"
+
+fi	# mkfs succeeded
+fi	# mkfs exists
 
 echo "streams: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -187,7 +187,7 @@ typedef long		label_t[14];	/* h/types.h:29 -- see hazard 4 */
  * IT IS 64 BITS WHERE THE VAX'S WAS 32, AND THAT IS THE SEAM RULE RATHER THAN
  * A LAPSE.  `time' crosses nothing: it is a kernel global, not a member of any
  * record.  The on-disk times ARE narrowed, per field, in src/include/sys/ino.h
- * and filsys.h -- `v8_i32 di_mtime' -- so iget.c:274-276's `dp->di_atime =
+ * and filsys.h -- `v8_i32 di_mtime' -- so iget.c:271-276's `dp->di_atime =
  * *ta' truncates on assignment exactly where 1985's four bytes are wanted, and
  * nowhere else.  The hazard CLAUDE.md records is the ADDRESS of a narrowed
  * field being taken as a time_t*, and the five sites here go the safe way:
@@ -438,7 +438,7 @@ typedef unsigned int	v8_u32;		/* :81 */
  * again, in the paragraph that documents it.
  *
  * `grep -oE SIG[A-Z]+' over the six imported files yields SIGKILL, SIGXFSZ and
- * SIGNAL.  The third is alloc.c:141, an upstream comment in capitals --
+ * SIGNAL.  The third is alloc.c:190, an upstream comment in capitals --
  * "SHOULD RATHER SEND A SIGNAL AND SUSPEND THE PROCESS" -- and it is the
  * fourth time in this port that a sweep has counted prose as an instance.  The
  * filter that separates them is to grep the RAISE, not the name:
@@ -721,8 +721,8 @@ void	v8k_stunconf(void);	/* forget them all; for tests */
  * what an object IMPORTS, and a collision is about what it DEFINES.  So the
  * measurement is `nm -g' on the archives, filtered to T and D:
  *
- *	free	libv8c.a(malloc.o)	alloc.c:156 defines free(dev, bno)
- *	ialloc	libv8c.a(malloc.o)	alloc.c:232 defines ialloc(dev)
+ *	free	libv8c.a(malloc.o)	alloc.c:205 defines free(dev, bno)
+ *	ialloc	libv8c.a(malloc.o)	alloc.c:281 defines ialloc(dev)
  *	min	libv8c.a(min.o)		rdwri.c:250
  *	max	libv8c.a(max.o)		rdwri.c:236
  *	sleep	libv8c.a(sleep.o)	shim/kern/sys/v8fs.c

@@ -46,7 +46,13 @@
 #include "../../../src/sys/h/mount.h"	/* struct mount, M_MOUNTED, findmount */
 #include "../../../src/sys/h/cmap.h"	/* mfind's authentic declaration */
 #include "../../../src/sys/h/acct.h"	/* ASU, for suser's u_acflag */
-#include "../h/buf.h"
+/*
+ * `#include "../h/buf.h"' stood here and was removed in §8a step 5c, for the
+ * reason shim/kern/sys/subr.c gives at the same place: this file used neither
+ * of that header's two constants, and the header is gone.  Nothing here needs
+ * `struct buf' either -- mount.h's m_bufp is a pointer to an incomplete type,
+ * which is all findmount and allocmount below ever handle.
+ */
 
 void	kvprintf(const char *fmt, __builtin_va_list ap);	/* machdep.c:175 */
 
@@ -72,15 +78,18 @@ struct fstypsw fstypsw[] = {
 int	nfstyp = 1;
 
 /*
- * Both device switches are EMPTY and both counts are 0.  conf.h says why the
- * one all-null row exists (C89 has no zero-length array) and why nothing may
- * index it.  nblkdev == 0 is what makes bio.c:352's range check reject every
- * block device instead of reading this row.
+ * THE TWO DEVICE SWITCHES USED TO BE HERE and moved to shim/kern/sys/ioconf.c
+ * in §8a step 5c.  That file is named for conf/ioconf.c, which is where
+ * config(8) emits exactly these tables, so they were in the wrong one of our
+ * two files all along -- this one holds the kernel SERVICES.  The move also
+ * put bdevsw under ioconf.c's dense-prefix invariant, which it needs for the
+ * same reason streamtab does and which is argued there.
+ *
+ * What did NOT change is that cdevsw stays empty and nchrdev stays 0.  What
+ * changed is that nblkdev is no longer permanently 0: a probe registers a
+ * block driver with v8k_bdconf() and bio.c:352's range check then admits it,
+ * which is what makes it possible to run this code at all.
  */
-struct cdevsw cdevsw[] = { { 0, 0, 0, 0, 0, 0, 0 } };
-int	nchrdev;
-struct bdevsw bdevsw[] = { { 0, 0, 0, 0, 0 } };
-int	nblkdev;
 
 /*
  * The proc table.  shim/kern/h/proc.h argues the size: slot 0 is pfind's chain
@@ -276,7 +285,7 @@ fustrlen(caddr_t addr)
  * provides the setjmp end of it for streamio.c.
  *
  * Reproducing it matters because the callers are written for it.  iget.c:93
- * and alloc.c:40,166,246 sleep at PINOD (10) waiting for a locked inode; if a
+ * and alloc.c:89,215,295 sleep at PINOD (10) waiting for a locked inode; if a
  * signal arrives, upstream unwinds out of the whole system call rather than
  * returning into a loop that will sleep again.  A version that always returned
  * normally would turn every interruptible inode wait into an uninterruptible
@@ -401,12 +410,32 @@ suser(void)
  * src/sys/h/mount.h:22, so that declaration is the prototype and this
  * definition answers to it.
  *
- * The mount table is all zero here, so every lookup returns NULL, and the two
- * callers differ in what they do about it: alloc.c:381's getfs() panics with
- * "no fs" and alloc.c:425's getfsx() returns -1.  Both are correct answers for
- * a system with nothing mounted, and the panic is the one that will fire first
- * when v8fs is given an image without a mount entry -- which is the right way
- * to find out.
+ * The two callers differ in what they do about a NULL: alloc.c:418's getfs()
+ * PANICS, at :426, and alloc.c:461's getfsx() returns -1, at :470.  Both are
+ * correct answers for a system with nothing mounted, and the panic is the one
+ * that fires first when v8fs is handed an image with no mount entry -- which
+ * is the right way to find out.  Since §8a step 5c there IS one: main.c's
+ * iinit() calls allocmount below, and tests/streams/fsprobe.c reaching getfs
+ * at all is the assertion that it worked.
+ *
+ * THREE THINGS IN THAT SENTENCE WERE WRONG AND ONE OF THEM IS BELL LABS'.
+ * It used to read `alloc.c:381's getfs() panics with "no fs" and alloc.c:425's
+ * getfsx() returns -1'.
+ *
+ *   THE LINE NUMBERS were written before this port put a 43-line PORT comment
+ *   at the top of alloc.c for the second NOLONG deviation, and inserting a
+ *   comment silently moves every citation below it.  Eight citations across
+ *   five files went stale the same way, all by exactly +43.
+ *
+ *   THE PANIC STRING IS `getfs', not "no fs" -- and "no fs" is not invented.
+ *   It is upstream's own words at alloc.c:414, in the comment block directly
+ *   above the function: `panic: no fs -- the device is not mounted.'  Twelve
+ *   lines below it the code says panic("getfs").  So BELL LABS' COMMENT IS
+ *   STALE AGAINST BELL LABS' CODE, and this port read the comment and wrote it
+ *   down as the behaviour.  CLAUDE.md's rule is that a recorded diagnosis is a
+ *   hypothesis until re-measured; it turns out that applies to the imported
+ *   half's own comments too, which is the one place the fidelity contract
+ *   guarantees we will not have checked them.
  */
 /*
  * THE DEFINITION IS OLD-STYLE, IN A FILE THAT IS OTHERWISE MODERN C, AND THAT
@@ -438,6 +467,56 @@ findmount(fstyp, dev)
 		    mp->m_fstyp == fstyp)
 			return (mp);
 	return (NULL);
+}
+
+/*
+ * allocmount -- sys3.c:239-259, transcribed.  findmount's sibling, declared by
+ * the same authentic header (mount.h:23), old-style for the same dev_t reason,
+ * and here because §8a step 5c gave it its first caller: shim/kern/sys/main.c's
+ * iinit(), which is where a root filesystem gets its mount entry.
+ *
+ * THE `if' AT :247 IS TRANSCRIBED EXACTLY AND IT LOOKS LIKE A BUG.  Upstream is
+ *
+ *	if(!mp->m_flags&M_MOUNTED) {
+ *
+ * -- and `!' binds tighter than `&', so what it computes is
+ * `(mp->m_flags == 0) & M_MOUNTED', not `!(mp->m_flags & M_MOUNTED)'.  Those
+ * are different expressions and they agree here for one reason: M_MOUNTED is 1
+ * (mount.h:27) and it is THE ONLY FLAG the structure has.  A free slot has
+ * m_flags 0, so `1 & 1' is 1; a mounted slot has m_flags 1, so `0 & 1' is 0.
+ * Correct, by a coincidence between an operator precedence and a bit value.
+ *
+ * It is left exactly as written, because the fidelity contract says a change to
+ * imported logic must be forced by the target and this one would be forced by
+ * taste -- and because "correct today, wrong the day a second flag is defined"
+ * is upstream's risk to have taken, and recording it is worth more than
+ * quietly repairing it.  Note which direction it would fail in: a second flag
+ * on a mounted slot leaves the expression at 0, so the slot stays unavailable;
+ * a second flag on a FREE slot makes `!m_flags' 0 and the slot becomes
+ * invisible to the allocator.  Both lose a slot rather than double-mounting
+ * one, which is the safe direction.
+ */
+struct mount *
+allocmount(fstyp, dev)
+	int fstyp;
+	dev_t dev;
+{
+	register struct mount *mp, *free;
+
+	free = NULL;
+	for (mp = mount; mp < mount + NMOUNT; mp++) {
+		if (!mp->m_flags & M_MOUNTED) {
+			if (free == NULL)
+				free = mp;
+		} else if (mp->m_dev == dev && mp->m_fstyp == fstyp)
+			return NULL;	/* mounted twice */
+	}
+	if (free != NULL) {
+		free->m_flags |= M_MOUNTED;
+		free->m_dev = dev;
+		free->m_fstyp = fstyp;
+	}
+	return free;
 }
 
 /*

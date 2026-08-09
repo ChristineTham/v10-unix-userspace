@@ -105,7 +105,11 @@ struct proc {
  *
  *	sys/subr.c:235	for (p = &proc[pidhash[PIDHASH(pid)]];
  *			     p != &proc[0]; p = &proc[p->p_idhash])
- *	dev/bio.c:482,554,600	wakeup((caddr_t)&proc[2])
+ *	dev/bio.c:482,600	wakeup((caddr_t)&proc[2])
+ *	dev/bio.c:554		dpte = dptopte(&proc[2], p2dp)   -- NOT a wakeup;
+ *				this line used to be listed under the label
+ *				above, which was wrong about what it does and
+ *				right about what it needs
  *
  * pfind's loop uses proc[0] as its CHAIN TERMINATOR, so slot 0 can never be a
  * real process -- it is upstream's null, spelled as an index because p_idhash

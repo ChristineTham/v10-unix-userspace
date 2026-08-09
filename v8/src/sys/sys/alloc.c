@@ -45,24 +45,30 @@ daddr_t prev;
 	 * pointer that walks it did not, and the two disagree by a factor of
 	 * two.
 	 *
-	 * FOUR USES, AND EVERY ONE IS WRONG IN A DIFFERENT WAY:
+	 * FOUR USES, AND EVERY ONE IS WRONG IN A DIFFERENT WAY.  Each is given
+	 * as `ours (upstream)', because THIS COMMENT MOVED THEM: inserting it
+	 * pushed every line below down by 49 (43 before this paragraph was
+	 * added, which is itself the point), and the first draft cited only
+	 * upstream's numbers -- so `:70' pointed into the middle of the comment
+	 * containing the citation.  Both are useful and neither alone is:
 	 *
-	 *	:70, :96	`*p &= ~(1 << ...)' is an 8-byte
-	 *			read-modify-write on a 4-byte word, so clearing
+	 *	:119, :145	`*p &= ~(1 << ...)' is an 8-byte
+	 *	  (:70, :96)	read-modify-write on a 4-byte word, so clearing
 	 *			one block's bit rewrites the NEXT 32 blocks'
 	 *			word with whatever was read
-	 *	:83		`for(i = 0; i < BITMAP && !*p; i++, p++)'
+	 *	:132 (:83)	`for(i = 0; i < BITMAP && !*p; i++, p++)'
 	 *			strides EIGHT bytes for BITMAP iterations --
 	 *			it scans half the map and then runs 961 words
 	 *			past the end of the superblock buffer
-	 *	:89		`*p & (1 << j)' for j < 32 reads the right bits
+	 *	:138 (:89)	`*p & (1 << j)' for j < 32 reads the right bits
 	 *			but of an 8-byte load, so the answer is right
 	 *			by accident and only here
 	 *
-	 * UPSTREAM STATES THE ASSUMPTION FIVE LINES BELOW, at :88, and it is
-	 * the tell: `for(j = 0; j < 32; j++)' carries the trailing comment
-	 * "BITS PER LONG".  Bell Labs wrote down that a long is 32 bits, in a
-	 * comment, next to the loop that depends on it.
+	 * UPSTREAM STATES THE ASSUMPTION ONE LINE ABOVE THE THIRD OF THOSE, at
+	 * :137 (upstream :88), and it is the tell: `for(j = 0; j < 32; j++)'
+	 * carries the trailing comment "BITS PER LONG".  Bell Labs wrote down
+	 * that a long is 32 bits, in a comment, next to the loop that depends
+	 * on it.
 	 *
 	 * v8_i32 rather than int, because src/include/sys/types.h:80 is where
 	 * this port says "exactly four bytes, because a VAX wrote four bytes
