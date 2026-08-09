@@ -1422,7 +1422,8 @@ comments. Knowing the rule does not filter the output. Only filtering it does.
 Compiling those six files was supposed to be the mechanical part. It found the
 second-worst bug of the phase and it found it as a *warning*.
 
-`alloc.c:34` declares `register long *p`, and `p` walks `s_bfree` — the
+`alloc.c:34` — upstream's numbering; the port's comment moved it — declares
+`register long *p`, and `p` walks `s_bfree` — the
 superblock's free-block bit map. A year earlier, a different phase of this port
 had narrowed that array to four-byte words, because it is written to a disk and
 a VAX wrote four bytes there. The array narrowed. The pointer did not. So

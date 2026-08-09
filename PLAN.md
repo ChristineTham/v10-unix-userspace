@@ -2423,7 +2423,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
      reading three archives when the build makes five -- and the first
      correction to that said four, missing `libkmemu.a`.
    - **`dev/conf.c` is vestigial and Bell Labs say so.** Its `fstypsw[0]`
-     names `rnami`, defined nowhere; `nami.c:167` says *"USED TO BE rnami"*
+     names `rnami`, defined nowhere; `nami.c:167` upstream says *"USED TO BE rnami"*
      above `fsnami`, and `conf/config_diff:11` is *"dev/conf.c is no more.
      config makes a conf.c for each machine"*. The live source is
      `conf/devices:70-73`, which gives `fsnami`. `nfstyp` is **1** here.
@@ -2531,7 +2531,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
    plan, and the first two are the kind that make a build fail in a way that
    reads like a port bug:
 
-   - **`nami.c:145-148` breaks path resolution outright, and it is `NOLONG`
+   - **`nami.c:145-148` upstream breaks path resolution outright, and it is `NOLONG`
      again.** Under `#if DIRSIZ == 14` upstream hand-unrolls the name compare
      as `*(long *)&nm[0]`, `&nm[4]`, `&nm[8]`, `*(short *)&nm[12]` -- exactly
      4+4+4+2 = 14 **because V8's `long` is 32 bits** (`ccom/vax/macdefs.h:20`,

@@ -890,7 +890,7 @@ because they cross the shim seam everywhere else. `src/include/PORTING.md`.
 
 **AND A NARROWED ARRAY NEEDS ITS POINTERS NARROWED TOO, WHICH IS THE SAME BUG
 ARRIVING A YEAR LATER AS A WARNING.** §8a step 4a narrowed the on-disk records;
-§8a step 5 imported the kernel code that walks them, and `alloc.c:34` is
+§8a step 5 imported the kernel code that walks them, and `alloc.c:34` upstream is
 `register long *p` over `s_bfree`, the superblock's free-block bit map that
 step 4a had made `v8_i32[961]`. The array narrowed and the pointer did not, so
 `*p &= ~(1 << (j&31))` is an 8-byte read-modify-write on a 4-byte word and
@@ -1182,7 +1182,7 @@ SAYING SO.** The `syopen` case below says a dead file that answers your question
 is the worst kind of evidence. `dev/conf.c` is the second: it holds
 `struct fstypsw fstypsw[]` and `nfstyp = 4`, the obvious source for the kernel's
 filesystem switch, and its row 0 names **`rnami`, which is defined nowhere in
-the tree**. `sys/nami.c:167` is a comment reading *"USED TO BE rnami"* directly
+the tree**. `sys/nami.c:167` upstream is a comment reading *"USED TO BE rnami"* directly
 above `fsnami`. `conf/config_diff:11` settles it in one sentence —
 *"dev/conf.c is no more. config makes a conf.c for each machine"* — and `:13-14`
 lists the files "changed a little to make names regular", `nami.c` among them.

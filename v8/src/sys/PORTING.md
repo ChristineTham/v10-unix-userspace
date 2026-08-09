@@ -1044,7 +1044,8 @@ against a number someone typed.
 ### `nami.c`: the name compare, and `NOLONG` for the second time
 
 The one deviation, and it is total rather than partial -- with it, no path
-resolves at all. `nami.c:145-147`, inside `#if DIRSIZ == 14`:
+resolves at all. `nami.c:145-147` upstream (`:179-181` here, now `*(int *)`),
+inside `#if DIRSIZ == 14`:
 
 ```c
 if (*(long *)&nm[0] == *(long *)&dp->d_name[0] &&
@@ -1090,7 +1091,8 @@ grep -nE '(^|[^_a-zA-Z])(unsigned[[:blank:]]+)?long[[:blank:]]+[a-z_]' ...
   not just the six -- the three `nami.c` lines and nothing else in
   `v8/usr/sys/`.
 - `sizeof(long)` and friends: **zero**.
-- `alloc.c:416` is the word "long" in an English sentence in a comment. Not an
+- `alloc.c:416` upstream (`:465` here) is the word "long" in an English sentence
+  in a comment. Not an
   instance -- the sweep matching prose, which this project has now been caught
   by three times.
 - `bio.c:62-66` -- `nread nreada ncache nwrite bufcount[64]` -- are statistics
@@ -1100,7 +1102,8 @@ grep -nE '(^|[^_a-zA-Z])(unsigned[[:blank:]]+)?long[[:blank:]]+[a-z_]' ...
   `int`, so the cast sign-extends and the hole test still fires. It would be
   wrong if `daddr_t` were unsigned, which is the one thing to re-check if
   §4a's narrowing is ever revisited.
-- `nami.c:183`'s `extern long cdevpath` is **dead**: both it and its only use
+- `nami.c:183` upstream (`:217` here) -- `extern long cdevpath` -- is **dead**:
+  both it and its only use
   (`:410`) are inside `#ifdef CHAOS` (`:182-184`, `:408-422`), and `CHAOS` is
   not defined here. So it is neither a hazard nor an external name to supply
   -- which a `long` sweep flags and a reader has to go and check.
@@ -1274,7 +1277,7 @@ compare, whose cause is one line of Bell Labs' compiler: `# define NOLONG`,
 "map longs to ints" (`cmd/ccom/vax/macdefs.h:20`). A VAX `long` was 32 bits.
 
 `alloc.c` has the same bug and it is worse, because it did not stop the build.
-`alloc.c:34` is `register long *p`, and `p` walks `s_bfree` — the superblock's
+`alloc.c:34` upstream (ours is `:83`) is `register long *p`, and `p` walks `s_bfree` — the superblock's
 **free-block bit map**, which upstream declares `long S_bfree[BITMAP]`
 (`h/filsys.h:31`) and which §8a step 4a narrowed to `v8_i32 S_bfree[961]`
 (`src/include/sys/filsys.h:47`) precisely because a VAX wrote four bytes per
@@ -1396,6 +1399,7 @@ The obvious source for `fstypsw[]` is `dev/conf.c:602-611`, four rows and
 `nfstyp = 4`. Row 0 is `{ 0,…,0, rnami, smount, 0}` — and **`rnami` is not
 defined anywhere in the V8 kernel.** The only three occurrences of the name are
 that row, the `extern int rnami()` above it, and a comment at `sys/nami.c:167`
+— upstream's numbering; `:201` in our patched copy —
 reading *"USED TO BE rnami"*, immediately above the definition of `fsnami`.
 
 `conf/config_diff:11` explains it in Bell Labs' own words — *"dev/conf.c is no

@@ -69,6 +69,13 @@ extern	struct streamtab {
  * `extern int rnami()' above it at :592, and a COMMENT in sys/nami.c:167
  * reading "USED TO BE rnami" immediately above the definition of fsnami.
  *
+ * THAT :167 IS UPSTREAM'S NUMBERING; ours is :201, because this port's PORT
+ * comment moved it.  Said explicitly because this very file cites BOTH
+ * numberings eleven lines apart -- :96 below says `src/sys/sys/nami.c:202',
+ * which is our tree -- and nothing distinguished them.  An audit found sixteen
+ * stale citations across the tree from exactly this ambiguity, so every one
+ * here now names which tree it means.
+ *
  * Bell Labs say why, in their own words, at conf/config_diff:11 --
  *
  *	dev/conf.c is no more.  config makes a conf.c for each machine.
