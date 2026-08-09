@@ -1322,14 +1322,242 @@ check "a second bread of a cached block hits"	"1"	"$(f cache-b-cache)"
 check "and reaches no driver"			"1"	"$(f cache-no-io)"
 check "while an uncached block does one read"	"1"	"$(f cache-miss-io)"
 
-# 7. Hermetic.  This probe reads; a write would modify an image tests/mkfs
-# validated, and make a later suite's answer depend on this one having run.
-# That is the cross-suite form of the litter problem tests/crash-probe.sh
-# records.
-check "the probe wrote nothing to the image"	"0"	"$(f writes)"
+# 7. The READ path sent nothing to the DEVICE, which is a narrower claim than
+# the two this case made before it and is the only true one.
+#
+# It first said it was protecting "an image tests/mkfs validated" -- the image
+# is built fresh above, in $TMP, for this probe alone.  It then said the read
+# path "dirties no buffer": rdwri.c:50 sets IACC at the top of readi and iput's
+# IUPDAT bdwrites the inode, so it dirties one per lookup.  Mutating bdwrite to
+# be synchronous turned this case red, which is how that was found.
+#
+# What is left is bdwrite's contract: dirty buffers stay in the cache.  That is
+# worth asserting -- it says the buffer cache is write-back and not write-
+# through -- and `and bdwrite reaches no driver' below is its pair for a write.
+check "the read path sent nothing to the device" "0"	"$(f writes-after-read)"
 check "and it did reach the driver"		"1"	"$(f reads-total-positive)"
 
-# 8. No inode leaked.  ONE held at the end -- the root -- with i_count 2,
+# ---------------------------------------------------------------------------
+# 8. THE WRITE HALF -- §8a step 5d.  Step 5c drove namei/iget/bmap/readi/bread
+# and left every one of their siblings unexecuted: bmap's ALLOCATING arm,
+# alloc() and free(), ialloc() and ifree(), writei, itrunc, and nami.c's
+# NI_CREAT and NI_DEL.
+#
+# The instrument is the superblock's own s_tfree/s_tinode rather than a count of
+# device writes, because a device count depends on when a 32-buffer cache
+# evicted something -- the host-property class these suites are swept for.  The
+# one exception is the delayed-write case, where not doing a device write IS the
+# property.
+#
+# THE ACCEPTANCE TEST IS AT THE END OF THIS BLOCK AND IT IS NOT A PROBE CASE:
+# icheck, dcheck and fsck are handed the image afterwards.  Three programs of
+# Bell Labs', which know nothing about this one, asked whether what V8's kernel
+# wrote is a filesystem.
+# ---------------------------------------------------------------------------
+check "the free-block count starts positive"	"1"	"$(f w-tfree-start-positive)"
+check "and so does the free-inode count"	"1"	"$(f w-tinode-start-positive)"
+
+# 8.0 The u-area, asserted before anything reads it.  writei's IFREG arm tests
+# u_offset+u_count against u_limit[LIM_FSIZE], and out of bss that is 0, so
+# EVERY write to a regular file failed -- with EMFILE, upstream's own choice at
+# rdwri.c:167, which reads as a file-table problem and cost a debugging round
+# before shim/kern/sys/main.c grew v8k_uinit().  Both values are the port's own
+# (vlimit.h's INFINITY, param.h's CMASK), not the host's.
+check "v8k_kinit set the file-size limit"	"1"	"$(f w-limit-fsize)"
+check "and the creation mask"			"1"	"$(f w-limit-cmask)"
+
+# 8a. A write inside a block that already exists allocates nothing, and takes
+# writei's bread+bdwrite arm.  bdwrite hands the block to the cache and the
+# cache does not hand it to the driver, so `writes' must not move -- that is the
+# only observable difference between a delayed write and a synchronous one, and
+# it is the one place a device count is the assertion.
+check "/hello is there to write to"		"1"	"$(f w-hello-found)"
+check "an in-place write moves 5 bytes"		"5"	"$(f w-inplace-n)"
+check "and allocates nothing"			"1"	"$(f w-inplace-noalloc)"
+check "and bdwrite reaches no driver"		"1"	"$(f w-inplace-delayed)"
+check "and readi gives the new bytes back"	"1"	"$(f w-inplace-readback)"
+
+# 8b. Extending into a direct block that does not exist runs bmap's `nb == 0'
+# arm -- the first line of alloc() this port has ever executed.  One block, so
+# s_tfree drops by exactly one, and i_size becomes offset+count because
+# writei:224-226 only ever grows it.
+check "extending writes 6 bytes"		"6"	"$(f w-extend-n)"
+check "and allocates exactly one block"		"1"	"$(f w-extend-alloc1)"
+check "and i_size is offset plus count"		"2054"	"$(f w-extend-size)"
+# The skipped block has no disk block at all.  bmap answers -1 for it, NOT 0
+# (subr.c:31), and rdwri.c:85-87 turns that into geteblk+clrbuf -- so the zeros
+# come from a buffer attached to no device rather than from a cleared block.
+check "and the hole between reads as zero"	"1"	"$(f w-hole-zero)"
+
+# 8c. Past block 9, bmap must allocate the INDIRECT block as well as the data
+# block: two allocations for one logical block, subr.c:69-80 then :91-113.  The
+# pair is the only thing that distinguishes this from 8b.
+check "writing past block 9 moves 8 bytes"	"8"	"$(f w-indirect-n)"
+check "and allocates TWO blocks, not one"	"1"	"$(f w-indirect-alloc2)"
+check "and bmap can find block 10 again"	"1"	"$(f w-indirect-bmap)"
+check "and the bytes come back"			"1"	"$(f w-indirect-readback)"
+
+# 8c-bis. THE SIGNAL THAT MUST NOT BECOME A BROADCAST.  writei's over-limit arm
+# is psignal(u.u_procp, SIGXFSZ) and this port's psignal is a real kill(2), so
+# imported kernel code reaches out and touches the host there.
+#
+# THIS CASE EXISTS BECAUSE A MUTATION FOUND THE BUG BY KILLING THE TEST RUNNER.
+# Mutating v8k_uinit to leave u_limit 0 sent every write down that arm, and the
+# run produced no failing case at all -- it produced a dead shell.  fsprobe does
+# not call v8k_procinit, so v8k_hostpid was 0, v8k_hostof returned 0, psignal's
+# guard was `hp < 0', and the syscall was kill(0, SIGXFSZ): the whole process
+# group.  Both functions now refuse a host pid of 0.
+#
+# `survived' looks like a strange thing to assert and is the only thing that can
+# be asserted about a signal that must not arrive -- if it does, this line is
+# never printed and the case reports an empty `got'.  EMFILE is its pair, so a
+# writei that never reached the arm cannot pass it either.
+check "an over-limit write is refused"		"1"	"$(f w-xfsz-refused)"
+check "with EMFILE, upstream's own choice"	"24"	"$(f w-xfsz-emfile)"
+check "and the process is still alive"		"1"	"$(f w-xfsz-survived)"
+
+# 8d. ialloc and ifree.  A fresh inode has i_mode 0 -- that is ialloc's own test
+# at alloc.c:302 for whether the number it pulled is really free -- and a number
+# above ROOTINO.  It is freed by iput with i_nlink 0, which is how every caller
+# does it and is what reaches ifree through iget.c:196; calling ifree by hand
+# would leave the inode in core and prove less.
+check "ialloc hands out an inode"		"1"	"$(f w-ialloc-ok)"
+check "with i_mode 0"				"1"	"$(f w-ialloc-mode0)"
+check "and a number above the root's"		"1"	"$(f w-ialloc-above-root)"
+check "and the free-inode count drops by one"	"1"	"$(f w-ialloc-tinode)"
+check "and iput with nlink 0 gives it back"	"1"	"$(f w-ifree-tinode)"
+
+# 8e. namei with NI_CREAT: dsearch fails, nami.c:494 runs ialloc, iupdat writes
+# the inode, and writei(dp) puts the NAME in the parent directory -- the part no
+# direct ialloc can reach.  The mode carries no IFMT on purpose, so nami.c:503
+# has to add IFREG.  This is also the first call in the port's history to reach
+# access(dp, IWRITE), which is why §8a step 5d restored v8fs.c's s_ronly arm.
+check "NI_CREAT returns an inode"		"1"	"$(f w-creat-ok)"
+check "and nami.c added IFREG itself"		"1"	"$(f w-creat-isreg)"
+check "with the mode asked for"			"644"	"$(f w-creat-perm)"
+check "one link"				"1"	"$(f w-creat-nlink)"
+check "and no blocks yet"			"0"	"$(f w-creat-size)"
+
+# 8f. DRAIN THE SUPERBLOCK'S FREE LIST.  alloc() hands out s_free[--s_nfree]
+# until s_nfree hits 0 and only THEN follows the chain (alloc.c:163-176): bread
+# the block it just handed out, take df_nfree and df_free from it, carry on.
+# That is V7's struct fblk, 716 bytes, the record sys/fblk.h had never been
+# imported for -- and mkfs wrote it.  So this is the second half of step 5c's
+# claim, for metadata rather than data.
+#
+# The count is READ FROM THE SUPERBLOCK and the probe then allocates s_nfree+24
+# blocks, so the margin cannot go stale.  Every one of those writes succeeding
+# is itself the proof: without a refill, alloc() takes `goto nospace' and the
+# writes return ENOSPC.
+check "every block of a bulk write landed"	"1"	"$(f w-bulk-blocks)"
+check "and i_size is the whole of it"		"1"	"$(f w-bulk-size)"
+check "and the free list refilled from the chain" "1"	"$(f w-drain-refilled)"
+# At least one block per block written; more, because blocks 10.. need indirect
+# blocks too.  A lower bound rather than a number, because how many indirect
+# blocks a file of this size takes is a fact about NINDIR and not about alloc().
+check "and s_tfree fell by at least that many"	"1"	"$(f w-bulk-tfree-atleast)"
+check "and a block near the far end reads back"	"1"	"$(f w-bulk-readback)"
+
+# 8g. An ORDINARY namei finds it.  Without this, 8e proves only that ialloc
+# returned an inode; the directory entry writei(dp) wrote is what makes it a
+# file with a name.
+check "a plain lookup finds the created name"	"1"	"$(f w-lookup-found)"
+check "at the size it was written to"		"1"	"$(f w-lookup-size-matches)"
+
+# 8h. NI_DEL.  nami.c:298-328 clears d_ino, writei()s the directory -- writei's
+# ONE synchronous arm, rdwri.c:207-217, guarded on exactly that -- and iputs the
+# target with nlink now 0, reaching itrunc, which walks NADDR-1 down to 0 handing
+# every block back to free(), then ifree for the inode.
+#
+# A SUCCESSFUL DELETE RETURNS NULL: fsnami's arm ends `goto out' and namei's
+# case 1 returns NULL.  u_error is the only thing separating success from
+# failure, the same shape as the enoent/notdir pair above.
+check "NI_DEL returns null"			"1"	"$(f w-del-null)"
+check "with no error, which is what says it worked" "0"	"$(f w-del-err)"
+check "and the name is gone"			"1"	"$(f w-del-gone)"
+check "with ENOENT"				"2"	"$(f w-del-gone-err)"
+
+# THE ROUND TRIP, and it is the strongest single pair here.  Everything 8e and
+# 8f took -- one inode and several hundred blocks -- has come back, so s_tinode
+# is exactly what it was before the create and s_tfree exactly what it was after
+# 8c.  An off-by-one anywhere in alloc, free, ialloc, ifree or itrunc moves one.
+check "every inode taken came back"		"1"	"$(f w-roundtrip-tinode)"
+check "and every block"				"1"	"$(f w-roundtrip-tfree)"
+
+# 8i. update() is sync(2)'s internal name and bflush(NODEV) pushes every
+# B_DELWRI buffer at the driver.  Until they run, most of the work above is in a
+# 32-buffer cache and the image on disk is a lie.
+check "the flush reached the driver"		"1"	"$(f w-flush-wrote)"
+check "and the run wrote something overall"	"1"	"$(f w-writes-total-positive)"
+
+# ---------------------------------------------------------------------------
+# 8j. THE ACCEPTANCE TEST.  Three of Bell Labs' own programs, which know nothing
+# about the probe, are handed the image V8's kernel just wrote.
+#
+# This is the property step 5c could not have: a reader agreeing with a writer
+# proves they share a belief, and the two halves of THIS probe are one program.
+# icheck walks the image independently and recomputes the block accounting;
+# dcheck walks the directory tree and recomputes the link counts; fsck does both
+# and REPAIRS, so its silence is the strongest of the three.
+# ---------------------------------------------------------------------------
+# EVERY CAPTURE HERE IS BOUNDED, and that is not tidiness.  A mutation that
+# corrupted the free list made fsck print for forty seconds and the SHELL died
+# -- `xrealloc: cannot allocate 18446744071562067968 bytes' -- so the run
+# produced no summary and no diagnosis.  These three programs are bounded in
+# time by their deadlines and were not bounded in volume by anything; on a
+# healthy image they print six lines.
+icout=$(V8ROOT=$ROOT/rootfs "$ROOT/rootfs/etc/icheck" "$FSTMP/img" 2>&1 | head -200)
+# `missing' is icheck's count of blocks that are in neither a file nor the free
+# list -- exactly what a leak in alloc/free/itrunc produces, and the reason this
+# is the first line to look at.
+check "icheck finds no missing blocks" "0" \
+    "$(printf '%s\n' "$icout" | awk '$1=="missing"{print $2}')"
+# used + free must be every block outside the ilist.  fsize and isize come from
+# the probe, which read them out of the superblock through getfs.
+icused=$(printf '%s\n' "$icout" | awk '$1=="used"{print $2}')
+icfree=$(printf '%s\n' "$icout" | awk '$1=="free"{print $2}')
+check "and used+free accounts for every block" \
+    "$(( $(f fs-fsize) - $(f fs-isize) ))" "$(( icused + icfree ))"
+
+# dcheck prints one line per disagreement between an inode's link count and the
+# number of directory entries pointing at it.  Silence is the assertion, and it
+# is the one that would catch NI_CREAT or NI_DEL getting i_nlink wrong.
+#
+# A SILENCE CASE NEEDS A POSITIVE CONTROL, because a dcheck that failed to run
+# at all is also silent -- the "a case that silently disappears is worse than
+# one that asserts a host property" rule.  dcheck names the image it checked
+# whatever it finds, so that line is the proof it ran.
+dcraw=$(V8ROOT=$ROOT/rootfs "$ROOT/rootfs/etc/dcheck" "$FSTMP/img" 2>&1 | head -200)
+dcout=$(printf '%s\n' "$dcraw" | grep -v "^$FSTMP/img" | grep -v '^$')
+check "dcheck ran on the image" "1" \
+    "$(printf '%s\n' "$dcraw" | grep -c "^$FSTMP/img")"
+check "and found no link-count disagreement" "" "$dcout"
+
+# fsck -y so no case can block on stdin, </dev/null so a prompt that ignored -y
+# fails rather than waits, and a deadline because a checker that repairs can
+# loop.  tests/mkfs uses the same shape and says why.
+cp "$FSTMP/img" "$FSTMP/img.prefsck"
+fsout=$(perl -e 'alarm 40; exec @ARGV' env V8ROOT=$ROOT/rootfs \
+        "$ROOT/rootfs/etc/fsck" -y "$FSTMP/img" </dev/null 2>&1 | head -200)
+# fsck's own three numbers, arrived at by a different walk from icheck's.
+check "fsck agrees with icheck's three numbers" \
+    "$(printf '%s\n' "$icout" | awk '$1=="files"{print $2}') files $icused blocks $icfree free" \
+    "$(printf '%s\n' "$fsout" | grep 'files.*blocks.*free' | sed 's/^ *//')"
+# The positive control for the silence case below, and it is not decoration:
+# phase 5 is the FREE LIST, which is precisely what alloc() drained and refilled
+# and what itrunc handed everything back to.  A fsck that never got that far
+# would leave "nothing modified" true and meaningless.
+check "and reached phase 5, the free list" "1" \
+    "$(printf '%s\n' "$fsout" | grep -c 'Phase 5')"
+check "and reports nothing modified" "" \
+    "$(printf '%s\n' "$fsout" | grep 'FILE SYSTEM WAS MODIFIED')"
+# AND THE BYTES SAY SO TOO.  fsck printing no complaint and fsck changing
+# nothing are two different claims; tests/mkfs learned to assert the second.
+if cmp -s "$FSTMP/img.prefsck" "$FSTMP/img"; then pass=$((pass+1))
+else bad "fsck modified the image V8's kernel wrote" \
+	 "$(cmp "$FSTMP/img.prefsck" "$FSTMP/img" 2>&1 | head -2)"; fi
+
+# 9. No inode leaked.  ONE held at the end -- the root -- with i_count 2,
 # because rootdir and u_cdir are two igets of the same (dev, ROOTINO) and the
 # second finds it in the hash rather than taking a second slot.  This is the
 # only case here that constrains the inode table, and it exists because

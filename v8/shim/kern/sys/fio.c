@@ -186,10 +186,36 @@ v8k_procinit(void)
  * the fold is undone is a named function rather than an inline cast somewhere
  * -- the day a second V8 process exists, this is the function that grows a
  * table and nothing else changes.
+ *
+ * AN UNINITIALISED MAP ANSWERED `0', AND kill(0, sig) IS A BROADCAST.
+ * §8a step 5d, found by mutation, and it had killed the test runner and the
+ * shell above it before it was understood.
+ *
+ * v8k_procinit() sets v8k_hostpid from getpid(2), so it is nonzero once that
+ * has run -- and it had run in every consumer that existed, because all three
+ * of them were stream probes.  A consumer that stands up a FILESYSTEM does not
+ * need a process description and does not call it, so p_pid stayed 0 out of
+ * bss, `v8pid == p_pid' matched with v8pid 0, and this returned
+ * v8k_hostpid == 0.  subr.c's psignal guard is `if (hp < 0) return', which 0
+ * passes, and the syscall that came out was kill(0, SIGXFSZ) -- every process
+ * in the group, i.e. run.sh and the interactive shell.
+ *
+ * THE SHAPE IS THIS PORT'S MOST REPEATED ONE AND THE OTHER HALF WAS ALREADY
+ * FIXED.  subr.c's gsignal carries `if (pgrp == 0) return' with a comment
+ * explaining that group 0 is not a group; foldid() above never returns 0 for a
+ * non-root pid for the same family of reason.  The guard landed on gsignal and
+ * the line beside it kept the assumption -- exactly what CLAUDE.md records for
+ * fio.c's own (short)u_uid cast sitting one line under the paragraph arguing
+ * against a bare cast.
+ *
+ * So the answer is TWO guards, because they are two different claims: this one
+ * says "no host process is known", and subr.c's says "0 is not a pid".
  */
 long
 v8k_hostof(int v8pid)
 {
+	if (v8k_hostpid <= 0)
+		return (-1);		/* v8k_procinit has not run */
 	if (v8pid == v8k_proc0.p_pid || v8pid == v8k_proc0.p_pgrp)
 		return (v8k_hostpid);
 	return (-1);

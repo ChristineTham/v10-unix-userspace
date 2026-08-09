@@ -63,6 +63,7 @@
 #include "../../src/sys/h/buf.h"	/* AUTHENTIC -- see below */
 #include "../../shim/kern/h/conf.h"
 #include "../../shim/kern/h/filsys.h"
+#include "../../src/sys/h/vlimit.h"	/* LIM_FSIZE and INFINITY -- §8a step 5d */
 
 /*
  * THIS PROBE IS COMPILED -DKERNEL AND THAT IS NOT OPTIONAL, unlike the other
@@ -99,6 +100,19 @@
 int	readi(), iput(), brelse(), iodone(), bwrite(), schar(), iupdat();
 int	bhinit(), ihinit(), binit(), iinit();
 daddr_t	bmap();
+
+/*
+ * §8a step 5d, the write half.  THREE OF THESE ARE SPELLED v8k_ AND THAT IS
+ * NOT A SHIM FUNCTION -- it is Bell Labs' own, reached by the name param.h
+ * renames it to.  hostok.h:44-52 #undefs the redirects so this file can have
+ * <stdlib.h> as well, which means the plain names `free', `ialloc' and `time'
+ * belong to the HOST here.  Calling free(dev, bno) would compile (the host's
+ * takes one pointer, and this is K&R) and hand a device number to the C
+ * library's allocator.  The file's own header comment already records the
+ * same trap for `mount'.
+ */
+int	writei(), update(), bflush(), itrunc(), v8k_free();
+struct inode	*v8k_ialloc();
 
 int	v8k_bdconf(struct bdevsw *bd);
 void	v8k_bdunconf(void);
@@ -198,6 +212,53 @@ readfile(struct inode *ip, char *dst, int max)
 	if (u.u_error)
 		return (-1);
 	return (max - (int)u.u_count);
+}
+
+/*
+ * The write side of the same thing, §8a step 5d.  Returns the byte count
+ * actually written, or -1 with u_error set.
+ *
+ * u_segflg 1 matters MORE here than it does for the read.  rdwri.c:191-197 is
+ *
+ *	if (u.u_segflg != 1) { if (copyin(...)) { u.u_error = EFAULT; ... } }
+ *	else bcopy(u.u_base, bp->b_un.b_addr+on, n);
+ *
+ * -- and shim/kern/sys/subr.c's copyin is a bcopy with a NULL guard, so BOTH
+ * arms would work and the flag would look like a formality.  It is not: it is
+ * what fsnami sets at nami.c:251 before it writes a directory entry, so a
+ * probe that left it 0 would exercise a different arm from the one the kernel
+ * uses on itself.
+ */
+static int
+writefile(struct inode *ip, off_t off, char *src, int len)
+{
+	u.u_base = src;
+	u.u_count = len;
+	u.u_offset = off;
+	u.u_segflg = 1;
+	u.u_error = 0;
+	writei(ip);
+	if (u.u_error)
+		return (-1);
+	return (len - (int)u.u_count);
+}
+
+/*
+ * Read a fixed span out of a file, so a write can be checked where it landed
+ * rather than only from offset 0.
+ */
+static int
+readat(struct inode *ip, off_t off, char *dst, int len)
+{
+	u.u_base = dst;
+	u.u_count = len;
+	u.u_offset = off;
+	u.u_segflg = 1;
+	u.u_error = 0;
+	readi(ip);
+	if (u.u_error)
+		return (-1);
+	return (len - (int)u.u_count);
 }
 
 /* A cheap content check that survives being printed on one line. */
@@ -473,14 +534,452 @@ main(int argc, char **argv)
 	}
 
 	/* ---------------------------------------------------------------
-	 * 7. Nothing was written.  This probe reads; if a write happened, an
-	 * image tests/mkfs validated has been modified underneath it and the
-	 * next suite's answer would depend on this one having run.  That is
-	 * the cross-suite version of the litter problem tests/crash-probe.sh
-	 * records.
+	 * 7. THE READ PATH WROTE NOTHING, asserted here rather than at the end
+	 * because everything after this line writes on purpose.
+	 *
+	 * THIS CASE HAS NOW BEEN WRONG ABOUT ITSELF TWICE, and the second time
+	 * was measured rather than argued.
+	 *
+	 * It first said a write would modify "an image tests/mkfs validated ...
+	 * underneath it".  The image is built fresh by run.sh in $TMP for this
+	 * probe alone, so there was no shared artefact to protect.
+	 *
+	 * The replacement said the read path "reaches no bdwrite and dirties no
+	 * buffer".  IT DIRTIES ONE ON EVERY LOOKUP.  rdwri.c:50 is
+	 * `ip->i_flag |= IACC' at the top of readi, and iput's IUPDAT
+	 * (iget.c:198) then writes the inode back -- with bdwrite, because
+	 * waitfor is 0.  Mutating bio.c's bdwrite to take bawrite's synchronous
+	 * arm turned this case red, which is how it was found; the claim was
+	 * plausible, cited nothing, and was false.
+	 *
+	 * So what it asserts is exactly bdwrite's contract and nothing more: a
+	 * read leaves dirty buffers IN THE CACHE and sends nothing to the
+	 * DEVICE.  That is still worth having -- it is what says the cache is a
+	 * write-back cache rather than a write-through one -- and it is the
+	 * pair to `w-inplace-delayed' below, which asserts the same thing for a
+	 * write and is the case that names it.
 	 */
-	printf("writes %ld\n", nwrite);
+	printf("writes-after-read %ld\n", nwrite);
 	printf("reads-total-positive %d\n", nread > 0 ? 1 : 0);
+
+	/* ---------------------------------------------------------------
+	 * 8. THE WRITE HALF -- §8a step 5d, and none of it had ever executed.
+	 *
+	 * Step 5c drove namei -> iget -> bmap -> readi -> bread.  Every one of
+	 * those has a sibling on this side that the read path structurally
+	 * cannot reach: bmap's ALLOCATING arm, alloc() and free(), ialloc() and
+	 * ifree(), writei, itrunc, and nami.c's NI_CREAT and NI_DEL.
+	 *
+	 * THE INSTRUMENT IS THE SUPERBLOCK'S OWN ACCOUNTING, not a count of
+	 * device writes.  s_tfree and s_tinode are what alloc/free and
+	 * ialloc/ifree maintain, they are exact, and they are what icheck
+	 * independently recomputes at the end of the suite by walking the
+	 * image.  A device-write count would depend on when the 32-buffer cache
+	 * happened to evict something, which is the host-property class the
+	 * suites are swept for.  Device counts appear in exactly one case
+	 * below, where the point IS that a delayed write does not do one.
+	 */
+	{
+		long		tfree0, tinode0, w0;
+		long		tfreeA, tinodeA;
+		struct inode	*nip;
+		struct argnamei	arg;
+		int		i, k, got;
+		char		small[64];
+
+		tfree0 = (long)fp->s_tfree;
+		tinode0 = (long)fp->s_tinode;
+		printf("w-tfree-start-positive %d\n", tfree0 > 0 ? 1 : 0);
+		printf("w-tinode-start-positive %d\n", tinode0 > 0 ? 1 : 0);
+
+		/*
+		 * THE U-AREA'S FILE-SIZE LIMIT, ASSERTED BEFORE ANYTHING USES
+		 * IT, because it is what §8a step 5d cost a debugging round
+		 * to.  writei's IFREG arm is
+		 *
+		 *	u.u_offset + u.u_count > u.u_limit[LIM_FSIZE]
+		 *
+		 * and out of bss that array is all zero, so `0 + 5 > 0' is
+		 * true and EVERY write to a regular file fails.  It failed
+		 * with EMFILE -- upstream's own choice at rdwri.c:167, and
+		 * "too many open files" points at the file table rather than
+		 * at a limit nobody had set.
+		 *
+		 * shim/kern/sys/main.c's v8k_uinit() sets it from upstream's
+		 * main.c:62-77, and this case is what says v8k_kinit called
+		 * it.  A relation the port controls end to end: the value is
+		 * vlimit.h's INFINITY, not anything the host decides.
+		 */
+		printf("w-limit-fsize %d\n",
+		    u.u_limit[LIM_FSIZE] == INFINITY ? 1 : 0);
+		printf("w-limit-cmask %d\n", u.u_cmask == CMASK ? 1 : 0);
+
+		/* -----------------------------------------------------
+		 * 8a. Overwrite inside a block that already exists.
+		 *
+		 * /hello is 27 bytes, so block 0 is allocated and blocks 1
+		 * upward are not.  A 5-byte write at offset 0 therefore
+		 * allocates NOTHING, and writei takes its bread + bdwrite arm
+		 * (rdwri.c:187 and :222) because n+on is not BSIZE.
+		 *
+		 * bdwrite IS THE ONE PLACE A DEVICE COUNT IS THE ASSERTION.
+		 * It sets B_DELWRI|B_DONE and brelse()s -- rdwri.c hands the
+		 * block to the cache and the cache does not hand it to the
+		 * driver.  So `writes' must not move here, and that is the
+		 * only observable difference between a delayed write and a
+		 * synchronous one.
+		 */
+		ip = lookup("/hello");
+		if (ip == NULL) {
+			printf("w-hello-found 0\n");
+		} else {
+			printf("w-hello-found 1\n");
+			w0 = nwrite;
+			n = writefile(ip, (off_t)0, "HELLO", 5);
+			printf("w-inplace-n %d\n", n);
+			printf("w-inplace-noalloc %d\n",
+			    (long)fp->s_tfree == tfree0 ? 1 : 0);
+			printf("w-inplace-delayed %d\n",
+			    nwrite == w0 ? 1 : 0);
+
+			got = readat(ip, (off_t)0, small, 5);
+			small[got > 0 ? got : 0] = '\0';
+			printf("w-inplace-readback %d\n",
+			    (got == 5 && strncmp(small, "HELLO", 5) == 0)
+			    ? 1 : 0);
+
+			/* ---------------------------------------------
+			 * 8b. Extend into a direct block that does not
+			 * exist yet: bmap's `nb == 0' arm at subr.c:26-38,
+			 * which is the first line of alloc() this port has
+			 * ever run.  One block, so s_tfree drops by exactly
+			 * one -- and i_size becomes the offset plus the
+			 * count, because writei:224-226 only grows it.
+			 */
+			tfreeA = (long)fp->s_tfree;
+			n = writefile(ip, (off_t)2048, "second", 6);
+			printf("w-extend-n %d\n", n);
+			printf("w-extend-alloc1 %d\n",
+			    tfreeA - (long)fp->s_tfree == 1 ? 1 : 0);
+			printf("w-extend-size %ld\n", (long)ip->i_size);
+
+			/*
+			 * AND THE HOLE READS AS ZERO.  Block 1 was skipped,
+			 * so it has no disk block at all, and reading it must
+			 * not hand back whatever was on the platter.
+			 *
+			 * THE MECHANISM IS NOT WHAT IT LOOKS LIKE, and this
+			 * comment said the wrong thing until the guard was
+			 * read.  bmap for B_READ on an unallocated block does
+			 * not return 0 -- subr.c:31 is
+			 * `if(rwflg==B_READ || (bp = alloc(...))==NULL)
+			 *  return((daddr_t)-1)', i.e. MINUS ONE -- and
+			 * rdwri.c:85-87 answers that with
+			 * `bp = geteblk(); clrbuf(bp);', a buffer attached to
+			 * no device at all.  So the zeros come from an empty
+			 * buffer, not from a cleared block, and no I/O
+			 * happens.  Same shape as the ttyld tab case: the
+			 * answer that surprises you is the one to go and read
+			 * the guard for.
+			 */
+			got = readat(ip, (off_t)1100, small, 8);
+			for (i = 0, k = 0; i < got; i++)
+				if (small[i] != 0)
+					k++;
+			printf("w-hole-zero %d\n", (got == 8 && k == 0) ? 1 : 0);
+
+			/* ---------------------------------------------
+			 * 8c. Past block 9, so bmap has to allocate the
+			 * INDIRECT BLOCK as well as the data block -- two
+			 * allocations for one logical block, subr.c:69-80
+			 * then :91-113.  s_tfree drops by exactly 2, and
+			 * that pair is the only thing that distinguishes
+			 * this from 8b.
+			 *
+			 * The indirect one is bwrite (synchronous, "so that
+			 * indirect blocks never point at garbage") while the
+			 * data block is bdwrite, so a device count here
+			 * would be 1 -- true, and fragile, because getblk
+			 * may also evict.  The block count is not.
+			 */
+			tfreeA = (long)fp->s_tfree;
+			n = writefile(ip, (off_t)(10 * 1024), "indirect", 8);
+			printf("w-indirect-n %d\n", n);
+			printf("w-indirect-alloc2 %d\n",
+			    tfreeA - (long)fp->s_tfree == 2 ? 1 : 0);
+			b10 = bmap(ip, (daddr_t)10, B_READ);
+			printf("w-indirect-bmap %d\n", b10 > 0 ? 1 : 0);
+
+			got = readat(ip, (off_t)(10 * 1024), small, 8);
+			printf("w-indirect-readback %d\n",
+			    (got == 8 && strncmp(small, "indirect", 8) == 0)
+			    ? 1 : 0);
+			iput(ip);
+		}
+
+		/* -----------------------------------------------------
+		 * 8c-bis. THE SIGNAL THAT MUST NOT BECOME A BROADCAST.
+		 *
+		 * writei's over-limit arm is `psignal(u.u_procp, SIGXFSZ)'
+		 * followed by EMFILE, and this port's psignal is a REAL
+		 * kill(2) rather than a bit set in p_sig.  So the arm is one
+		 * of the few places where imported kernel code reaches out and
+		 * touches the host, and it deserves to be exercised on purpose
+		 * rather than only by accident.
+		 *
+		 * IT WAS FOUND BY ACCIDENT FIRST, and the accident is why this
+		 * case exists.  Mutating v8k_uinit to leave u_limit at 0 made
+		 * every write take this arm -- and the mutation did not
+		 * produce a failing case, it KILLED THE TEST RUNNER AND THE
+		 * SHELL ABOVE IT.  fsprobe does not call v8k_procinit (it
+		 * stands up a filesystem, not a process description), so
+		 * v8k_hostpid was 0, v8k_hostof returned 0, psignal's guard
+		 * was `hp < 0', and the syscall was kill(0, SIGXFSZ) -- the
+		 * whole process group.  Both functions now refuse a host pid
+		 * of 0; shim/kern/sys/fio.c has the account.
+		 *
+		 * The assertion is that the process is STILL HERE afterwards,
+		 * which is a strange-looking thing to assert and is the only
+		 * thing that can be asserted about a signal that must not
+		 * arrive.  It is paired with EMFILE so that a writei which
+		 * simply never reached the arm would not pass it.
+		 */
+		u.u_limit[LIM_FSIZE] = 8;	/* absurdly small, on purpose */
+		ip = lookup("/hello");
+		if (ip == NULL) {
+			printf("w-xfsz-found 0\n");
+		} else {
+			n = writefile(ip, (off_t)0, "0123456789", 10);
+			printf("w-xfsz-refused %d\n", n < 0 ? 1 : 0);
+			printf("w-xfsz-emfile %d\n", u.u_error);
+			iput(ip);
+		}
+		u.u_limit[LIM_FSIZE] = INFINITY;
+		printf("w-xfsz-survived 1\n");
+
+		/* -----------------------------------------------------
+		 * 8d. ialloc and ifree, asked directly and in isolation.
+		 *
+		 * ialloc's fast arm is `ino = fp->s_inode[--fp->s_ninode]'
+		 * (alloc.c:298), the superblock's cache of known-free inode
+		 * numbers, which mkfs filled.  A fresh inode must have
+		 * i_mode 0 -- that is ialloc's own test at :302 for whether
+		 * the number it pulled is really free -- and a number above
+		 * ROOTINO, since :302 refuses to hand out 1 or 2.
+		 *
+		 * FREEING IT IS NOT ifree(): it is iput() with i_nlink 0,
+		 * which is how every caller does it, and it reaches ifree
+		 * through iget.c:196.  Calling ifree by hand would leave the
+		 * inode in core and prove less.
+		 */
+		tinodeA = (long)fp->s_tinode;
+		nip = v8k_ialloc(dev);
+		if (nip == NULL) {
+			printf("w-ialloc-ok 0\n");
+		} else {
+			printf("w-ialloc-ok 1\n");
+			printf("w-ialloc-mode0 %d\n", nip->i_mode == 0 ? 1 : 0);
+			printf("w-ialloc-above-root %d\n",
+			    (long)nip->i_number > (long)ROOTINO ? 1 : 0);
+			printf("w-ialloc-tinode %d\n",
+			    tinodeA - (long)fp->s_tinode == 1 ? 1 : 0);
+
+			nip->i_nlink = 0;
+			iput(nip);
+			printf("w-ifree-tinode %d\n",
+			    (long)fp->s_tinode == tinodeA ? 1 : 0);
+		}
+
+		/* -----------------------------------------------------
+		 * 8e. namei with NI_CREAT -- the whole create path in one
+		 * call: dsearch fails, nami.c:494 runs ialloc, iupdat writes
+		 * the new inode, and writei(dp) puts the name into the
+		 * PARENT DIRECTORY.  That last one is the part no direct
+		 * ialloc can reach, and it is a write to a directory, which
+		 * is a different arm of writei from a write to a file.
+		 *
+		 * flagp->mode CARRIES NO IFMT, on purpose: nami.c:503-504
+		 * adds IFREG when the caller supplies none, and asking for
+		 * that arm is worth more than spelling IFREG here.
+		 *
+		 * access(dp, IWRITE) AT :496 IS WHY §8a step 5d RESTORED THE
+		 * s_ronly CHECK in shim/kern/sys/v8fs.c.  This is the first
+		 * call in the port's history that reaches it.
+		 */
+		arg.flag = NI_CREAT;
+		arg.ino = 0;
+		arg.idev = 0;
+		arg.mode = 0644;
+		strncpy(pathbuf, "/created", sizeof(pathbuf) - 1);
+		pathbuf[sizeof(pathbuf) - 1] = '\0';
+		u.u_dirp = pathbuf;
+		u.u_error = 0;
+		nip = namei(schar, &arg, 1);
+		if (nip == NULL) {
+			printf("w-creat-ok 0\n");
+			printf("w-creat-err %d\n", u.u_error);
+		} else {
+			printf("w-creat-ok 1\n");
+			printf("w-creat-isreg %d\n",
+			    (nip->i_mode & IFMT) == IFREG ? 1 : 0);
+			printf("w-creat-perm %o\n", nip->i_mode & 07777);
+			printf("w-creat-nlink %d\n", nip->i_nlink);
+			printf("w-creat-size %ld\n", (long)nip->i_size);
+
+			/* ---------------------------------------------
+			 * 8f. DRAIN THE SUPERBLOCK'S FREE LIST, which is
+			 * the case this whole section exists for.
+			 *
+			 * alloc() hands out fp->s_free[--s_nfree] until
+			 * s_nfree reaches 0, and only THEN does it follow
+			 * the chain (alloc.c:163-176): bread the block it
+			 * just handed out, take df_nfree and df_free from
+			 * it, and carry on.  That is V7's free-list format,
+			 * struct fblk, 716 bytes -- the one sys/fblk.h had
+			 * never been imported for -- and mkfs wrote it.
+			 *
+			 * So this is the second half of the same claim step
+			 * 5c made about data: a format one program wrote in
+			 * 2025 and a kernel from 1985 walks.  Reaching it
+			 * needs MORE THAN s_nfree allocations, so the count
+			 * is read from the superblock rather than assumed,
+			 * and the drain is asserted by s_nfree going UP --
+			 * a refill is the only thing that can raise it.
+			 */
+			k = (int)fp->s_nfree;
+			printf("w-nfree-before %d\n", k);
+			tfreeA = (long)fp->s_tfree;
+
+			for (i = 0; i < sizeof(big); i++)
+				big[i] = (char)('A' + (i % 26));
+
+			got = 0;
+			for (i = 0; i < k + 24; i++)
+				if (writefile(nip, (off_t)i * 1024,
+				    big + (i % 97), 1024) == 1024)
+					got++;
+			printf("w-bulk-blocks %d\n", got == k + 24 ? 1 : 0);
+			printf("w-bulk-size %d\n",
+			    (long)nip->i_size == (long)(k + 24) * 1024
+			    ? 1 : 0);
+
+			/*
+			 * The drain: s_nfree cannot rise unless alloc()
+			 * refilled it from a chained block, and the only
+			 * code that does that is the arm above.
+			 */
+			printf("w-drain-refilled %d\n",
+			    (int)fp->s_nfree > 0 &&
+			    (long)fp->s_tfree < tfreeA ? 1 : 0);
+
+			/*
+			 * AND THE ACCOUNTING IS EXACT.  k+24 data blocks,
+			 * plus the indirect block that blocks 10.. need.
+			 * Written as a range rather than a number because
+			 * how many indirect blocks a file of this size uses
+			 * is a fact about NINDIR, not about alloc(); the
+			 * lower bound is what says nothing leaked.
+			 */
+			printf("w-bulk-tfree-delta %ld\n",
+			    tfreeA - (long)fp->s_tfree);
+			printf("w-bulk-tfree-atleast %d\n",
+			    tfreeA - (long)fp->s_tfree >= (long)(k + 24)
+			    ? 1 : 0);
+
+			/*
+			 * Read one block back from the far end, through the
+			 * indirect block that the bulk write allocated.
+			 */
+			got = readat(nip, (off_t)(k + 20) * 1024, small, 8);
+			printf("w-bulk-readback %d\n",
+			    (got == 8 &&
+			     strncmp(small, big + ((k + 20) % 97), 8) == 0)
+			    ? 1 : 0);
+			iput(nip);
+		}
+
+		/* -----------------------------------------------------
+		 * 8g. The name is really in the directory -- a SECOND,
+		 * ordinary namei, with no flag, finding what the create
+		 * path put there.  Without this, 8e proves only that
+		 * ialloc returned an inode; the entry writei(dp) wrote
+		 * into the parent is what makes it a file with a name.
+		 */
+		ip = lookup("/created");
+		printf("w-lookup-found %d\n", ip != NULL ? 1 : 0);
+		if (ip != NULL) {
+			printf("w-lookup-size-matches %d\n",
+			    (long)ip->i_size > 0 ? 1 : 0);
+			iput(ip);
+		}
+
+		/* -----------------------------------------------------
+		 * 8h. NI_DEL -- unlink, and the round trip closes.
+		 *
+		 * nami.c:298-328 clears d_ino in the entry, writei()s the
+		 * directory (which is writei's ONE synchronous arm,
+		 * rdwri.c:207-217, guarded on the entry being cleared) and
+		 * iput()s the target with i_nlink now 0 -- reaching itrunc,
+		 * which walks NADDR-1 down to 0 handing every block back to
+		 * free(), and then ifree for the inode itself.
+		 *
+		 * A SUCCESSFUL DELETE RETURNS NULL, which is not a failure:
+		 * fsnami's NI_DEL arm ends `goto out', and namei's case 1
+		 * iputs the parent and returns NULL.  u_error is the only
+		 * thing that separates the two, which is the same shape as
+		 * the enoent/notdir pair in section 5.
+		 */
+		arg.flag = NI_DEL;
+		arg.ino = 0;
+		arg.idev = 0;
+		arg.mode = 0;
+		strncpy(pathbuf, "/created", sizeof(pathbuf) - 1);
+		pathbuf[sizeof(pathbuf) - 1] = '\0';
+		u.u_dirp = pathbuf;
+		u.u_error = 0;
+		nip = namei(schar, &arg, 1);
+		printf("w-del-null %d\n", nip == NULL ? 1 : 0);
+		printf("w-del-err %d\n", u.u_error);
+		if (nip != NULL)
+			iput(nip);
+
+		ip = lookup("/created");
+		printf("w-del-gone %d\n", ip == NULL ? 1 : 0);
+		printf("w-del-gone-err %d\n", u.u_error);
+		if (ip != NULL)
+			iput(ip);
+
+		/*
+		 * THE ROUND TRIP, and it is the strongest single number
+		 * here.  Everything 8e/8f took -- one inode and several
+		 * hundred blocks -- has come back, so s_tinode is exactly
+		 * what it was before the create and s_tfree is exactly what
+		 * it was after 8c.  An off-by-one anywhere in alloc, free,
+		 * ialloc, ifree or itrunc moves one of these.
+		 */
+		printf("w-roundtrip-tinode %d\n",
+		    (long)fp->s_tinode == tinode0 ? 1 : 0);
+		printf("w-roundtrip-tfree %d\n",
+		    (long)fp->s_tfree == tfreeA ? 1 : 0);
+
+		/* -----------------------------------------------------
+		 * 8i. Flush.  update() is sync(2)'s internal name: it writes
+		 * back every modified superblock and every modified inode,
+		 * then bflush(NODEV) pushes every B_DELWRI buffer at the
+		 * driver.  Until this runs, most of the work above is in a
+		 * 32-buffer cache and the image on disk is a lie.
+		 *
+		 * The suite's real acceptance test comes after the probe
+		 * exits: icheck, dcheck and fsck -- three programs of Bell
+		 * Labs' that know nothing about this one -- are given the
+		 * image and asked whether it is a filesystem.
+		 */
+		w0 = nwrite;
+		update();
+		bflush(NODEV);
+		printf("w-flush-wrote %d\n", nwrite > w0 ? 1 : 0);
+		printf("w-writes-total-positive %d\n", nwrite > 0 ? 1 : 0);
+	}
 
 	/*
 	 * 8. NO INODE WAS LEAKED, which is a real bug class and the only thing

@@ -50,6 +50,17 @@
 #include "../h/filsys.h"		/* forwards to src/include/sys/filsys.h */
 
 /*
+ * vlimit.h is AUTHENTIC and is included for LIM_FSIZE and INFINITY, which
+ * v8k_uinit() below needs.  user.h:171 already points at it in a comment --
+ * `int u_limit[8]; /_ :116 -- see src/sys/h/vlimit.h _/' -- so the header was
+ * already the named authority for that array's indices and nothing had ever
+ * included it.  It is #defines only: eight LIM_ indices, NLIMITS and
+ * INFINITY, no struct and no declaration, so there is nothing in it that can
+ * collide with the host.
+ */
+#include "../../../src/sys/h/vlimit.h"
+
+/*
  * THE AUTHENTIC buf.h, BY ITS FULL PATH, AND THE PATH IS AN ASSERTION.
  *
  * `#include "../h/buf.h"' from this directory would find shim/kern/h/buf.h --
@@ -304,6 +315,73 @@ iinit(void)
 }
 
 /*
+ * v8k_uinit -- the u-area fields main() sets before it calls ihinit, and the
+ * §8a step 5d addition to this file.  sys/main.c:52-79, the block between
+ * `p = &proc[0]' and `clkstart()'.
+ *
+ * IT IS FORCED, NOT COMPLETENESS.  writei() at rdwri.c:164-169 is
+ *
+ *	if ((ip->i_mode&IFMT)==IFREG &&
+ *	    u.u_offset + u.u_count > u.u_limit[LIM_FSIZE]) {
+ *		psignal(u.u_procp, SIGXFSZ);
+ *		u.u_error = EMFILE;
+ *
+ * -- and a u-area that has never been initialised has u_limit[] all zero out
+ * of bss, so EVERY write to a regular file takes that arm.  Not "large writes
+ * fail": all of them, including a one-byte write at offset 0, because
+ * `0 + 1 > 0'.  The read half never touched u_limit, which is why this was
+ * invisible through §8a step 5c.
+ *
+ * AND THE FAILURE WOULD HAVE READ AS A PORT BUG IN THE WRONG FILE.  EMFILE is
+ * "too many open files"; upstream's own choice, not ours, and nothing to do
+ * with a size limit.  A first write returning EMFILE points an investigation
+ * at the file table, which this port does size, rather than at a limit nobody
+ * had set.
+ *
+ * THREE ARMS OF UPSTREAM'S LOOP ARE OMITTED and they are the three that name
+ * VAX memory: LIM_STACK is 512*1024, LIM_DATA is ctob(MAXDSIZ) and LIM_TEXT
+ * is ctob(MAXTSIZ).  MAXDSIZ and MAXTSIZ are vmparam.h numbers about a VAX
+ * address space; measured, nothing in libv8kern reads u_limit at any index
+ * but LIM_FSIZE -- `grep -rn u_limit src/sys shim/kern' is rdwri.c:165 and
+ * this file.  Naming them here rather than inventing values for them is the
+ * same policy the binit() transcription below already follows for the swap
+ * tail, and the same one conf.h follows for nfstyp: an arm with no consumer
+ * is a claim nothing can check.
+ *
+ * u_cmask IS TRANSCRIBED THOUGH ITS VALUE IS THE BSS DEFAULT.  CMASK is 0
+ * (h/param.h:71) so the assignment changes nothing today -- and it is here
+ * because nami.c:502's `flagp->mode & ~u.u_cmask' is about to read it, and a
+ * zero that is stated is a different thing from a zero that is left over.
+ * Same reasoning as spelling the on-disk field widths out loud.
+ *
+ * u_uid AND u_gid ARE DELIBERATELY LEFT AT ZERO, which is root, and that is
+ * upstream's answer rather than a convenience: main.c sets neither, because
+ * process 0 IS root.  shim/kern/sys/fio.c's v8k_procinit() folds the HOST's
+ * uid into them, and it exists for the stream side, where the u-area
+ * describes a real host process to ps.  A kernel standing up a filesystem is
+ * not that; calling it here would make v8fs.c's access() take its
+ * uid-comparison arms against inodes mkfs wrote as uid 0, so whether a write
+ * was permitted would depend on who ran the test.  That is the
+ * host-property class the test suites are swept for, arriving through a
+ * u-area field.
+ *
+ * STATIC, because v8k_kinit below is the only entry point that stands a
+ * filesystem up and there is no second caller to have.  An exported name with
+ * one in-file caller would be a component the collision sweep in tests/kmemu
+ * has to carry for nothing.
+ */
+static void
+v8k_uinit(void)
+{
+	int i;
+
+	u.u_procp = &v8k_proc0;			/* main.c:60 */
+	u.u_cmask = CMASK;			/* main.c:61 */
+	for (i = 1; i < (int)(sizeof(u.u_limit)/sizeof(u.u_limit[0])); i++)
+		u.u_limit[i] = INFINITY;	/* main.c:62-77, see above */
+}
+
+/*
  * v8k_kinit -- this port's main(), reduced to the part that stands up a
  * filesystem.  Ours, and named apart from V8's vocabulary because it is not
  * one of their functions.
@@ -341,6 +419,8 @@ int
 v8k_kinit(dev_t dev)
 {
 	rootdev = dev;
+
+	v8k_uinit();		/* main.c:52-79, BEFORE ihinit -- see above */
 
 	ihinit();
 	bhinit();

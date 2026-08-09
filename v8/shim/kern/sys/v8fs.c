@@ -47,6 +47,17 @@
 #include "../../../src/sys/h/cmap.h"	/* mfind's authentic declaration */
 #include "../../../src/sys/h/acct.h"	/* ASU, for suser's u_acflag */
 /*
+ * filsys.h arrived with §8a step 5d, for the s_ronly arm access() below has
+ * got back.  It is here for its DECLARATION and not only for the struct:
+ * src/include/sys/filsys.h:57 is `struct filsys *getfs();' inside #ifdef
+ * KERNEL, and without it the call is an implicit int under -std=gnu99 --
+ * which clang refuses outright rather than truncating, and did.  That refusal
+ * is the same guard tests/streams/fsprobe.c arranges with an #error, working
+ * for free because the shim half is compiled as C99 while the imported half
+ * is not.
+ */
+#include "../h/filsys.h"
+/*
  * `#include "../h/buf.h"' stood here and was removed in §8a step 5c, for the
  * reason shim/kern/sys/subr.c gives at the same place: this file used neither
  * of that header's two constants, and the header is gone.  Nothing here needs
@@ -351,21 +362,43 @@ plock(struct inode *ip)
  * directory-traversal permission unchecked while looking correct at five of
  * the six call sites.  Each denial arm sets its own errno, and they differ.
  *
- * Two arms of upstream's are dropped and both are argued rather than trimmed:
- * the s_ronly check needs a mounted filesystem, and there is no mount table
- * populated here yet; and the ITEXT/xrele check needs shared text, which this
- * port does not have (see xrele below).  Both are marked so that the mount
- * path knows to restore the first.
+ * THE s_ronly ARM IS BACK, §8a step 5d, AND THE NOTE THAT SAID IT COULD NOT BE
+ * WAS RIGHT WHEN WRITTEN AND WENT STALE WITHOUT BEING TOUCHED.  It read:
+ *
+ *	the s_ronly check needs a mounted filesystem, and there is no mount
+ *	table populated here yet ... Restore the s_ronly arm when v8fs learns
+ *	to mount read-only.
+ *
+ * §8a step 5c gave it one -- shim/kern/sys/main.c's iinit() calls allocmount()
+ * and sets fp->s_ronly -- so getfs(ip->i_dev) has answered since that step
+ * landed, and this arm was simply still absent.  Same shape as conf.h's
+ * "the switch tables are deliberately absent" paragraph, and as the
+ * shim/kern/h/buf.h that died when a third file arrived: A NOTE RECORDING
+ * WHY SOMETHING IS IMPOSSIBLE DOES NOT NOTICE WHEN IT BECOMES POSSIBLE.  What
+ * made it visible is that step 5d is the first step to CALL access() with
+ * IWRITE at all -- nami.c:485, :496 and :517 are the only sites that do, and
+ * all three are in the create path.
+ *
+ * The guard `!ip->i_fstyp' is upstream's own (fio.c:181) and is load-bearing
+ * here rather than decorative: a non-zero i_fstyp means the inode belongs to
+ * one of the filesystem types this port did not import, whose device number
+ * getfs() would not find a mount for -- and getfs() PANICS on a miss.
+ *
+ * ONE ARM IS STILL DROPPED and it stays dropped: ITEXT/xrele needs shared
+ * text, which this port does not have (see xrele below).
  */
 int
 v8k_access_impl(struct inode *ip, int mode)
 {
 	register int m = mode;
 
-	/* fio.c:178-190: the IWRITE arms -- s_ronly and ITEXT -- need a mount
-	 * table and shared text respectively; neither exists yet.  Restore the
-	 * s_ronly arm when v8fs learns to mount read-only. */
-
+	if (m == IWRITE) {			/* fio.c:180 */
+		if (!ip->i_fstyp && getfs(ip->i_dev)->s_ronly != 0) {
+			u.u_error = EROFS;
+			return (1);		/* fio.c:181-184 */
+		}
+		/* fio.c:185-189, the ITEXT/xrele arm, omitted -- no shared text */
+	}
 	if (u.u_uid == 0)
 		return (0);			/* fio.c:193 */
 	if (u.u_uid != ip->i_uid) {

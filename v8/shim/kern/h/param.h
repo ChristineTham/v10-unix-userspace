@@ -294,6 +294,7 @@ typedef unsigned int	v8_u32;		/* :81 */
 #define	NICINOD	100		/* h/param.h:116 -- CLSIZE==2; see above */
 #define	NICFREE	178		/* h/param.h:117 -- CLSIZE==2; see above */
 #define	BUFSIZE	4096		/* h/param.h:109 -- CLSIZE==2 */
+#define	CMASK	0		/* h/param.h:71 -- default file-creation mask */
 
 /*
  * THE BLOCK-GEOMETRY MACROS, AND LEAVING THEM OUT WAS SILENT.

@@ -649,6 +649,28 @@ dep 'authentic buf.h -> main.o' src/sys/h/buf.h    $B/kern/v8fs/main.o
 dep 'inode.h -> main.o'       src/sys/h/inode.h    $B/kern/v8fs/main.o
 dep 'mount.h -> main.o'       src/sys/h/mount.h    $B/kern/v8fs/main.o
 dep 'our filsys.h -> main.o'  shim/kern/h/filsys.h $B/kern/v8fs/main.o
+# §8a step 5d.  vlimit.h is authentic, it is #defines only, and NOTHING HAD
+# EVER INCLUDED IT although shim/kern/h/user.h:171 already named it in a
+# comment as the authority for u_limit's indices.  v8k_uinit needs LIM_FSIZE
+# and INFINITY from it; without them writei refuses every write to a regular
+# file, with EMFILE.
+#
+# BOTH THESE CASES ARE BELT AND BRACES AND THAT IS WORTH SAYING.  Measured by
+# deleting each include: the build FAILS -- `use of undeclared identifier
+# INFINITY' and `call to undeclared function getfs' -- because the shim half is
+# -std=gnu99 where the imported half is K&R.  So the compiler is the primary
+# guard and these assert the MAKE edge, which is the half the compiler cannot
+# see: a stale object built before the header changed.  The .d files clang
+# -MMD writes name both, checked.
+dep 'authentic vlimit.h -> main.o' src/sys/h/vlimit.h $B/kern/v8fs/main.o
+# And v8fs.c gained filsys.h in the same step, for `struct filsys *getfs()' --
+# the DECLARATION, not the struct.  Under -std=gnu99 an undeclared getfs is an
+# error rather than a truncated pointer, which is the good direction and is
+# what caught it; the edge is asserted so the include cannot be dropped by
+# someone tidying, which would turn a compile error into a rebuild that
+# silently did not happen.
+dep 'our filsys.h -> v8fs.o'  shim/kern/h/filsys.h $B/kern/v8fs/v8fs.o
+dep 'V8 filsys.h -> v8fs.o'   src/include/sys/filsys.h $B/kern/v8fs/v8fs.o
 
 # The seven headers §8a step 5 added.  Every one is reached by a quoted
 # "../h/x.h" that resolves against a directory the source is not in -- the

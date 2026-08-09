@@ -274,6 +274,17 @@ copyout(caddr_t from, caddr_t to, unsigned long n)
  * range a VAX `short p_pid' could hold.  A proc entry this process does not
  * own has no host pid, and nothing is sent -- which is right, and is also the
  * only sensible answer while there is one process.
+ *
+ * THE GUARD IS `<= 0' AND THE ZERO IS THE WHOLE POINT, §8a step 5d.  It was
+ * `hp < 0', which is the correct test for "not found" and the wrong test for
+ * what kill(2) does: kill(0, sig) signals EVERY PROCESS IN THE GROUP.  A
+ * consumer that had not called v8k_procinit() left v8k_hostpid 0, this sent
+ * kill(0, SIGXFSZ), and the test runner and the shell above it died -- see
+ * fio.c's v8k_hostof for how it was found and why the guard is in both places.
+ *
+ * gsignal below has carried exactly this guard, for exactly this reason,
+ * since it was written: `if (pgrp == 0) return', because group 0 is not a
+ * group.  The two functions are eleven lines apart.
  */
 void
 psignal(struct proc *p, int sig)	/* param.h aims the name at v8k_psignal */
@@ -283,7 +294,7 @@ psignal(struct proc *p, int sig)	/* param.h aims the name at v8k_psignal */
 	if (p == NULL || sig <= 0)
 		return;
 	hp = v8k_hostof(p->p_pid);
-	if (hp < 0)
+	if (hp <= 0)			/* 0 is not a pid; see above */
 		return;
 	rawsys2(SYS_kill, hp, (long)sig);
 }
