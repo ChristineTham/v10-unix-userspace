@@ -932,6 +932,38 @@ imported and never built. **An unreachable syscall cannot be seen to be wrong.**
 `mknod` asked the host — and it failed closed only because every jailed prefix
 is SIP-protected here.
 
+**AND TWO SYSCALLS RESOLVED NOTHING AT ALL, WHICH IS THE SAME SHAPE ONE STEP
+FURTHER ON.** `v8s_mknod` above passed its path *unresolved*; `v8s_readlink`
+and `v8s_utime` did not call `vpath()` **or** `mkpath()` — every other
+path-taking syscall in `syscall.c` does. So `ls -l` on a jailed symlink read
+the Mac's (`ls.c:365`) and `mv` inside the jail stamped the Mac's file of that
+name (`mv.c:129`). Two directions, and the quiet one is worse: loud `ENOENT`
+where the host has no such name, silently wrong where it does — and `/etc`,
+`/bin`, `/usr/bin` and `/usr/lib` are all names the Mac also has. `v8s_symlink`
+twelve lines below `readlink` **does** resolve, with `mkpath`, so the port
+could create a jailed symlink and then not read it back.
+
+**AND tests/v8sys COULD NOT HAVE FOUND EITHER, BECAUSE IT HAD BEEN RUNNING WITH
+THE JAIL OFF FOR ITS WHOLE LIFE.** The `test-v8sys` rule does not pass
+`$(SHIMFLAGS)`, so the binary carried no `-DV8ROOT_DEFAULT`, so `v8root()`
+returned 0 — and this file's own first sentence about the shim says what that
+means: "when unset it silently falls back to the host filesystem". 164 cases
+about the shim's syscalls, none of them able to see a syscall that resolved
+nothing. The recipe sets `V8ROOT` now; every existing case still passes, which
+is what says the jail was genuinely inert rather than merely unexercised.
+
+**AND A THIRD INSTANCE OF THE SAME ROOT CAUSE CAME OUT OF FIXING THEM.**
+`rootpath()` decides whether the rootfs has a name with
+`rawsys2(SYS_access, buf, 0)`, and **`access(2)` follows a symlink** — so a
+jailed symlink whose target does not exist reads as absent and *every*
+operation on it falls through to the host. Not just the two above:
+`v8s_unlink` cannot remove one either, which is how it was found, when a case
+asserting the `readlink` limit left the link behind and broke the next run.
+Asserted rather than fixed (`tests/v8sys`, three cases), because the fix is
+`lstat` in the one function every path in the world goes through: it answers
+the question the union rule actually asks — *does the rootfs have this NAME* —
+and changes the answer for everything else `access` cannot see. Its own unit.
+
 `v8s_execve` also interprets `#!` itself. The kernel would resolve a shebang
 against the real filesystem before the shim saw it, so every shell script ran
 under the Mac's shell — the last hole in the chroot, and the most invisible.

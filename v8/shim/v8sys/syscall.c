@@ -856,8 +856,30 @@ int v8s_execve(char *p, char **a, char **e)
 	RET(rawsys3(SYS_execve, (long)q, (long)a, (long)e));
 }
 
+/*
+ * vpath, AND IT HAD NONE AT ALL.  Every other path-taking syscall in this file
+ * resolves; these two passed the V8 path straight to the host, so `ls -l' on a
+ * jailed symlink read the Mac's (ls.c:365) and `mv' inside the jail stamped the
+ * Mac's file of that name (mv.c:129).  The failure has two directions and the
+ * quiet one is worse: loud ENOENT where the host has no such name, silently
+ * wrong where it does -- and /etc, /bin, /usr/bin and /usr/lib are all names
+ * the Mac also has.
+ *
+ * THE SHAPE IS THIS FILE'S MOST REPEATED ONE.  v8s_symlink twelve lines below
+ * DOES resolve its new name, with mkpath -- so the port could create a jailed
+ * symlink and then not read it back.  The fix landed on one line and the line
+ * beside it kept the assumption.
+ *
+ * LOOK rather than MAKE for both: readlink and utime(2) each require the file
+ * to exist, and V8P_MAKE keys on the parent, which would resolve a name inside
+ * the jail that is not there instead of letting it fall through.
+ *
+ * Found by the dispatch sweep run before adding a fourth filesystem type, not
+ * by anything failing -- and tests/v8sys could not have found it, because that
+ * suite had been running with V8ROOT unset and therefore with the jail off.
+ */
 long v8s_readlink(char *p, char *b, long n)
-{ RET(rawsys3(SYS_readlink, (long)p, (long)b, n)); }
+{ RET(rawsys3(SYS_readlink, (long)vpath(p), (long)b, n)); }
 
 /*
  * fork.  V8's vfork is the BSD one, which shared the address space until exec;
@@ -1338,6 +1360,13 @@ v8s_utime(char *p, long *tv)
 {
 	struct { long sec, usec; } t[2];
 
+	/*
+	 * ONE vpath, NOT TWO, and that is the aliasing trap v8s_link records:
+	 * rootpath() returns a pointer into its own static buffer, so a second
+	 * call would overwrite the first's answer.  See v8s_readlink above for
+	 * why this had none at all.
+	 */
+	p = vpath(p);
 	if (tv == 0) RET(rawsys2(SYS_utimes, (long)p, 0));
 	t[0].sec = tv[0]; t[0].usec = 0;
 	t[1].sec = tv[1]; t[1].usec = 0;

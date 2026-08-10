@@ -35,6 +35,9 @@ extern int v8s_unlink(char *);
 extern int v8s_link(char *, char *);
 extern int v8s_mkdir(char *, int);
 extern int v8s_rmdir(char *);
+extern int v8s_symlink(char *, char *);
+extern long v8s_readlink(char *, char *, long);
+extern int v8s_utime(char *, long *);
 extern char *v8s_sbrk(long);
 extern int v8s_pipe(int *);
 extern int v8s_kill(int, int);
@@ -70,6 +73,25 @@ classicfold(unsigned long long ino)
  */
 #define V8SIG_INT	2
 #define V8SIG_ALRM	14
+
+/*
+ * Remove a path inside the jail using the HOST's unlink, for the one thing the
+ * jail cannot remove itself.  A dangling symlink is invisible to rootpath()'s
+ * access(2) existence test, so v8s_unlink cannot see it -- and a case that
+ * asserts that limit would otherwise leave the link behind and break the NEXT
+ * run, which is exactly what it did.  "Would this still pass on a tree that has
+ * never been used?" has a mirror: would it still pass on a tree that has?
+ */
+static void
+hostrm(const char *jailpath)
+{
+	char h[1024];
+	const char *root = getenv("V8ROOT");
+
+	if (root == 0 || *root == '\0') return;
+	snprintf(h, sizeof h, "%s%s", root, jailpath);
+	unlink(h);
+}
 
 static int pass, fail;
 
@@ -1262,6 +1284,88 @@ main(void)
 		v8s_close(hostfd);
 		v8s_close(3);
 		v8s_unlink(sub);
+	}
+
+	/*
+	 * ------------------------------------- the jail's own path resolution
+	 *
+	 * TWO SYSCALLS RESOLVED NOTHING AT ALL, and every other path-taking one
+	 * in the file resolves.  v8s_readlink and v8s_utime passed the V8 path
+	 * straight to the host: `mv' inside the jail stamped the Mac's file of
+	 * that name (mv.c:129 is utime(target, ...)), and `ls -l' on a jailed
+	 * symlink read the host's (ls.c:365).  Found by the dispatch sweep run
+	 * before adding a fourth filesystem type, not by anything failing.
+	 *
+	 * THE SHAPE IS THIS FILE'S MOST REPEATED ONE.  v8s_symlink DOES resolve
+	 * its new name with mkpath -- so the port could create a jailed symlink
+	 * and then not read it back.  The pair is asserted together for that
+	 * reason.
+	 *
+	 * /usr/src is the prefix to use: it is on the mount table (Admin/Mk
+	 * needs it) and, measured, macOS has no /usr/src at all -- so before
+	 * the fix these fail LOUDLY with ENOENT rather than silently stamping
+	 * someone else's file.  On a host that does have one, the same cases
+	 * would have caught the quiet direction instead.
+	 */
+	{
+		char jf[] = "/usr/src/v8systest-file";
+		char jl[] = "/usr/src/v8systest-link";
+		long tv[2];
+		long n;
+
+		hostrm(jf);
+		hostrm(jl);
+
+		fd = v8s_creat(jf, 0644);
+		ok(fd >= 0, "a file can be created inside the jail");
+		if (fd >= 0) { v8s_write(fd, "x", 1); v8s_close(fd); }
+
+		tv[0] = tv[1] = 1000000000L;
+		ok(v8s_utime(jf, tv) == 0, "utime finds the JAIL's file");
+		ok(v8s_stat(jf, &st) == 0 && st.st_mtime == 1000000000L,
+		    "...and stamps that one");
+
+		/*
+		 * THE LINK POINTS AT SOMETHING THAT EXISTS, and the first
+		 * version of this case did not -- which found a THIRD instance
+		 * of the same root cause and is why the case below exists.
+		 */
+		ok(v8s_symlink("v8systest-file", jl) == 0,
+		    "a symlink can be created inside the jail");
+		n = v8s_readlink(jl, buf, (long)sizeof buf);
+		ok(n == 14, "...and readlink finds it");
+		ok(n == 14 && strncmp(buf, "v8systest-file", 14) == 0,
+		    "...and reads back what was written");
+
+		v8s_unlink(jl);
+
+		/*
+		 * A DANGLING SYMLINK CANNOT BE JAILED AT ALL, and this asserts
+		 * the limit rather than hiding it.  rootpath() decides whether
+		 * the rootfs has a name with `access(buf, 0)' -- and access(2)
+		 * FOLLOWS the link, so a symlink whose target does not exist
+		 * reads as absent and the path falls through to the host.
+		 * Every operation on such a link is affected, not just these
+		 * two: v8s_unlink cannot remove one either, which is how this
+		 * was found -- the first run of these cases left the link
+		 * behind and the next run failed to create it.
+		 *
+		 * NOT FIXED HERE.  The fix is lstat instead of access in
+		 * rootpath, which is a change to the single most load-bearing
+		 * function in the shim: every path in the world goes through
+		 * it, and the union rule ("does the rootfs have this name")
+		 * would start answering differently for anything else access
+		 * cannot see.  Asserted so that a future fix has to change this
+		 * case on purpose.
+		 */
+		ok(v8s_symlink("no-such-target-anywhere", jl) == 0,
+		    "a DANGLING symlink can be created inside the jail");
+		ok(v8s_readlink(jl, buf, (long)sizeof buf) < 0,
+		    "...and then cannot be read back: access(2) follows links");
+		ok(v8s_unlink(jl) < 0, "...nor unlinked, for the same reason");
+
+		hostrm(jl);
+		v8s_unlink(jf);
 	}
 
 	/*

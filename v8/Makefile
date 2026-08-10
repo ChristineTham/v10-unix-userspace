@@ -285,8 +285,18 @@ test-v8ccom: $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp
 	@$(ROOT)tests/v8ccom/run.sh $(A64BUILD)/v8ccom
 test-v8cc: $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/v8cc/run.sh
+# V8ROOT IS SET HERE, AND IT HAD NEVER BEEN.  This rule does not pass
+# $(SHIMFLAGS), so the test binary carries no -DV8ROOT_DEFAULT, so v8root()
+# returned 0 and -- in CLAUDE.md's own words about the shim -- "when unset it
+# silently falls back to the host filesystem".  The suite that tests the shim's
+# path resolution had therefore been running with the JAIL OFF for its whole
+# life: 164 cases, none of them able to see a syscall that resolved nothing.
+# Two that resolve nothing were found by a sweep instead.
+#
+# The environment variable rather than the flag, because that is how every
+# other suite says it and because v8root() checks it first anyway.
 test-v8sys: $(BUILD)/v8sys/test
-	@$(BUILD)/v8sys/test
+	@V8ROOT=$(ROOTFS) $(BUILD)/v8sys/test
 test-freestanding: $(V8CC_DEPS) $(ROOTFS_LIBS)
 	@$(ROOT)tests/freestanding/run.sh
 test-libv8c: $(V8CC_DEPS) $(ROOTFS_LIBS)
