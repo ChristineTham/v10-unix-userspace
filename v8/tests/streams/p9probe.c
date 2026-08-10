@@ -429,9 +429,22 @@ main(int argc, char **argv)
 	 * which is the loudest possible signal and the reason they sit here
 	 * rather than at the end.
 	 */
+	/*
+	 * 2^64-2 AND NOT 2^64-1, AND THE CHANGE OF NUMBER IS A FINDING RATHER
+	 * THAN AN ADJUSTMENT.  All-ones is now P9_OFFCUR, the cursor sentinel
+	 * p9.h argues for -- and this case is what refuted the sentence there
+	 * claiming a conforming client could not tell this server from a
+	 * conforming one.  It can, at exactly one offset, and this case was
+	 * the client doing it within the hour.
+	 *
+	 * The coverage is unharmed, which is the reason it is safe to move: a
+	 * read at 2^64-2 exercises the identical arm -- both are above 2^63 and
+	 * both read as negative under the bug -- and neither can legitimately
+	 * return a byte, since offset + count does not fit in the field.
+	 */
 	begin(P9_Tread);
 	p9_p32(&tb, 8);				/* the root, opened above */
-	p9_p64(&tb, 0xffffffffffffffffULL);
+	p9_p64(&tb, 0xfffffffffffffffeULL);
 	p9_p32(&tb, 64);
 	printf("dir-read-huge-offset %s\n", errname(xact()));
 

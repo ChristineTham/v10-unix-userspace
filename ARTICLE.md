@@ -1865,6 +1865,97 @@ earlier section had modified. I have now had this bug between two programs
 sharing a directory, between two cases sharing a stream, and between two
 sections sharing a file.
 
+### `cat /mnt/hello`
+
+The server answered a probe. Making it answer `cat` took one idea, and the idea
+arrived as a problem: where does the file offset live?
+
+Not in the program. A file offset in the client's memory is wrong three
+different ways, and all three are ordinary Unix. `dup` gives you two
+descriptors and *one* offset, so two rows in a client table would drift apart.
+`fork` gives parent and child one offset, so a copied table drifts too. And
+when a program replaces its own image the offset survives while every table in
+its address space is destroyed — which is the thing a comment in the switch had
+warned about a year earlier, in the words "that is fine today and will not be
+later".
+
+They are the same fact three times. The offset does not belong to the
+descriptor or to the process; it belongs to the open file description — the
+`struct file` a kernel keeps. And there is an object here with exactly those
+properties, which I had been looking straight at: a socket is shared by `dup`,
+shared by `fork`, and survives the image being replaced.
+
+So: **one connection per `open`**. The connection *is* the open file
+description. The fid becomes a constant, because a connection carries exactly
+one open file. The offset goes on the server, where the open file description
+already is. And the client ends up holding no per-file state at all — which
+means an inherited descriptor works in a program that knows nothing about it,
+not because anything was arranged, but because there is nothing to arrange.
+
+That immediately ran into the one thing 9P does not have. There is no seek
+message. There is no seek message because Plan 9's *kernel* held the offset, in
+the channel behind the descriptor, and handed every read an absolute one. 9P is
+a `pread` protocol because the thing above it is a kernel — and the thing above
+it here is a C library linked into `cat`. This is a specific and slightly
+delightful kind of discovery: not that the protocol is wrong, but that it
+encodes an assumption about its own environment which this environment does not
+satisfy.
+
+The extension is one concept. A fid has a cursor; a read at the all-ones offset
+uses and advances it; any other offset is 9P's own `pread` and does not touch
+it. I wrote in the header that a conforming client therefore could not tell
+this server from a conforming one. The existing probe refuted that inside the
+hour: it reads a directory at 2^64−1 on purpose, to prove an unsigned-offset
+crash guard is still there, and 2^64−1 is now the sentinel. The claim I can
+actually make is narrower — invisible at every offset from which a conforming
+client could read a byte, and 2^64−1 is not one of those. It is a better
+sentence, and I did not write it; a test written weeks earlier did.
+
+Then `cat /mnt/hello` printed the file, `cat /mnt/sub/deep` returned 28000
+bytes that `cmp` said were the ones `mkfs` was given, and
+`sh -c 'cat < /mnt/hello'` printed **nothing**.
+
+That last one is the case the whole design exists for — the shell opens the
+file, dups it onto standard input, and replaces itself with `cat`. And the bug
+was mine, three lines above a comment that had already diagnosed it. Closing a
+descriptor sent a `Tclunk`. But a clunk destroys the fid, and the fid belongs
+to the connection, which every dup shares — so the shell, doing the ordinary
+thing, clunked the file out from under the descriptor it had just made. A clunk
+is not `close(2)`; it is the *last* close. The right number of them is zero:
+the kernel drops the connection when the last descriptor goes, because the
+kernel is the thing that knows the reference count, and the server frees
+everything when the connection ends.
+
+The comment beside the call said so. It said "dropping the connection is what
+actually releases the server's fids" — and then called the clunk "politeness".
+The bug was inside the sentence explaining why it was unnecessary. I have
+written that shape into the project notes perhaps a dozen times now, always
+about someone else's code or my own from months ago, and it turns out to be
+just as easy to do while typing the explanation.
+
+Two smaller ones came out of the same run, and both are the same species. `ls`
+said `/mnt unreadable`, which is what you get when `open` fails, which is what
+happens when the directory snapshot cannot be built: a directory read carries
+bare stat structures, and only `Rstat` wraps its single stat in a second length
+field. I had put the second length in both places. And a directory's reported
+size has to be the length of the V7 records the shim will hand out, not the 64
+bytes the image charges — a rule this port learned once already, wrote down,
+and applied to exactly one filesystem type. A new type implementing the same
+interface does not inherit the fix.
+
+The last piece was containment, and it is where I nearly wrote a test that
+proved nothing. Eleven syscalls — `unlink`, `chmod`, `mkdir`, `utime` and the
+rest — have no slot in the switch at all; they were always passthrough, which
+was survivable while every filesystem answered out of the jail directory. With
+a mount they stop being containable: the path reaches the host verbatim, so
+`rm /mnt/x` asks macOS to unlink `/mnt/x`. They refuse now. But my test asserted
+that `chmod 777 /mnt/hello` exits 1 — and it exits 1 either way, because this
+machine has no `/mnt` and the host's `chmod` fails too. The guard and the
+absence of the directory were indistinguishable. The fix was to mount over a
+directory the host really does have, holding a file with different contents,
+and assert two things the absent directory cannot fake: that the read is
+shadowed by the image, and that the host file's mode is unchanged.
+
 
 ## What is left
 
@@ -1896,10 +1987,15 @@ What remains, in rough order:
   one connection per open file so that the socket itself is the descriptor and
   nothing has to be inherited through a table. **That server now exists** — it
   reads a file out of an image over 9P and `cmp` agrees — and what is left is
-  the client half, plus the writes. The sweep run before starting the client
-  found eleven entry points in the shim with no slot in the filesystem-type
-  table at all, and two of them (`utime`, `readlink`) resolve no path today and
-  are holes in the jail as it stands.
+  the client half, plus the writes. **The client now exists too**: with one
+  environment variable set, `cat /mnt/sub/deep` returns those same 28000 bytes,
+  and `ls`, `tail`, `wc`, `grep` and shell redirection all work against the
+  image unmodified. What is genuinely left is the **write half of the server** —
+  `Twrite`, `Tcreate`, `Tremove` and `Twstat` answer `EROFS` today, while the
+  kernel code underneath them is written and tested — and the one gap the
+  client cannot close on its own, which is `chdir` into a mount: nothing in the
+  shim tracks a working directory, so a relative name inside a mount would
+  resolve against the host.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.

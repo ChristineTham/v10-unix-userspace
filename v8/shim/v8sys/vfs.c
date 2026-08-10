@@ -132,9 +132,24 @@ typ(int i)
 struct v8fstyp *
 v8fs_typefor(const char *p)
 {
+	struct v8fstyp *t;
 	int i, k;
 
 	if (p == 0 || *p != '/') return (0);
+	/*
+	 * A v8fs MOUNT IS ASKED FIRST, and the order is mount semantics rather
+	 * than a preference: mounting on a name hides what was under it.  The
+	 * table below is static and this one is configured at run time from
+	 * V8MOUNT, so it cannot be a row -- p9cl.c argues why the environment
+	 * is the registry (the jail is per-binary; a `mount' command would put
+	 * a row in its own address space and exit).
+	 *
+	 * The foot-gun is stated rather than guarded: V8MOUNT=/=... would
+	 * shadow /bin and the whole world with it.  That is what mounting on
+	 * the root does, and a rule refusing it would be this port deciding
+	 * something Unix does not.
+	 */
+	if ((t = v8fs_p9for(p)) != 0) return (t);
 	for (i = 0; mounts[i].m_pfx; i++) {
 		const char *d = mounts[i].m_pfx;
 		for (k = 0; d[k] && p[k] == d[k]; k++)
@@ -161,14 +176,25 @@ v8fs_typefor(const char *p)
 /* ------------------------------------------------- descriptor ownership */
 
 /*
- * Which filesystem owns a descriptor.  Null means passthrough, so the table
- * costs nothing until a second type exists and needs no initialisation.
+ * Which filesystem owns a descriptor.
  *
- * IT DOES NOT SURVIVE A PROGRAM REPLACING ITSELF, and that is fine today and
- * will not be later.  The table is process memory; a passthrough descriptor
- * needs no entry, so inheritance works by construction.  A server-backed one
- * would need its handle re-attached on the far side, which is a thing 9P has a
- * message for and an in-process table could never have done anyway.
+ * THIS USED TO BE THE ANSWER AND IS NOW A CACHE, and the note it replaces was
+ * right about the problem and wrong about how long it had.  It said the table
+ * "does not survive a program replacing itself, and that is fine today and
+ * will not be later" -- later arrived with v8fs.  A server-backed descriptor
+ * that reads as passthrough gets a raw read(2) on a 9P socket, and because the
+ * server sends nothing unsolicited that is a HANG rather than a wrong answer.
+ * Redirection is the ordinary way it would happen: sh opens the file, dup2s it
+ * onto 0 and runs cat.
+ *
+ * So the authority moved to the KERNEL, which still knows what a descriptor is
+ * after the image is replaced -- p9cl.c's v8fs_p9adopt asks getpeername.  This
+ * table is what stops that being a syscall on every read.
+ *
+ * THREE STATES, WHERE THERE USED TO BE TWO.  Null now means UNEXAMINED rather
+ * than passthrough, and a descriptor examined and found ordinary stores
+ * &v8fs_pass.  Without that distinction the fallback would run on every read
+ * of stdin forever, which is the hottest path in the system.
  */
 #define V8FS_NFD	256
 static struct v8fstyp *fdtyp[V8FS_NFD];
@@ -176,14 +202,25 @@ static struct v8fstyp *fdtyp[V8FS_NFD];
 struct v8fstyp *
 v8fs_fdtype(int fd)
 {
-	if (fd < 0 || fd >= V8FS_NFD || fdtyp[fd] == 0) return (&v8fs_pass);
-	return (fdtyp[fd]);
+	struct v8fstyp *t;
+
+	if (fd < 0) return (&v8fs_pass);
+	if (fd < V8FS_NFD && fdtyp[fd] != 0) return (fdtyp[fd]);
+	/*
+	 * Unexamined -- or above the table, which is not a limit on
+	 * correctness here, only on caching.  v8fs_p9adopt returns 0 without a
+	 * syscall when no mount is configured, so a world with no v8fs pays
+	 * one predictable branch.
+	 */
+	if ((t = v8fs_p9adopt(fd)) == 0) t = &v8fs_pass;
+	if (fd < V8FS_NFD) fdtyp[fd] = t;
+	return (t);
 }
 
 void
 v8fs_bind(int fd, struct v8fstyp *t)
 {
-	if (fd >= 0 && fd < V8FS_NFD) fdtyp[fd] = (t == &v8fs_pass) ? 0 : t;
+	if (fd >= 0 && fd < V8FS_NFD) fdtyp[fd] = t;
 }
 
 void

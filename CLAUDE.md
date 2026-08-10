@@ -487,6 +487,111 @@ keeps `di_atime`, `di_mtime` and `di_ctime` only in the **disk** inode, and
 `iupdat` (`iget.c:250-273`) is what breads it to write them back. Anything that
 reports a timestamp has to do that read itself.
 
+**AND THE MOUNT WORKS NOW, ON ONE SENTENCE: THE CONNECTION IS THE OPEN FILE
+DESCRIPTION.** §8a step 5e's client is `shim/v8sys/p9cl.c`, a fourth type in
+the switch; with `V8MOUNT=/mnt=sock`, `cat /mnt/sub/deep` returns 28000 bytes
+identical to what `mkfs` was handed, through Bell Labs' `namei`/`bmap`/`readi`
+in another process. **One `connect()` per `open(2)`** is the whole design, and
+it is forced rather than chosen: a file offset in client memory is wrong three
+ways at once — `dup` shares one offset between two descriptors, `fork` shares
+it between two processes, and a program replacing its image keeps it while
+every table in its address space dies. All three are the same fact, that the
+offset belongs to the **`struct file`** — and a socket is shared by `dup`,
+shared by `fork`, and survives the image being replaced. So the fid is a
+**constant**, the offset lives on the **server**, and the client holds no
+per-descriptor state for a regular file at all. An inherited descriptor works
+because there is nothing to inherit.
+
+- **A PROTOCOL CAN ASSUME SOMETHING THIS PORT DOES NOT HAVE, and 9P assumes a
+  KERNEL.** 9P has no seek because Plan 9's kernel held the offset in the Chan;
+  every Tread carries an absolute one. There is no kernel here. The extension
+  is one concept — a fid has a cursor, `P9_OFFCUR` uses and advances it, any
+  other offset is 9P's own pread and does not touch it — plus `Tseek`/`Rseek`
+  numbered outside 100..127. `tail(1)`, a 1985 program, exercises it.
+- **AND A TEST REFUTED THE SENTENCE CLAIMING A CONFORMING CLIENT COULD NOT
+  TELL, WITHIN THE HOUR.** `p9probe` reads a directory at 2^64-1 to prove the
+  unsigned-offset crash guard is there, and that offset is now the sentinel.
+  The honest claim is narrower — invisible at every offset a conforming client
+  can read a byte from, and 2^64-1 is not one. Right way round.
+- **A `Tclunk` IN close(2) IS WRONG, BECAUSE A CLUNK IS THE *LAST* CLOSE.** The
+  fid belongs to the connection, which every `dup` shares — so `sh` doing the
+  ordinary thing for `cat < /mnt/hello` (open, `dup2` onto 0, close the
+  original) clunked the file out from under the descriptor it had just made,
+  and `cat` printed nothing. The right number is **zero**: the kernel drops the
+  connection at the last close because it is the thing that knows the reference
+  count. **The comment beside it got the mechanism exactly right** — "dropping
+  the connection is what actually releases the server's fids" — and then called
+  the clunk "politeness". The bug was inside the sentence explaining why it was
+  unnecessary.
+- **A DESCRIPTOR TABLE IN PROCESS MEMORY BECAME A CACHE, AND NULL NOW MEANS
+  *UNEXAMINED*.** `vfs.c:167` had recorded for a year that the table dies when
+  a program replaces itself and that this "is fine today and will not be
+  later"; later arrived. A server-backed descriptor reading as passthrough gets
+  a raw `read(2)` on a 9P socket, which **hangs** — the server sends nothing
+  unsolicited — so the authority moved to `getpeername(2)`, which the kernel
+  still answers. Measured: a *connected* client reports the bound path (len
+  106); an `accept()`ed fd and a socketpair report empty (len 16). The third
+  table state is what stops the fallback running on every read of stdin.
+- **`dir.c:114`'s RULE HAD TO BE APPLIED A SECOND TIME, IN A SECOND
+  FILESYSTEM.** A directory's `st_size` is the length of the V7 record
+  snapshot, not what the thing underneath charges — 64 bytes on the image
+  against 768 of records. The port fixed this once for passthrough; a new type
+  implementing the same interface does not inherit the fix. That is "the line
+  beside it kept the assumption" where the line beside it is a whole second
+  implementation.
+- **ELEVEN SYSCALLS HAVE NO SLOT IN `struct v8fstyp` AND THAT STOPPED BEING
+  CONTAINABLE.** `link unlink rmdir mkdir mknod symlink readlink chmod chown
+  utime` are passthrough by construction. Survivable while every type answered
+  out of `$V8ROOT`; with a mount, `rootpath()` must *not* prepend the root, so
+  `rm /mnt/x` asks the **Mac** to unlink `/mnt/x`. They refuse with `EROFS`,
+  one line each, rather than getting slots — a slot claims the operation is
+  implemented. `access()` is implemented over `t_stat`; `readlink` is `EINVAL`
+  (a V7 image holds no symlink); **`chdir` is the one genuine gap**, since
+  nothing tracks a working directory.
+- **AND THE CASE FOR THAT GUARD PASSED FOR THE WRONG REASON.** `chmod 777
+  /mnt/hello` exits 1 whether or not the guard exists, because this machine has
+  no `/mnt` and the host's `chmod` fails too — the guard and the absence of the
+  directory are indistinguishable. The host-property trap in a case written to
+  prove containment. Fixed by mounting over a directory the host really has,
+  holding a file with different contents, and asserting both that the read is
+  **shadowed** and that the host file's mode is **unchanged**.
+- **MIXING OCTAL AND HEX IN ONE FLAG TEST NAMES THE FLAG NEXT TO THE ONE YOU
+  MEANT.** `flags & 01000` was written for `O_TRUNC`; 01000 is 0x200, which is
+  `O_CREAT`. `syscall.c` spells both in hex side by side for exactly this
+  reason.
+
+**AND THE AUDITOR FOUND TWELVE MORE, NOT ONE OF THEM AN LP64 BUG.** Run on the
+client the hour it was written — the rule that the subagent earns its keep on
+*new shim code* held for the fourth time. It came back clean on every hazard it
+exists for; what it found was **a rule stated in one place and not applied in
+the one beside it**, twelve times. `shim/kern/NOTES.md` has them all. The four
+that generalise:
+
+- **THE GUARD THAT COULD NOT FIRE AND THE CASE THAT DID FIRE RETURNED THE SAME
+  VALUE.** `p9uid()` parses an owner and returned 0 — root — on both failure
+  paths, against this file's own contract that *non-root never maps to root*.
+  Its range test (`v > 32767`) is **dead**, because `"%d"` of a `short` cannot
+  exceed it; the live route is that `di_uid` is `v8_i16` and therefore
+  **signed**, so uid 40000 renders as `"-25536"` and the `'-'` is a non-digit.
+  A written guard next to an unguarded case, both landing on the same return.
+- **THE BITS WERE THE SERVER'S AND THE IDENTITY WAS THE HOST'S**, and identity
+  is the half that decides. `access()` recomputed permission from the image's
+  mode against the host uid while the server takes `fio.c`'s root bypass
+  (`u_uid` is 0 and nothing sets it) — so on **every file of every image**
+  `test -r` said no and `cat` printed it. When two ends both look right, check
+  which end supplies each *operand*, not just each value.
+- **A DEADLINE BUILT ON `alarm` DOES NOT BOUND A V8 PROGRAM**, and the suite
+  hung twenty-six minutes proving it. Two independent reasons and the alarm
+  itself is fine: **V8's `sh` catches SIGALRM on purpose** (`sh/fault.c:123`,
+  because it uses `alarm(2)` for `$TIMEOUT` and the fork retry), and *a
+  deadline on one end of a pipe is not a deadline on the pipe* — `sh -c 'cat <
+  f'` leaves `cat` holding the stdout a `$( )` is reading. Fork, `setpgrp`, and
+  kill the **process group**.
+- **V8's `cat` IS NOT AN INSTRUMENT FOR READ ERRORS**: `while ((n = read(...))
+  > 0)` ends the loop on −1 and exits **0**. Two cases written to assert a
+  failing read both passed for that reason — *including the passthrough
+  control*, which is what gave it away. Assert the bytes.
+
 ## Architecture: three layers, three different rules
 
 The single most important thing to get right is **which layer you are editing**,

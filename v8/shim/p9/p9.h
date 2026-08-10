@@ -61,6 +61,25 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
 #define P9_VERSION	"9P2000"
 
 /*
+ * ...AND THE VERSION THIS CLIENT ACTUALLY ASKS FOR, because the extension
+ * below is not optional for it and 9P has a mechanism for saying so.
+ *
+ * Tversion IS the negotiation: a client offers a string, and a server answers
+ * with the largest version it speaks or "unknown".  A conforming 9P2000 server
+ * offered "9P2000.v8" answers "9P2000" -- which is exactly the signal this
+ * client needs, because it sends P9_OFFCUR on every read and a server without
+ * a cursor would hand it zero bytes from a file with a nonzero length.  That
+ * is a silent empty file, and it is what happened before this existed.
+ *
+ * So the client refuses a mount it cannot read rather than reading nothing
+ * from it.  A fallback -- client-side offsets against a conforming server, at
+ * the cost of the dup/fork/exec correctness the cursor buys -- is possible and
+ * is not written, because nothing here has a foreign server and an unexercised
+ * rule cannot be seen to be incomplete.
+ */
+#define P9_VERSION_V8	"9P2000.v8"
+
+/*
  * msize is negotiated, and this is what the client proposes.  8192 + 24 is
  * u9fs's and plan9port's customary pair: the 24 is IOHDRSZ, the largest
  * fixed part any message puts in front of its data (Twrite's
@@ -105,6 +124,69 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
 #define P9_Rstat	125
 #define P9_Twstat	126
 #define P9_Rwstat	127
+
+/*
+ * ------------------------------------------------- THE ONE EXTENSION, AND WHY
+ *
+ * 9P HAS NO SEEK, AND THAT IS NOT AN OVERSIGHT: Plan 9's KERNEL holds the file
+ * offset, in the Chan behind the descriptor, and every Tread carries the
+ * absolute offset the kernel computed.  9P is a pread/pwrite protocol because
+ * the thing above it is a kernel.
+ *
+ * THIS PORT HAS NO KERNEL ABOVE IT.  The client is libv8sys, linked into each
+ * V8 program, and a file offset in ITS memory is wrong three different ways at
+ * once, all of them ordinary Unix:
+ *
+ *	dup(2)	   two descriptors, ONE offset.  Two client rows diverge.
+ *	fork(2)	   parent and child share the offset.  A copied table does not.
+ *	execve(2)  the offset survives.  A table in process memory does not --
+ *		   vfs.c:167 recorded that before there was anything to lose.
+ *
+ * What all three share is that the offset belongs to the OPEN FILE
+ * DESCRIPTION -- the `struct file' -- and not to the descriptor or to the
+ * process.  And this design has an exact counterpart for it: ONE CONNECTION
+ * PER open(2).  A dup shares the socket, a fork shares the socket, a program
+ * replacing itself keeps the socket.  So the offset goes where the open file
+ * description already is, which is the far end of the wire, and the client
+ * holds no per-file state at all -- see shim/v8sys/p9cl.c.
+ *
+ * THE EXTENSION IS ONE CONCEPT AND IT IS CONFINED TO A SENTINEL.  A fid has a
+ * cursor.  Tread with offset == P9_OFFCUR uses it and advances it; any other
+ * offset is 9P's own pread, byte for byte, and DOES NOT TOUCH the cursor.
+ * Twrite is written into the rule and NOT YET IMPLEMENTED BY THE SERVER --
+ * v8fsd answers EROFS to it until S8a step 5f -- and that is a trap rather
+ * than a gap: the client already sends P9_OFFCUR on Twrite, so a do_write
+ * that does not carry do_read's two lines will write every byte at offset
+ * 0xFFFFFFFFFFFFFFFF.  Found by an auditor reading the two files together.
+ *
+ * THE FIRST DRAFT OF THIS NOTE SAID A CONFORMING CLIENT COULD NOT TELL, AND
+ * tests/streams/p9probe.c REFUTED IT WITHIN THE HOUR -- which is the right way
+ * round, and worth leaving written down.  The probe reads a directory at
+ * 2^64-1 on purpose, to prove the unsigned-offset crash guard is still there,
+ * and that offset is now the sentinel.  So the honest statement is narrower:
+ * the extension is invisible at every offset a conforming client can read a
+ * byte from, and 2^64-1 is not one -- offset + count does not fit in the field
+ * there, so a client sending it is probing rather than reading.  The probe's
+ * case moved to 2^64-2, which exercises the identical arm.
+ *
+ * Tseek/Rseek then read and set that cursor, and they are numbered outside
+ * 100..127 so that no conforming client can collide with them.
+ */
+#define P9_Tseek	128
+#define P9_Rseek	129
+
+/*
+ * The sentinel.  All ones is the right choice rather than a free one: it is
+ * the only offset a conforming client can never legitimately send, because a
+ * read there could not return a byte -- offset + count would not fit in the
+ * 64 bits the field has.
+ */
+#define P9_OFFCUR	0xffffffffffffffffULL
+
+/* Tseek whence, V7's lseek(2) numbering exactly -- sys2.c's L_SET/L_INCR/L_XTND */
+#define P9_SEEKSET	0
+#define P9_SEEKCUR	1
+#define P9_SEEKEND	2
 
 /* qid type bits, and the mode bits that mirror them in a stat */
 #define P9_QTFILE	0x00

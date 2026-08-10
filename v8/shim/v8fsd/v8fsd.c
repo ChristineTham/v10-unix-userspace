@@ -196,6 +196,18 @@ struct fid {
 	char		 f_name[P9_NAMELEN];
 	unsigned char	*f_dir;		/* generated directory listing */
 	long		 f_dirlen;
+	/*
+	 * THE CURSOR, AND IT IS THE OPEN FILE DESCRIPTION'S OFFSET -- p9.h's
+	 * extension note has the argument.  It is here rather than in the
+	 * client because a dup, a fork and a program replacing itself all
+	 * share one offset and share this connection, and share nothing in
+	 * client memory.
+	 *
+	 * Only P9_OFFCUR reads or writes it.  An explicit offset is 9P's own
+	 * pread and leaves it alone, which is what lets a conforming client
+	 * use this server without discovering the extension exists.
+	 */
+	p9_u64		 f_off;
 };
 
 struct conn {
@@ -235,6 +247,7 @@ fidnew(struct conn *c, p9_u32 f)
 		p->f_name[0] = '\0';
 		p->f_dir = 0;
 		p->f_dirlen = 0;
+		p->f_off = 0;
 		return (p);
 	}
 	return (0);
@@ -574,7 +587,17 @@ do_version(struct conn *c, p9_u32 tag, struct p9buf *in)
 	 * prefix test is the spec's too: a client may offer "9P2000.u" and a
 	 * server that speaks only the base protocol answers "9P2000".
 	 */
-	p9_pstr(&b, strncmp(ver, "9P2000", 6) == 0 ? P9_VERSION : "unknown");
+	/*
+	 * ...AND THE EXTENSION IS NEGOTIATED HERE, which is what makes it an
+	 * extension rather than a divergence.  A client that asks for
+	 * "9P2000.v8" is told it has it; anything else starting with "9P2000"
+	 * gets the base protocol, exactly as a conforming server would answer.
+	 * p9.h says why the client needs the distinction: it sends P9_OFFCUR on
+	 * every read, and against a server with no cursor that is a silent
+	 * empty file rather than an error.
+	 */
+	p9_pstr(&b, strcmp(ver, P9_VERSION_V8) == 0 ? P9_VERSION_V8 :
+	    strncmp(ver, "9P2000", 6) == 0 ? P9_VERSION : "unknown");
 	reply(c, &b);
 }
 
@@ -804,6 +827,7 @@ do_read(struct conn *c, p9_u32 tag, struct p9buf *in)
 	p9_u32 fid, count;
 	p9_u64 off;
 	long n, max;
+	int atcur;
 	unsigned char *dst;
 
 	fid = p9_g32(in);
@@ -812,6 +836,38 @@ do_read(struct conn *c, p9_u32 tag, struct p9buf *in)
 	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
 	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
 	if (f->f_omode < 0) { rerror(c, tag, EBADF); return; }
+
+	/*
+	 * THE SENTINEL, AND IT IS RESOLVED HERE SO THAT EVERYTHING BELOW IS
+	 * 9P's OWN CODE PATH.  p9.h's extension note has the argument for the
+	 * cursor existing at all; what matters at this line is that an
+	 * explicit offset must reach the rest of this function unchanged, or
+	 * the server stops being one a conforming client can use.
+	 */
+	atcur = (off == P9_OFFCUR);
+	/*
+	 * A DIRECTORY HAS NO CURSOR HERE, AND REFUSING IS WHAT TURNS A SILENT
+	 * WRONG ANSWER INTO A LOUD ONE.
+	 *
+	 * The client converts a directory into V7 256-byte records and serves
+	 * reads out of its own snapshot (p9cl.c), so the position that matters
+	 * is in the record stream and not in this listing -- there is no
+	 * sensible cursor for this end to keep.  What made it worth a guard is
+	 * what happens without one: a v8fs directory descriptor that leaves the
+	 * process that opened it (a plain dup(2) is enough) has no snapshot, so
+	 * p9_t_read falls through to a real Tread and the program receives RAW
+	 * 9P STAT RECORDS and exit 0.  Measured by an auditor: 222 bytes whose
+	 * first two are a stat's size[2], read as a d_ino of 51.
+	 *
+	 * EISDIR rather than EINVAL because that is the answer the program
+	 * needs -- and it restores parity with passthrough, where read(2) on a
+	 * host directory descriptor the shim does not know returns -1.
+	 */
+	if (atcur && (f->f_ip->i_mode & IFMT) == IFDIR) {
+		rerror(c, tag, EISDIR);
+		return;
+	}
+	if (atcur) off = f->f_off;
 
 	max = c->c_msize - P9_IOHDRSZ;
 	if ((long)count > max) count = (p9_u32)max;
@@ -892,11 +948,107 @@ do_read(struct conn *c, p9_u32 tag, struct p9buf *in)
 		if (n < 0) { rerror(c, tag, u.u_error ? u.u_error : EIO); return; }
 	}
 
+	/*
+	 * ADVANCE ONLY WHAT THE SENTINEL ASKED FOR.  `n' is what was actually
+	 * produced, not what was requested, so a short read at end of file
+	 * leaves the cursor at the end rather than past it -- which is what
+	 * makes a second read return 0 instead of EINVAL from the directory
+	 * boundary walk.
+	 */
+	if (atcur) f->f_off = off + (p9_u64)n;
+
 	txbuf[7] = (unsigned char)(n & 0xff);
 	txbuf[8] = (unsigned char)((n >> 8) & 0xff);
 	txbuf[9] = (unsigned char)((n >> 16) & 0xff);
 	txbuf[10] = (unsigned char)((n >> 24) & 0xff);
 	b.b_p = dst + n;
+	reply(c, &b);
+}
+
+/*
+ * Tseek -- the extension, and p9.h says at length why it exists.  In one line:
+ * lseek(2) moves the OPEN FILE DESCRIPTION's offset, this connection is that
+ * description, and 9P has no message for it because Plan 9's kernel held it.
+ *
+ * THE LENGTH FOR SEEK_END IS THE ONE THING THAT IS NOT ARITHMETIC, and it is
+ * two different numbers.  For a file it is i_size.  For a DIRECTORY it is the
+ * length of the generated 9P listing, not i_size -- the two are unrelated, for
+ * exactly the reason dir.c:114 records about the host (a run of records built
+ * from entries is not the size the filesystem charges).  So the listing has to
+ * exist before the question can be answered, and gendir is what makes it.
+ */
+static void
+do_seek(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	struct p9buf b;
+	struct fid *f;
+	p9_u32 fid;
+	p9_u64 off, base;
+	int whence;
+	long long np;
+
+	fid = p9_g32(in);
+	off = p9_g64(in);
+	whence = (int)p9_g8(in);
+	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
+	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
+	if (f->f_omode < 0) { rerror(c, tag, EBADF); return; }
+
+	switch (whence) {
+	case P9_SEEKSET:
+		base = 0;
+		break;
+	case P9_SEEKCUR:
+		base = f->f_off;
+		break;
+	case P9_SEEKEND:
+		if ((f->f_ip->i_mode & IFMT) == IFDIR) {
+			if (f->f_dir == 0 && gendir(f) < 0) {
+				rerror(c, tag, u.u_error ? u.u_error : EIO);
+				return;
+			}
+			base = (p9_u64)f->f_dirlen;
+		} else
+			base = (p9_u64)(unsigned long)f->f_ip->i_size;
+		break;
+	default:
+		rerror(c, tag, EINVAL);
+		return;
+	}
+
+	/*
+	 * `off' IS SIGNED ON THE V7 SIDE AND UNSIGNED ON THE WIRE, which is
+	 * the shape that produced this server's one remote crash: a p9_u64 in
+	 * a signed comparison.  lseek(fd, -4, 1) is legal and must work, so
+	 * the value is reinterpreted rather than range-checked, and the SUM is
+	 * what gets tested -- in a signed type wide enough to hold it, before
+	 * anything indexes with it.  A negative result is EINVAL, which is
+	 * lseek(2)'s own answer.
+	 */
+	/*
+	 * THE CHECK IS BEFORE THE ADDITION, AND THE FIRST VERSION WAS AFTER IT.
+	 * `np = base + off; if (np < 0)' reasons correctly about reinterpreting
+	 * the unsigned wire offset and then performs the addition in a type
+	 * that cannot hold every reachable sum -- signed overflow, which is
+	 * undefined and which an ordinary V8 lseek can reach: measured,
+	 * lseek(2^62, SEEK_SET) then lseek(2^62, SEEK_CUR) wrapped to
+	 * LLONG_MIN and was rejected for the wrong reason.  Found by an
+	 * auditor, in the guard written to prevent exactly this class.
+	 */
+	{
+		long long d = (long long)(p9_u64)off;
+		long long b0 = (long long)base;
+
+		if (d < 0 ? b0 < -d : d > 0x7fffffffffffffffLL - b0) {
+			rerror(c, tag, EINVAL);
+			return;
+		}
+		np = b0 + d;
+	}
+	f->f_off = (p9_u64)np;
+
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rseek, tag);
+	p9_p64(&b, f->f_off);
 	reply(c, &b);
 }
 
@@ -984,6 +1136,7 @@ serve1(struct conn *c)
 	case P9_Topen:		do_open(c, tag, &in); break;
 	case P9_Tread:		do_read(c, tag, &in); break;
 	case P9_Tclunk:		do_clunk(c, tag, &in); break;
+	case P9_Tseek:		do_seek(c, tag, &in); break;
 	case P9_Tstat:		do_stat(c, tag, &in); break;
 
 	/*

@@ -1864,6 +1864,369 @@ check "the first connection still knows its fids" "1"	"$(q conn1-still-alive)"
 # poll loop here would take every other client with it.
 check "and survives the second one closing"	"1"	"$(q conn1-after-conn2-closed)"
 
+# ===========================================================================
+# 9. THE CLIENT -- §8a step 5e's other half, and the only section in this file
+#    that runs no probe at all.
+#
+# Everything above this line is a program written to test something.  These
+# cases run the SHIPPED BINARIES -- rootfs/bin/cat, ls, sh, rm and usr/bin/tail
+# -- against a mount, with no argument they would not have been given in 1985.
+# That is the whole claim of the step: not that a 9P server answers correctly,
+# which section 8 established, but that Bell Labs' namei, iget, bmap and readi
+# running in another process are reachable by `cat FILE'.
+#
+# THE SOCKET PATH IS RELATIVE FOR THE CLIENT TOO, and for the server's reason
+# one step further along: sun_path is 104 bytes, $TMPDIR is around 50 on a Mac,
+# and the client refuses a mount whose socket path will not fit -- silently,
+# because a mount that does not exist is not an error.  Found the honest way:
+# the first end-to-end run of this used an absolute path under the session
+# scratch directory, at 130 characters, and cat said "No such file or
+# directory" about a file that was there.  cd into the directory and the length
+# is bounded by the name.
+#
+# V8MOUNT is set per-command rather than exported, so that the LAST case can
+# ask what happens without it -- which is the control that says the mount is
+# what does this rather than something in the jail.
+# A SECOND SERVER, because line 1715 killed the first one the moment the probe
+# exited -- every check in section 8 reads the probe's saved output, so nothing
+# there needed it alive and the kill was invisible.  These cases run programs,
+# so they do.  Diagnosed by this section failing eleven times with "No such
+# file or directory" while the identical command worked by hand.
+rm -f "$P9DIR/csock"
+( cd "$P9DIR" && exec "$V8FSD" csock p9img ) > "$TMP/p9cli.out" 2>&1 &
+CPID=$!
+cready=0
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+	grep -q "^v8fsd ready" "$TMP/p9cli.out" 2>/dev/null && { cready=1; break; }
+	kill -0 $CPID 2>/dev/null || break
+	sleep 0.2
+done
+check "a server for the client half"		"1"	"$cready"
+
+# A DEADLINE ON EVERY ONE OF THEM, for a reason this section is uniquely
+# exposed to: a v8fs read is a round trip, so a server that answers nothing
+# leaves an ORDINARY V8 PROGRAM blocked in read(2) forever -- and a hang in
+# `make test' reports nothing at all, which is strictly worse than a failure.
+#
+# AND `perl -e "alarm N; exec"' IS NOT THAT DEADLINE, WHICH THIS SECTION FOUND
+# BY HANGING FOR TWENTY-SIX MINUTES.  Two independent reasons, and the alarm
+# mechanism itself is fine -- measured, `perl -e 'alarm 2; exec @ARGV' sleep 10'
+# dies at two seconds with status 142:
+#
+#   V8's sh CATCHES SIGALRM ON PURPOSE.  src/cmd/sh/fault.c:123 is
+#   `setsig(SIGALRM)' and :94 handles it -- the shell uses alarm(2) itself, for
+#   $TIMEOUT (main.c:224) and for the fork retry (xec.c:466).  So the signal
+#   that was supposed to kill it is one it was written to survive.
+#
+#   AND A DEADLINE ON ONE END OF A PIPE IS NOT A DEADLINE ON THE PIPE, which
+#   CLAUDE.md already records from the ttyld harness.  Even against a program
+#   that does die, `sh -c "cat < /mnt/f"' leaves cat holding the stdout the
+#   command substitution is reading, so $( ) never returns.
+#
+# So the child is put in its own PROCESS GROUP and the whole group is killed.
+# That reaches the grandchildren, and it does not care what the child thinks
+# about SIGALRM.
+deadline() {
+	perl -e '
+		my $pid = fork();
+		die "fork: $!" unless defined $pid;
+		if ($pid == 0) { setpgrp(0, 0); exec @ARGV; exit 127; }
+		$SIG{ALRM} = sub { kill(-9, $pid); };
+		alarm 30;
+		waitpid($pid, 0);
+		my $st = $?;
+		alarm 0;
+		exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
+	' "$@"
+}
+# export, NOT `env VAR=v deadline ...' -- env execs a PROGRAM and cannot call a
+# shell function, so the first version of this ran /usr/bin/env looking for a
+# binary named `deadline'.
+v8run()  { ( cd "$P9DIR"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/mnt=csock"
+	     export V8ROOT V8MOUNT; deadline "$@" ); }
+v8bare() { ( cd "$P9DIR"; V8ROOT="$ROOT/rootfs"; unset V8MOUNT
+	     export V8ROOT; deadline "$@" ); }
+# The same, mounted somewhere the HOST also has a directory -- see the
+# containment cases at the end of this section for why that is not the same
+# test twice.
+v8host() { ( cd "$P9DIR"; V8ROOT="$ROOT/rootfs"; V8MOUNT="$P9DIR/hostdir=csock"
+	     export V8ROOT V8MOUNT; deadline "$@" ); }
+CAT=$ROOT/rootfs/bin/cat
+LS=$ROOT/rootfs/bin/ls
+SH=$ROOT/rootfs/bin/sh
+RM=$ROOT/rootfs/bin/rm
+TAIL=$ROOT/rootfs/usr/bin/tail
+
+# The headline.  A V8 program, a V8 path, a V8 filesystem, three processes.
+check "cat reads a file out of the mount" "hello from a V8 filesystem" \
+	"$(v8run "$CAT" /mnt/hello 2>&1)"
+
+# ...and the one that cannot pass by accident: 28000 bytes, two directories
+# down, through bmap's indirect arm, compared against what mkfs was handed.
+v8run "$CAT" /mnt/sub/deep > "$TMP/mntread" 2>"$TMP/mntread.err"
+if cmp -s "$FSTMP/big.txt" "$TMP/mntread"; then pass=$((pass+1))
+else bad "the 28000 bytes cat read through the mount are not the ones mkfs was given" \
+	 "$(cmp "$FSTMP/big.txt" "$TMP/mntread" 2>&1 | head -2; head -2 "$TMP/mntread.err")"; fi
+
+# A DIRECTORY IS A DIFFERENT PATH ENTIRELY -- 9P stat records converted to V7
+# 256-byte records and handed to dir.c's snapshot machinery.  `ls' is the
+# reader that made the conversion's first bug visible: it said "/mnt
+# unreadable", because open(2) is what fails when the snapshot cannot be built.
+check "ls lists the mount"			"hello sub" \
+	"$(v8run "$LS" /mnt 2>&1 | tr '\n' ' ' | sed 's/ *$//')"
+check "and the subdirectory"			"deep" \
+	"$(v8run "$LS" /mnt/sub 2>&1)"
+# ls -l is stat, which is a whole connection per entry, and it reports the
+# IMAGE's numbers -- mode and size come off a V7 inode mkfs wrote.
+check "ls -l reports the image's size"		"27" \
+	"$(v8run "$LS" -l /mnt/hello 2>&1 | awk '{print $5}')"
+check "and the image's mode"			"-rw-r--r--" \
+	"$(v8run "$LS" -l /mnt/hello 2>&1 | awk '{print $1}')"
+
+# THE INHERITANCE CASE, AND IT IS WHY getpeername IS IN THE DESIGN.  sh opens
+# the file, dup2s it onto 0 and replaces itself with cat -- so cat's fd 0 is a
+# 9P socket in a process whose descriptor table was destroyed by the exec.  A
+# client that kept its types in process memory reads a raw socket here and
+# BLOCKS FOREVER, because the server sends nothing unsolicited.
+#
+# It also caught a second bug that a directly-opened file never could: the
+# close of the original descriptor was sending a Tclunk, which destroyed the
+# fid the dup was still using, and cat printed nothing.
+check "a redirection survives the program being replaced" "hello from a V8 filesystem" \
+	"$(v8run "$SH" -c 'cat < /mnt/hello' 2>&1)"
+check "and the byte count of the big one"	"28000" \
+	"$(v8run "$SH" -c 'wc -c < /mnt/sub/deep' 2>&1 | tr -d ' ')"
+
+# lseek, WHICH IS THE ONE THING 9P HAS NO MESSAGE FOR -- p9.h argues that at
+# length.  tail(1) is a 1985 program that seeks, so the extension is exercised
+# by something that was not written for it.
+# The expected value is COMPUTED FROM THE SUITE'S OWN FILE and not written
+# out, which is not tidiness: the first draft transcribed a line from the
+# scratch file used while developing this, and failed against big.txt's actual
+# contents.  A constant copied from somewhere else is a claim about that other
+# place.
+check "tail seeks to the end of a mounted file"	"$(tail -1 "$FSTMP/big.txt")" \
+	"$(v8run "$TAIL" -1 /mnt/sub/deep 2>&1)"
+
+# The negative half.  A name that is not there must be ENOENT from the SERVER's
+# namei, not from the Mac.
+check "a missing name is ENOENT"		"1" \
+	"$(v8run "$CAT" /mnt/nope >/dev/null 2>&1; echo $?)"
+# THE BOUNDARY IS A CHARACTER AND NOT A LENGTH.  /mntfoo is not in the mount,
+# and a prefix test on length alone would claim it -- the same trap vfs.c's
+# table carries a trailing slash to avoid.
+check "/mntfoo is not the mount"		"1" \
+	"$(v8run "$CAT" /mntfoo >/dev/null 2>&1; echo $?)"
+
+# READ ONLY, AND FROM TWO DIFFERENT PLACES.  The write goes to the server and
+# comes back EROFS; the unlink never leaves this process, because rm(1) reaches
+# a syscall that has no slot in struct v8fstyp and would otherwise have asked
+# the HOST to unlink /mnt/hello.
+check "a write is refused"			"1" \
+	"$(v8run "$SH" -c 'echo x > /mnt/hello' >/dev/null 2>&1; echo $?)"
+# ...and two syscalls that never leave this process, because they have no slot
+# in struct v8fstyp and would otherwise have asked the HOST to change a file
+# called /mnt/hello.  There is no /mnt on this machine, which is luck rather
+# than containment -- MOUNTED() is what makes it a refusal.
+check "chmod on a mount is refused"		"1" \
+	"$(v8run "$ROOT/rootfs/bin/chmod" 777 /mnt/hello >/dev/null 2>&1; echo $?)"
+check "and mkdir"				"1" \
+	"$(v8run "$ROOT/rootfs/bin/mkdir" /mnt/newdir >/dev/null 2>&1; echo $?)"
+# rm -f EXITS 0 AND THAT IS UPSTREAM'S OWN BEHAVIOUR, not the mount lying:
+# rm.c:107 is `if(unlink(arg) && (fflg==0 || iflg))', so -f suppresses the
+# error and errcode is never incremented.  The case is here because the
+# obvious way to test the unlink refusal reads as a pass either way, and the
+# next person to write it should know before spending the round.  What says
+# the refusal happened is the file still being there, below.
+check "rm -f says nothing, as rm.c:107 does"	"0" \
+	"$(v8run "$RM" -f /mnt/hello >/dev/null 2>&1; echo $?)"
+# ...and the file is still there, which is the half that says the refusal was
+# not a refusal to find it.
+check "the file survived all three"		"hello from a V8 filesystem" \
+	"$(v8run "$CAT" /mnt/hello 2>&1)"
+
+# THE MOUNT IS WHAT DOES THIS.  Same binary, same path, no V8MOUNT -- and the
+# answer must be that there is no such file, or every case above is consistent
+# with /mnt being something in the jail.
+check "without V8MOUNT there is no /mnt/hello" "1" \
+	"$(v8bare "$CAT" /mnt/hello >/dev/null 2>&1; echo $?)"
+# ...and the jail is untouched beside it, which is the other direction: a
+# mount that shadowed the static table would break /etc.
+check "the jail still answers for /etc"		"0" \
+	"$(v8run "$CAT" /etc/group >/dev/null 2>&1; echo $?)"
+
+# ---------------------------------------------------------------------------
+# CONTAINMENT, AND THE CASES ABOVE CANNOT SHOW IT.
+#
+# `chmod on a mount is refused' passes on this machine whether or not MOUNTED()
+# exists, because there is no /mnt here and the host's chmod fails too -- the
+# guard and the absence of the directory are indistinguishable.  That is the
+# host-property trap wearing a different hat: a case that is green for a reason
+# the port does not control.
+#
+# So mount over a directory the host really has, holding a file with different
+# contents, and ask two questions the absence of /mnt cannot answer.
+mkdir -p "$P9DIR/hostdir"
+printf 'THE HOST FILE, NOT THE IMAGE\n' > "$P9DIR/hostdir/hello"
+chmod 600 "$P9DIR/hostdir/hello"
+
+# A MOUNT SHADOWS WHAT IS UNDER IT.  Same path, and the answer must come off
+# the disk image rather than out of the directory that is really there.
+check "a mount shadows the host directory"	"hello from a V8 filesystem" \
+	"$(v8host "$CAT" "$P9DIR/hostdir/hello" 2>&1)"
+# ...and the host file is still what it was, which is the half that says the
+# read went somewhere else rather than that the file was overwritten.
+check "and the host file is untouched"		"THE HOST FILE, NOT THE IMAGE" \
+	"$(cat "$P9DIR/hostdir/hello")"
+
+# NOW THE GUARD.  chmod has no slot in struct v8fstyp, so without MOUNTED() it
+# reaches the host with the path verbatim and changes THIS file's mode.  With
+# it, the mode is what it was.  This is the case the /mnt one could not be.
+v8host "$ROOT/rootfs/bin/chmod" 777 "$P9DIR/hostdir/hello" >/dev/null 2>&1
+# substr AND NOT $1, because macOS appends `@' to the mode column for a file
+# with extended attributes -- which $TMPDIR files acquire without asking.  The
+# first draft compared the whole field and failed with `600@' against `600',
+# which is the host-property trap arriving inside the case written to avoid it.
+check "chmod through a mount does not reach the host" "-rw-------" \
+	"$(ls -l "$P9DIR/hostdir/hello" | awk '{print substr($1,1,10)}')"
+
+# ---------------------------------------------------------------------------
+# WHAT AN AUDITOR FOUND, TURNED INTO CASES.  Every one of these was a measured
+# defect in code written the same day; the fixes are in and these are what stop
+# them coming back.
+
+# 1. THE MOUNT PARSER.  The strip loop and the socket-path scan shared an
+# index, so a trailing slash made the socket path "=csock" and two slashes
+# "/=csock" -- a mount that silently does not exist, which is the failure mode
+# the parser's own comment says it was written to avoid.
+check "a trailing slash in V8MOUNT still connects" "hello from a V8 filesystem" \
+	"$( cd "$P9DIR"; V8ROOT="$ROOT/rootfs" V8MOUNT="/mnt/=csock" \
+	    export V8ROOT V8MOUNT; deadline "$CAT" /mnt/hello 2>&1 )"
+check "and two of them"				"hello from a V8 filesystem" \
+	"$( cd "$P9DIR"; V8ROOT="$ROOT/rootfs" V8MOUNT="/mnt//=csock" \
+	    export V8ROOT V8MOUNT; deadline "$CAT" /mnt/hello 2>&1 )"
+
+# 2. A BARE "/" IS REFUSED.  vfs.c's comment claimed mounting on the root would
+# "shadow /bin and the whole world"; measured, it shadowed exactly "/" and
+# nothing under it, which is an incoherent half-mount nobody described.  With
+# the refusal, /bin is the jail's and there is no mount at all.
+# AND THE CASE HAS TO LOOK AT `/', NOT AT `/bin' -- the first draft asserted
+# that `ls /bin' still worked, which a mutation showed is true either way: the
+# whole point of the finding is that a "/" mount shadows exactly "/" and
+# nothing beneath it.  What distinguishes is the ROOT's own listing: refused,
+# it is the jail's and contains bin; allowed, it is the server's and does not.
+check "V8MOUNT=/ is refused, and / is the jail's" "1" \
+	"$( cd "$P9DIR"; V8ROOT="$ROOT/rootfs" V8MOUNT="/=csock" \
+	    export V8ROOT V8MOUNT; deadline "$LS" / 2>/dev/null | grep -c '^bin$' )"
+
+# 3. chdir INTO A MOUNT WAS A JAIL ESCAPE, and the mount point is what made it
+# visible: with the prefix set to a name the HOST also has, `cd' returned 0 and
+# put the program in the Mac's directory.  Measured before the fix with
+# V8MOUNT=/etc=sock -- pwd said /private/etc and cat read the Mac's passwd.
+check "cd into a mount is refused"		"1" \
+	"$(v8host "$SH" -c "cd $P9DIR/hostdir" >/dev/null 2>&1; echo $?)"
+# ...and the same shell can still cd anywhere else, so the refusal is about the
+# mount and not about cd.
+check "and cd elsewhere still works"		"0" \
+	"$(v8host "$SH" -c 'cd /bin' >/dev/null 2>&1; echo $?)"
+
+# 4. access() MUST AGREE WITH open().  It recomputed permission from the
+# image's mode bits against the HOST's uid, while the server runs Bell Labs'
+# access() with u_uid 0 and takes fio.c's root bypass -- so on every file of
+# every image `test -r' said no and `cat' said yes.  mkfs makes everything
+# root-owned, so this was total rather than an edge case.
+check "test -r and cat agree on a mounted file"	"readable" \
+	"$(v8run "$SH" -c 'if test -r /mnt/hello; then echo readable; else echo NOT; fi' 2>&1)"
+# ...and the write half is still refused, which is the other direction: an
+# access() that just said yes to everything would pass the case above.
+check "and test -w says no on a read-only mount" "notwritable" \
+	"$(v8run "$SH" -c 'if test -w /mnt/hello; then echo writable; else echo notwritable; fi' 2>&1)"
+
+# 5. A DIRECTORY DESCRIPTOR THAT LEAVES ITS PROCESS MUST NOT RETURN RAW 9P.
+# The snapshot is keyed on the fd in this process, so a dup or an exec loses
+# it, and p9_t_read then fell through to a real Tread -- handing the program
+# 222 bytes of 9P stat records and exit 0, with the first two bytes of a
+# stat's size[2] read as a d_ino.  The server now refuses a cursor read on a
+# directory fid, so it is an error instead.  Passthrough fails loudly here too
+# (read(2) on a host directory fd the shim does not know is -1), which is the
+# parity that says this is not a new rule.
+# The construct matters and the first draft's did not reach it: `ls /mnt; cat
+# /mnt' is two processes each opening the directory for itself, so both build
+# their own snapshot and both succeed.  What is needed is ONE descriptor
+# crossing a process -- sh opens the directory, dup2s it onto 0 and execs cat,
+# which then has a v8fs directory descriptor and no snapshot for it.
+# THE ASSERTION IS ON THE BYTES AND NOT ON THE EXIT STATUS, because V8's cat
+# is `while ((n = read(fi, buf, BUFSIZ)) > 0)' -- a read error is not > 0, so
+# it ends the loop and exits 0.  The first draft of these two checked $? and
+# both passed for that reason, including the passthrough control, which is what
+# gave it away.  What was actually wrong before the fix is that the program
+# received 222 BYTES OF 9P STAT RECORDS and could not tell; so what has to be
+# asserted is that nothing comes out.
+check "a directory read that lost its snapshot yields nothing" "0" \
+	"$(v8run "$SH" -c 'cat < /mnt' 2>/dev/null | wc -c | tr -d ' ')"
+# ...and passthrough behaves identically, which is what says this is parity
+# rather than a rule invented for v8fs.
+check "and passthrough does the same on /etc"	"0" \
+	"$(v8run "$SH" -c 'cat < /etc' 2>/dev/null | wc -c | tr -d ' ')"
+
+# 6. A SECOND IMAGE, FOR TWO PROPERTIES THE FIRST ONE CANNOT EXPRESS -- and
+# both cases were written against the first image, ran green, and were shown
+# VACUOUS by mutation.  That is the informative outcome and it is why they are
+# here instead.
+#
+#   A 0600 FILE.  `hello' is 0644, so the `other' bits grant read and the old
+#   uid-recomputing access() agreed with open() by accident.  The disagreement
+#   only shows on a file whose mode denies the caller: the server takes
+#   fio.c's root bypass (u_uid is 0 and nothing sets it) and opens it anyway.
+#
+#   A WIDE uid.  di_uid is v8_i16 and SIGNED, so 40000 loads as -25536 and
+#   v8fsd renders it "-25536"; the client's parser met a '-' and returned 0,
+#   which is root.  CLAUDE.md's contract for every 16-bit narrowing here is
+#   "root maps to root, and non-root never maps to root", and both halves are
+#   asserted below -- a case that only checked the second would pass against a
+#   parser that returned the sentinel for everything.
+UIDDIR=$FSTMP/uidfs
+mkdir -p "$UIDDIR"
+printf 'secret\n' > "$UIDDIR/s.txt"
+printf '/dev/null\n200 32\nd--777 0 0\nsecret\n---600 0 0 %s\nwide\n---644 40000 40001 %s\n$\n' \
+	"$UIDDIR/s.txt" "$UIDDIR/s.txt" > "$UIDDIR/proto"
+if ! ( cd "$UIDDIR" && V8ROOT=$ROOT/rootfs "$MKFS" img proto ) >"$UIDDIR/mkfs.log" 2>&1; then
+	bad "v8fs client: the uid image would not build" "$(head -3 "$UIDDIR/mkfs.log")"
+else
+rm -f "$UIDDIR/sk"
+( cd "$UIDDIR" && exec "$V8FSD" sk img ) > "$TMP/p9uid.out" 2>&1 &
+UPID=$!
+uready=0
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+	grep -q "^v8fsd ready" "$TMP/p9uid.out" 2>/dev/null && { uready=1; break; }
+	kill -0 $UPID 2>/dev/null || break
+	sleep 0.2
+done
+check "a server for the uid image"		"1"	"$uready"
+v8uid() { ( cd "$UIDDIR"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/m=sk"
+	    export V8ROOT V8MOUNT; deadline "$@" ); }
+
+check "test -r agrees with open on a 0600 file" "readable" \
+	"$(v8uid "$SH" -c 'if test -r /m/secret; then echo readable; else echo NOT; fi' 2>&1)"
+check "and cat really can read it"		"secret" \
+	"$(v8uid "$CAT" /m/secret 2>&1)"
+# The contract, both halves.  A uid V8 cannot represent must not read as root...
+check "a uid V8 cannot hold does not read as root" "0" \
+	"$(v8uid "$LS" -l /m/wide 2>&1 | awk '{print $3}' | grep -c '^root$')"
+# ...and a uid that IS root still does.
+check "and a root-owned file still does"	"1" \
+	"$(v8uid "$LS" -l /m/secret 2>&1 | awk '{print $3}' | grep -c '^root$')"
+kill $UPID 2>/dev/null; wait $UPID 2>/dev/null
+fi	# the uid image built
+
+# THE SERVER MUST STILL BE THERE, and it is the cheapest possible assertion
+# that nothing above took it down.  Sixteen client programs have connected and
+# exited by now -- each one closing a socket mid-conversation, which is the
+# event SIGPIPE would have killed it on.
+check "and the server survived every client"	"0" \
+	"$(kill -0 $CPID 2>/dev/null; echo $?)"
+kill $CPID 2>/dev/null; wait $CPID 2>/dev/null
+
 fi	# the probe ran
 fi	# the server came up
 fi	# p9probe built

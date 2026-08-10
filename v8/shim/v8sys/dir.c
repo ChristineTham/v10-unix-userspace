@@ -484,6 +484,49 @@ v8sys_diropen(const char *path, int fd)
 	return (0);
 }
 
+/*
+ * Adopt a snapshot SOMEBODY ELSE BUILT, and take ownership of the buffer.
+ *
+ * WHY THIS RATHER THAN A SECOND SNAPSHOT IMPLEMENTATION.  A v8fs directory
+ * arrives as a run of 9P stat records off a socket, not as host getdirentries,
+ * so v8sys_diropen above cannot produce it -- but everything AFTER the
+ * conversion is identical, and it is exactly the part with the interesting
+ * rules in it: dirsize's "what read(2) will produce is not what the host
+ * charges", the -1 free-slot sentinel that fd 0 forced, and a seek that is in
+ * record space rather than in the underlying object's.  Two copies of those is
+ * one copy that goes stale, which is the one-table rule this shim already
+ * applies to the mount list.
+ *
+ * THE BUFFER MUST COME FROM v8sys_alloc, because v8sys_dirclose frees it with
+ * v8sys_free.  Said out loud because the ownership transfer is the whole
+ * interface and a caller that kept the pointer would double-free at close.
+ *
+ * A CLIENT-SIDE SNAPSHOT IS NOT THE COMPROMISE IT LOOKS LIKE.  Everything else
+ * about a v8fs file is server-side precisely so that dup, fork and a program
+ * replacing itself all work (p9.h's extension note).  A directory is the one
+ * thing that is not -- and it inherits a limit this shim has had since
+ * v8sys_diropen was written, rather than inventing one, because the host
+ * filesystem's directories have been snapshotted per-descriptor all along.
+ * Nothing redirects a descriptor from a directory, so the case does not arise.
+ */
+int
+v8sys_diradopt(int fd, char *recs, long nbytes)
+{
+	struct dirshim *s = 0;
+	int i;
+
+	v8sys_dirinit();
+	for (i = 0; i < MAXDIRFD; i++)
+		if (shims[i].fd == -1) { s = &shims[i]; break; }
+	if (s == 0) { v8_errno = V8_EMFILE; return (-1); }
+
+	s->fd = fd;
+	s->recs = recs;
+	s->nbytes = nbytes;
+	s->pos = 0;
+	return (0);
+}
+
 long
 v8sys_dirread(int fd, void *buf, long n)
 {

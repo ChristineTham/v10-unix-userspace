@@ -284,6 +284,26 @@ v8sys_rootpath(char *p, int mode)
 		return (buf);
 	}
 
+	/*
+	 * A SERVER-BACKED MOUNT IS NOT IN THE ROOTFS, and this line is the
+	 * difference between saying so and writing to the Mac.
+	 *
+	 * v8fs_typefor() is used here as a GATE -- "does any mount claim this
+	 * name" -- and every type it could return used to answer out of
+	 * $V8ROOT.  v8fs does not: the file is on a disk image in another
+	 * process.  Prepending the root would build $V8ROOT/mnt/x, and the
+	 * creating syscalls would then bring that file into existence, so a
+	 * failed unlink on a mount would leave a real file in the jail named
+	 * after a file that is somewhere else entirely.
+	 *
+	 * Returning the path UNCHANGED is what an unclaimed path gets, and it
+	 * is right for the same reason: this function's job is the union with
+	 * the rootfs, and a mount is not in the union.  The syscalls that then
+	 * pass the bare path to the host are guarded separately -- see
+	 * MOUNTED() below, which exists because "the host probably has no
+	 * /mnt" is not a guarantee anyone made.
+	 */
+	if (v8fs_mounted(p)) return (p);
 	if (v8fs_typefor(p) == 0) return (p);
 	if ((root = v8root()) == 0) return (p);
 
@@ -365,6 +385,43 @@ mkpath(char *p)
 	return v8sys_rootpath(p, V8P_MAKE);
 }
 
+/*
+ * FOURTEEN SYSCALLS HAVE NO SLOT IN struct v8fstyp, AND THEY ARE PASSTHROUGH
+ * BY CONSTRUCTION.  (This said ELEVEN, and an auditor counted: NINE refuse
+ * with the macro below -- link, mknod, unlink, chmod, chown, mkdir, rmdir,
+ * symlink, utime, which is ten MOUNTED() calls because link guards both its
+ * names -- plus access, readlink and chdir, which answer instead; and the
+ * enumeration had missed v8s_chroot, which passes its path completely
+ * unresolved, mounted or not, and v8s_execve.  Counting names while describing
+ * calls is a shape this repo has recorded before.)  That was invisible while every type answered out of $V8ROOT --
+ * a chmod on a /proc path was wrong, but it was wrong about a file in the
+ * jail.  With a mount in another process it stops being containable: the path
+ * reaches the host verbatim (rootpath leaves it alone, and says why), so
+ * `rm /mnt/x' asks the Mac to unlink /mnt/x.  There is no /mnt on this
+ * machine, which is luck and not a design.
+ *
+ * SO THEY REFUSE, ONE LINE EACH, RATHER THAN BEING GIVEN SLOTS.  A slot is a
+ * claim that the operation is implemented; EROFS is the truth, and it is the
+ * truth for the right reason -- the server answers EROFS to Twrite, Tcreate,
+ * Tremove and Twstat today, so a mutating operation on a mount has exactly one
+ * answer and this is it.  When §8a step 5f makes the server writable these
+ * become slots, and the guard is what will fail loudly if one is forgotten.
+ *
+ * THE THREE READERS ARE NOT IN THE LIST, because EROFS would be a lie about a
+ * question that has a real answer.  access() is implemented below over t_stat;
+ * readlink() is EINVAL, which is what readlink(2) says about a file that is
+ * not a symbolic link, and a V7 image contains no other kind; chdir() refuses
+ * with EACCES, and its comment says why that is a refusal rather than a gap.
+ * (This paragraph used to call chdir "ENOTDIR-or-worse", which was the wrong
+ * half of its own sentence: nothing errored at all, and an auditor walked
+ * straight out of the jail through it.)
+ */
+int v8s_getuid(void);
+int v8s_getgid(void);
+
+#define MOUNTED(p)	do { if (v8fs_mounted(p)) {			\
+				v8_errno = V8_EROFS; return (-1); } } while (0)
+
 /* ------------------------------------------------------- PASSTHROUGH */
 
 /*
@@ -441,6 +498,8 @@ int v8s_link(char *a, char *b)
 	 */
 	if (a == 0 || b == 0)
 		RET(rawsys2(SYS_link, (long)a, (long)b));
+	/* BOTH names, because a link crosses two and either may be a mount. */
+	MOUNTED(a); MOUNTED(b);
 
 	if (dotlink(b)) {
 		struct v8_stat st;
@@ -492,6 +551,7 @@ int v8s_link(char *a, char *b)
  */
 int v8s_mknod(char *p, int mode, int dev)
 {
+	MOUNTED(p);
 	if ((mode & 0170000) == 0040000)
 		RET(rawsys2(SYS_mkdir, (long)mkpath(p), mode & 07777));
 	v8_errno = v8sys_errno(EPERM);
@@ -516,6 +576,7 @@ int v8s_unlink(char *p)
 {
 	struct v8_stat st;
 
+	MOUNTED(p);
 	p = vpath(p);
 	if (dotlink(p)) {
 		/*
@@ -538,18 +599,87 @@ int v8s_unlink(char *p)
 		RET(rawsys1(SYS_rmdir, (long)p));
 	RET(rawsys1(SYS_unlink, (long)p));
 }
-int v8s_chdir(char *p)                   { RET(rawsys1(SYS_chdir, (long)vpath(p))); }
-int v8s_chmod(char *p, int m)            { RET(rawsys2(SYS_chmod, (long)vpath(p), m)); }
-int v8s_chown(char *p, int u, int g)     { RET(rawsys3(SYS_chown, (long)vpath(p), u, g)); }
+/*
+ * chdir INTO A MOUNT IS REFUSED, and until it was, it was a JAIL ESCAPE.
+ *
+ * rootpath() now returns a mounted path unchanged -- it must, because the file
+ * is on an image in another process -- so an unguarded chdir hands the bare
+ * name to the host.  With a mount whose prefix the Mac also has, that is not a
+ * failure but a success into the wrong world: measured with V8MOUNT=/etc=sock,
+ * `cd /etc' returned 0, pwd said /private/etc, and `cat passwd' read the Mac's
+ * password database.  Before the rootpath line, /etc resolved into $V8ROOT.
+ * /mnt is safe only because this machine has no /mnt.
+ *
+ * EACCES rather than EROFS, because chdir is not a write and the refusal is
+ * not about the medium: nothing in this shim tracks a working directory, so
+ * v8fs_typefor refuses a relative path and a program that got inside a mount
+ * would find every relative name resolving against the host.  That is the one
+ * gap the client cannot close on its own -- PLAN.md §8a step 5f -- and until
+ * it is closed the honest answer is no.
+ */
+int v8s_chdir(char *p)
+{
+	if (v8fs_mounted(p)) { v8_errno = V8_EACCES; return (-1); }
+	RET(rawsys1(SYS_chdir, (long)vpath(p)));
+}
+int v8s_chmod(char *p, int m)            { MOUNTED(p); RET(rawsys2(SYS_chmod, (long)vpath(p), m)); }
+int v8s_chown(char *p, int u, int g)     { MOUNTED(p); RET(rawsys3(SYS_chown, (long)vpath(p), u, g)); }
 int v8s_fchmod(int f, int m)             { RET(rawsys2(SYS_fchmod, f, m)); }
 int v8s_fchown(int f, int u, int g)      { RET(rawsys3(SYS_fchown, f, u, g)); }
-int v8s_access(char *p, int m)           { RET(rawsys2(SYS_access, (long)vpath(p), m)); }
-int v8s_mkdir(char *p, int m)            { RET(rawsys2(SYS_mkdir, (long)mkpath(p), m)); }
-int v8s_rmdir(char *p)                   { RET(rawsys1(SYS_rmdir, (long)vpath(p))); }
+/*
+ * access() ANSWERS OUT OF THE MOUNT, because it has an answer.  It is also the
+ * one of the eleven that programs actually reach on a path they are about to
+ * open -- sh's PATH search and test(1) are both access() -- so refusing it
+ * would make a mounted file look absent rather than unwritable.
+ *
+ * The permission bits are the SERVER'S, from the image's own inode, and the
+ * comparison is against the mode a V7 stat reports.  Mode 0 (F_OK) is answered
+ * by the stat succeeding, which is what it means.
+ */
+/*
+ * access() ON A MOUNT ANSWERS WHAT WILL ACTUALLY HAPPEN, and the first version
+ * answered a different question from open(2) on every file of every image.
+ *
+ * It recomputed permission from the image's mode bits against THE HOST'S uid.
+ * The server does not do that: v8fsd calls Bell Labs' access() with u.u_uid,
+ * which nothing sets and which is therefore 0, so fio.c's root bypass applies
+ * and the open succeeds whatever the mode says.  Measured on a mkfs image
+ * holding a 0600 root-owned file: `test -r' said NOT readable and `cat'
+ * printed it.  That is not an edge case -- mkfs protos make everything
+ * root-owned and no V8 program here runs as uid 0 -- so the disagreement was
+ * total, and it is the shape access(2) exists to prevent.
+ *
+ * The bits were the server's; the IDENTITY was the host's, and identity is the
+ * half that decides.  So this stops modelling a permission system that neither
+ * end runs and reports what the operations will do:
+ *
+ *	F_OK, R_OK   the stat succeeded, and so will the open
+ *	W_OK	     EROFS -- every write path answers that today
+ *	X_OK	     EACCES -- v8s_execve is passthrough, so nothing can be
+ *		     executed off a mount whatever the mode bits say
+ *
+ * When §8a step 5f gives the server a real uid and a writable image, this
+ * becomes a question worth asking over the wire, and it should be asked
+ * rather than recomputed here.  PLAN.md §8a step 5f carries it.
+ */
+int v8s_access(char *p, int m)
+{
+	struct v8_stat st;
+
+	if (!v8fs_mounted(p)) RET(rawsys2(SYS_access, (long)vpath(p), m));
+	if (v8fs_p9.t_stat(p, &st, 1) < 0) return (-1);
+	/* V8's access(2) mode bits: 4 read, 2 write, 1 execute, exactly V7's. */
+	if (m & 02) { v8_errno = V8_EROFS; return (-1); }
+	if (m & 01) { v8_errno = V8_EACCES; return (-1); }
+	return (0);
+}
+int v8s_mkdir(char *p, int m)            { MOUNTED(p); RET(rawsys2(SYS_mkdir, (long)mkpath(p), m)); }
+int v8s_rmdir(char *p)                   { MOUNTED(p); RET(rawsys1(SYS_rmdir, (long)vpath(p))); }
 /* a is the link TEXT and is stored verbatim -- resolving it would bake this
  * machine's rootfs path into a symlink the jail is supposed to interpret for
  * itself.  Only the new name is resolved. */
-int v8s_symlink(char *a, char *b)        { RET(rawsys2(SYS_symlink, (long)a, (long)mkpath(b))); }
+/* Only b is guarded: a is the link TEXT, stored verbatim and never resolved. */
+int v8s_symlink(char *a, char *b)        { MOUNTED(b); RET(rawsys2(SYS_symlink, (long)a, (long)mkpath(b))); }
 /*
  * dup and dup2 -- and BOTH DROPPED THE DESCRIPTOR'S TYPE, which was invisible
  * while the only non-passthrough type was /proc and nothing dup'd one.
@@ -879,7 +1009,18 @@ int v8s_execve(char *p, char **a, char **e)
  * suite had been running with V8ROOT unset and therefore with the jail off.
  */
 long v8s_readlink(char *p, char *b, long n)
-{ RET(rawsys3(SYS_readlink, (long)vpath(p), (long)b, n)); }
+{
+	/*
+	 * EINVAL AND NOT EROFS, because readlink is a reader and the question
+	 * has a real answer: a V7 image has no symbolic links -- V8 added them
+	 * to ITS filesystem, and mkfs(8) writes no IFLNK -- so every name on a
+	 * mount is "not a symbolic link", which is exactly what readlink(2)
+	 * reports as EINVAL.  Refusing with EROFS would make ls -l print a
+	 * different wrong thing.
+	 */
+	if (v8fs_mounted(p)) { v8_errno = V8_EINVAL; return (-1); }
+	RET(rawsys3(SYS_readlink, (long)vpath(p), (long)b, n));
+}
 
 /*
  * fork.  V8's vfork is the BSD one, which shared the address space until exec;
@@ -1360,6 +1501,7 @@ v8s_utime(char *p, long *tv)
 {
 	struct { long sec, usec; } t[2];
 
+	MOUNTED(p);
 	/*
 	 * ONE vpath, NOT TWO, and that is the aliasing trap v8s_link records:
 	 * rootpath() returns a pointer into its own static buffer, so a second

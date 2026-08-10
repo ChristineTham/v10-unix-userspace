@@ -96,4 +96,24 @@ extern struct v8fstyp v8fs_pass;
  */
 extern struct v8fstyp v8fs_fdfs;
 
+/*
+ * v8fs -- the FOURTH type, and the first that is not in this process.  V8's own
+ * namei/iget/bmap/readi answer it, over a 9P socket, in shim/v8fsd.  p9cl.c has
+ * the design; the three things a caller here needs to know are:
+ *
+ *  - it is CONFIGURED AT RUN TIME, from V8MOUNT, so it is not a row in the
+ *    static table above.  v8fs_p9for() is the lookup and v8fs_typefor() asks it
+ *    FIRST, because shadowing what is underneath is what mounting means.
+ *  - a descriptor is identified by asking the KERNEL (getpeername), not by a
+ *    table, which is what makes an inherited one work.  v8fs_p9adopt() is that
+ *    question and v8fs_fdtype() asks it only when its own table has no opinion.
+ *  - v8fs_mounted() is the guard for the syscalls that have no slot in this
+ *    struct.  Without it they resolve a mounted path through rootpath() and act
+ *    on the HOST -- see its comment in syscall.c.
+ */
+extern struct v8fstyp v8fs_p9;
+struct v8fstyp *v8fs_p9for(const char *path);
+struct v8fstyp *v8fs_p9adopt(int fd);
+int             v8fs_mounted(const char *path);
+
 #endif /* V8SYS_VFS_H */
