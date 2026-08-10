@@ -82,6 +82,90 @@ When a signal-driven source arrives, `spl6` gains the mask and the counter stays
 exactly as it is. That is the one line of this file most likely to need changing,
 so it is the one written down.
 
+## THIS ARCHIVE CANNOT BE LINKED INTO A V8 PROGRAM, and that is measured
+
+§8a step 5e set out to make `open(2)` land in v8fs by adding a fourth type to
+`shim/v8sys/vfs.c`. That type has to call `namei`, `iget` and `readi`, so the
+client would have to link this archive. It cannot, and the reason is not the
+240.7 KB of bss that made it a separate archive in the first place.
+
+**Link `cat` against it and `cat`'s buffer disappears.** `ld` says so:
+
+```
+tentative definition of '_buf' with size 4096 from bin/cat.o
+  is being replaced by real definition of smaller size 8
+  from libv8kern.a[18](main.o)
+```
+
+`cat.c:10` is `char buf[BLOCK]`, `BLOCK` 4096, and `shim/kern/sys/main.c:213`
+is `struct buf *buf = v8k_buftab`. A K&R tentative definition is a **common**,
+the kernel's is a real definition, and resolving a common against a real
+definition is exactly what a linker is supposed to do. So `read(0, buf, 4096)`
+writes 4096 bytes into an eight-byte pointer.
+
+**Whether you notice is a property of the layout, not of the bug.** Two links
+of the same two objects:
+
+| link | `_buf` | result |
+|---|---|---|
+| `-force_load` | `__DATA,__data`, 8 bytes | **SIGSEGV**, exit 139 — *and the 3000-byte output was still byte-identical*, which is `mkdir`'s "a crash can happen after the work is done" arriving in the linker |
+| natural (`-u _v8k_kinit`, no force) | `__DATA,__data`, 8 bytes | **exit 0**, output byte-identical, nothing said |
+
+The second is the real one, because a `vfs.c` type referencing one kernel entry
+point is all it takes to pull `main.o` in — no `-force_load` required. And what
+the overrun lands on is not arbitrary. `nm -n`:
+
+```
+000000010001d588 D _buf
+000000010001d590 D _buffers
+000000010001d598 D _nbuf
+```
+
+`cat`'s first `read` scribbles over `_buffers` and `_nbuf`, **the buffer
+cache's own pointers**, and exits 0.
+
+### The population, swept rather than guessed
+
+297 program objects against this archive's 266 defined names: **56 (object,
+name) pairs, over 33 objects and 29 programs, on 27 distinct names.**
+
+| pair | count | what the linker does |
+|---|---|---|
+| `T`–`T` | 30 | refuses under `-force_load`; without it the program's own wins, which is correct |
+| `C`–`D` | 13 | **silent** — the common is replaced. `cat`'s case |
+| `C`–`C` | 6 | **silent** — merged, larger size wins |
+| `C`–`T` | 5 | **silent** — the common resolves to a text address |
+| `T`–`C` | 1 | **silent**, the other way round |
+| `D`–`D` | 1 | refuses |
+
+**25 of the 56 are silent.** They are not obscure names either — they are the
+1985 vocabulary: `buf bread alloc bmap tty file bwrite getblk iput itrunc panic
+copyin copyout nfile proc`. `_buf` alone hits eight programs (`cat join wc clri
+lex man mkfs refer`), and the checkers are over-represented for a structural
+reason: `icheck`, `dcheck`, `ncheck`, `fsck`, `mkfs`, `clri` and `restor`
+reimplement the kernel's own algorithms under the kernel's own names.
+
+### Hiding the symbols gets most of the way and stops
+
+`ld -r -exported_symbols_list` (keeping only `_v8k_*`) makes 22 of the 27 names
+private. The other five — `bootime ecmx nswap runout tty` — survive, because
+**`ld` will not make a common symbol a private extern**, and two commons merge
+by taking the larger size with no diagnostic at all. So the mitigation converts
+the loudest half of the problem into the quietest half of the problem.
+
+### And the second reason is independent of all of it
+
+`shim/v8sys/vfs.c:167` already said it, before any of this was measured: the
+descriptor-type table "does not survive a program replacing itself". A v8fs
+descriptor is an inode pointer and an offset in process memory, so after `exec`
+the integer means nothing — and `cat /mnt/a > /mnt/b` needs `sh` to open the
+target and `cat` to inherit it. Even a perfect symbol-hiding scheme leaves
+shell redirection into a mount impossible.
+
+**Both roads lead to a server**, which is what PLAN.md §8a said the seam was
+for. `tests/kmemu` asserts that no V8 binary links this archive, so re-opening
+the in-process option means deleting a case that says why it was closed.
+
 ## The boundary, same as everywhere else in `shim/`
 
 Raw syscalls only. `libkmemu` remains the sole component permitted to link the
@@ -101,7 +185,17 @@ as "bcopy is absent" would have missed it.
 three names rather than one.** `streamio.c` aborts a system call with
 `longjmp(u.u_qsav)` when a signal arrives mid-sleep, so `sys/slp.c` has to do
 the matching `setjmp` — and taking that from `<setjmp.h>` would be `bcopy` all
-over again, in an archive linked into V8 programs. `src/include/setjmp.h` is
+over again.
+
+(That last clause used to read "in an archive linked into V8 programs", and the
+section above is what made it false: **nothing links this archive into a V8
+program and nothing can.** The argument survives the correction intact, because
+it was never about who links the archive — it is about a Bell Labs kernel using
+Apple's implementation of a primitive V8 shipped its own version of. The one
+caller today is `tests/streams/fsprobe.c`, a host binary, and the claim would be
+the same if it stayed the only one for ever.)
+
+`src/include/setjmp.h` is
 this port's own, 24 longs for AAPCS64's callee-saved set, implemented in
 `compiler/setjmp.s` to the same ABI clang compiles this directory with. So the
 kernel and the program above it use one jump buffer and one implementation.

@@ -1363,6 +1363,135 @@ else
 	bad "archives missing -- cannot sweep for duplicate definitions"
 fi
 
+# --- AND THE THIRD POPULATION, WHICH IS THE PROGRAM'S OWN OBJECTS --------
+#
+# The sweep above is archive against archive.  It cannot see a name that a
+# PROGRAM defines and an archive also defines, and that is not a hypothetical
+# gap: it is the measurement that decided §8a step 5e.
+#
+# Costing the mount began by linking libv8kern into cat, on the reading that a
+# fourth filesystem type would need the kernel in the client.  ld said
+#
+#	tentative definition of '_buf' with size 4096 from bin/cat.o is being
+#	replaced by real definition of smaller size 8 from libv8kern.a(main.o)
+#
+# -- cat.c:10 is `char buf[BLOCK]', BLOCK 4096, and shim/kern/sys/main.c:213 is
+# `struct buf *buf = v8k_buftab'.  A K&R tentative definition is a COMMON, the
+# kernel's is a real definition, and the linker is supposed to prefer the real
+# one.  So cat's 4096-byte buffer became an eight-byte pointer.  Measured: the
+# binary links with one warning, copies its input CORRECTLY, and then dies of
+# SIGSEGV -- exit 139 -- which is mkdir's "a crash can happen after the work is
+# done" arriving in the linker.
+#
+# Swept: 56 such names across 33 of this port's programs, and they are the
+# 1985 vocabulary -- buf bread alloc bmap tty file bwrite getblk iput itrunc
+# panic copyin copyout -- because the checkers reimplement the kernel's own
+# algorithms under the kernel's own names.  Hiding libv8kern's globals behind
+# `ld -r -exported_symbols_list' recovers 22 of the 27 and CANNOT recover the
+# other five: ld will not make a common a private extern, and two commons merge
+# silently by taking the larger size.
+#
+# Two assertions, because there are two separable claims.
+
+# ONE: no V8 binary links libv8kern.  That is the step-5e decision, and the
+# other half of its argument is not about symbols at all -- vfs.c:167 already
+# said an in-process descriptor table "does not survive a program replacing
+# itself", so `> /mnt/f' could never have worked in the client.  Both roads
+# lead to a server, and this case is what notices if someone re-opens the
+# in-process one without re-reading why it was closed.
+#
+# The witness is the v8k_ prefix: 30 names, defined by libv8kern and by no
+# other archive here, measured rather than assumed by the vacuity check below.
+if [ -f "$KERNA" ]; then
+	adefs "$KERNA" | grep '^v8k_' > "$TMP/d.v8konly"
+	nv8k=$(wc -l < "$TMP/d.v8konly" | tr -d ' ')
+	[ "$nv8k" -ge 20 ] && ok ||
+		bad "libv8kern exports almost no v8k_ names -- the witness is vacuous"
+	other=""
+	for p in libc sys stub kmemu; do
+		grep -q '^v8k_' "$TMP/d.$p" && other="$other libv8$p"
+	done
+	check "only libv8kern defines the v8k_ names" "" "$other"
+
+	# $allbins is the machos() list from the nm -u sweep above -- one walk of
+	# the rootfs for the whole suite, and it already asserts its own floor.
+	linked=""
+	for f in $allbins; do
+		nm -g "$f" 2>/dev/null |
+		    awk '$2 ~ /^[TDSBC]$/ {print substr($3,2)}' |
+		    grep -qxFf "$TMP/d.v8konly" && linked="$linked $(basename "$f")"
+	done
+	# 29 PROGRAMS, not 33 -- 33 is the object count, and the first draft of
+	# this line said 33 while the word beside it said programs.  nroff and
+	# troff each contribute two objects.
+	check "no V8 binary links libv8kern (56 collisions, 29 programs)" "" "$linked"
+fi
+
+# TWO: the general class.  A program object's COMMON against an archive's TEXT
+# is the same shape as cat's buf, and it exists in the live link lines too --
+# swept, six of them today (od/max, dc/log10, mkfs/utime, nroff and troff/nlist,
+# sh/tmpnam).  All six resolve the program's way, and only because nothing pulls
+# the archive member in.  What would pull it in is -force_load, which this build
+# ALREADY uses for libkmemu, so the hazard is one library-list edit away.
+#
+# So the assertion is on the artefact rather than on the pairing: in the built
+# binary, a name the program declared as a common must live in program storage
+# and not in __TEXT.  Derived every run -- a transcribed list of six would go
+# stale the first time a program is imported.
+for a in "$LIBCA" "$SYSA" "$STUBA" "$KMEMUA"; do
+	nm -g "$a" 2>/dev/null | awk '$2 == "T" {print substr($3,2)}'
+done | sort -u > "$TMP/arch.text"
+
+[ -s "$TMP/arch.text" ] && ok || bad "no archive text symbols -- the C-vs-T sweep is vacuous"
+
+# One walk of the rootfs, not one per object: `find' inside the loop below cost
+# seven seconds of a five-second suite, which is the sort of thing that gets a
+# guard deleted rather than fixed.
+find "$V8ROOT" -type f ! -name '*.o' 2>/dev/null |
+	awk -F/ '{print $NF, $0}' | sort -u -k1,1 > "$TMP/rootfs.index"
+
+# ONE nm over every program object rather than one per object -- there are
+# about 300 of them, and `nm -gA' prefixes each line with the file it came from,
+# which is the whole reason to prefer it here.
+find "$ROOT/build/stage0" -name '*.o' \
+     ! -path '*/kern/*' ! -path '*/v8sys/*' \
+     ! -path '*/libc/*' ! -path '*/kmemu/*' 2>/dev/null > "$TMP/prog.objs"
+[ -s "$TMP/prog.objs" ] && ok || bad "no program objects found -- did the build run?"
+
+xargs nm -gA < "$TMP/prog.objs" 2>/dev/null |
+	awk 'NF == 4 && $3 == "C" { sub(/:$/, "", $1); print $1, substr($4, 2) }' |
+	sort -u > "$TMP/prog.commons"
+
+# ...and the intersection in one pass.  Sorted by object, so the nm -m below is
+# done once per binary rather than once per pair.
+awk 'NR == FNR { a[$1]; next } ($2 in a)' \
+    "$TMP/arch.text" "$TMP/prog.commons" > "$TMP/ct.pairs"
+
+ctpairs=0 ctskip=0 ctbad="" lastbin=""
+while read -r o s; do
+	d=$(basename "$(dirname "$o")"); b=$(basename "$o" .o)
+	case "$d" in bin) name=$b ;; *) name=$d ;; esac
+	bin=$(awk -v n="$name" '$1 == n {print $2; exit}' "$TMP/rootfs.index")
+	if [ -z "$bin" ]; then ctskip=$((ctskip + 1)); continue; fi
+	if [ "$bin" != "$lastbin" ]; then
+		nm -m "$bin" 2>/dev/null > "$TMP/nm.bin"; lastbin=$bin
+	fi
+	line=$(grep -E "(^| )_$s\$" "$TMP/nm.bin" | head -1)
+	case "$line" in
+	'')	  ctskip=$((ctskip + 1)) ;;
+	*__TEXT*) ctbad="$ctbad $name/$s" ;;
+	*)	  ctpairs=$((ctpairs + 1)) ;;
+	esac
+done < "$TMP/ct.pairs"
+# The pair count is printed rather than pinned: it moves with every import, and
+# the crash probe's floor is the lesson about a number nobody wrote down.  What
+# is asserted is that the sweep found SOMETHING to check and that none of it
+# resolved into library text.
+[ "$ctpairs" -ge 4 ] && ok ||
+	bad "the common-vs-text sweep checked $ctpairs pairs -- too few to mean anything"
+check "no program's common resolved into an archive's text" "" "$ctbad"
+echo "  (common-vs-text: $ctpairs pairs checked, $ctskip not installed)"
+
 # --- the stub really is what the others get ------------------------------
 # Both halves define kmemu_synth, so `is it defined' proves nothing. What
 # distinguishes them is that only one pulls libSystem in with it.
