@@ -1066,7 +1066,7 @@ corruption**.
 Bell Labs' out-of-space path is a kludge and they label it one in capitals:
 
 ```c
-nospace:					/* alloc.c:187-195 */
+nospace:					/* alloc.c:185-196 */
 	fserr(fp, "file system full");
 	/* THIS IS A KLUDGE... */
 	for (i = 0; i < 5; i++)

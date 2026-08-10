@@ -18,6 +18,7 @@
 #include "../../shim/v8sys/v8sys.h"
 #include "../../shim/v8sys/vfs.h"
 #include "../../shim/p9/p9.h"
+#include "../../shim/v8id.h"
 
 typedef void (*v8handler)();
 
@@ -649,6 +650,58 @@ p9_reap(pid_t pid)
 	}
 	kill(pid, SIGKILL);
 	waitpid(pid, &status, 0);
+}
+
+/*
+ * v8_foldid's CONTRACT, AND IT HAS TO BE A UNIT TEST BECAUSE THE HOST CANNOT
+ * REACH IT.
+ *
+ * The function narrows a 32-bit host uid into V8's 16-bit field, and the whole
+ * point of it is what happens above 32767 -- where this machine's uid (501)
+ * and a CI runner's never go.  CLAUDE.md's rule is to assert a RELATION THE
+ * PORT CONTROLS rather than a property of the machine, and there is no relation
+ * available end to end: no `ls -l' on this host can produce the input that
+ * matters.  So the guard is the rule itself, over a table that includes the
+ * values that broke it.
+ *
+ * THE TWO PROPERTIES ARE ASSERTED SEPARATELY because they fail separately.
+ * A cast satisfies "root maps to root" perfectly and violates the other one;
+ * a fold that forgot the id==0 case would do the reverse.
+ *
+ * 65536 AND 131072 ARE THE MEASURED FAILURES of the bare `(short)' cast that
+ * stood in stat_translate, procfs.c and (once) fio.c.  4294967294 is `nobody'
+ * on macOS, which is a real uid a real file can have.
+ */
+static void
+foldid_contract(void)
+{
+	static const long v[] = {
+		0, 1, 2, 501, 32766, 32767,		/* everything that fits */
+		32768, 65535, 65536, 65537,		/* the wrap */
+		131072, 200000, 999999, 4294967294L,	/* and past it; -2 is nobody */
+		-1, -65536				/* not reachable, still guarded */
+	};
+	int i, n = (int)(sizeof v / sizeof v[0]);
+	int exact = 1, noroot = 1, inrange = 1;
+
+	for (i = 0; i < n; i++) {
+		short f = v8_foldid(v[i]);
+
+		/* every id that fits is kept EXACTLY -- the common case, and the
+		 * reason this change is invisible on any ordinary host */
+		if (v[i] >= 0 && v[i] <= 32767 && f != (short)v[i]) exact = 0;
+		/* the one with teeth: nothing but 0 may come out as 0 */
+		if (v[i] != 0 && f == 0) noroot = 0;
+		/* and the result is a plausible V7 uid rather than a negative */
+		if (f < 0) inrange = 0;
+	}
+	ok(v8_foldid(0) == 0, "v8_foldid: root maps to root");
+	ok(exact,   "v8_foldid: every id that fits is exact");
+	ok(noroot,  "v8_foldid: non-root NEVER maps to root");
+	ok(inrange, "v8_foldid: never returns a negative uid");
+	/* The two the cast actually got wrong, named so a failure says which. */
+	ok(v8_foldid(65536) != 0,  "v8_foldid: 65536 is not root");
+	ok(v8_foldid(131072) != 0, "v8_foldid: 131072 is not root");
 }
 
 static void
@@ -1505,6 +1558,7 @@ main(void)
 	p9_stats();
 	p9_bounds();
 	p9_framing();
+	foldid_contract();
 
 	/* ------------------------------------------------------- cleanup */
 	snprintf(sub, sizeof sub, "%s/a", tmpl); v8s_unlink(sub);

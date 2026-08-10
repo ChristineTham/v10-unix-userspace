@@ -517,3 +517,105 @@ the stand-in and removing it, and a dangling symlink is exactly what the old
 code could not clean up. The case removes it with `hostrm` before creating it
 now. A case has to be a pure function of what it set up; this suite is the
 third place that lesson has had to be applied.
+
+## A host id narrowed into V8's 16 bits — one rule, four sites, and the fix had reached one
+
+`shim/v8id.h` is `v8_foldid()`, and the contract is two properties rather than a
+formula:
+
+```
+	root maps to root		(0 -> 0)
+	non-root NEVER maps to root	(nothing else -> 0)
+	everything that fits stays exact (1..32767 unchanged)
+```
+
+The second is the one with teeth. `u_uid` and `st_uid` are `short` — V8's own
+widths — and a host id is 32 bits, so a bare `(short)` cast maps every multiple
+of 65536 onto **zero**. Measured: 65536 → 0, 131072 → 0. Zero is root, the
+identity `fio.c:193`'s `access()` bypasses and `streamio.c:44` lets past a
+stream's exclusive-use lock. The cast does not produce a wrong number, it
+produces a **privilege**.
+
+### The sweep, and why the earlier fix stopped at one file
+
+`fio.c` was given this fold after an auditor found it folding `p_pid` and then
+casting `u_uid` and `u_gid` **on the next two lines**, directly under its own
+paragraph explaining why a truncation is wrong. Sweeping for the same shape
+across the whole shim found it still standing in two more places:
+
+| | what it feeds | |
+|---|---|---|
+| `syscall.c` `stat_translate` | every `ls -l`, via `stat(2)` | was a cast |
+| `procfs.c` `prgetuarea` | `ps(1)`'s uid column | was a cast |
+| `fio.c` `v8k_procinit` | the v8fs server's own identity | already folded |
+| `p9cl.c` `p9_t_chown` | an id written **into a disk image** | added below |
+
+So the shape CLAUDE.md records — *the fix landed on one line and the line beside
+it kept the assumption* — with the line beside it in **another component**.
+
+`p_uid` is deliberately **not** folded twelve lines from `prgetuarea`: this port
+widened it to `int` (`src/include/sys/proc.h:32-35`, because the alignment
+padding after a 16-bit field cost the same four bytes the field did), so there
+is no narrowing there to guard.
+
+### Why a header and not a function anybody links
+
+No two of the components may share an archive: libv8sys must not link
+libv8kern (56 symbol collisions over 29 programs, 25 of them silent), and
+libkmemu is the one component that may link host libc. A pure arithmetic rule
+needs no link edge, so it is `static` in a header and each translation unit gets
+its own copy of the same sentence. Spelling it out four times is the antipattern
+`kmem.c`'s one-table rule exists to refuse — and is how the third site came to be
+missed.
+
+### getuid(2) is deliberately NOT folded
+
+Every 16-bit *field* is folded. `getuid` is not a field, it is a value that flows
+back **out** to the host, and the tree settles it in one line: `mv.c:56` is
+`setuid(getuid())`, and `v8s_setuid` hands its argument straight to the kernel.
+`mkdir.c:69`'s `chown(d, getuid(), getgid())` is the same shape — on a
+passthrough path it reaches the host's `chown`, which wants the real number.
+
+The cost, stated because it is the honest half: `st_uid == getuid()` (`ls.c:81`,
+`ps/doselect.c:30`) compares a folded 16-bit value against a raw 32-bit one, so
+above 32767 they disagree. **That is not a regression** — the bare cast
+disagreed just as surely, for the same values. Making them agree needs a two-way
+map (fold in, unfold out to setuid and chown), which is a real design and was
+not this change. What this change fixes is the contract: non-root must never
+read as root, because root is a privilege and a colliding non-root id is only a
+wrong name.
+
+### The fourth site came from the audit, and it is a round-trip failure
+
+`p9_t_chown` sent the raw host id; the server truncates it with V7's own
+`ip->i_uid = uap->uid`; and `p9uid()` at the **reading** end refuses any string
+beginning with `-`. So `chown(f, 40000)` stored −25536 and `stat(2)` read it
+back as `P9UID_BAD` — a value that does not survive the port's own two halves,
+and that disagrees with what `stat` reports for the same host id on a jailed
+path. Folding before the wire fixes both: the number the server stores is the
+number `statof` renders is the number `p9uid` parses, and it is the same number
+`stat_translate` produces for that id. **A mount and the jail agree about who
+owns a file.**
+
+### Two guards, and neither is redundant
+
+This host's uid is 501 and a CI runner's is lower, so *nothing end to end can
+reach the values that matter* — CLAUDE.md's rule is then to assert a relation
+the port controls, and there are two different relations here:
+
+- **the arithmetic**, over a table including 0, 32767, 65536, 131072 and −1, in
+  `tests/v8sys`. Mutation: make `v8_foldid` a bare cast and four cases fire.
+- **the call sites**, as a source sweep in `tests/kmemu` — nothing in the shim
+  may narrow an id with a cast again — plus a **derived** count of the files
+  that call the fold. Mutation: revert any one site and both fire; revert the
+  client's and the count goes 4 → 3.
+
+The unit test cannot see a missing call and the sweep cannot see broken
+arithmetic, which is why there are two.
+
+**And the sweep matches its own documentation**, which is a standing note here:
+four files now *discuss* the bare cast in prose, so a naive grep counts the
+explanation as an instance. Comment lines are excluded and the excluded count is
+**printed**, so a reader can see the filter is doing something rather than
+hiding something. Both `grep` and `/usr/bin/grep` agree — worth checking,
+because the interactive shell here is ugrep, not BSD grep.

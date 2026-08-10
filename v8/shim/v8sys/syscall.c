@@ -21,6 +21,7 @@
 #include "v8sys.h"
 #include "vfs.h"
 #include "rawsys.h"
+#include "../v8id.h"		/* v8_foldid -- the narrowing rule, shared */
 
 int v8_errno;
 
@@ -900,6 +901,29 @@ int v8s_dup2(int a, int b)
 }
 int v8s_getpid(void)                     { return ((int)rawsys0(SYS_getpid)); }
 int v8s_getppid(void)                    { return ((int)rawsys0(SYS_getppid)); }
+/*
+ * getuid AND ITS THREE SIBLINGS ARE RAW, AND THAT IS A DECISION RATHER THAN
+ * THE ABSENCE OF ONE.
+ *
+ * Every 16-bit id FIELD in this port is folded (shim/v8id.h): st_uid here,
+ * u_uid in /proc, u_uid in the v8fs server.  This is not a field, it is a
+ * VALUE THAT FLOWS BACK OUT TO THE HOST, and the tree proves it in one line --
+ * mv.c:56 is `setuid(getuid())', and v8s_setuid hands its argument straight to
+ * the kernel.  A folded id there would try to become a user that does not
+ * exist.  mkdir.c:69's `chown(d, getuid(), getgid())' is the same shape: on a
+ * passthrough path it reaches the host's chown, which wants the real number.
+ *
+ * WHAT THAT COSTS, said plainly because it is the honest half.  A V8 program
+ * comparing `st_uid == getuid()' -- ls.c:81, ps/doselect.c:30 -- is comparing a
+ * folded 16-bit value against a raw 32-bit one, so on a host whose uid exceeds
+ * 32767 they disagree.  THIS IS NOT A REGRESSION: the bare `(short)' cast that
+ * preceded the fold disagreed with getuid() just as surely, for the same values.
+ * Making them agree needs a two-way map -- fold on the way in, unfold on the
+ * way back out to setuid and chown -- which is a real design and not this
+ * commit.  What this commit fixes is the CONTRACT: non-root must never read as
+ * root, because root is a privilege and a colliding non-root id is only a
+ * wrong name.
+ */
 int v8s_getuid(void)                     { return ((int)rawsys0(SYS_getuid)); }
 int v8s_geteuid(void)                    { return ((int)rawsys0(SYS_geteuid)); }
 int v8s_getgid(void)                     { return ((int)rawsys0(SYS_getgid)); }
@@ -1489,8 +1513,20 @@ stat_translate(struct hoststat64 *hs, struct v8_stat *vs)
 	vs->st_ino   = v8sys_fold_ino(hs->st_ino);
 	vs->st_mode  = hs->st_mode;
 	vs->st_nlink = (short)hs->st_nlink;
-	vs->st_uid   = (short)hs->st_uid;
-	vs->st_gid   = (short)hs->st_gid;
+	/*
+	 * FOLDED, NOT CAST, and this was a bare `(short)' until the sweep that
+	 * followed §8a step 5f-b.  st_uid is `short' -- V8's own width -- and a
+	 * host id is 32 bits, so the cast mapped every multiple of 65536 onto
+	 * ZERO.  Measured: 65536 -> 0 and 131072 -> 0, in the stat(2) path every
+	 * `ls -l' goes through, which means a file owned by such a user reads as
+	 * owned by ROOT.  shim/v8id.h has the contract and the history; the
+	 * short version is that fio.c was given this fix after an auditor found
+	 * the identical cast there, and the fix reached one component of three.
+	 *
+	 * NOTE WHAT IS DELIBERATELY NOT FOLDED: v8s_getuid.  See the note there.
+	 */
+	vs->st_uid   = v8_foldid((long)hs->st_uid);
+	vs->st_gid   = v8_foldid((long)hs->st_gid);
 	vs->st_rdev  = (v8_dev_t)(hs->st_rdev & 0xffff);
 	vs->st_size  = (v8_off_t)hs->st_size;
 	vs->st_atime = (v8_time_t)hs->st_atime_sec;

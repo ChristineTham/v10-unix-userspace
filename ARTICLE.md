@@ -2420,6 +2420,50 @@ arm the move brought to life, and mutation says so: delete it, and a case about
 directory and macOS will not do that.
 
 
+### The cast that made a stranger root
+
+The last thing this session did came out of a sweep rather than a bug report,
+and it is the clearest example I have of why a repeated bug class deserves a
+sweep instead of a fix.
+
+Some months ago an auditor found the shim folding a host process id into V8's
+sixteen-bit field correctly, and then narrowing a *user* id with a plain cast on
+the next two lines — directly beneath the file's own paragraph explaining why a
+truncation there is dangerous. That got fixed. What nobody did was ask where
+else the same cast lived.
+
+It lived in two more places, and a third turned up while I was fixing those. The
+worst is the one in `stat` — the path every `ls -l` goes through. A user id on
+this Mac is thirty-two bits; V8's field is sixteen; and a plain cast maps every
+multiple of 65536 onto **zero**. Zero is root. So on a machine with
+directory-issued accounts, a file belonging to an ordinary user reads as
+belonging to root, and the kernel's permission check has a bypass for exactly
+that identity. The cast does not produce a wrong number. It produces a
+privilege.
+
+The rule that replaces it is two sentences — root maps to root, non-root never
+maps to root, everything that fits stays exact — and it lives in a header rather
+than a library, because no two of the four components that need it are allowed
+to share an archive. A pure piece of arithmetic needs no link edge.
+
+What it deliberately does *not* touch is `getuid` itself, and the tree settles
+that in a single line: `mv` contains `setuid(getuid())`, and that value goes
+straight back out to the real kernel. A folded id there would try to become a
+user who does not exist. The honest consequence, which belongs in the record
+rather than in a footnote, is that comparing a file's owner against your own id
+still disagrees on such a host — but it disagreed before too, for exactly the
+same values. The fix is to the contract, not to the identity map. A colliding
+user id is a wrong name; a promotion to root is something else.
+
+And there is no test on this machine that can reach any of it, because the uid
+here is 501 and a CI runner's is lower still. So the guards are two, for two
+different relations: the arithmetic, checked against a table that includes the
+values which broke it, and the call sites, checked by a sweep of the source
+asserting that nothing narrows an id with a cast again. Neither can see what the
+other sees. The sweep also matches its own explanation — four files now discuss
+the bad cast in prose — so it excludes comments and *prints how many it
+excluded*, because a filter that silently removes things is the next bug.
+
 ## What is left
 
 Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix

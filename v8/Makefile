@@ -226,7 +226,8 @@ SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
 # long.  Defined HERE for SHIM_ASM's reason: the first rule that uses it is
 # below, and a variable defined lower down expands to nothing.
 SHIM_HDR = $(ROOT)shim/v8sys/v8sys.h $(ROOT)shim/v8sys/vfs.h \
-           $(ROOT)shim/v8sys/rawsys.h $(ROOT)shim/p9/p9.h
+           $(ROOT)shim/v8sys/rawsys.h $(ROOT)shim/p9/p9.h \
+           $(ROOT)shim/v8id.h
 
 # The 9P codec, and it is OUTSIDE shim/v8sys on purpose.  It is compiled twice
 # -- once into libv8sys.a for the client, once into the v8fs server, which is a

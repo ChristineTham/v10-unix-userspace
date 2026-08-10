@@ -660,7 +660,7 @@ kmkdir(struct inode *dir, char *name, int mode)
 	strncpy(buf, name, sizeof buf - 1);
 	buf[sizeof buf - 1] = '\0';
 	arg.flag = NI_MKDIR;
-	arg.mode = (short)((mode & 0777) | IFDIR);	/* sys2.c:234 */
+	arg.mode = (short)((mode & 0777) | IFDIR);	/* sys2.c:235 */
 	arg.ino = 0;
 	arg.idev = 0;
 	u.u_cdir = dir;
@@ -684,12 +684,12 @@ kmkdir(struct inode *dir, char *name, int mode)
 	u.u_base = (caddr_t)x;
 	u.u_offset = 0;
 	u.u_segflg = 1;
-	iupdat(ip, &v8k_time, &v8k_time, 1);	/* sys2.c:253, see above */
+	iupdat(ip, &v8k_time, &v8k_time, 1);	/* sys2.c:255, see above */
 	writei(ip);
 	/*
 	 * writei's ERROR IS ONE UPSTREAM CAN AFFORD TO DROP AND THIS WRAPPER
 	 * CANNOT, and the difference is that upstream's mkdir() IS the system
-	 * call.  sys2.c:254 ignores the return too -- but u.u_error is the
+	 * call.  sys2.c:256 ignores the return too -- but u.u_error is the
 	 * syscall's own error slot, so it reaches the user and mkdir(1) prints
 	 * something.  Here the value dies in this function, do_create tests
 	 * only `nip == NULL', and the server answers Rcreate.
@@ -1651,9 +1651,13 @@ do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
  * actually meant, and a server that applied them all would zero a file's mode
  * every time somebody set its length.
  *
- * FIVE FIELDS ARE HONOURED and each maps onto a V7 syscall this port owes the
- * mount: s_length is truncate, s_mode is chmod, s_uid/s_gid are chown,
- * s_atime and s_mtime are utime.  s_name is a rename and is NOT honoured --
+ * SIX FIELDS ARE HONOURED AND THEY ARE FOUR V7 SYSCALLS BETWEEN THEM, which
+ * is two counts and neither is five: s_length is truncate, s_mode is chmod,
+ * s_uid/s_gid are chown, s_atime/s_mtime are utime.  (This said FIVE, from a
+ * FOUR that had been right about the syscalls -- and adding the s_atime arm
+ * added no syscall at all, so incrementing it was wrong on every reading.
+ * Counting one thing while describing another, again, in the paragraph that
+ * two commits earlier corrected exactly that slip.)  s_name is a rename and is NOT honoured --
  * V7's rename is unlink-and-link in the shell's own words, there is no syscall
  * for it, and doing it here would mean composing directory entries by hand.
  *
@@ -1801,7 +1805,7 @@ do_wstat(struct conn *c, p9_u32 tag, struct p9buf *in)
 	/*
 	 * wowner() AND suser() BOTH RETURN 1 FOR PERMITTED, which is the
 	 * OPPOSITE polarity from access() six lines above -- upstream's own
-	 * inconsistency, reproduced rather than harmonised, and v8fs.c:468-471
+	 * inconsistency, reproduced rather than harmonised, and v8fs.c:519-522
 	 * records it beside the function.  Getting it the wrong way round here
 	 * would make every wstat succeed for every user.
 	 *

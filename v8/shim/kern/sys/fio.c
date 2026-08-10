@@ -51,6 +51,7 @@
  */
 
 #include "../../v8sys/rawsys.h"
+#include "../../v8id.h"		/* v8_foldid -- the narrowing rule, shared */
 #include "../h/param.h"
 
 /*
@@ -148,18 +149,18 @@ int		nfile = NFILE;
  * used it while v8k_hostof() called getpid() again and nothing read it at all.
  * Dead code with a comment saying it is live is worse than no code: the next
  * reader takes the comment at its word and signals a folded pid.
+ *
+ * AND THE FIX REACHED ONE OF THREE COMPONENTS, WHICH IS THE SAME SHAPE ONE
+ * LEVEL UP.  The paragraph above is about two lines in this file; a later
+ * sweep for `(short)' against a uid found the identical cast still standing in
+ * syscall.c's stat_translate -- the stat(2) path every `ls -l' goes through --
+ * and in procfs.c's u-area, which is ps(1)'s uid column.  So foldid() has
+ * moved into shim/v8id.h as v8_foldid(), a header rather than a symbol because
+ * no two of the three components may share an archive.  The rule and its
+ * argument live there now; what stays here is the account of the FIELDS, which
+ * is this file's business.
  */
 static long	v8k_hostpid;	/* the real one, for kill(2) */
-
-static short
-foldid(long id)
-{
-	if (id == 0)
-		return (0);			/* root is root */
-	if (id > 0 && id <= 32767)
-		return ((short)id);		/* the ordinary case, exact */
-	return ((short)(id % 32766 + 1));	/* 1..32766, never 0 */
-}
 
 void
 v8k_procinit(void)
@@ -172,8 +173,8 @@ v8k_procinit(void)
 	v8k_proc0.p_nice = NZERO;
 	v8k_proc0.p_wchan = NULL;
 	u.u_procp = &v8k_proc0;
-	u.u_uid = foldid(rawsys0(SYS_getuid));
-	u.u_gid = foldid(rawsys0(SYS_getgid));
+	u.u_uid = v8_foldid(rawsys0(SYS_getuid));
+	u.u_gid = v8_foldid(rawsys0(SYS_getgid));
 	u.u_segflg = 0;
 }
 

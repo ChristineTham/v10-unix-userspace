@@ -53,6 +53,7 @@
 #include "vfs.h"
 #include "rawsys.h"
 #include "../p9/p9.h"
+#include "../v8id.h"		/* v8_foldid -- the narrowing rule, shared */
 
 extern int v8_errno;
 extern char *v8sys_getenv(const char *name);
@@ -1318,13 +1319,11 @@ p9_t_mkdir(char *p, int mode)
  * dir.c's rule at the top of it, raw syscalls only, so there is no snprintf to
  * borrow.  Twelve bytes is enough for any int with its sign.
  *
- * NEGATIVES ARE FORMATTED RATHER THAN REFUSED, because chown(f, -1, -1) is a
- * legal V7 call: sys4.c:294 is `ip->i_uid = uap->uid' with no check, an int
- * into a short, so -1 lands in the inode as 65535.  Truncation is therefore
- * upstream's own answer and is left to the server, which does the identical
- * assignment -- narrowing here as well would be a second opinion about a
- * question that already has one.  -(long)v rather than -v so that INT_MIN does
- * not overflow on the way to being printed.
+ * IT FORMATS THE WHOLE int RANGE, INCLUDING NEGATIVES, and after the fold
+ * below no caller passes one -- kept because this is a FORMATTER and its
+ * contract is its parameter type, not a policy about what may be formatted.
+ * Said out loud so the arm is known to be unexercised rather than assumed
+ * live.  -(long)v rather than -v so that INT_MIN does not overflow.
  */
 static void
 p9dec(char *d, long max, int v)
@@ -1375,7 +1374,7 @@ p9wstatpath(char *p, const struct p9stat *s)
  * t_chmod.  Masked to 07777 for p9_t_mkdir's reason inverted: there the bit
  * above 0777 is DMDIR and a mode carrying S_IFDIR must not reach it, and here
  * the whole point is that the file type is not the caller's to change.  V7's
- * chmod is `ip->i_mode &= ~07777; ip->i_mode |= fmode&07777' (sys4.c:240-244),
+ * chmod is `ip->i_mode &= ~07777; ip->i_mode |= fmode&07777' (sys4.c:249,252),
  * so upstream masks in the same place and the server masks again.
  */
 static int
@@ -1390,10 +1389,30 @@ p9_t_chmod(char *p, int mode)
 
 /*
  * t_chown.  BOTH IDS ARE ALWAYS SENT, because V7's chown always sets both --
- * there is no -1 "leave it alone" convention in sys4.c:282-291, that is POSIX
+ * there is no -1 "leave it alone" convention in sys4.c:292-296, that is POSIX
  * arriving later.  So the empty-string "do not touch" form is not used here at
  * all, and a caller who wanted one field would have to read the other first,
  * which is what a V7 program does.
+ *
+ * THE ID IS FOLDED BEFORE IT GOES ON THE WIRE, AND THAT IS THE FOURTH
+ * NARROWING SITE.  An auditor found the two ends of this field disagreeing:
+ * the server truncates with V7's own `ip->i_uid = uap->uid' (an int into a
+ * short), and p9uid() at the READING end refuses any string beginning with
+ * `-'.  So chown(f, 40000) stored -25536 and stat(2) read it back as
+ * P9UID_BAD -- a value that does not round-trip through the port's own two
+ * halves, and one that disagrees with what stat reports for the same host id
+ * on the passthrough type.
+ *
+ * Folding here fixes both at once: v8_foldid never returns a negative, so the
+ * number the server stores is the number statof renders is the number p9uid
+ * parses, AND it is the same number stat_translate would have produced for
+ * that host id on a jailed path.  A mount and the jail agree about who owns a
+ * file, which is the property worth having.
+ *
+ * WHAT IT COSTS is V7's answer to chown(f, -1), which truncated to 65535.
+ * Nothing in the tree makes that call -- mkdir.c:69 passes getuid()/getgid()
+ * -- and the rule this port has settled on is that a HOST id entering a V8
+ * 16-bit field is folded.  An image is such a field.  shim/v8id.h.
  */
 static int
 p9_t_chown(char *p, int uid, int gid)
@@ -1401,8 +1420,8 @@ p9_t_chown(char *p, int uid, int gid)
 	struct p9stat s;
 
 	p9_nostat(&s);
-	p9dec(s.s_uid, (long)sizeof s.s_uid, uid);
-	p9dec(s.s_gid, (long)sizeof s.s_gid, gid);
+	p9dec(s.s_uid, (long)sizeof s.s_uid, v8_foldid((long)uid));
+	p9dec(s.s_gid, (long)sizeof s.s_gid, v8_foldid((long)gid));
 	return (p9wstatpath(p, &s));
 }
 

@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2100 cases, 2099 on a host whose $TMPDIR
+make test             # all 17 suites (2108 cases, 2107 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -761,7 +761,7 @@ CONSUMER MEETING A SECOND WITH THE OPPOSITE ANSWER.** `cat big > /mnt/x` on a
 below, and no timeout`; the server exited 2 and **every** client's connection
 dropped, not just the writer's. Reachable from an unprivileged program; the
 image survives, so it is availability rather than corruption. Bell Labs'
-out-of-space path is a kludge they label one in capitals — `alloc.c:187-195`
+out-of-space path is a kludge they label one in capitals — `alloc.c:185-196`
 sleeps five clock ticks on `lbolt` hoping another process frees a block — and
 `v8fs.c`'s `sleep()` maps that onto a `tsleep` whose panic comment reasons
 **entirely about streams**, which was a true and complete account of every
@@ -795,6 +795,49 @@ caller that existed when it was written. Four things:
   is still alive* and *it still answers a read*, and leaves the write case
   green. Nor is the image asserted clean afterwards — only still **readable**,
   which is the thing a mid-write death would actually have destroyed.
+
+**AND A HOST id NARROWED INTO V8's 16 BITS IS ONE RULE WITH FOUR SITES, AND THE
+FIX HAD REACHED ONE OF THEM.** `shim/v8id.h` is `v8_foldid()`; the contract is
+**root maps to root, non-root NEVER maps to root, everything that fits stays
+exact**. `u_uid` and `st_uid` are `short` — V8's own widths — so a bare
+`(short)` cast maps every multiple of 65536 onto **zero**, and zero is the
+identity `fio.c:193`'s `access()` bypasses. Measured: 65536 → 0, 131072 → 0. The
+cast does not produce a wrong number, it produces a **privilege**.
+
+- **THE EARLIER FIX STOPPED AT ONE FILE, AND SWEEPING FOUND THREE MORE.**
+  `fio.c` was given the fold after an auditor caught it folding `p_pid` and
+  casting `u_uid` on the next two lines. Still standing afterwards:
+  `stat_translate` (every `ls -l`), `procfs.c`'s u-area (`ps`'s uid column), and
+  — found by the next audit — `p9_t_chown`, which writes an id **into a disk
+  image**. Same shape as always, with the line beside it *in another component*.
+  `p_uid` is deliberately not folded: this port widened it to `int`, so there is
+  no narrowing there to guard.
+- **IT IS A HEADER BECAUSE NO TWO OF THE FOUR MAY SHARE AN ARCHIVE** — libv8sys
+  must not link libv8kern, and libkmemu is the one that may link libc. A pure
+  arithmetic rule needs no link edge, so it is `static` in a header. Spelling it
+  four times is what `kmem.c`'s one-table rule refuses, and is how the third
+  site was missed.
+- **getuid(2) IS DELIBERATELY RAW, and the tree settles it in one line.** Every
+  16-bit *field* is folded; `getuid` is a value that flows back **out** to the
+  host, and `mv.c:56` is `setuid(getuid())`. The cost is that
+  `st_uid == getuid()` disagrees above 32767 — **not a regression**, the cast
+  disagreed for the same values. Making them agree needs a two-way map, which is
+  a design and not a patch. What gets fixed is the contract, because root is a
+  privilege and a colliding non-root id is only a wrong name.
+- **THE ROUND TRIP IS ITS OWN PROPERTY.** The client sent a raw id, the server
+  truncated with V7's own `ip->i_uid = uap->uid`, and `p9uid()` at the *reading*
+  end refuses a leading `-` — so `chown(f, 40000)` stored −25536 and `stat` read
+  back `P9UID_BAD`. Two ends of one field, each defensible alone. Fold before
+  the wire and the number stored is the number rendered is the number parsed,
+  **and it is what the jail reports for the same id**.
+- **NO END-TO-END TEST CAN REACH ANY OF THIS** (uid 501 here, lower on a
+  runner), so there are **two** guards for two different relations: the
+  arithmetic, over a table, in `tests/v8sys`; and the call sites, as a source
+  sweep plus a **derived** count of the files that call the fold, in
+  `tests/kmemu`. The unit test cannot see a missing call and the sweep cannot
+  see broken arithmetic. And the sweep **matches its own documentation** — four
+  files now discuss the cast in prose — so comments are excluded and the
+  excluded count is *printed*, rather than a filter quietly hiding things.
 
 **AND THE OPEN MODE WAS CHECKED AT OPEN AND NEVER AGAIN.** V7 re-checks it on
 every transfer, in one line — `rdwr()` is

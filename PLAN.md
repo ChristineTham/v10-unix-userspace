@@ -2835,7 +2835,7 @@ Ordered so that value lands before risk, and so each step is testable alone.
 
    **AND FILLING THE IMAGE KILLED THE SERVER**, which 5f made reachable and
    5f-b's audit found. Bell Labs' out-of-space path is a kludge they label one
-   in capitals -- `alloc.c:187-195` sleeps five clock ticks on `lbolt` hoping
+   in capitals -- `alloc.c:185-196` sleeps five clock ticks on `lbolt` hoping
    another process frees a block -- and this port maps `sleep()` onto a
    `tsleep` that PANICS with no device below and no timeout. `cat big > /mnt/x`
    on a 200-block image took the whole server down, dropping every client's

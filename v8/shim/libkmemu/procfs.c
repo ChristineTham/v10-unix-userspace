@@ -24,6 +24,7 @@
 #include "../v8sys/vfs.h"
 #include "../v8sys/v8sys.h"
 #include "../v8sys/rawsys.h"
+#include "../v8id.h"		/* v8_foldid -- the narrowing rule, shared */
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <libproc.h>
@@ -619,8 +620,24 @@ prgetuarea(struct prinfo *g, struct v8user *u)
 
 	for (i = 0; i < (long)sizeof *u; i++) q[i] = 0;
 
-	u->u_uid  = (short)g->si.pbsi_uid;
-	u->u_ruid = (short)g->si.pbsi_ruid;
+	/*
+	 * FOLDED, NOT CAST -- the third of the three sites, and the one that
+	 * makes ps(1) report an owner.  u_uid and u_ruid are `short' (V8's
+	 * user.h:33-34) and a Darwin uid is 32 bits, so the bare cast that stood
+	 * here mapped every multiple of 65536 onto ZERO and printed such a
+	 * process as root's.  shim/v8id.h has the contract.
+	 *
+	 * p_uid IS NOT FOLDED, twelve lines away in prgetproc, and that is
+	 * right rather than an oversight: this port WIDENED it to `int'
+	 * (src/include/sys/proc.h:32-35, because the alignment padding after a
+	 * 16-bit field cost the same four bytes the field did), so there is no
+	 * narrowing there to guard.  Which leaves ps(1) comparing a full-width
+	 * p_uid against getuid() on one line of doselect.c and a 16-bit u_uid
+	 * against the same getuid() on the next -- see the note above
+	 * v8s_getuid for why the second cannot be made exact from here.
+	 */
+	u->u_uid  = v8_foldid((long)g->si.pbsi_uid);
+	u->u_ruid = v8_foldid((long)g->si.pbsi_ruid);
 	u->u_procp = (char *)0x80000000L;	/* SYSADR; see above */
 	u->u_start = g->havebi ? (long)g->bi.pbi_start_tvsec : 0;
 

@@ -3026,7 +3026,7 @@ fi	# the writable server section
 # 200 blocks is enough to reach nospace in about a second.
 #
 # WHY IT WAS UNREACHABLE UNTIL NOW.  Bell Labs' out-of-space path is a kludge
-# they label one in capitals (alloc.c:187-195): print a message, sleep five
+# they label one in capitals (alloc.c:185-196): print a message, sleep five
 # clock ticks in the hope another process frees a block, then ENOSPC.  This
 # port maps sleep() onto tsleep(), which PANICS when there is no device below
 # and no timeout -- correctly, for the streams that were its only caller when

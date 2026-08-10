@@ -1591,6 +1591,48 @@ himax=$(echo "$psout" | tail -n +2 | awk '{if ($1+0 > m) m = $1+0} END {print m+
 if [ "$himax" -gt 32767 ]; then ok
 else echo "  (not exercised: highest pid here is $himax, inside 16 bits)"; fi
 
+# --- THE SAME CLASS FOR uid, AND ITS DETERMINISTIC GUARD IS A SWEEP ------
+#
+# A host uid is 32 bits and V8's u_uid and st_uid are `short', so a bare
+# `(short)' cast maps every multiple of 65536 onto ZERO -- and zero is ROOT,
+# the identity fio.c:193's access() bypasses and streamio.c:44 lets past an
+# exclusive stream.  Measured: 65536 -> 0, 131072 -> 0.  shim/v8id.h is the one
+# definition of the fold that avoids it.
+#
+# THIS HOST CANNOT REACH IT, exactly as it cannot reach a pid above 32767, and
+# for the same reason a CI runner never will.  So the guard is not a value but
+# the SOURCE: nothing in the shim may narrow an id with a cast again.  The
+# arithmetic itself is asserted separately, over a table, in tests/v8sys --
+# that is the analogue of the FIELD WIDTH assertion this pid block points at.
+#
+# THE INSTRUMENT MATCHES ITS OWN DOCUMENTATION, which is a trap this repo has a
+# standing note about: v8id.h, syscall.c, procfs.c and fio.c all now DISCUSS the
+# bare cast in prose, and a naive grep counts the explanation as an instance.
+# Comment lines are excluded, and the count of what was excluded is printed, so
+# a future reader can see the filter is doing something rather than hiding
+# something.
+idcast=$(grep -rnE '\(short\)[^;]*(uid|gid)' "$ROOT/shim" 2>/dev/null |
+         grep -v '\.md:' | grep -vE ':[[:blank:]]*\*' | grep -vE ':[[:blank:]]*/\*')
+[ -z "$idcast" ] && ok || bad "a host id is narrowed with a cast, not v8_foldid" "$idcast"
+idprose=$(grep -rnE '\(short\)[^;]*(uid|gid)' "$ROOT/shim" 2>/dev/null |
+          grep -v '\.md:' | wc -l | tr -d ' ')
+echo "  (id-cast sweep: $idprose matches, all in comments)"
+# ...and the fold is actually CALLED at each of the four narrowing sites, which
+# the sweep above cannot see -- deleting a call and the cast together would
+# leave it green.  Four files, and the count is derived rather than written
+# down, so adding a fifth site is a decision rather than a silent omission.
+#
+# AND `.md' IS EXCLUDED HERE TOO, WHICH IT WAS NOT WHEN THIS WAS WRITTEN.  The
+# case above carries a paragraph headed "THE INSTRUMENT MATCHES ITS OWN
+# DOCUMENTATION" and excludes comment lines for exactly that reason; this line,
+# added in the same edit, did not -- and went red the moment shim/NOTES.md
+# gained a section describing the rule, reporting 5 files for 4 call sites.
+# The fix landing on one line while the line beside it keeps the assumption,
+# committed by the person who had just written the warning.
+idfold=$(grep -rl "v8_foldid(" "$ROOT/shim" 2>/dev/null |
+         grep -v '\.md$' | grep -v 'v8id\.h' | wc -l | tr -d ' ')
+check "every component that narrows an id calls the shared fold" "4" "$idfold"
+
 # ps must see ITSELF: the one process guaranteed to exist while it runs.
 echo "$psout" | grep -q '(ps)' && ok || bad "ps lists itself"
 
