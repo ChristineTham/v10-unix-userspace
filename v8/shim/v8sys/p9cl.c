@@ -1303,6 +1303,161 @@ p9_t_mkdir(char *p, int mode)
 	return (rc);
 }
 
+/*
+ * ------------------------------------------------------------------ Twstat
+ *
+ * chmod, chown and utime are ONE MESSAGE, and that is 9P's shape rather than a
+ * shortcut here: a wstat carries a whole stat and the server applies whichever
+ * of its fields are not the "do not touch" sentinel.  So each of the three
+ * below is p9_nostat() plus one or two assignments, and the interesting code is
+ * all in deciding what to put in a field rather than in sending it.
+ */
+
+/*
+ * The inverse of p9uid() above, and it exists because THIS FILE HAS NO libc --
+ * dir.c's rule at the top of it, raw syscalls only, so there is no snprintf to
+ * borrow.  Twelve bytes is enough for any int with its sign.
+ *
+ * NEGATIVES ARE FORMATTED RATHER THAN REFUSED, because chown(f, -1, -1) is a
+ * legal V7 call: sys4.c:294 is `ip->i_uid = uap->uid' with no check, an int
+ * into a short, so -1 lands in the inode as 65535.  Truncation is therefore
+ * upstream's own answer and is left to the server, which does the identical
+ * assignment -- narrowing here as well would be a second opinion about a
+ * question that already has one.  -(long)v rather than -v so that INT_MIN does
+ * not overflow on the way to being printed.
+ */
+static void
+p9dec(char *d, long max, int v)
+{
+	char tmp[12];
+	long n = 0, i = 0;
+	unsigned long u;
+
+	if (v < 0) {
+		if (i + 1 < max) d[i++] = '-';
+		u = (unsigned long)(-(long)v);
+	} else
+		u = (unsigned long)v;
+	do { tmp[n++] = (char)('0' + (int)(u % 10)); u /= 10; } while (u);
+	while (n > 0 && i + 1 < max) d[i++] = tmp[--n];
+	d[i] = '\0';
+}
+
+static int
+p9wstat(int fd, const struct p9stat *s)
+{
+	struct p9buf b, r;
+
+	begin(&b, P9_Twstat);
+	p9_p32(&b, P9CL_FILEFID);
+	p9_pstatw(&b, s);			/* the outer count is 9P's wart */
+	if (!p9_ok(&b)) { v8_errno = V8_EIO; return (-1); }
+	return (xact(fd, &b, P9_Rwstat, &r) < 0 ? -1 : 0);
+}
+
+/* Walk to the path, wstat it, drop the connection -- t_stat's shape exactly. */
+static int
+p9wstatpath(char *p, const struct p9stat *s)
+{
+	struct p9mnt *m = p9mount();
+	const char *rel;
+	int fd, rc;
+
+	if (m == 0 || (rel = p9rel(m, p)) == 0) { v8_errno = V8_ENOENT; return (-1); }
+	if ((fd = p9dial(m)) < 0) return (-1);
+	if (p9walk(fd, rel) < 0) { rawsys1(SYS_close, fd); return (-1); }
+	rc = p9wstat(fd, s);
+	rawsys1(SYS_close, fd);
+	return (rc);
+}
+
+/*
+ * t_chmod.  Masked to 07777 for p9_t_mkdir's reason inverted: there the bit
+ * above 0777 is DMDIR and a mode carrying S_IFDIR must not reach it, and here
+ * the whole point is that the file type is not the caller's to change.  V7's
+ * chmod is `ip->i_mode &= ~07777; ip->i_mode |= fmode&07777' (sys4.c:240-244),
+ * so upstream masks in the same place and the server masks again.
+ */
+static int
+p9_t_chmod(char *p, int mode)
+{
+	struct p9stat s;
+
+	p9_nostat(&s);
+	s.s_mode = (p9_u32)(mode & 07777);
+	return (p9wstatpath(p, &s));
+}
+
+/*
+ * t_chown.  BOTH IDS ARE ALWAYS SENT, because V7's chown always sets both --
+ * there is no -1 "leave it alone" convention in sys4.c:282-291, that is POSIX
+ * arriving later.  So the empty-string "do not touch" form is not used here at
+ * all, and a caller who wanted one field would have to read the other first,
+ * which is what a V7 program does.
+ */
+static int
+p9_t_chown(char *p, int uid, int gid)
+{
+	struct p9stat s;
+
+	p9_nostat(&s);
+	p9dec(s.s_uid, (long)sizeof s.s_uid, uid);
+	p9dec(s.s_gid, (long)sizeof s.s_gid, gid);
+	return (p9wstatpath(p, &s));
+}
+
+/*
+ * t_utime, and it is the slot mv(1) needs.
+ *
+ * WHY mv IS THE CONSUMER: on a mount link(2) has no slot and is refused, so
+ * mv.c:114 always fails and mv always takes the fallback -- fork, exec
+ * /bin/cp, wait, then mv.c:129's `utime(target, &s1.st_atime)' to put the
+ * source's timestamps on the copy.  Without this slot the copy and the unlink
+ * both succeed and only the times are silently lost.
+ *
+ * A NULL tv IS "NOW" HERE AND IS NOT WHAT A VAX DID, and the difference is
+ * older than this file.  V7's utime copyin's from the address it is handed
+ * (sys4.c:533), so utime(f, 0) on a VAX read eight bytes of user address 0 --
+ * crt0, since a.out text starts there -- and stamped the file with them.  The
+ * shim has always answered "now" instead, because v8s_utime passes a null
+ * timeval to SYS_utimes and that is what macOS means by it.  Reproduced rather
+ * than widened: the mount gives the same answer the passthrough type already
+ * gives, so a program cannot tell the two apart by asking.
+ *
+ * THE SENTINEL COLLIDES WITH A REAL TIME, at exactly one value.  "Do not
+ * touch" is all ones, and a time_t of -1 -- 31 December 1969, which a signed
+ * di_atime can hold perfectly well -- encodes to the same 0xffffffff.  There
+ * is no room in the encoding for both, so the request is refused rather than
+ * silently dropped, which is the difference between a caller that can see what
+ * happened and one that cannot.
+ */
+static int
+p9_t_utime(char *p, long *tv)
+{
+	struct p9stat s;
+	struct { long sec, usec; } now;
+	long at, mt;
+
+	if (tv == 0) {
+		if (rawsys2(SYS_gettimeofday, (long)&now, 0) < 0) {
+			v8_errno = V8_EINVAL;
+			return (-1);
+		}
+		at = mt = now.sec;
+	} else {
+		at = tv[0];
+		mt = tv[1];
+	}
+	if ((p9_u32)at == (p9_u32)~0U || (p9_u32)mt == (p9_u32)~0U) {
+		v8_errno = V8_EINVAL;
+		return (-1);
+	}
+	p9_nostat(&s);
+	s.s_atime = (p9_u32)at;
+	s.s_mtime = (p9_u32)mt;
+	return (p9wstatpath(p, &s));
+}
+
 struct v8fstyp v8fs_p9 = {
 	"v8fs",
 	p9_t_path,
@@ -1310,7 +1465,8 @@ struct v8fstyp v8fs_p9 = {
 	p9_t_read, p9_t_write, p9_t_seek,
 	p9_t_stat, p9_t_fstat,
 	p9_t_ioctl,
-	p9_t_access, p9_t_remove, p9_t_mkdir
+	p9_t_access, p9_t_remove, p9_t_mkdir,
+	p9_t_chmod, p9_t_chown, p9_t_utime
 };
 
 /* ------------------------------------------------------- directory reads */

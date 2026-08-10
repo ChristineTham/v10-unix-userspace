@@ -959,6 +959,45 @@ pr_mkdir(char *rp, int mode)
 	return (-1);
 }
 
+/*
+ * chmod, chown and utime -- EPERM, for pr_remove's reason and one more.
+ *
+ * A process file has a mode, an owner and times, and all three are
+ * SYNTHESISED by prstat from the live process rather than stored anywhere, so
+ * there is no field here to write to: a chmod that appeared to succeed would
+ * be undone by the next stat, which recomputes.  Killian's own /proc is the
+ * same -- proca.c has no arm for any of them.
+ *
+ * EPERM AND NOT EROFS, which is the distinction v8s_mknod's history is about:
+ * EROFS says the filesystem refuses writes, and /proc very much does take
+ * writes (pr_write exists, and Killian's whole point was that you could write
+ * a process's memory).  It is these three operations that are meaningless, not
+ * the medium.
+ */
+static int
+pr_chmod(char *rp, int mode)
+{
+	(void)rp; (void)mode;
+	v8_errno = V8_EPERM;
+	return (-1);
+}
+
+static int
+pr_chown(char *rp, int uid, int gid)
+{
+	(void)rp; (void)uid; (void)gid;
+	v8_errno = V8_EPERM;
+	return (-1);
+}
+
+static int
+pr_utime(char *rp, long *tv)
+{
+	(void)rp; (void)tv;
+	v8_errno = V8_EPERM;
+	return (-1);
+}
+
 static struct v8fstyp procfs = {
 	"proc",
 	pr_path,
@@ -966,7 +1005,8 @@ static struct v8fstyp procfs = {
 	pr_read, pr_write, pr_seek,
 	pr_stat, pr_fstat,
 	pr_ioctl,
-	pr_access, pr_remove, pr_mkdir
+	pr_access, pr_remove, pr_mkdir,
+	pr_chmod, pr_chown, pr_utime
 };
 
 /*

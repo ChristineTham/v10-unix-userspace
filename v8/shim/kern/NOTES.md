@@ -885,3 +885,161 @@ showing `Tstat` where the new code sends `Taccess`.
 `$(SHIM_HDR)` is four named headers rather than a wildcard, and the recipes
 changed from `$^` to `$(filter %.c %.s,$^)` so the headers are prerequisites
 without becoming compiler inputs. `deps` 353 → 357.
+
+## §8a step 5f-b — chmod, chown and utime, which are one message
+
+The last three of the fourteen slotless syscalls that had a 9P answer. They are
+**one Twstat between them**: a wstat carries a whole stat and the server applies
+whichever fields are not the "do not touch" sentinel, so `p9_t_chmod` sets
+`s_mode`, `p9_t_chown` sets `s_uid`/`s_gid`, and `p9_t_utime` sets
+`s_atime`/`s_mtime`, over one wire format. What is left refusing is `link` and
+`symlink`, which 9P2000 has no message for at all.
+
+`streams` 567 → 592, `make test` 2060 → 2085. Eight mutations, eight fire.
+
+### Reading upstream first found three deviations and one missing arm
+
+The server's `do_wstat` had been written from a recalled citation. Reading
+`sys4.c` and `fio.c`:
+
+| | upstream | do_wstat as it stood |
+|---|---|---|
+| `chmod` | `sys4.c:238`, gated on `owner(1)` | `suser()` |
+| `chown` | `sys4.c:282`, `!suser() \|\| owner(1)==NULL` | `suser()` — **right** |
+| `utime` | `sys4.c:521`, `owner(1)`, **both** times, `IACC\|IUPD\|ICHG` | `suser()`, mtime only, no ICHG |
+| sticky | `sys4.c:250`, `if (u.u_uid) fmode &= ~ISVTX` | absent |
+
+`owner()` is `fio.c:215-228` and its rule is **ownership OR superuser**. The
+comment above the function said exactly that — "ownership for everything else"
+— while the code tested `suser()` alone, and cited `sys3.c`, which is
+`fsmount`. None of it is observable, because `u_uid` is 0 here and both rules
+therefore always permit; **that is why the sentence and the line could disagree
+for a whole step**. `wowner()` is the rule written out, and the `||`
+short-circuits in upstream's order because `suser()` has a side effect
+(`u_acflag |= ASU`).
+
+### An arm declined for a reason that was true and never covered the case
+
+`s_atime` was not honoured, and the recorded reason was: *"nothing in this
+world sets atime alone, and an unexercised arm is a claim nothing can check."*
+Still true. It never covered the consumer that turned up.
+
+`mv.c:129` is `utime(target, &s1.st_atime)` — the address of one `struct stat`
+field, relying on `st_atime`/`st_mtime` being adjacent `time_t`s to pass a
+`time_t[2]` — and on a mount it is not an unusual path but the **only** path,
+because `link(2)` has no slot and is refused, so `mv` always falls through to
+fork, `/bin/cp` and utime. **Declining an arm because nothing sets a field
+ALONE is a different claim from nothing setting it at all**, and only the second
+would have been a reason. Before the arm, `mv` on a mount copied and unlinked
+correctly and silently lost both timestamps.
+
+The two times are one arm now, because `iupdat` is one call: it writes
+`di_atime` when IACC is set and `di_mtime` when IUPD is set (`iget.c:272-275`)
+and there is no way to ask for one, so the field the client did not send is
+re-written with the value already on the disk. `ICHG` goes with them, which
+this arm did not set — `sys4.c:536` is all three, and the comment four lines
+above it, "Can't set ICHG", means the caller cannot *choose* a ctime, not that
+ctime stays put.
+
+### The two ends of one wire, an hour apart, and only the reading end had the guard
+
+`do_wstat` parsed the owner with `atoi`, which has no error return. Measured
+over a real Twstat before the fix:
+
+| sent | resulting `i_uid` | reply |
+|---|---|---|
+| `"nobody"` | **0 (root)** | Rwstat |
+| `"--"` | **0 (root)** | Rwstat |
+| `"12x"` | 12 | Rwstat |
+
+0 is root, and root is the identity `fio.c:193` lets bypass every permission
+check on the image — so an unparseable owner was not a wrong answer, it was a
+privilege grant with a success reply. **The client end of this same field
+already had the guard**, given to `p9uid` by an earlier audit, with the contract
+spelled out beside it: *root maps to root, and non-root never maps to root.*
+
+It matters because plain 9P2000 specifies the field as a **name**, and
+`statof`'s own comment acknowledges that and sends a number anyway. A
+conforming foreign client doing a wstat sends `"chris"`.
+
+**Range is not parseability, and only the second is guarded.** `"65536"` is
+accepted and truncates, because that is V7's own answer — `sys4.c:294` is
+`ip->i_uid = uap->uid`, an int into a short, unchecked. A leading `-` is
+accepted too, because `statof` renders `i_uid` with `"%d"` of a signed short and
+a negative owner is a value this server itself emits.
+
+Nothing could have caught it: `do_wstat` had **no client caller at all** until
+`p9_t_chown`, which is this step. The case for it is a new `-w` mode in
+`p9probe`, because no V8 program can send a name — `p9_t_chown` formats an int.
+
+### Two hand-rolled copies of one length patch
+
+`do_stat` spent eight lines writing 9P2000's outer count and patching it
+afterwards, with a comment explaining the wart. The client's Twstat needed the
+same eight lines. `p9_pstatw()` is the one definition, and `p9_nostat()` is
+beside it — the all-ones initialiser, which is a function rather than a
+`memset` of `0xff` because **the strings are the asymmetry**: all-ones has no
+spelling in a string field, so "do not touch" there is the empty string, and
+filling the struct with `0xff` would send four 255-byte names.
+
+### Four dead declarations kept cover on one line with two live ones
+
+`int iinit(), binit(), bhinit(), ihinit(), update(), brelse();` — the first four
+have no call site in `v8fsd.c` (`v8k_kinit` calls them), and the paragraph
+directly above the line says *"a declaration with no call site is an unconsumed
+component"*. The rule was being stated and broken in adjacent lines. The one
+that mattered is `iinit`, because **5f changed it**: `main.c:304` is
+`void iinit(int ronly)` and the declaration still said `int iinit()`. Deleted
+rather than corrected — the fix for an unconsumed declaration is not a better
+declaration.
+
+### EROFS is a claim about the medium; EPERM is a claim about the operation
+
+`v8s_mknod`'s device arm said *"the refusal is the same one the host arm
+gives"*, and it was not: a `MOUNTED(p)` made the mounted answer **EROFS** and
+the host answer **EPERM**. EROFS says the filesystem will not take writes, which
+stopped being true in 5f; EPERM says the operation is meaningless, which is the
+actual reason and is true of both worlds. The macro could go because that arm
+never touches the path — it sets errno and returns, so there was nothing for the
+guard to contain. `procfs.c`'s three new slots record the same distinction from
+the other side: `/proc` refuses chmod/chown/utime with EPERM and not EROFS,
+because `/proc` very much does take writes and it is these three operations that
+are meaningless there.
+
+### What the tests learned
+
+- **`ls -l` is minute-granular**, so it cannot show that a utime worked when the
+  file was written seconds ago. A **1991** date is a difference it can show, and
+  `ls -lu` is what makes the atime arm's case distinct from the mtime arm's.
+  Order matters: the `cat` two cases later moves the atime, which is then
+  asserted as a *relation* (no longer the value we put there) rather than as
+  today's date.
+- **A case can be vacuous for two independent reasons.** "chmod cannot change
+  the file type" on a plain file passed under every mutation: `ls` switches on
+  `st_mode & S_IFMT` pre-set to `-` at `ls.c:336` and not overwritten by the switch at `:354`, which has no `default` arm, so a mode with no
+  type bits still prints as a plain file — *and* `p9tostat` rebuilds the type
+  from `DMDIR` rather than passing the server's IFMT through, so `ls` on a
+  mount cannot see the server's mode word at all. The **directory** is where it
+  is observable, because `statof` sets DMDIR from `(i_mode & IFMT) == IFDIR`.
+- **The read-only server has to still be up.** The containment cases were first
+  written after `kill $RPID`, which is precisely how §9f's read-only pair was
+  vacuous until an `rm` exiting 0 gave it away. Both servers now live across the
+  whole section, and the byte-identical `cmp` moved below it so it covers 5f-b's
+  writes too — a refused wstat that had already dirtied an inode shows there and
+  nowhere else.
+- **A containment case survived by testing a better property.** "chmod through a
+  mount does not reach the host" was written when chmod had no slot, and the
+  guard was the refusal. chmod is a slot now and the call goes to the server —
+  and the property being asserted is the one that always mattered: *a mounted
+  path never reaches the host's chmod.* Measured: revert the dispatch to
+  `rawsys2(SYS_chmod, vpath(p), m)` and it fires, along with two others.
+- **The mutation harness had the same-second trap on the APPLY side.** The
+  documented one is the restore side. Here the previous restore's rebuild
+  finished in the same second the next mutation was written, so `make` declared
+  the artefact current and two runs were meaningless — caught by the harness's
+  own artefact-hash check, which is the only reason they were not read as "the
+  guard did not fire". `v8fsd` is a binary rather than an object, so
+  determinism was measured first (two builds of identical source, identical
+  hash) before it was used as the check.
+- **And the harness littered the repo root**, because a script `exec`'d from
+  stdin has no `__file__` worth trusting. `tests/deps` caught it.

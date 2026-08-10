@@ -2065,10 +2065,15 @@ check "/mntfoo is not the mount"		"1" \
 # the HOST to unlink /mnt/hello.
 check "a write is refused"			"1" \
 	"$(v8run "$SH" -c 'echo x > /mnt/hello' >/dev/null 2>&1; echo $?)"
-# ...and two syscalls that never leave this process, because they have no slot
-# in struct v8fstyp and would otherwise have asked the HOST to change a file
-# called /mnt/hello.  There is no /mnt on this machine, which is luck rather
-# than containment -- MOUNTED() is what makes it a refusal.
+# ...and two more, AND WHAT REFUSES THEM HAS CHANGED TWICE UNDER THIS COMMENT.
+# It used to read "two syscalls that never leave this process, because they
+# have no slot in struct v8fstyp ... MOUNTED() is what makes it a refusal".
+# Both have slots now -- mkdir since §8a step 5f, chmod since 5f-b -- so both
+# DO leave the process, and what refuses them is the SERVER: this section's
+# v8fsd runs -r, iupdat returns at iget.c:248 before it breads anything, and
+# the reply is EROFS.  The cases are unchanged and still right; only the reason
+# is, which is this repository's most repeated shape and the reason a comment
+# naming a mechanism has to be re-read every time the mechanism moves.
 check "chmod on a mount is refused"		"1" \
 	"$(v8run "$ROOT/rootfs/bin/chmod" 777 /mnt/hello >/dev/null 2>&1; echo $?)"
 check "and mkdir"				"1" \
@@ -2120,9 +2125,18 @@ check "a mount shadows the host directory"	"hello from a V8 filesystem" \
 check "and the host file is untouched"		"THE HOST FILE, NOT THE IMAGE" \
 	"$(cat "$P9DIR/hostdir/hello")"
 
-# NOW THE GUARD.  chmod has no slot in struct v8fstyp, so without MOUNTED() it
-# reaches the host with the path verbatim and changes THIS file's mode.  With
-# it, the mode is what it was.  This is the case the /mnt one could not be.
+# NOW THE GUARD, AND §8a step 5f-b MADE IT A BETTER ONE RATHER THAN A STALE
+# ONE.  It was written when chmod had no slot: without MOUNTED() the call
+# reached the host with the path verbatim and changed THIS file's mode, and the
+# guard was the refusal.  chmod is a slot now, so the call goes to the server
+# instead -- and the property being asserted is the one that actually matters
+# and always was: A MOUNTED PATH NEVER REACHES THE HOST'S chmod.  Revert the
+# dispatch to `rawsys2(SYS_chmod, vpath(p), m)' and vpath leaves a mounted path
+# alone, so the mode below becomes 777 and this fires exactly as before.
+#
+# The mount here is read-only, so nothing lands on the image either; the
+# writable half of the same claim is §9f-b, where the chmod does reach the
+# image and the checkers at the end of the section still call it clean.
 v8host "$ROOT/rootfs/bin/chmod" 777 "$P9DIR/hostdir/hello" >/dev/null 2>&1
 # substr AND NOT $1, because macOS appends `@' to the mode column for a file
 # with extended attributes -- which $TMPDIR files acquire without asking.  The
@@ -2761,11 +2775,163 @@ if [ "$wready" = 1 ]; then
 	check "...and the file is still readable"	"hello from a V8 filesystem" \
 		"$(r8 "$CAT" /ro/hello 2>&1)"
 
+	# THE READ-ONLY SERVER STAYS UP PAST THIS POINT, and moving the kill
+	# below §9f-b was not tidying.  Section 9f-b has containment cases of
+	# its own, and against a dead server every one of them would pass for
+	# the wrong reason -- which is not hypothetical here: the read-only
+	# pair in §9f was written against a socket killed a hundred lines
+	# earlier and was vacuous until the `rm' exiting 0 gave it away.  Both
+	# servers are alive for the whole of the next section, and the
+	# byte-identical cmp that used to sit here now runs after it, so it
+	# covers 9f-b's writes as well.
+
+	# =====================================================================
+	# 9f-b. chmod, chown AND utime -- §8a step 5f-b, and they are ONE
+	#       message.  A Twstat carries a whole stat and the server applies
+	#       whichever fields are not "do not touch", so all three syscalls
+	#       are one wire format with different fields filled in.
+	#
+	# THE READ-ONLY SERVER IS STILL UP at this point, which is why the
+	# containment case below can run against it.
+	# ---------------------------------------------------------------------
+
+	# chmod, through V8's own chmod(1).  The mode is read back with ls -l
+	# rather than with a stat helper, because ls -l is what a person would
+	# use and it is the only reader here that goes through the whole client.
+	w8 "$ROOT/rootfs/bin/chmod" 600 /mnt/hello >/dev/null 2>&1
+	check "chmod reaches the image"			"-rw-------" \
+		"$(w8 "$LS" -l /mnt/hello 2>/dev/null | awk '{print $1}')"
+	w8 "$ROOT/rootfs/bin/chmod" 644 /mnt/hello >/dev/null 2>&1
+	check "...and back again"			"-rw-r--r--" \
+		"$(w8 "$LS" -l /mnt/hello 2>/dev/null | awk '{print $1}')"
+
+	# (A case asserting that chmod cannot change the type of a PLAIN FILE
+	# stood here and was vacuous twice over -- mutation is what said so.
+	# ls switches on st_mode & S_IFMT pre-set to `-' at ls.c:336 and NOT overwritten by the switch at :354, which has no default arm,
+	# so a mode that lost its type bits entirely still prints as a plain
+	# file; and p9tostat REBUILDS the type from DMDIR rather than passing
+	# the server's IFMT through, so ls on a mount could not see the
+	# server's mode word even if it wanted to.  The directory case below is
+	# the one that can fail.)
+
+	# chown, AND ITS CONSUMER IS mkdir(1) RATHER THAN chown(1) -- which is
+	# not ported.  mkdir.c:69 is `chown(d, getuid(), getgid())', UNCHECKED,
+	# straight after the mknod, so before this step every directory made on
+	# a mount was silently left owned by root and nothing said so.
+	#
+	# THE ASSERTION IS A RELATION, NOT A NUMBER: `id -u' is a property of
+	# whoever runs this, so the case compares the owner ls reports against
+	# the owner the shell asks for.  A hardcoded 501 is the host-property
+	# trap that has broken this repo's CI twice.
+	w8 "$ROOT/rootfs/bin/mkdir" /mnt/owned >/dev/null 2>&1
+	check "mkdir's chown reaches the image"		"$(id -un)" \
+		"$(w8 "$LS" -ld /mnt/owned 2>/dev/null | awk '{print $3}')"
+	# ...and the control that says the case above is about the chown and
+	# not about mkdir: hello was made by mkfs and nothing has chowned it.
+	check "...and a file nothing chowned is still root"	"root" \
+		"$(w8 "$LS" -l /mnt/hello 2>/dev/null | awk '{print $3}')"
+
+	# CHMOD A DIRECTORY, WHICH IS WHERE THE FILE TYPE IS OBSERVABLE.  The
+	# server's arm is `ip->i_mode = (ip->i_mode & IFMT) | nm', and dropping
+	# that IFMT is invisible on a plain file for two independent reasons
+	# (see the note above) -- but statof sets DMDIR from
+	# `(ip->i_mode & IFMT) == IFDIR', so a directory whose type bits were
+	# overwritten stops being reported as one and ls prints `-'.  Measured
+	# by mutation: without the IFMT the checkers at the end of this section
+	# go red, and so does this.
+	w8 "$ROOT/rootfs/bin/chmod" 700 /mnt/owned >/dev/null 2>&1
+	check "chmod on a directory keeps it a directory"	"drwx------" \
+		"$(w8 "$LS" -ld /mnt/owned 2>/dev/null | awk '{print $1}')"
+
+	# AN OWNER THE SERVER CANNOT PARSE, which is the one guard in this step
+	# that NO V8 PROGRAM CAN REACH.  9P specifies the field as a name and
+	# this server takes a number; p9_t_chown formats an int, so it is
+	# incapable of sending "nobody" -- only a foreign client, or this probe,
+	# can ask the question.  It was atoi(), which has no error return, so
+	# every unparseable owner became uid 0 WITH A SUCCESS REPLY, and 0 is
+	# the identity fio.c:193 lets bypass every permission check.
+	( cd "$WFSTMP" && perl -e 'alarm 30; exec @ARGV' "$P9PROBE" wsock /dev/null -w ) \
+		> "$TMP/p9w.probe" 2>"$TMP/p9w.probeerr"
+	wq() { awk -v k="$1" '$1 == k {print $2}' "$TMP/p9w.probe"; }
+	check "the write probe ran"			"0"	"$(wq w-uid-before)"
+	check "an owner that is a NAME is refused"	"EINVAL" "$(wq w-uid-name)"
+	# ...and refused BEFORE assigning.  A wstat that rejected on the way out
+	# would satisfy the case above and still have changed the file.
+	check "...and the owner is untouched"		"0"	"$(wq w-uid-name-unchanged)"
+	check "so is one that is all punctuation"	"EINVAL" "$(wq w-uid-dashes)"
+	check "and one with a digit and then rubbish"	"EINVAL" "$(wq w-uid-trailing)"
+	check "...and that one changed nothing either"	"0"	"$(wq w-uid-trailing-unchanged)"
+	# THE POSITIVE HALF, without which the guard is indistinguishable from
+	# a server that refuses every wstat.
+	check "a plain number is still accepted"	"1"	"$(wq w-uid-number)"
+	check "...and lands in the inode"		"7"	"$(wq w-uid-number-took)"
+	# A NEGATIVE IS A NUMBER THIS SERVER ITSELF EMITS -- statof renders
+	# i_uid with "%d" of a SIGNED short -- so refusing every '-' would mean
+	# refusing to take back a value it had just handed out.
+	check "and so is a negative one"		"1"	"$(wq w-uid-negative)"
+	check "...which round-trips as itself"		"-3"	"$(wq w-uid-negative-took)"
+	check "and the owner restores to root"		"0"	"$(wq w-uid-restored)"
+	# An all-ones wstat is 9P's "sync me" and must not be an error.
+	check "a wstat that touches nothing succeeds"	"1"	"$(wq w-sync)"
+	check "and the server is still there"		"0"	"$(wq w-alive)"
+
+	# utime, AND mv(1) IS WHY IT EXISTS.  On a mount link(2) has no slot
+	# and is refused, so mv ALWAYS falls through to fork, /bin/cp and then
+	# mv.c:129's `utime(target, &s1.st_atime)'.  Without the slot the copy
+	# and the unlink both succeed and only the timestamps are lost --
+	# silently, because mv does not check utime either.
+	#
+	# 1991 IS THE INSTRUMENT, and that is deliberate.  ls -l prints minutes
+	# for a recent file and a YEAR for an old one, so a same-minute
+	# comparison could not tell a working utime from a broken one -- the
+	# resolution trap this suite already learned from the s_time case.  A
+	# 1991 date is a difference ls can actually show.
+	echo "aged content" > "$WFSTMP/aged"
+	touch -t 199107150000 "$WFSTMP/aged"
+	w8 "$ROOT/rootfs/bin/mv" "$WFSTMP/aged" /mnt/aged >/dev/null 2>&1
+	check "mv carries a 1991 mtime onto the mount"	"Jul 15 1991" \
+		"$(w8 "$LS" -l /mnt/aged 2>/dev/null | awk '{print $6, $7, $8}')"
+	# AND THE atime WITH IT, which is the half a mtime-only server would
+	# have passed the case above without.  do_wstat honoured s_mtime alone
+	# until 5f-b and said why: "nothing in this world sets atime alone".
+	# True, and it never covered mv, which sets BOTH -- utime(2) takes a
+	# time_t[2] and mv hands it &st.st_atime.  THIS case is the one the
+	# s_atime arm exists for; ORDER MATTERS, because the cat below moves it.
+	check "...and the atime with it"		"Jul 15 1991" \
+		"$(w8 "$LS" -lu /mnt/aged 2>/dev/null | awk '{print $6, $7, $8}')"
+	# ...and it is a MOVE, so the bytes have to be there too.  A utime that
+	# worked on an empty file would satisfy the cases above alone.
+	check "...and the bytes came with it"		"aged content" \
+		"$(w8 "$CAT" /mnt/aged 2>&1)"
+	check "...and the source is gone"		"gone" \
+		"$([ -e "$WFSTMP/aged" ] || echo gone)"
+	# THAT cat MOVED THE atime, and asserting so is free here because the
+	# file is the only one in the suite whose atime was a known constant a
+	# moment ago.  readi sets IACC (rdwri.c:50) so iput runs IUPDAT on every
+	# READ -- the finding §8a step 5f had to make three measurements to see,
+	# because a frozen clock and a delayed write hid it.  The assertion is a
+	# RELATION (it is no longer the value we put there) rather than today's
+	# date, which is a property of the machine and not of the port.
+	check "...and reading it moved the atime, as V7 says it must"	"moved" \
+		"$(w8 "$LS" -lu /mnt/aged 2>/dev/null |
+		   awk '{ t = $6 " " $7 " " $8
+		          print (t == "Jul 15 1991") ? "frozen" : "moved" }')"
+
+	# CONTAINMENT, and the read-only mount is the sharpest form of it: all
+	# three of these are writes, and s_ronly makes iupdat return before it
+	# breads anything, so not even a mode bit can move.
+	check "chmod on a read-only mount fails"	"1" \
+		"$(r8 "$ROOT/rootfs/bin/chmod" 700 /ro/hello >/dev/null 2>&1; echo $?)"
+	check "...and the mode is unchanged"		"-rw-r--r--" \
+		"$(r8 "$LS" -l /ro/hello 2>/dev/null | awk '{print $1}')"
+
 	sleep 0.3
 	kill $RPID 2>/dev/null; wait $RPID 2>/dev/null
 	# NOT ONE BYTE, and this is the guarantee the EROFS arm never gave: a
 	# read through a read-only mount cannot move an atime either, because
-	# s_ronly makes iupdat return before it breads the inode.
+	# s_ronly makes iupdat return before it breads the inode.  It now also
+	# covers the refused chmod two cases up -- a wstat that failed but had
+	# already dirtied an inode would show here and nowhere else.
 	check "and the read-only image is byte-identical to what it was given"	"same" \
 		"$(cmp -s "$FSTMP/p9img" "$WFSTMP/roimg" && echo same || echo differs)"
 
@@ -2774,6 +2940,8 @@ if [ "$wready" = 1 ]; then
 	# with.  A leaked block passes fsck -- icheck calls it `missing' and
 	# says 0 either way once it is off the free list -- so the exact
 	# equality is the only thing that can see one.
+	w8 "$RM" /mnt/aged >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/rmdir" /mnt/owned >/dev/null 2>&1
 	w8 "$RM" /mnt/fresh >/dev/null 2>&1
 	w8 "$RM" /mnt/d2/keep >/dev/null 2>&1
 	w8 "$ROOT/rootfs/bin/rmdir" /mnt/d2 >/dev/null 2>&1

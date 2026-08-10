@@ -68,12 +68,22 @@
  *   wakeup.
  *
  * SPLITTING IT the same way steps 5c and 5d were split keeps the unit
- * reviewable and keeps a failure attributable, so what 5f does NOT do is give
- * the ten path-taking syscalls their v8fstyp slots -- link, mknod, unlink,
- * chmod, chown, mkdir, rmdir, symlink, utime.  MOUNTED() in syscall.c still
- * refuses all of them with EROFS, which is now a lie about a writable
- * filesystem rather than the truth about a read-only one, and is deliberately
- * left loud so that the follow-on step has to remove it one call at a time.
+ * reviewable and keeps a failure attributable, so 5f deliberately left the
+ * path-taking syscalls refusing with MOUNTED() -- a lie about a writable
+ * filesystem, left loud so that the follow-on step had to remove it one call
+ * at a time.
+ *
+ * §8a step 5f-b IS THAT STEP, and only link and symlink still refuse: they
+ * have no 9P2000 message at all, and a V7 image holds no symlink to read back
+ * anyway.  access, unlink, mkdir, rmdir and mknod's directory arm became slots
+ * in 5f; chmod, chown and utime in 5f-b, as one Twstat between them.
+ *
+ * (This paragraph named "the TEN path-taking syscalls" and then listed NINE --
+ * link, mknod, unlink, chmod, chown, mkdir, rmdir, symlink, utime -- because
+ * link guards both of its names and the count was of MOUNTED() calls while the
+ * sentence was of names.  Counting one thing while describing another is a
+ * shape this repo has recorded more than once, and syscall.c's own enumeration
+ * of the same set had made the same slip in the same direction.)
  */
 
 #include "../kern/h/param.h"
@@ -157,7 +167,27 @@
  * most-read global unreachable by its own name.
  */
 int		readi(), writei(), iput(), schar(), itrunc(), iupdat();
-int		iinit(), binit(), bhinit(), ihinit(), update(), brelse();
+int		update(), brelse();
+/*
+ * AND THE PARAGRAPH ABOVE WAS TRUE OF ITSELF AND FALSE OF THE LINE UNDER IT.
+ * "A declaration with no call site is an unconsumed component" was written
+ * about writei/itrunc/iupdat, correctly, directly above a line declaring
+ * iinit, binit, bhinit and ihinit -- none of which this file calls.  v8k_kinit
+ * calls all four; the server reaches them only through it.  An auditor found
+ * it, and the rule was being stated and broken in adjacent lines.
+ *
+ * THE ONE THAT MATTERED WAS iinit, because 5f CHANGED IT.  main.c:304 is
+ * `void iinit(int ronly)' -- the mount flag, which is what -r is -- and the
+ * declaration here still said `int iinit()'.  A K&R declaration that
+ * contradicts the definition is exactly what this port keeps finding, and it
+ * was harmless only because nothing called it.  Deleted rather than corrected:
+ * the fix for an unconsumed declaration is not a better declaration.
+ *
+ * update() and brelse() STAY, and they are the reason the line has to be split
+ * rather than removed -- the poll loop calls update() after every message and
+ * itimes() calls brelse().  Four of the six were dead and two were live, on
+ * one line, which is how the dead four kept their cover.
+ */
 int		v8k_access();
 int		v8k_kinit(dev_t dev, int ronly);
 extern void	v8fs_clock(void);		/* shim/kern/sys/v8fs.c */
@@ -1531,19 +1561,108 @@ do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
  * actually meant, and a server that applied them all would zero a file's mode
  * every time somebody set its length.
  *
- * FOUR FIELDS ARE HONOURED and each maps onto a V7 syscall this port already
- * owes the mount: s_length is truncate, s_mode is chmod, s_uid/s_gid are
- * chown, s_mtime is utime.  s_name is a rename and is NOT honoured -- V7's
- * rename is unlink-and-link in the shell's own words, there is no syscall for
- * it, and doing it here would mean composing directory entries by hand.
- * s_atime is not honoured for a duller reason: V7's utime(2) takes both times
- * and iupdat writes whichever flags are set, but nothing in this world sets
- * atime alone, and an unexercised arm is a claim nothing can check.
+ * FIVE FIELDS ARE HONOURED and each maps onto a V7 syscall this port owes the
+ * mount: s_length is truncate, s_mode is chmod, s_uid/s_gid are chown,
+ * s_atime and s_mtime are utime.  s_name is a rename and is NOT honoured --
+ * V7's rename is unlink-and-link in the shell's own words, there is no syscall
+ * for it, and doing it here would mean composing directory entries by hand.
+ *
+ * s_atime WAS THE FIFTH AND IT ARRIVED WITH ITS CONSUMER, which is this
+ * repository's most repeated shape: an unexercised rule cannot be seen to be
+ * incomplete.  The reason recorded here for declining it was "nothing in this
+ * world sets atime alone", and that sentence is still true and never covered
+ * the case that turned up -- mv(1) sets BOTH.  mv.c:129 is
+ * `utime(target, &s1.st_atime)', taking the address of one struct stat field
+ * and relying on atime/mtime being adjacent time_t's to pass a time_t[2]; and
+ * on a mount it is not an unusual path but the ONLY path, because link(2) has
+ * no slot and is refused, so mv always falls through to fork, /bin/cp and
+ * utime.  Declining an arm because no caller sets a field ALONE is a different
+ * claim from no caller setting it at all, and only the second one would have
+ * been a reason.
  *
  * A ZERO-LENGTH NAME IS THE "DO NOT TOUCH" FORM for a string, not all ones,
  * which is 9P's own asymmetry and the reason s_name gets a length test rather
  * than a comparison against a sentinel.
  */
+
+/*
+ * owner() -- fio.c:215-228, less the namei, and it is here because the
+ * COMMENT IN do_wstat CLAIMED THIS RULE WHILE THE CODE TESTED suser() ALONE.
+ * Upstream is
+ *
+ *	owner(follow) { ip = namei(...);
+ *		if(u.u_uid == ip->i_uid) return(ip);
+ *		if(suser()) return(ip);
+ *		iput(ip); return(NULL); }
+ *
+ * so the rule is ownership OR superuser, and chmod (sys4.c:238) and utime
+ * (sys4.c:521) both gate on it.  chown (sys4.c:282) is the one that really is
+ * superuser-only -- `if (!suser() || (ip = owner(1)) == NULL) return' -- and
+ * its arm below is therefore right as it stands.
+ *
+ * NOT OBSERVABLE TODAY, which is exactly why the sentence and the line could
+ * disagree: u_uid is 0 here and nothing sets it, so suser() is always true and
+ * both rules always permit.  The day a uid arrives over the wire the
+ * difference between them is the whole of the answer, and the citation the old
+ * comment gave -- sys3.c -- was wrong as well; sys3.c is fsmount.
+ *
+ * suser() HAS A SIDE EFFECT (u_acflag |= ASU) and upstream reaches it only
+ * when the uid does not match, so the || has to short-circuit in that order.
+ */
+static int
+wowner(struct inode *ip)
+{
+	return (u.u_uid == ip->i_uid || suser());
+}
+
+/*
+ * THE OWNER FIELD IS A NAME IN 9P AND A NUMBER HERE, and atoi() cannot tell
+ * the two apart -- which is how every unparseable owner became ROOT.
+ *
+ * Measured, over a real Twstat, before this existed: "nobody" set i_uid to 0
+ * and the server answered Rwstat; so did "--"; "12x" set it to 12.  atoi has
+ * no error return, so `atoi("nobody")' and `atoi("0")' are the same call with
+ * the same answer, and the answer is the one identity fio.c:193 lets bypass
+ * every permission check on the image.
+ *
+ * IT IS THE SERVER END OF A CONTRACT THE CLIENT END ALREADY KEPT.  p9uid() at
+ * p9cl.c:1005-1040 was given exactly this guard by an earlier audit, and its
+ * comment states the rule for the whole port -- root maps to root, and
+ * non-root NEVER maps to root.  The two ends of one wire, one hour apart, and
+ * only the reading end had it.  Nothing could have caught it: do_wstat had no
+ * client caller at all until p9_t_chown, which is this step.
+ *
+ * WHY A FOREIGN CLIENT IS THE REAL CASE.  Plain 9P2000 specifies this field as
+ * a NAME, and statof() acknowledges that and sends a number anyway because
+ * there are two passwd files here and no principled way to choose between
+ * them.  So u9fs or 9pfuse doing a wstat sends "chris", which is not this
+ * server's spelling of anything -- and the honest answer to a name is that
+ * this server does not take names, not that the file now belongs to root.
+ *
+ * RANGE IS NOT PARSEABILITY, and only the second is guarded.  "65536" is
+ * accepted and truncates to 0, because that is V7's OWN answer: sys4.c:294 is
+ * `ip->i_uid = uap->uid', an int assigned into a short, with no check.  A
+ * string V7 could have produced keeps V7's behaviour; a string it could not
+ * produce is refused.  A leading '-' is accepted for the same reason -- statof
+ * renders i_uid with "%d" of a signed short, so a negative owner is a value
+ * this server itself emits.
+ */
+static int
+wuid(const char *s, short *out)
+{
+	long v = 0;
+	int i = 0, neg = 0;
+
+	if (s[0] == '-') { neg = 1; i = 1; }
+	if (s[i] == '\0') return (-1);		/* "" and "-" are not numbers */
+	for (; s[i]; i++) {
+		if (s[i] < '0' || s[i] > '9') return (-1);
+		v = v * 10 + (s[i] - '0');
+		if (v > 2147483647L) return (-1);	/* wider than chown's int */
+	}
+	*out = (short)(neg ? -v : v);		/* V7's truncation, deliberately */
+	return (0);
+}
 static void
 do_wstat(struct conn *c, p9_u32 tag, struct p9buf *in)
 {
@@ -1564,11 +1683,11 @@ do_wstat(struct conn *c, p9_u32 tag, struct p9buf *in)
 
 	/*
 	 * PERMISSION FOR A wstat IS THE FILE'S OWN WRITE BIT for a truncation
-	 * and ownership for everything else -- V7's chmod(2) is `if(u.u_uid !=
-	 * ip->i_uid && !suser()) return' at sys3.c, and truncate is a write.
-	 * Both collapse to the same thing while u_uid is 0, and both are
-	 * written out anyway, because the day a uid arrives over the wire the
-	 * difference between them is the whole of the answer.
+	 * and wowner() for everything else, which is upstream's owner() and is
+	 * argued above the function.  Truncate is a write, so it is the one arm
+	 * that asks access() rather than ownership -- V7 has no truncate(2) to
+	 * copy a rule from, and shortening a file there is creat(2), which
+	 * needs write permission and not ownership.
 	 */
 	if (st.s_length != (p9_u64)~0ULL) {
 		if ((ip->i_mode & IFMT) == IFDIR) { rerror(c, tag, EISDIR); return; }
@@ -1590,15 +1709,25 @@ do_wstat(struct conn *c, p9_u32 tag, struct p9buf *in)
 		touched = 1;
 	}
 	/*
-	 * suser() RETURNS 1 FOR PERMITTED, which is the OPPOSITE polarity from
-	 * access() six lines above -- upstream's own inconsistency, reproduced
-	 * rather than harmonised, and v8fs.c:468-471 records it beside the
-	 * function.  Getting it the wrong way round here would make every wstat
-	 * succeed for every user.
+	 * wowner() AND suser() BOTH RETURN 1 FOR PERMITTED, which is the
+	 * OPPOSITE polarity from access() six lines above -- upstream's own
+	 * inconsistency, reproduced rather than harmonised, and v8fs.c:468-471
+	 * records it beside the function.  Getting it the wrong way round here
+	 * would make every wstat succeed for every user.
+	 *
+	 * THE STICKY BIT IS UPSTREAM'S ONE SPECIAL CASE and it is not decoration:
+	 * sys4.c:250-251 is `if (u.u_uid) uap->fmode &= ~ISVTX', so a chmod by
+	 * anyone but root cannot set ISVTX.  On a VAX that bit kept a program's
+	 * text in the swap area, which is a resource a user could otherwise
+	 * consume by asking.  It collapses here for the same reason wowner()
+	 * does -- u_uid is 0 -- and it is written out for the same reason too.
 	 */
 	if (st.s_mode != (p9_u32)~0U) {
-		if (!suser()) { rerror(c, tag, EPERM); return; }
-		ip->i_mode = (ip->i_mode & IFMT) | (unsigned short)(st.s_mode & 07777);
+		unsigned short nm = (unsigned short)(st.s_mode & 07777);
+
+		if (!wowner(ip)) { rerror(c, tag, EPERM); return; }
+		if (u.u_uid) nm &= ~ISVTX;
+		ip->i_mode = (ip->i_mode & IFMT) | nm;
 		ip->i_flag |= ICHG;
 		touched = 1;
 	}
@@ -1610,40 +1739,60 @@ do_wstat(struct conn *c, p9_u32 tag, struct p9buf *in)
 	 * all-ones has no spelling in a string field.
 	 */
 	if (st.s_uid[0] != '\0') {
+		short v;
+
 		if (!suser()) { rerror(c, tag, EPERM); return; }
-		ip->i_uid = (short)atoi(st.s_uid);
+		if (wuid(st.s_uid, &v)) { rerror(c, tag, EINVAL); return; }
+		ip->i_uid = v;
 		ip->i_flag |= ICHG;
 		touched = 1;
 	}
 	if (st.s_gid[0] != '\0') {
+		short v;
+
 		if (!suser()) { rerror(c, tag, EPERM); return; }
-		ip->i_gid = (short)atoi(st.s_gid);
+		if (wuid(st.s_gid, &v)) { rerror(c, tag, EINVAL); return; }
+		ip->i_gid = v;
 		ip->i_flag |= ICHG;
 		touched = 1;
 	}
-	if (st.s_mtime != (p9_u32)~0U) {
+	/*
+	 * THE TWO TIMES ARE ONE ARM, because iupdat is one call.
+	 *
+	 * utime(2) IS THE ONLY WAY TO SET A TIME TO SOMETHING OTHER THAN NOW,
+	 * and it must go through iupdat with explicit ta/tm rather than through
+	 * the IACC/IUPD flags alone -- a flag means "stamp it with the clock"
+	 * and this is the opposite request.  iupdat writes di_atime when IACC
+	 * is set and di_mtime when IUPD is set (iget.c:272-275), and there is no
+	 * way to ask it for one of the two; so the field the client did NOT send
+	 * is re-written with the value already on the disk, which is a no-op
+	 * write rather than a silent change.  itimes() is the read half and was
+	 * already here for Tstat.
+	 *
+	 * ICHG GOES WITH THEM, and this arm used not to set it.  sys4.c:536 is
+	 * `ip->i_flag |= IACC|IUPD|ICHG' -- all three -- and the comment four
+	 * lines above it, "Can't set ICHG", means the CALLER cannot choose a
+	 * ctime, not that ctime stays put: iupdat stamps it from the clock.  So
+	 * a V7 utime moves ctime and this arm did not.  Invisible over the wire,
+	 * because 9P's stat has no third time and p9tostat reports ctime as
+	 * mtime, and visible in the image to anything that reads di_ctime.
+	 *
+	 * waitfor IS 1 HERE AND 0 UPSTREAM (sys4.c:537).  Kept, and the
+	 * difference is a write-scheduling hint rather than a semantic: bwrite
+	 * puts the block out now, bdwrite marks it delayed and the poll loop's
+	 * update() flushes it before the next message is read.  The one thing
+	 * bwrite can do that bdwrite cannot is report an I/O error to this
+	 * caller, and there is no path here that could act on one.
+	 */
+	if (st.s_atime != (p9_u32)~0U || st.s_mtime != (p9_u32)~0U) {
 		p9_u32 oat, omt;
 		time_t at, mt;
 
-		if (!suser()) { rerror(c, tag, EPERM); return; }
-		/*
-		 * utime(2) IS THE ONLY WAY TO SET A TIME TO SOMETHING OTHER
-		 * THAN NOW, and it must go through iupdat with explicit ta/tm
-		 * rather than through the IUPD flag -- IUPD means "stamp it
-		 * with the clock" and this is the opposite request.
-		 *
-		 * THE ATIME ARGUMENT IS THE ONE ALREADY ON THE DISK, because
-		 * iupdat writes BOTH whenever both flags are set and there is
-		 * no way to ask it for one.  Setting IACC with `time' in ta
-		 * would move atime to now as a side effect of setting mtime,
-		 * which is a change nobody asked for and which no reader could
-		 * attribute.  itimes() is the read half of iupdat and is
-		 * already here for Tstat.
-		 */
+		if (!wowner(ip)) { rerror(c, tag, EPERM); return; }
 		itimes(ip, &oat, &omt);
-		at = (time_t)oat;
-		mt = (time_t)st.s_mtime;
-		ip->i_flag |= IACC | IUPD;
+		at = (time_t)(st.s_atime != (p9_u32)~0U ? st.s_atime : oat);
+		mt = (time_t)(st.s_mtime != (p9_u32)~0U ? st.s_mtime : omt);
+		ip->i_flag |= IACC | IUPD | ICHG;
 		iupdat(ip, &at, &mt, 1);
 		touched = 1;
 	}
@@ -1806,8 +1955,6 @@ do_stat(struct conn *c, p9_u32 tag, struct p9buf *in)
 	struct fid *f;
 	struct p9stat st;
 	p9_u32 fid = p9_g32(in);
-	unsigned char *outer;
-	long n;
 
 	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
 	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
@@ -1815,19 +1962,13 @@ do_stat(struct conn *c, p9_u32 tag, struct p9buf *in)
 	statof(f->f_ip, f->f_name, &st);
 	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rstat, tag);
 	/*
-	 * THE OUTER COUNT, which is 9P2000's one real wart: the message field
-	 * is stat[n] and the bytes inside it start with the structure's own
-	 * size[2].  The two differ by exactly two.  p9_pstat writes the inner
-	 * one; this writes the outer, and it is patched afterwards for the
-	 * same reason the inner one is.
+	 * THE OUTER COUNT is 9P2000's one real wart -- stat[n] whose n bytes
+	 * open with the structure's own size[2] -- and it used to be eight
+	 * hand-rolled lines here.  It moved into p9_pstatw() when the client
+	 * grew a Twstat and would otherwise have written the second copy.
 	 */
-	outer = b.b_p;
-	p9_p16(&b, 0);
-	p9_pstat(&b, &st);
+	p9_pstatw(&b, &st);
 	if (!p9_ok(&b)) { rerror(c, tag, EIO); return; }
-	n = (b.b_p - outer) - 2;
-	outer[0] = (unsigned char)(n & 0xff);
-	outer[1] = (unsigned char)((n >> 8) & 0xff);
 	reply(c, &b);
 }
 

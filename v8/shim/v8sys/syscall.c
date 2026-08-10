@@ -444,35 +444,48 @@ mkpath(char *p)
 }
 
 /*
- * FOURTEEN SYSCALLS HAVE NO SLOT IN struct v8fstyp, AND THEY ARE PASSTHROUGH
- * BY CONSTRUCTION.  (This said ELEVEN, and an auditor counted: NINE refuse
- * with the macro below -- link, mknod, unlink, chmod, chown, mkdir, rmdir,
- * symlink, utime, which is ten MOUNTED() calls because link guards both its
- * names -- plus access, readlink and chdir, which answer instead; and the
- * enumeration had missed v8s_chroot, which passes its path completely
- * unresolved, mounted or not, and v8s_execve.  Counting names while describing
- * calls is a shape this repo has recorded before.)  That was invisible while every type answered out of $V8ROOT --
- * a chmod on a /proc path was wrong, but it was wrong about a file in the
- * jail.  With a mount in another process it stops being containable: the path
- * reaches the host verbatim (rootpath leaves it alone, and says why), so
- * `rm /mnt/x' asks the Mac to unlink /mnt/x.  There is no /mnt on this
- * machine, which is luck and not a design.
+ * FOURTEEN SYSCALLS HAD NO SLOT IN struct v8fstyp AND WERE PASSTHROUGH BY
+ * CONSTRUCTION.  Nine of the fourteen have slots now; this is the standing
+ * account of where the other five went, and the count has been wrong twice, so
+ * it is written as a classification rather than as a number.
  *
- * SO THEY REFUSE, ONE LINE EACH, RATHER THAN BEING GIVEN SLOTS.  A slot is a
- * claim that the operation is implemented; EROFS is the truth, and it is the
- * truth for the right reason -- the server answers EROFS to Twrite, Tcreate,
- * Tremove and Twstat today, so a mutating operation on a mount has exactly one
- * answer and this is it.  When §8a step 5f makes the server writable these
- * become slots, and the guard is what will fail loudly if one is forgotten.
+ * WHY IT MATTERS AT ALL.  A slotless mutating call resolves a mounted path
+ * through rootpath(), which leaves such a path alone and says why -- so it
+ * reaches the host VERBATIM, and `rm /mnt/x' asks the Mac to unlink /mnt/x.
+ * That was containable while every type answered out of $V8ROOT: a chmod on a
+ * /proc path was wrong, but it was wrong about a file in the jail.  With a
+ * mount in another process it is not.  There is no /mnt on this machine, which
+ * is luck and not a design -- and a case that leaned on it passed for the
+ * wrong reason until it was rewritten over a directory the host really has.
  *
- * THE THREE READERS ARE NOT IN THE LIST, because EROFS would be a lie about a
- * question that has a real answer.  access() is implemented below over t_stat;
- * readlink() is EINVAL, which is what readlink(2) says about a file that is
- * not a symbolic link, and a V7 image contains no other kind; chdir() refuses
- * with EACCES, and its comment says why that is a refusal rather than a gap.
- * (This paragraph used to call chdir "ENOTDIR-or-worse", which was the wrong
- * half of its own sentence: nothing errored at all, and an auditor walked
- * straight out of the jail through it.)
+ * TWO STILL REFUSE with the macro below -- link and symlink -- and that is
+ * THREE MOUNTED() calls, because link guards both of its names.  (Counting
+ * names while describing calls is a shape this repo has recorded more than
+ * once, including in this very paragraph, so both numbers are here.)  Neither
+ * is deferred work: 9P2000 has no message for either, .u is what added one and
+ * PLAN.md §8a rules .u out, and a V7 image holds no symlink to read back.
+ *
+ * SEVEN ANSWER THROUGH A SLOT, and mknod is an eighth with one arm in each
+ * camp.  §8a step 5f gave access, unlink, mkdir and rmdir one, along with
+ * mknod's DIRECTORY arm; §8a step 5f-b adds chmod, chown and utime, which are
+ * one Twstat between them.  The rule the sequence obeys is that a slot is a
+ * CLAIM the operation is implemented -- so EROFS was the truth while the
+ * server refused every write, and became a lie the day it stopped, which is
+ * why these arrived in two steps rather than being stubbed early.
+ *
+ * THREE ANSWER WITHOUT A SLOT, because EROFS would be a lie about a question
+ * with a real answer: readlink() is EINVAL, which is what readlink(2) says
+ * about a file that is not a symbolic link, and a V7 image contains no other
+ * kind; chdir() refuses with EACCES, and its comment says why that is a
+ * refusal rather than a gap; and mknod's DEVICE arm is EPERM, which 5f-b
+ * changed from EROFS so that the two worlds give one answer -- see the note
+ * there for why EPERM is the true one.  (This paragraph used to call chdir
+ * "ENOTDIR-or-worse", which was the wrong half of its own sentence: nothing
+ * errored at all, and an auditor walked straight out of the jail through it.)
+ *
+ * AND TWO ARE THEIR OWN QUESTIONS, both missed by the first enumeration:
+ * v8s_chroot, which passes its path completely unresolved whether or not it is
+ * mounted, and v8s_execve.
  */
 int v8s_getuid(void);
 int v8s_getgid(void);
@@ -638,13 +651,23 @@ int v8s_mknod(char *p, int mode, int dev)
 	 * would name a driver on a machine that does not exist.  9P2000 has no
 	 * message for one either -- the .u extension added it, and PLAN.md §8a
 	 * rules .u out.  The refusal is the same one the host arm gives.
+	 *
+	 * AND THAT LAST SENTENCE WAS FALSE UNTIL §8a step 5f-b, which is what
+	 * made it true rather than correcting it.  A MOUNTED(p) stood here, so
+	 * the mounted answer was EROFS and the host answer EPERM -- two words
+	 * for one refusal, and the wrong one of the two: EROFS says the
+	 * filesystem will not take writes, which stopped being true in 5f,
+	 * where EPERM says the operation is meaningless, which is the actual
+	 * reason and is true of both worlds.  The macro could go because this
+	 * arm never touches the path: it sets errno and returns, so there was
+	 * nothing for the guard to contain.  procfs.c's three new slots record
+	 * the same distinction from the other side.
 	 */
 	if ((mode & 0170000) == 0040000) {
 		struct v8fstyp *t = FSFOR(p);
 
 		return (t->t_mkdir(t->t_path(p, V8P_MAKE), mode & 07777));
 	}
-	MOUNTED(p);
 	v8_errno = v8sys_errno(EPERM);
 	return (-1);
 }
@@ -746,8 +769,32 @@ int v8s_chdir(char *p)
 	if (v8fs_mounted(p)) { v8_errno = V8_EACCES; return (-1); }
 	RET(rawsys1(SYS_chdir, (long)vpath(p)));
 }
-int v8s_chmod(char *p, int m)            { MOUNTED(p); RET(rawsys2(SYS_chmod, (long)vpath(p), m)); }
-int v8s_chown(char *p, int u, int g)     { MOUNTED(p); RET(rawsys3(SYS_chown, (long)vpath(p), u, g)); }
+/*
+ * chmod AND chown ARE SLOTS NOW, §8a step 5f-b, and so is utime a thousand
+ * lines below.  All three were MOUNTED() -- a flat EROFS on any mounted path --
+ * and that refusal was honest for exactly as long as the server refused every
+ * write.  From 5f it was a lie about a writable filesystem; this is the step
+ * that stops telling it.
+ *
+ * ONE Twstat ANSWERS ALL THREE, so the three slots below are three spellings
+ * of one message rather than three protocol additions.  p9cl.c has the shape.
+ *
+ * V8P_LOOK FOR ALL OF THEM, because every one names a file that must already
+ * exist -- there is no creating form of chmod.  v8s_mkdir is the contrast, and
+ * it is four lines up.
+ */
+int v8s_chmod(char *p, int m)
+{
+	struct v8fstyp *t = FSFOR(p);
+
+	return (t->t_chmod(t->t_path(p, V8P_LOOK), m));
+}
+int v8s_chown(char *p, int u, int g)
+{
+	struct v8fstyp *t = FSFOR(p);
+
+	return (t->t_chown(t->t_path(p, V8P_LOOK), u, g));
+}
 int v8s_fchmod(int f, int m)             { RET(rawsys2(SYS_fchmod, f, m)); }
 int v8s_fchown(int f, int u, int g)      { RET(rawsys3(SYS_fchown, f, u, g)); }
 /*
@@ -1632,20 +1679,23 @@ int v8s_wait3(int *status, int options, void *rusage)
 int
 v8s_utime(char *p, long *tv)
 {
-	struct { long sec, usec; } t[2];
+	struct v8fstyp *t = FSFOR(p);
 
-	MOUNTED(p);
 	/*
-	 * ONE vpath, NOT TWO, and that is the aliasing trap v8s_link records:
-	 * rootpath() returns a pointer into its own static buffer, so a second
-	 * call would overwrite the first's answer.  See v8s_readlink above for
-	 * why this had none at all.
+	 * A SLOT SINCE §8a step 5f-b -- see v8s_chmod for why the MOUNTED()
+	 * that stood here had to go.  What used to be in this function is the
+	 * timeval conversion, and it moved into vfs.c's pt_utime unchanged: it
+	 * was always passthrough's business rather than the dispatcher's, in
+	 * exactly the way ioctl.c's sgtty translation was.
+	 *
+	 * THE ALIASING TRAP IS GONE WITH IT and is worth recording because it
+	 * was the reason this function had a body.  rootpath() returns a
+	 * pointer into its own static buffer, so two calls in one expression
+	 * silently give you the same string twice -- v8s_link records it.  A
+	 * single t_path() call cannot have the problem, which is a property of
+	 * the dispatch shape and not a thing anyone has to remember here.
 	 */
-	p = vpath(p);
-	if (tv == 0) RET(rawsys2(SYS_utimes, (long)p, 0));
-	t[0].sec = tv[0]; t[0].usec = 0;
-	t[1].sec = tv[1]; t[1].usec = 0;
-	RET(rawsys2(SYS_utimes, (long)p, (long)t));
+	return (t->t_utime(t->t_path(p, V8P_LOOK), tv));
 }
 
 int

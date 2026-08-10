@@ -159,6 +159,109 @@ qtype_of(p9_u32 fid)
 	}
 }
 
+/* The uid string out of a Tstat on `fid', or "?" if the stat failed. */
+static const char *
+uid_of(p9_u32 fid)
+{
+	static struct p9stat s;
+
+	begin(P9_Tstat);
+	p9_p32(&tb, fid);
+	if (xact() != P9_Rstat) return ("?");
+	(void)p9_g16(&rb);			/* the outer count */
+	if (p9_gstat(&rb, &s) < 0) return ("?");
+	return (s.s_uid);
+}
+
+/*
+ * Send a Twstat on `fid' whose only non-sentinel field is the owner, and
+ * return the reply type.  p9_nostat is what makes it "only" -- every other
+ * field goes out as all ones, which is 9P's "do not touch".
+ */
+static int
+wstat_uid(p9_u32 fid, const char *uid)
+{
+	struct p9stat s;
+
+	p9_nostat(&s);
+	strncpy(s.s_uid, uid, sizeof s.s_uid - 1);
+	begin(P9_Twstat);
+	p9_p32(&tb, fid);
+	p9_pstatw(&tb, &s);
+	return (xact());
+}
+
+/*
+ * -w: THE WRITE SUITE, and it exists for one guard that no V8 program can
+ * reach.  9P2000 specifies a stat's owner as a NAME; this server sends and
+ * takes a decimal number, because turning one into the other means reading a
+ * passwd file and there are two here with no principled way to choose.  So the
+ * question "what does this server do with an owner it cannot parse?" can only
+ * be asked over the wire -- p9_t_chown, the only client caller of Twstat, is
+ * incapable of sending a name because it formats an int.
+ *
+ * IT WAS atoi(), WHICH HAS NO ERROR RETURN.  Measured before the fix:
+ * "nobody" and "--" both set the owner to 0 and got an Rwstat back, and "12x"
+ * set it to 12.  0 is root, and root is the identity fio.c:193 lets bypass
+ * every permission check on the image -- so an unparseable owner was not a
+ * wrong answer, it was a privilege grant, with a success reply.  The reading
+ * end of this same wire had had the guard since an earlier audit; the writing
+ * end, written an hour before this, did not.
+ *
+ * A REFUSAL IS ONLY HALF THE CASE.  Each rejected string is followed by a
+ * reading of the owner, because a wstat that refused AFTER assigning would
+ * satisfy a reply-only assertion perfectly.
+ */
+static void
+writecases(void)
+{
+	char *w1[1];
+
+	w1[0] = "hello";
+	if (walk(1, 1, w1) != 1) { fprintf(stderr, "p9probe -w: no hello\n"); exit(2); }
+
+	printf("w-uid-before %s\n", uid_of(1));
+
+	printf("w-uid-name %s\n", errname(wstat_uid(1, "nobody")));
+	printf("w-uid-name-unchanged %s\n", uid_of(1));
+	printf("w-uid-dashes %s\n", errname(wstat_uid(1, "--")));
+	printf("w-uid-trailing %s\n", errname(wstat_uid(1, "12x")));
+	printf("w-uid-trailing-unchanged %s\n", uid_of(1));
+
+	/* ...and a number still works, or the guard is just a refusal. */
+	printf("w-uid-number %d\n", wstat_uid(1, "7") == P9_Rwstat);
+	printf("w-uid-number-took %s\n", uid_of(1));
+
+	/*
+	 * A NEGATIVE IS A NUMBER THIS SERVER ITSELF EMITS.  statof renders
+	 * i_uid with "%d" of a signed short, so an image whose proto gave a
+	 * file uid 40000 reads back as "-25536" -- and a guard that refused
+	 * every '-' would refuse to accept a value it had just handed out.
+	 */
+	printf("w-uid-negative %d\n", wstat_uid(1, "-3") == P9_Rwstat);
+	printf("w-uid-negative-took %s\n", uid_of(1));
+
+	/* Put it back, so the section's own round-trip accounting still holds. */
+	(void)wstat_uid(1, "0");
+	printf("w-uid-restored %s\n", uid_of(1));
+
+	/*
+	 * AN ALL-ONES wstat TOUCHES NOTHING AND IS NOT AN ERROR -- 9P uses it
+	 * as "sync me".  The case is here because do_wstat's `touched'
+	 * bookkeeping has an arm for it that nothing else reaches.
+	 */
+	{
+		struct p9stat s;
+
+		p9_nostat(&s);
+		begin(P9_Twstat);
+		p9_p32(&tb, 1);
+		p9_pstatw(&tb, &s);
+		printf("w-sync %d\n", xact() == P9_Rwstat);
+	}
+	printf("w-alive %s\n", uid_of(1));
+}
+
 static int
 dial(const char *path)
 {
@@ -181,13 +284,27 @@ main(int argc, char **argv)
 	long total, got;
 	FILE *save;
 
-	if (argc != 3) {
-		fprintf(stderr, "usage: p9probe socket readback\n");
+	if (argc != 3 && !(argc == 4 && strcmp(argv[3], "-w") == 0)) {
+		fprintf(stderr, "usage: p9probe socket readback [-w]\n");
 		return (2);
 	}
 	fd = dial(argv[1]);
 
 	attach();
+
+	/*
+	 * -w IS A SEPARATE SUITE RATHER THAN MORE CASES, because it needs a
+	 * WRITABLE server and everything below needs a read-only one.  The
+	 * suite runs the read-only server first and asserts against an image
+	 * it can prove is byte-identical afterwards; running these cases there
+	 * would get EROFS out of do_wstat's mntronly arm, three tests before
+	 * the guard they exist for.
+	 */
+	if (argc == 4) {
+		writecases();
+		close(fd);
+		return (0);
+	}
 
 	/* ---------------------------------------------------- walking */
 

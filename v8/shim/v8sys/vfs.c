@@ -389,6 +389,39 @@ pt_mkdir(char *rp, int mode)
 	RET(rawsys2(SYS_mkdir, (long)rp, mode & 07777));
 }
 
+static int
+pt_chmod(char *rp, int mode)
+{
+	RET(rawsys2(SYS_chmod, (long)rp, mode));
+}
+
+static int
+pt_chown(char *rp, int uid, int gid)
+{
+	RET(rawsys3(SYS_chown, (long)rp, uid, gid));
+}
+
+/*
+ * pt_utime.  The conversion from V7's time_t[2] to the host's two timevals is
+ * the body of what v8s_utime used to be, moved here unchanged -- it is
+ * passthrough's business and not the dispatcher's, which is the same move
+ * ioctl.c's sgtty translation made when t_ioctl arrived.
+ *
+ * A NULL tv IS "NOW", which is macOS's reading of a null timeval pointer and
+ * not a VAX's -- see the long note beside p9_t_utime, which reproduces this
+ * answer rather than the 1985 one so that the two types agree.
+ */
+static int
+pt_utime(char *rp, long *tv)
+{
+	struct { long sec, usec; } t[2];
+
+	if (tv == 0) RET(rawsys2(SYS_utimes, (long)rp, 0));
+	t[0].sec = tv[0]; t[0].usec = 0;
+	t[1].sec = tv[1]; t[1].usec = 0;
+	RET(rawsys2(SYS_utimes, (long)rp, (long)t));
+}
+
 struct v8fstyp v8fs_pass = {
 	"pass",
 	pt_path,
@@ -396,7 +429,8 @@ struct v8fstyp v8fs_pass = {
 	pt_read, pt_write, pt_seek,
 	v8sys_pt_stat, v8sys_pt_fstat,
 	v8sys_pt_ioctl,
-	pt_access, pt_remove, pt_mkdir
+	pt_access, pt_remove, pt_mkdir,
+	pt_chmod, pt_chown, pt_utime
 };
 
 /* ---------------------------------------------------------------- /dev/fd */
@@ -594,5 +628,6 @@ struct v8fstyp v8fs_fdfs = {
 	pt_read, pt_write, pt_seek,
 	fd_stat, v8sys_pt_fstat,
 	v8sys_pt_ioctl,
-	pt_access, pt_remove, pt_mkdir
+	pt_access, pt_remove, pt_mkdir,
+	pt_chmod, pt_chown, pt_utime
 };

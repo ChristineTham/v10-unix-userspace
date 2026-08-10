@@ -94,17 +94,35 @@ struct v8fstyp {
 	 * with no opinion has a spelling other than a wrong one.
 	 *
 	 * WHAT STILL HAS NO SLOT AFTER THIS, and why, so that the next step
-	 * inherits a list rather than a survey: chmod, chown and utime are one
-	 * Twstat away and are deferred only to keep this step reviewable; link
-	 * and symlink have no 9P2000 message at all and a V7 image holds no
-	 * symlink either; mknod for a device is meaningless on an image no
-	 * kernel will mount; chdir needs a working directory this shim does not
-	 * track; chroot and execve are the two the enumeration in syscall.c had
-	 * missed and are their own questions.
+	 * inherits a list rather than a survey: link and symlink have no 9P2000
+	 * message at all and a V7 image holds no symlink either; mknod for a
+	 * device is meaningless on an image no kernel will mount; chdir needs a
+	 * working directory this shim does not track; chroot and execve are the
+	 * two the enumeration in syscall.c had missed and are their own
+	 * questions.
 	 */
 	int   (*t_access)(char *rp, int mode);
 	int   (*t_remove)(char *rp, int isdir);
 	int   (*t_mkdir)(char *rp, int mode);
+
+	/*
+	 * THE THREE §8a STEP 5f-b ADDED, and they are ONE MESSAGE on the wire
+	 * even though they are three syscalls here.  9P's Twstat carries a whole
+	 * stat and the server applies whichever fields are not "do not touch",
+	 * so chmod is a wstat setting s_mode, chown one setting s_uid/s_gid, and
+	 * utime one setting s_atime/s_mtime.  The line above used to say they
+	 * were "one Twstat away and deferred only to keep this step reviewable";
+	 * this is that step.
+	 *
+	 * t_utime TAKES V7's OWN ARGUMENT, a time_t[2] of {atime, mtime} or a
+	 * null pointer, rather than something host-shaped.  That is deliberate:
+	 * mv.c:129 passes &st.st_atime and relies on the two fields being
+	 * adjacent, so the shape the caller uses is part of what has to be
+	 * reproduced, and each type converts for itself.
+	 */
+	int   (*t_chmod)(char *rp, int mode);
+	int   (*t_chown)(char *rp, int uid, int gid);
+	int   (*t_utime)(char *rp, long *tv);
 };
 
 /*

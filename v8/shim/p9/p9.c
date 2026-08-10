@@ -199,6 +199,69 @@ p9_pstat(struct p9buf *b, const struct p9stat *s)
 	sz[1] = (unsigned char)((n >> 8) & 0xff);
 }
 
+/*
+ * p9_pstatw -- a stat WITH the outer count in front of it.
+ *
+ * 9P2000's one real wart: the message field is stat[n], and the n bytes inside
+ * it open with the structure's OWN size[2].  The two counts differ by exactly
+ * two, and both have to be patched after the fact because neither length is
+ * known until the strings are encoded.  Tstat's reply and Twstat carry the
+ * wrapped form; a directory read carries bare stats concatenated with no outer
+ * count at all, which is why p9_pstat stays exported beside this.
+ *
+ * IT IS A FUNCTION BECAUSE THERE ARE NOW TWO CALL SITES.  The server's Rstat
+ * had these eight lines with a comment explaining the wart, and the client's
+ * Twstat would have been a second hand-rolled copy -- which is how the two ends
+ * of one protocol come to disagree by two bytes, and the disagreement decodes.
+ * The decode side already shows the shape: p9statfid and do_wstat each spend a
+ * bare p9_g16 on the outer count with a comment saying which one it is.
+ */
+void
+p9_pstatw(struct p9buf *b, const struct p9stat *s)
+{
+	unsigned char *outer = b->b_p;
+	long n;
+
+	p9_p16(b, 0);
+	p9_pstat(b, s);
+	if (b->b_bad) return;
+	n = (b->b_p - outer) - 2;
+	outer[0] = (unsigned char)(n & 0xff);
+	outer[1] = (unsigned char)((n >> 8) & 0xff);
+}
+
+/*
+ * p9_nostat -- the stat in which every field says DO NOT TOUCH.
+ *
+ * Twstat's rule is that a field the client does not mean to change is sent as
+ * all ones, so a wstat is built by starting from this and setting the one or
+ * two fields that are the request.  A server given a stat that was merely
+ * zeroed would read every field as meant and, as do_wstat's own header comment
+ * puts it, zero a file's mode every time somebody set its length.
+ *
+ * THE STRINGS ARE THE ASYMMETRY and they are why this is a function rather
+ * than a memset of 0xff: all-ones has no spelling in a string field, so the
+ * "do not touch" form for s_name, s_uid, s_gid and s_muid is the EMPTY string.
+ * Filling the struct with 0xff would send four 255-byte names.
+ */
+void
+p9_nostat(struct p9stat *s)
+{
+	long i;
+	char *q = (char *)s;
+
+	for (i = 0; i < (long)sizeof *s; i++) q[i] = 0;	/* the strings, and only they, stay */
+	s->s_type      = (p9_u16)~0U;
+	s->s_dev       = (p9_u32)~0U;
+	s->s_qid.q_type = (p9_u8)~0U;
+	s->s_qid.q_vers = (p9_u32)~0U;
+	s->s_qid.q_path = (p9_u64)~0ULL;
+	s->s_mode      = (p9_u32)~0U;
+	s->s_atime     = (p9_u32)~0U;
+	s->s_mtime     = (p9_u32)~0U;
+	s->s_length    = (p9_u64)~0ULL;
+}
+
 /* ------------------------------------------------------------------- get */
 
 p9_u32

@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2060 cases, 2059 on a host whose $TMPDIR
+make test             # all 17 suites (2085 cases, 2084 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -699,6 +699,92 @@ that generalise:
   iflg))` suppresses both the message and the error count. Both are correct rm.
   So the two obvious ways to run it agree on the one answer that means nothing.
   Assert the file.
+
+**AND §8a step 5f-b GAVE chmod, chown AND utime THEIR SLOTS, WHICH ARE ONE
+MESSAGE — leaving only `link` and `symlink` refusing.** A Twstat carries a whole
+stat and the server applies whichever fields are not the all-ones sentinel. Five
+things generalise, and three are about a sentence rather than about code:
+
+- **"NOTHING SETS X ALONE" IS NOT "NOTHING SETS X", and the difference is the
+  whole of a missing arm.** `s_atime` was declined with a reason that is still
+  true — *"nothing in this world sets atime alone, and an unexercised arm is a
+  claim nothing can check"* — and the consumer that arrived sets **both**.
+  `mv.c:129` is `utime(target, &s1.st_atime)`, and on a mount it is not an
+  unusual path but the **only** path, because `link(2)` has no slot and is
+  refused, so mv always falls through to fork, `/bin/cp` and utime. Before the
+  arm, `mv` on a mount copied and unlinked correctly and lost both timestamps
+  silently. This is the unexercised-rule shape with a **qualifier** doing the
+  damage: only the unqualified claim would have been a reason.
+- **THE TWO ENDS OF ONE WIRE, AN HOUR APART, AND ONLY THE READING END HAD THE
+  GUARD.** `do_wstat` parsed a 9P owner with `atoi`, which has no error return,
+  so `"nobody"` and `"--"` both set the inode's uid to **0 — root**, the one
+  identity `fio.c:193` lets bypass every permission check, and answered Rwstat.
+  The *client* end of the same field had had the guard since an earlier audit,
+  with the contract written beside it: root maps to root, non-root never maps to
+  root. Plain 9P2000 specifies the field as a **name**, so a conforming foreign
+  client sends one. Two properties, and only the second is guarded: **range is
+  not parseability** — `"65536"` truncates and must, because `sys4.c:294` is
+  `ip->i_uid = uap->uid` unchecked and that is V7's own answer. Nothing could
+  have caught it: `do_wstat` had no client caller until the step that added one.
+- **A COMMENT CAN CLAIM UPSTREAM'S RULE WHILE THE CODE BESIDE IT IMPLEMENTS A
+  DIFFERENT ONE, AND A UNIFORM VALUE HIDES BOTH.** `chmod` and `utime` gate on
+  `owner(1)` — `fio.c:215-228`, ownership **or** superuser — and the code tested
+  `suser()` alone while the comment said "ownership for everything else" and
+  cited `sys3.c`, which is `fsmount`. Not observable, because `u_uid` is 0 here
+  so both rules always permit; that is precisely why the sentence and the line
+  could disagree for a whole step. Two more of the same shape sat with it:
+  upstream strips ISVTX for a non-root chmod, and upstream's `utime` sets
+  `IACC|IUPD|ICHG` where the arm set two of three. **Read the syscall, not the
+  memory of it** — and note the comment "Can't set ICHG" means the caller cannot
+  *choose* a ctime, not that ctime stays put.
+- **EROFS IS A CLAIM ABOUT THE MEDIUM AND EPERM IS A CLAIM ABOUT THE OPERATION,
+  and one of them stopped being true.** `v8s_mknod`'s device arm said "the
+  refusal is the same one the host arm gives" and it was not: a `MOUNTED(p)` made
+  the mounted answer EROFS and the host answer EPERM. Since 5f the filesystem
+  takes writes, so EROFS is false there and EPERM — this operation is meaningless
+  — is true of both worlds. The guard could go because that arm never touches the
+  path. `/proc`'s three new slots record it from the other side: EPERM, because
+  `/proc` very much does take writes and it is these three operations that mean
+  nothing there.
+- **FOUR DEAD DECLARATIONS SHARED A LINE WITH TWO LIVE ONES, directly under the
+  paragraph forbidding them.** `int iinit(), binit(), bhinit(), ihinit(),
+  update(), brelse();` sat below "a declaration with no call site is an
+  unconsumed component"; only `update` and `brelse` have call sites. The one that
+  mattered is `iinit`, which **5f itself had changed** to `void iinit(int ronly)`
+  while the declaration still said `int iinit()`. Deleted rather than corrected:
+  the fix for an unconsumed declaration is not a better declaration. A mixed line
+  is how the dead ones keep cover.
+
+**AND THE MUTATION RULES GAINED TWO, BOTH FROM THE HARNESS RATHER THAN THE
+CODE.** The existing entries cover the restore side; these are new:
+
+- **THE SAME-SECOND TRAP HAS AN *APPLY* SIDE.** The previous mutation's restore
+  rebuild finished in the same second the next mutation was written, so `make`
+  declared the artefact current and two runs measured nothing. They were caught
+  only by the harness's own artefact-hash check, which is the difference between
+  "did not rebuild" and a false "the guard did not fire". Sleep and re-`touch`
+  **after writing the mutation**, not only after restoring it. And when the
+  artefact is a linked binary rather than an object, **measure its determinism
+  first** — two builds of identical source, identical hash — before trusting it
+  as the check; `v8fsd` passes, `ar` archives famously do not.
+- **A CASE CAN BE VACUOUS FOR TWO INDEPENDENT REASONS, so finding one is not
+  finishing.** "chmod cannot change the file type" survived every mutation
+  because `ls` pre-sets `ftype` to `-` at `ls.c:336` and the switch at `:354`
+  has **no `default` arm** to overwrite it, so a mode that lost its type bits
+  entirely still prints as a plain file — **and** `p9tostat` rebuilds the type
+  from `DMDIR` rather than
+  passing the server's `IFMT` through, so `ls` on a mount cannot see the
+  server's mode word at all. Fixing either alone would have left it green. The
+  observable is a **directory**, because `statof` sets DMDIR from
+  `(i_mode & IFMT) == IFDIR`.
+- **AND A CONTAINMENT CASE CAN SURVIVE A STEP BY TESTING A BETTER PROPERTY.**
+  "chmod through a mount does not reach the host" was written when chmod had no
+  slot and the guard was the refusal. chmod is a slot now and the call goes to
+  the server — and what the case asserts is the thing that always mattered: *a
+  mounted path never reaches the host's chmod.* Do not delete such a case as
+  stale; re-derive what it discriminates and **measure that** (revert the
+  dispatch to `rawsys2(SYS_chmod, vpath(p), m)` and it fires). Only the comment
+  was wrong.
 
 ## Architecture: three layers, three different rules
 

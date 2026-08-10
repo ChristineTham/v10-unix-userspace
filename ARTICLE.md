@@ -2220,6 +2220,120 @@ seven writes through one descriptor, and the second one lands on top of the
 first.
 
 
+### Three syscalls that are one message
+
+`chmod`, `chown` and `utime` were the last of the fourteen path-taking calls
+with a 9P answer, and they turned out to be a single message. 9P's `Twstat`
+carries an entire `stat` structure, and the rule is that any field the client
+does not mean to change is sent as all ones — so a chmod is a wstat that sets
+the mode, a chown one that sets the owner, and a utime one that sets the times.
+Three syscalls, one wire format, three different fields filled in. What is left
+refusing a mounted path is `link` and `symlink`, and neither is deferred work:
+9P2000 has no message for either, and a V7 image holds no symbolic link to read
+back.
+
+The server had already had a `Twstat` handler for a step. It had never been
+called. And reading Bell Labs' own `chmod`, `chown` and `utime` before writing
+the client half found that three of its arms disagreed with them — in each case
+with a comment directly above claiming the rule the code did not implement.
+`chmod` and `utime` gate on `owner()`, which is *ownership or superuser*, and
+the code tested superuser alone while the comment said "ownership for
+everything else". It cited the wrong file, too. None of it was observable,
+because the server runs as uid 0 and both rules therefore always permit — which
+is exactly why the sentence and the line could disagree for a whole step
+without anything going red.
+
+The missing arm is the more interesting one, because it had been declined on
+purpose and the reason given was true. The server honoured the modification
+time and not the access time, and the note said: *nothing in this world sets
+atime alone, and an unexercised arm is a claim nothing can check.* Still true.
+It simply never covered the case that turned up. `mv` sets **both** — line 129
+of `mv.c` is `utime(target, &s1.st_atime)`, which takes the address of one
+field of a `struct stat` and relies on the next field being adjacent to pass a
+two-element array — and on a mount that line is not an unusual path but the
+only path, because `link` is refused, so `mv` always falls through to forking
+`/bin/cp` and then stamping the copy. Declining an arm because nothing sets a
+field *alone* is a different claim from nothing setting it at all, and only the
+second one would have been a reason. Before the arm existed, moving a file
+within a mount copied it correctly, removed the original correctly, and lost
+both timestamps without a word.
+
+Testing that needed a moment's thought about the instrument. `ls -l` prints
+minutes for a recent file, and the test writes and reads within the same
+second, so a comparison of "before" and "after" could not distinguish a working
+`utime` from a broken one. `ls -l` prints a *year* for an old file. Giving the
+source file a 1991 date makes the difference one the instrument can actually
+show — the same lesson, in a different key, as the earlier discovery that a
+minute-granular listing could not see the clock start moving.
+
+### The two ends of one wire, an hour apart
+
+The auditor ran on this the hour it was written, for the fifth consecutive
+unit, and its best finding was in the code I had just made reachable.
+
+9P specifies a file's owner as a *name*. This server sends a number, and says
+why: turning an inode's numeric owner into a login name means reading a
+password file, and there are two of them here with no principled way to choose.
+So `statof` writes `"0"`, and the handler read it back with `atoi`.
+
+`atoi` has no error return. `atoi("nobody")` is 0, and so is `atoi("0")`. The
+auditor drove a real server with a raw client and measured it: an owner of
+`"nobody"` set the file's uid to 0 and the server replied with a success. So
+did `"--"`. `"12x"` set it to 12. And 0 is root — the one identity the kernel's
+`access()` bypasses entirely.
+
+What makes it worth writing down is not the bug but where the guard already
+was. The *client* end of this same field had been given exactly this check by
+an earlier audit, with the contract spelled out beside it: root maps to root,
+and non-root never maps to root. The reading end had it. The writing end,
+added an hour before, did not. This project's most repeated shape is "the fix
+landed on one line and the line beside it kept the assumption"; this is that
+shape with a process boundary and a protocol in between.
+
+The fix has to separate two properties that look like one. `"65536"` is
+accepted, and truncates to 0 — because that is V7's own answer, `ip->i_uid =
+uap->uid`, an `int` assigned into a `short` with no check. A string V7 could
+have produced keeps V7's behaviour. A string it could not produce is refused.
+Range is not parseability.
+
+And nothing could have caught it, which is the reason it existed: the handler
+had no caller until the step that added one. The test for it is a new mode in
+the wire-level probe, because no V8 program can reach it — the client formats
+an integer and is structurally incapable of sending a name. Only a foreign
+client, or a probe, can ask the question.
+
+### A case that was vacuous twice over
+
+Eight mutations, eight fire — but only after mutation testing revealed that one
+of the new cases asserted nothing at all.
+
+The case was "chmod cannot change a file's type", and it survived every attempt
+to break the code it was supposed to guard. The first reason is that `ls`
+chooses its type character with a `switch` whose default is `-`, so a mode word
+that had lost its type bits *entirely* still prints as an ordinary file. The
+second, discovered while fixing the first, is that the client reconstructs the
+type from a single protocol flag rather than passing the server's mode word
+through — so `ls` on a mount cannot see that field even in principle. Either
+reason alone would have kept the case green after the other was fixed.
+
+The type is observable on a **directory**, because the flag the client trusts
+is itself derived from the server's type bits. Re-aimed at a directory, the
+case fires — along with all five independent checkers, which is the other
+lesson repeating: `icheck`, `dcheck` and `fsck` know nothing about 9P, and they
+caught this before the re-aimed case did.
+
+The mutation harness contributed a finding of its own, in the same family as
+several before it. This project has a documented rule that a mutation run must
+`touch` the source after restoring it, because the whole cycle can finish
+inside one second and `make` compares timestamps at whole-second granularity.
+That rule covers the *restore*. It does not cover the *apply*: the previous
+mutation's restore-rebuild finished in the same second the next mutation was
+written, `make` declared the binary current, and two runs measured a program
+that had never been changed. They were caught only because the harness hashes
+the artefact and checks it moved — which is the difference between "the
+mutation did not compile" and a comfortable, false "the guard did not fire".
+
+
 ## What is left
 
 Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix

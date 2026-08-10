@@ -314,6 +314,8 @@ void	p9_pstr(struct p9buf *b, const char *s);
 void	p9_pdata(struct p9buf *b, const void *p, long n);
 void	p9_pqid(struct p9buf *b, const struct p9qid *q);
 void	p9_pstat(struct p9buf *b, const struct p9stat *s);
+void	p9_pstatw(struct p9buf *b, const struct p9stat *s);	/* + the outer count */
+void	p9_nostat(struct p9stat *s);				/* every field "do not touch" */
 
 p9_u32	p9_g8(struct p9buf *b);
 p9_u32	p9_g16(struct p9buf *b);
