@@ -1271,6 +1271,21 @@ above `fsnami`. `conf/config_diff:11` settles it in one sentence —
 lists the files "changed a little to make names regular", `nami.c` among them.
 `dev/param.c` is a third instance, stale against `sys/param.c`.
 
+**AND IT IS BOTH NAMES IN THAT ROW, NOT ONE.** Row 0 is
+`{ 0,0,0,0,0,0,0,0, rnami, smount, 0 }`, and `smount` is defined nowhere either:
+the whole 18k-line kernel mentions it in **exactly two lines, both in
+`dev/conf.c`** — the `extern` and the table row. The live mount syscall is
+`fsmount()` at `sys3.c:273`, wired at `sysent.c:103` as call 21. So §8a step
+5e's costing, which had been carrying "`smount` is not imported" as an open
+question, was asking about a function that does not exist.
+
+Two things generalise. **A dead row goes stale in every column, so check them
+all** — finding one bad name is a reason to check its neighbours, not evidence
+that the rest are fine. And the sweep for it is a trap: `grep -rln 'smount'`
+returns four files, because **`fsmount` contains `smount`**. That is the
+instrument matching its own subject, one shape along from the `time(&` sweep
+that counted its own documentation. Use `[^a-z_]smount[^a-z_]|^smount`.
+
 **The live source is `conf/devices`**, which this file already cites for
 `ttyld` (`:75`) and `/dev/tty` (`:55`), and whose `:70-73` are the filesystem
 handlers. So the rule is sharper than "read the source": **when two upstream
