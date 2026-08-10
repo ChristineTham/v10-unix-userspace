@@ -1100,10 +1100,43 @@ jailed symlink whose target does not exist reads as absent and *every*
 operation on it falls through to the host. Not just the two above:
 `v8s_unlink` cannot remove one either, which is how it was found, when a case
 asserting the `readlink` limit left the link behind and broke the next run.
-Asserted rather than fixed (`tests/v8sys`, three cases), because the fix is
-`lstat` in the one function every path in the world goes through: it answers
-the question the union rule actually asks — *does the rootfs have this NAME* —
-and changes the answer for everything else `access` cannot see. Its own unit.
+**FIXED NOW, AND THE MEASUREMENT IS WHAT MADE IT SAFE TO TOUCH THE MOST
+LOAD-BEARING FUNCTION IN THE SHIM.** The predicate is a raw `lstat`, which
+answers the question the union rule actually asks — *does the rootfs have this
+NAME* — rather than "is there a reachable object at the end of it". Three
+things settled it, and none is an argument:
+
+- **The two predicates disagree on exactly FOUR shapes on this host, and every
+  one is "the last component is a symlink whose resolution fails"**: a dangling
+  absolute link (`ENOENT`), a dangling relative one (`ENOENT`), a loop
+  (`ELOOP`), and a link whose target is behind an unsearchable directory
+  (`EACCES`). Everywhere else they agree — a file behind `chmod 000` fails
+  *both*, because `lstat` needs search permission on the prefix too. So a fix
+  keyed on "access said ENOENT" would have covered half the class; keying on
+  the **question** covers all of it.
+- **The change is MONOTONE**, which is what bounds the blast radius: there is
+  no case where `access` succeeds and `lstat` fails, so the union can only ever
+  resolve *more* names into the jail, never fewer. (The candidate
+  counterexample is a trailing slash on a link to a *directory*, where `lstat`
+  follows; measured, both succeed.)
+- **`wavea`, `jail` and `kmemu` are unchanged at 124/128/146**, run before and
+  after — the diff the task asked for rather than a green run.
+
+**AND THE NOTE RECORDING THE FIX WAS WRONG ABOUT WHICH MODE CHANGES.** It said
+only `V8P_LOOK`, "because the parent case is a directory and cannot be a
+dangling link". Nothing stops it being one — and with `access` the parent then
+reads as absent, the path falls through, and `creat("/etc/x")` writes to the
+**Mac's** `/etc`. That is the escape direction, in the mode that exists to stop
+exactly it. Both modes changed.
+
+**AND THE CASE FOR THAT SECOND HALF WAS VACUOUS ON ITS FIRST DRAFT.** Written
+as a create, it stayed green with the predicate reverted, because this Mac has
+no `/usr/src` — so the create fails whichever world it lands in and the guard
+is indistinguishable from the absence. Same trap as `chmod 777 /mnt`. The fix
+is to assert the **resolution**: `v8sys_rootpath()` is not static, and whether
+it returns a `$V8ROOT`-prefixed path or the bare one *is* the behaviour that
+changed. No host directory required. Eight of eleven cases now fire on the
+revert.
 
 `v8s_execve` also interprets `#!` itself. The kernel would resolve a shebang
 against the real filesystem before the shim saw it, so every shell script ran

@@ -48,6 +48,10 @@ extern int v8sys_signo_to_host(int);
 extern int v8sys_signo_from_host(int);
 extern int v8sys_errno(int);
 extern v8_ino_t v8sys_fold_ino(unsigned long long);
+/* rootpath is asked DIRECTLY below: the union rule's answer is the
+ * behaviour under test, and a create cannot show it on a host that has
+ * no writable jailed prefix.  V8P_LOOK/V8P_MAKE come from vfs.h. */
+extern char *v8sys_rootpath(char *p, int mode);
 
 /*
  * The map v8sys_fold_ino() used to be, written out here because it is the
@@ -75,22 +79,49 @@ classicfold(unsigned long long ino)
 #define V8SIG_ALRM	14
 
 /*
- * Remove a path inside the jail using the HOST's unlink, for the one thing the
- * jail cannot remove itself.  A dangling symlink is invisible to rootpath()'s
- * access(2) existence test, so v8s_unlink cannot see it -- and a case that
- * asserts that limit would otherwise leave the link behind and break the NEXT
- * run, which is exactly what it did.  "Would this still pass on a tree that has
- * never been used?" has a mirror: would it still pass on a tree that has?
+ * Reach a path inside the jail WITHOUT the shim, by putting $V8ROOT in front of
+ * it by hand.
+ *
+ * hostrm() existed for the one thing the jail could not remove itself: a
+ * dangling symlink was invisible to rootpath()'s access(2) existence test, so
+ * v8s_unlink could not see it, and a case asserting that limit would leave the
+ * link behind and break the NEXT run -- which is exactly what it did.  ("Would
+ * this still pass on a tree that has never been used?" has a mirror: would it
+ * still pass on a tree that has?)
+ *
+ * The predicate is an lstat now and the jail can remove its own links, so
+ * hostrm is a belt-and-braces cleanup rather than the only way out.  hostexists
+ * is the half that earns its keep: it is the only way to tell "the shim removed
+ * the jail's link" from "the shim removed a link it made on the host at the
+ * bare path", and before the fix the second is what would have happened.
  */
+static int
+hostpath(char *out, long n, const char *jailpath)
+{
+	const char *root = getenv("V8ROOT");
+
+	if (root == 0 || *root == '\0') return (0);
+	snprintf(out, (size_t)n, "%s%s", root, jailpath);
+	return (1);
+}
+
 static void
 hostrm(const char *jailpath)
 {
 	char h[1024];
-	const char *root = getenv("V8ROOT");
 
-	if (root == 0 || *root == '\0') return;
-	snprintf(h, sizeof h, "%s%s", root, jailpath);
-	unlink(h);
+	if (hostpath(h, (long)sizeof h, jailpath)) unlink(h);
+}
+
+/* lstat, not access -- this helper has to see exactly what the fix is about. */
+static int
+hostexists(const char *jailpath)
+{
+	char h[1024];
+	struct stat sb;
+
+	if (!hostpath(h, (long)sizeof h, jailpath)) return (0);
+	return (lstat(h, &sb) == 0);
 }
 
 static int pass, fail;
@@ -1340,29 +1371,123 @@ main(void)
 		v8s_unlink(jl);
 
 		/*
-		 * A DANGLING SYMLINK CANNOT BE JAILED AT ALL, and this asserts
-		 * the limit rather than hiding it.  rootpath() decides whether
-		 * the rootfs has a name with `access(buf, 0)' -- and access(2)
-		 * FOLLOWS the link, so a symlink whose target does not exist
-		 * reads as absent and the path falls through to the host.
-		 * Every operation on such a link is affected, not just these
-		 * two: v8s_unlink cannot remove one either, which is how this
-		 * was found -- the first run of these cases left the link
-		 * behind and the next run failed to create it.
+		 * A DANGLING SYMLINK IS JAILED NOW, AND THESE CASES USED TO
+		 * ASSERT THE OPPOSITE.
 		 *
-		 * NOT FIXED HERE.  The fix is lstat instead of access in
-		 * rootpath, which is a change to the single most load-bearing
-		 * function in the shim: every path in the world goes through
-		 * it, and the union rule ("does the rootfs have this name")
-		 * would start answering differently for anything else access
-		 * cannot see.  Asserted so that a future fix has to change this
-		 * case on purpose.
+		 * rootpath() decided whether the rootfs had a name with
+		 * `access(buf, 0)', and access(2) FOLLOWS the last component --
+		 * so a symlink whose target does not exist read as ABSENT, the
+		 * path fell through unresolved, and every operation on it went
+		 * to the host.  It affected every syscall, not the two that
+		 * showed it: v8s_unlink could not remove one either, which is
+		 * how it was found, because the first run of these cases left
+		 * the link behind and broke the next one.
+		 *
+		 * The predicate is a raw lstat now, which answers the question
+		 * the union rule actually asks -- does the rootfs have this
+		 * NAME -- rather than "is there a reachable object at the end
+		 * of it".  Rewritten on purpose, which is what the old comment
+		 * asked a future fix to have to do.
 		 */
 		ok(v8s_symlink("no-such-target-anywhere", jl) == 0,
 		    "a DANGLING symlink can be created inside the jail");
-		ok(v8s_readlink(jl, buf, (long)sizeof buf) < 0,
-		    "...and then cannot be read back: access(2) follows links");
-		ok(v8s_unlink(jl) < 0, "...nor unlinked, for the same reason");
+		n = v8s_readlink(jl, buf, (long)sizeof buf);
+		ok(n == 23, "...and readlink finds it, inside the jail");
+		ok(n == 23 && strncmp(buf, "no-such-target-anywhere", 23) == 0,
+		    "...and reads back what was written");
+		/*
+		 * ...AND IT REALLY IS THE JAIL'S, which the two above cannot
+		 * say on their own: had the link been made on the HOST at the
+		 * bare path, every call would have agreed with every other and
+		 * been consistently wrong.  This reaches $V8ROOT/... directly.
+		 */
+		ok(hostexists(jl), "...and the link is in the rootfs, not on the host");
+		ok(v8s_unlink(jl) == 0, "...and the jail can remove its own link");
+		ok(!hostexists(jl), "...and it is really gone");
+
+		/*
+		 * THE OTHER SHAPES access(2) COULD NOT SEE.  Measured on this
+		 * host, the two predicates disagree on exactly four things and
+		 * every one is "the last component is a symlink whose
+		 * resolution fails": a dangling absolute link (above), a
+		 * dangling RELATIVE one, a LOOP, and a link whose target sits
+		 * behind a directory that cannot be searched.  Only the first
+		 * was ever tested, and one instance of a class is how the two
+		 * syscalls that resolved no path at all came to be fixed one at
+		 * a time.
+		 *
+		 * The errnos differ -- ENOENT, ENOENT, ELOOP, EACCES -- so a
+		 * fix keyed on "access said ENOENT" would have covered half of
+		 * them.  Keying on the QUESTION covers all four, and that is
+		 * what these assert.
+		 */
+		ok(v8s_symlink(jl, jl) == 0, "a symlink LOOP can be made in the jail");
+		ok(v8s_readlink(jl, buf, (long)sizeof buf) > 0,
+		    "...and readlink finds it too, where access said ELOOP");
+		ok(v8s_unlink(jl) == 0, "...and the loop can be removed");
+
+		/*
+		 * A CREATION THROUGH A DANGLING PARENT MUST NOT REACH THE HOST,
+		 * which is V8P_MAKE's half and the note recorded for this fix
+		 * got it wrong.  It said only V8P_LOOK changes, "because the
+		 * parent case is a directory and cannot be a dangling link".
+		 * Nothing stops it being one.  With access, the parent read as
+		 * absent, the path fell through, and the create landed on the
+		 * MAC -- the escape direction, in the mode that exists to
+		 * prevent it.  With lstat the name is the jail's and the create
+		 * fails.  Neither answer creates the file; only one stays in.
+		 */
+		{
+			char jd[] = "/usr/src/v8systest-dir";
+			char jn[] = "/usr/src/v8systest-dir/inside";
+			char *rp;
+			const char *vr = getenv("V8ROOT");
+			int cfd;
+
+			/*
+			 * REMOVE IT FIRST.  A previous run that died between
+			 * making this and removing it leaves a dangling symlink
+			 * behind, and the next run then fails to create it --
+			 * which reads as the fix being broken.  That is the
+			 * crash-probe lesson arriving inside one suite: a case
+			 * has to be a pure function of what it set up.  (It is
+			 * also why hostrm exists at the bottom of this block.)
+			 */
+			hostrm(jd);
+			ok(v8s_symlink("no-such-directory", jd) == 0,
+			    "a dangling symlink can stand where a directory would");
+
+			/*
+			 * THE ASSERTION IS ON THE RESOLUTION, NOT ON THE
+			 * CREATE, and the first draft of this block had it the
+			 * other way round -- which mutation showed was VACUOUS.
+			 * Reverting the predicate left three of its cases green,
+			 * because the escape it is about is unobservable on a
+			 * host with no writable jailed prefix: this Mac has no
+			 * /usr/src at all, so the create fails whichever world
+			 * it lands in, and the guard is indistinguishable from
+			 * the absence.  That is the same trap the mount cases
+			 * fell into with `chmod 777 /mnt'.
+			 *
+			 * v8sys_rootpath is not static and the answer it gives
+			 * IS the behaviour that changed: with access the parent
+			 * reads absent and the bare path comes back, with lstat
+			 * the name is the jail's.  No host directory required.
+			 */
+			rp = v8sys_rootpath(jn, V8P_MAKE);
+			ok(vr != 0 && *vr != '\0' && rp != 0 &&
+			    strncmp(rp, vr, strlen(vr)) == 0,
+			    "...and a create through it resolves INSIDE the jail");
+			ok(rp != 0 && strcmp(rp, jn) != 0,
+			    "...rather than falling through to the bare path");
+
+			/* ...and it then fails, which is failing closed. */
+			cfd = v8s_creat(jn, 0644);
+			ok(cfd < 0, "...and the create itself fails");
+			if (cfd >= 0) v8s_close(cfd);
+			ok(!hostexists(jn), "...leaving nothing in the rootfs");
+			ok(v8s_unlink(jd) == 0, "...and the stand-in comes away");
+		}
 
 		hostrm(jl);
 		v8s_unlink(jf);

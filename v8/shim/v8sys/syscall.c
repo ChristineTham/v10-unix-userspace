@@ -238,6 +238,51 @@ v8root(void)
  * because readers still pass V8P_LOOK.
  */
 
+/*
+ * "DOES THE ROOTFS HAVE THIS NAME" IS AN lstat QUESTION, AND IT USED TO BE AN
+ * access ONE.
+ *
+ * access(2) follows the last component.  So a symlink inside the jail whose
+ * target cannot be resolved read as ABSENT, the path fell through unresolved,
+ * and every operation on it went to the host -- which is the wrong direction
+ * for a chroot to fail in.  Found while fixing two syscalls that resolved no
+ * path at all; orthogonal to those, because this one resolves correctly except
+ * for names access(2) cannot see.
+ *
+ * MEASURED, the two predicates disagree on exactly four shapes on this host,
+ * and all four are "the last component is a symlink whose resolution fails":
+ * a dangling absolute link (ENOENT), a dangling relative one (ENOENT), a loop
+ * (ELOOP), and a link whose target sits behind an unsearchable directory
+ * (EACCES).  Everywhere else they agree -- a file behind chmod 000 fails BOTH,
+ * because lstat needs search permission on the prefix too; a name below a
+ * dangling link fails both; a trailing slash on a link to a file fails both.
+ *
+ * AND THE CHANGE IS MONOTONE, which is what bounds it: there is no case where
+ * access succeeds and lstat fails, so the union rule can only ever resolve MORE
+ * names into the jail and never fewer.  (The candidate counterexample is a
+ * trailing slash on a symlink to a DIRECTORY, where lstat is documented to
+ * follow; measured, both succeed.)  That is the reasoning for touching the
+ * single most load-bearing function in the shim at all.
+ *
+ * RAW, NOT v8s_lstat -- the same reason the access call had: v8s_lstat runs its
+ * argument back through vpath(), which re-enters this function and would
+ * overwrite the buf still being built.
+ *
+ * THE BUFFER IS A BYTE ARRAY because struct hoststat64 is declared a thousand
+ * lines below here and nothing is read out of it: only the syscall's success is
+ * wanted.  Its size is not a hope -- there is a _Static_assert beside that
+ * declaration, where the type is complete.
+ */
+#define V8_STATBUF	256
+
+static int
+rootfs_has(const char *path)
+{
+	char st[V8_STATBUF];
+
+	return (rawsys2(SYS_lstat64, (long)path, (long)st) == 0);
+}
+
 char *
 v8sys_rootpath(char *p, int mode)
 {
@@ -311,12 +356,12 @@ v8sys_rootpath(char *p, int mode)
 	for (m = 0; p[m] && n < (int)sizeof buf - 1; m++) buf[n++] = p[m];
 	buf[n] = '\0';
 	/*
-	 * access(2) raw, NOT v8s_stat: v8s_stat runs its argument back through
-	 * vpath(), which re-enters this function and would overwrite the buf we
-	 * are still building.  It happens to be harmless today only because
-	 * $V8ROOT does not itself start with a V8 directory prefix -- set
-	 * V8ROOT=/usr/lib/anything and it would clobber.  Not worth leaving to
-	 * luck for a call that only asks whether the file exists.
+	 * rootfs_has() is raw, NOT v8s_lstat: v8s_lstat runs its argument back
+	 * through vpath(), which re-enters this function and would overwrite the
+	 * buf we are still building.  It happens to be harmless today only
+	 * because $V8ROOT does not itself start with a V8 directory prefix --
+	 * set V8ROOT=/usr/lib/anything and it would clobber.  Not worth leaving
+	 * to luck for a call that only asks whether the name is there.
 	 */
 	if (mode == V8P_MAKE) {
 		/*
@@ -330,11 +375,24 @@ v8sys_rootpath(char *p, int mode)
 			if (buf[i] == '/') cut = i;
 		if (cut <= 0) return (p);
 		buf[cut] = '\0';
-		ok = rawsys2(SYS_access, (long)buf, 0) == 0;
+		/*
+		 * BOTH MODES CHANGE, AND THE NOTE THAT SAID OTHERWISE WAS A
+		 * GUESS.  The reasoning recorded for this fix was that only
+		 * V8P_LOOK is affected, "because the parent case is a directory
+		 * and cannot be a dangling link".  Nothing stops it being one:
+		 * $V8ROOT/etc could be a symlink to nothing, and then access
+		 * says absent, the path falls through, and creat("/etc/x")
+		 * writes to the MAC's /etc -- the escape direction, in the mode
+		 * that exists to stop exactly that.  With lstat the name is the
+		 * jail's and the create fails ENOENT, which is failing closed.
+		 * Neither answer creates the file; only one of them stays
+		 * inside.
+		 */
+		ok = rootfs_has(buf);
 		buf[cut] = '/';
 		return (ok ? buf : p);
 	}
-	if (rawsys2(SYS_access, (long)buf, 0) == 0) return (buf);
+	if (rootfs_has(buf)) return (buf);
 	return (p);
 }
 
@@ -1295,6 +1353,15 @@ struct hoststat64 {			/* macOS arm64 struct stat64 */
 	int		st_lspare;
 	long long	st_qspare[2];
 };
+
+/*
+ * rootfs_has() up at the top of this file hands SYS_lstat64 a bare byte array,
+ * because this declaration is a thousand lines below it and nothing is read out
+ * of the result.  The size is asserted HERE, where the type is complete, rather
+ * than left as a comment claiming it is big enough.
+ */
+_Static_assert(sizeof(struct hoststat64) <= V8_STATBUF,
+    "V8_STATBUF is smaller than the kernel's stat64 -- rootfs_has would smash its stack");
 
 static void
 stat_translate(struct hoststat64 *hs, struct v8_stat *vs)

@@ -2031,6 +2031,61 @@ pipeline must still die when its reader goes away, because that is how
 
 Nine mutations now, and nine of them fire.
 
+And an auditor read the result and found that in moving the legitimate case out
+of one line, I had left its errno behind: the two protocol faults that remain
+on that line were still being reported as "no such file", four lines above a
+new line correctly calling the same class an I/O error. The rule it violates is
+stated in the same file, in a comment I wrote. The fix lands on one line and
+the line beside it keeps the assumption — I have recorded that shape a dozen
+times, and it is no less easy to do while typing the thing that documents it.
+
+
+### A predicate that answered a different question
+
+The jail resolves a path by asking whether the rootfs has the name, and it
+asked with `access(path, F_OK)`. But `access` follows the last component — so a
+symlink inside the jail whose target does not exist reads as *absent*, the path
+falls through unresolved, and every operation on it goes to the host. That is
+the wrong direction for a chroot to fail in. It had been found months earlier,
+written down honestly as a limit with three test cases asserting it, and left
+alone, because it is the one function every path in the world passes through.
+
+The right predicate is `lstat`, which answers what the union rule actually asks
+— does the rootfs have this *name* — rather than "is there a reachable object
+at the end of it". What made it safe to change was not the argument but three
+measurements.
+
+The two predicates disagree on exactly four things on this host, and all four
+are the same shape: a dangling absolute link, a dangling relative one, a loop,
+and a link whose target sits behind a directory the process cannot search. The
+errnos are `ENOENT`, `ENOENT`, `ELOOP` and `EACCES` — so a fix keyed on "access
+said the file was missing" would have covered half the class. Everywhere else
+they agree, including the cases that look like they should not: a file behind
+`chmod 000` fails both, because `lstat` needs search permission on the prefix
+too.
+
+Second, the change is monotone. There is no input where `access` succeeds and
+`lstat` fails, so the union can only ever resolve *more* names into the jail,
+never fewer. That is what bounds the blast radius, and it is a fact about the
+two syscalls rather than about my code.
+
+Third, the three suites that exercise the union rule hardest came back at
+exactly the counts they had before — and the suite that owns the limit failed
+precisely the two cases written to state it. That is what a correct fix to a
+documented limitation looks like from the outside.
+
+Two things I got wrong along the way, both recorded. The note I had left for
+this fix said only the reading mode would change, "because the parent case is a
+directory and cannot be a dangling link" — nothing stops it being one, and with
+`access` a dangling parent sends a file creation to the Mac, which is the
+escape direction in the mode that exists to prevent it. And my first test for
+that half was vacuous: written as a create, it passed with the fix reverted,
+because this machine has no `/usr/src` and the create fails whichever world it
+lands in. The guard and the absence of the directory were indistinguishable —
+the same trap I had walked into a week earlier with a `chmod` on a mount point.
+The answer was to stop asserting the consequence and assert the resolution: ask
+the function directly which path it returns.
+
 
 ## What is left
 

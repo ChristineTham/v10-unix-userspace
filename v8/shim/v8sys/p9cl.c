@@ -443,8 +443,15 @@ p9dial(struct p9mnt *m)
 	 * than signal(SIGPIPE, SIG_IGN).  Ignoring the signal would change the
 	 * program's own disposition, and a V8 program in a pipeline MUST still
 	 * die when its reader goes away -- that is how `yes | head' terminates.
-	 * The option changes one descriptor, so write(2) on this socket returns
-	 * EPIPE and everything else about the process is untouched.
+	 * Here, write(2) on this socket returns EPIPE and everything else about
+	 * the process is untouched.
+	 *
+	 * PER SOCKET, NOT PER DESCRIPTOR, and this comment said descriptor until
+	 * an auditor pointed out that the difference is the file's whole thesis.
+	 * The flag lives in so_flags on the struct socket -- the OPEN FILE
+	 * DESCRIPTION -- so every dup, every fork and an image replacement all
+	 * share it. That is the better reading rather than a weaker one: the
+	 * protection inherits for exactly the reason the offset does.
 	 *
 	 * Failure is not fatal: an older kernel without the option leaves the
 	 * older behaviour, which is worse but not wrong enough to refuse a mount
@@ -589,7 +596,28 @@ p9walk(int fd, const char *rel)
 
 		if (xact(fd, &b, P9_Rwalk, &r) < 0) return (-1);
 		got = p9_g16(&r);
-		if (!p9_ok(&r) || got > nw) { v8_errno = V8_ENOENT; return (-1); }
+		/*
+		 * THESE TWO ARE PROTOCOL FAULTS AND NOT "NO SUCH FILE", and
+		 * this line said ENOENT until an auditor read it.  It used to
+		 * be `got != nw', which ALSO covered the legitimate short walk
+		 * -- and for that case ENOENT was the right answer.  Moving the
+		 * legitimate case into the branch below left its errno behind
+		 * on the two that remain: a reply too short to hold nwqid[2],
+		 * and a server returning more qids than names were asked for.
+		 * Neither is a statement about the file.  xacttag() in this
+		 * same file already says the rule -- "A REPLY OF THE WRONG TYPE
+		 * IS EIO AND NOT A PARSE" -- and :613 four lines below calls
+		 * this very class EIO.  The fix landed on one line and the line
+		 * beside it kept the assumption, which is this port's most
+		 * repeated shape and is no less easy to do while writing the
+		 * thing that documents it.
+		 *
+		 * Measured against a nonconforming server: an Rwalk with no
+		 * nwqid field, and got = 65535 for a two-name walk, both
+		 * reported ENOENT.  A caller that reads ENOENT as "then create
+		 * it" takes the wrong branch on a wedged mount.
+		 */
+		if (!p9_ok(&r) || got > nw) { v8_errno = V8_EIO; return (-1); }
 		if (got != nw) {
 			struct p9qid q;
 			p9_u32 k;
@@ -598,8 +626,17 @@ p9walk(int fd, const char *rel)
 			/*
 			 * `got' is 0 only from a server that answered a failed
 			 * FIRST name with a short reply instead of an Rerror.
-			 * There is then nothing to read a reason out of, so the
-			 * loop does not run and ENOENT stands.
+			 * There is then nothing IN THIS MESSAGE to read a reason
+			 * out of, so the loop does not run and ENOENT stands.
+			 *
+			 * On a CONTINUATION message the reason would in fact be
+			 * available -- it is the last qid of the previous Rwalk,
+			 * which this loop discards each time round.  Carrying it
+			 * across iterations is deliberately not done: it needs a
+			 * path of more than P9_MAXWELEM components AND a server
+			 * that breaks the spec, since a real one answers a
+			 * zero-length walk with an Rerror (v8fsd.c:732-735), so
+			 * the state would exist for a case nothing can reach.
 			 *
 			 * p9_gqid returns void and reports an underrun through
 			 * p9_ok, which is checked once after the loop: a buffer

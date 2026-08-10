@@ -450,3 +450,70 @@ The neighbouring case *is* handled: `v8s_dup2` closes the target's snapshot when
 it dup2s over a directory descriptor, because the host closes that descriptor
 and `dir.c` would otherwise keep serving records for a file that is now
 something else.
+
+## The jail's existence predicate: access(2) → lstat(2)
+
+`v8sys_rootpath()` decides whether the rootfs has a name, and it asked with
+`access(buf, 0)`. **access(2) follows the last component**, so a symlink inside
+the jail whose target could not be resolved read as *absent*, the path fell
+through unresolved, and every operation on it went to the host — the wrong
+direction for a chroot to fail in. It is now a raw `lstat`.
+
+This is the single most load-bearing function in the shim: every path in the
+world goes through it. Three measurements are what made changing it safe, and
+they are recorded because the next person to touch it will want them.
+
+**Exactly four shapes disagree on this host**, and all four are "the last
+component is a symlink whose resolution fails":
+
+| | access | lstat |
+|---|---|---|
+| dangling absolute link | `ENOENT` | ok |
+| dangling relative link | `ENOENT` | ok |
+| symlink loop | `ELOOP` | ok |
+| link → target behind an unsearchable directory | `EACCES` | ok |
+| a file behind `chmod 000` | `EACCES` | **`EACCES`** — agrees |
+| a name below a dangling link | `ENOENT` | **`ENOENT`** — agrees |
+| trailing slash on a link to a file | `ENOTDIR` | **`ENOTDIR`** — agrees |
+
+The errnos differ across the four, which is the useful part: a fix keyed on
+"`access` said ENOENT" would have covered two of them. Keying on the *question*
+covers the class.
+
+**The change is monotone.** There is no case where `access` succeeds and
+`lstat` fails, so the union rule can only ever resolve *more* names into the
+jail and never fewer. The candidate counterexample is a trailing slash on a
+symlink to a **directory**, where `lstat` is documented to follow — measured,
+both succeed.
+
+**The union-heavy suites are unchanged**: `wavea` 124, `jail` 128, `kmemu` 146,
+before and after. `v8sys` went 173 → 185, and the two cases that failed on the
+first run are the two that had been written to *state the limit*, which is what
+the old comment asked a future fix to have to change on purpose.
+
+### Two things the fix's own note got wrong
+
+**It said only `V8P_LOOK` changes**, "because the parent case is a directory
+and cannot be a dangling link". Nothing stops it being one. With `access`, a
+dangling `$V8ROOT/etc` reads as absent, `creat("/etc/x")` falls through, and
+the file lands on the **Mac** — the escape direction, in the mode that exists
+to prevent it. With `lstat` the name is the jail's and the create fails
+`ENOENT`. Neither answer creates the file; only one stays inside. Both modes
+changed.
+
+**And the case for that half was vacuous when written as a create.** Reverting
+the predicate left it green, because this Mac has no `/usr/src`: the create
+fails whichever world it lands in, so the guard and the absence of the
+directory are indistinguishable. That is the `chmod 777 /mnt` trap exactly. The
+answer is to assert the **resolution** rather than its consequence —
+`v8sys_rootpath()` is not static, and whether it returns a `$V8ROOT`-prefixed
+path or the bare one *is* what changed. No host directory required.
+
+### And the litter came back
+
+The first run of the rewritten cases failed on `a dangling symlink can stand
+where a directory would` — because the *previous* run had died between creating
+the stand-in and removing it, and a dangling symlink is exactly what the old
+code could not clean up. The case removes it with `hostrm` before creating it
+now. A case has to be a pure function of what it set up; this suite is the
+third place that lesson has had to be applied.
