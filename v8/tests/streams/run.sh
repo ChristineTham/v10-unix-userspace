@@ -2875,6 +2875,34 @@ if [ "$wready" = 1 ]; then
 	check "a wstat that touches nothing succeeds"	"1"	"$(wq w-sync)"
 	check "and the server is still there"		"0"	"$(wq w-alive)"
 
+	# THE OPEN MODE, RE-CHECKED ON EVERY TRANSFER.  rdwri.c's rdwr() is one
+	# line -- `if((fp->f_flag&mode) == 0) { u.u_error = EBADF; return; }' --
+	# and this server had one third of it: do_read checked NOTHING, and
+	# do_write refused OREAD but not OEXEC.  Only a probe can ask: the
+	# client opens with V7's three modes, has no spelling for OEXEC, and
+	# would never write to a fid it opened for reading.
+	#
+	# THE TWO GATES ARE NOT COMPLEMENTS, which is why each direction needs
+	# both a refusal and a success.  9P's open(5) defines mode 3 as
+	# "execute (read, but check execute permission)" -- Plan 9's kernel has
+	# to read a binary to run it -- so OEXEC READS and does not write, and
+	# a server that simply refused OEXEC would pass a refusals-only suite.
+	check "an OREAD fid reads"			"8"	"$(wq om-read-reads)"
+	check "...and cannot write"			"-1"	"$(wq om-read-writes)"
+	check "an OWRITE fid writes"			"1"	"$(wq om-write-writes)"
+	check "...and cannot read"			"-1"	"$(wq om-write-reads)"
+	check "an ORDWR fid reads"			"8"	"$(wq om-rdwr-reads)"
+	check "...and writes"				"1"	"$(wq om-rdwr-writes)"
+	# The two halves of the finding: OEXEC could read (right, and unchanged)
+	# and could also WRITE and truncate (wrong, and the live defect).
+	check "an OEXEC fid reads, as 9P says it may"	"8"	"$(wq om-exec-reads)"
+	check "...and cannot write"			"-1"	"$(wq om-exec-writes)"
+	# A PROBE THAT LEAVES LITTER IS THE SHAPE THIS SUITE KEEPS MEETING, so
+	# the byte those writes changed is put back, and the restore is checked
+	# rather than assumed -- everything below reads this file.
+	check "and the byte it wrote is put back"	"1"	"$(wq om-restored)"
+	check "...to what it was"			"104"	"$(wq om-restored-byte)"
+
 	# utime, AND mv(1) IS WHY IT EXISTS.  On a mount link(2) has no slot
 	# and is refused, so mv ALWAYS falls through to fork, /bin/cp and then
 	# mv.c:129's `utime(target, &s1.st_atime)'.  Without the slot the copy

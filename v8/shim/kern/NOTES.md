@@ -1158,3 +1158,71 @@ two and leaves the write case green.
 And the image is deliberately **not** asserted clean afterwards, only still
 *readable* by `icheck` — a server that died mid-write could have left a
 superblock nothing can parse, and that is the thing worth ruling out.
+
+## The open mode was checked at open and never again
+
+The third of the auditor's findings, and the smallest to state: V7 re-checks
+what a file was opened for on **every** transfer, in one line —
+
+```c
+	if((fp->f_flag&mode) == 0) { u.u_error = EBADF; return; }	/* rdwr() */
+```
+
+— and this server had one third of it. `do_read` checked only that the fid was
+open at all; `do_write` refused `P9_OREAD` and not `P9_OEXEC`. Measured by the
+auditor against a real server: a fid opened `0x03` (OEXEC) accepted a Tread
+**and** a Twrite, and `0x13` (OEXEC|OTRUNC) ran `itrunc`. The plain half is
+reachable by an ordinary program — `open("/mnt/f", 1)` then `read()` returned
+the bytes.
+
+### OEXEC reads and does not write, which is 9P's rule and not a choice
+
+`open(5)` gives mode 3 as *"execute (read, but check execute permission)"*,
+because Plan 9's kernel has to read a binary in order to run it. So the two
+gates are **not complements**:
+
+| mode | read | write |
+|---|---|---|
+| OREAD (0) | yes | no |
+| OWRITE (1) | no | yes |
+| ORDWR (2) | yes | yes |
+| OEXEC (3) | **yes** | no |
+
+`canread()` is therefore "anything but OWRITE" and `canwrite()` is "OWRITE or
+ORDWR", and each direction needs a refusal case *and* a success case — a server
+that simply refused OEXEC outright would pass a refusals-only suite.
+
+### What this does NOT fix, said out loud
+
+`u_uid` is 0, so Bell Labs' `access()` takes `fio.c:193`'s root bypass and
+grants IWRITE on every file of every image. So the **permission** dimension is
+moot, and the `OEXEC|OTRUNC` truncation the auditor measured happens before this
+change and after it. Folding OTRUNC into `want` is right — `open(5)` says
+truncation requires write permission "even if the mode is OREAD", which is also
+`open1`'s reading — and it collapses the `mntronly` arm from two spellings of
+one rule to one. But it changes no answer today, in the same way `wowner()`
+does not, and the comment says so rather than implying a fix.
+
+What *is* live is the gate, which is a property of the **fid** rather than of
+the identity, and wrong at any uid.
+
+### Only a probe can ask
+
+The client opens with V7's `O_RDONLY`/`O_WRONLY`/`O_RDWR`, has no spelling for
+OEXEC at all, and would never write to a fid it opened for reading. Every case
+here is a message no client of ours emits — which is the class `p9probe` exists
+for, and the second time in two steps that the guard for a defect had to be a
+wire-level case (the first was `atoi` on an owner name).
+
+Ten cases; `streams` 597 → 607. Two mutations, two fire, and each fires on
+exactly one case — removing the read gate reddens *an OWRITE fid cannot read*
+and nothing else; reverting the write gate to its old `== P9_OREAD` form
+reddens *an OEXEC fid cannot write* and nothing else.
+
+**And the probe puts its byte back.** These cases write to `hello` on the
+shared writable image, which the chmod cases, the owner control and the
+round-trip accounting all read afterwards — the artefact-leak shape this suite
+has met three times (between programs sharing a directory, between cases
+sharing a stream, between sections sharing an image). The original byte is read
+first and written back last, and the restore is **asserted** rather than
+assumed, because a restore nothing checks is a restore that stops happening.

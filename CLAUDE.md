@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2090 cases, 2089 on a host whose $TMPDIR
+make test             # all 17 suites (2100 cases, 2099 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -795,6 +795,35 @@ caller that existed when it was written. Four things:
   is still alive* and *it still answers a read*, and leaves the write case
   green. Nor is the image asserted clean afterwards — only still **readable**,
   which is the thing a mid-write death would actually have destroyed.
+
+**AND THE OPEN MODE WAS CHECKED AT OPEN AND NEVER AGAIN.** V7 re-checks it on
+every transfer, in one line — `rdwr()` is
+`if((fp->f_flag&mode) == 0) { u.u_error = EBADF; return; }` — and v8fsd had one
+third of it: `do_read` checked only that the fid was open, and `do_write`
+refused `P9_OREAD` but not `P9_OEXEC`. So a fid that had proved only execute
+permission could write, and `open("/mnt/f", 1)` followed by `read()` returned
+the bytes. Three things:
+
+- **THE TWO GATES ARE NOT COMPLEMENTS, and that is 9P's rule rather than a
+  choice.** `open(5)` defines mode 3 as *"execute (read, but check execute
+  permission)"*, because Plan 9's kernel must read a binary to run it — so
+  OEXEC **reads** and does not write. `canread()` is "anything but OWRITE",
+  `canwrite()` is "OWRITE or ORDWR", and each direction needs a refusal case
+  *and* a success case: a server that refused OEXEC outright would pass a
+  refusals-only suite.
+- **SAY WHAT THE FIX DOES NOT FIX.** `u_uid` is 0, so `access()` takes
+  `fio.c:193`'s root bypass and grants IWRITE on everything — the
+  `OEXEC|OTRUNC` truncation an auditor measured happens before the change and
+  after it. Folding OTRUNC into `want` is still right (`open(5)`: truncation
+  requires write permission "even if the mode is OREAD") and collapses one rule
+  that was written twice, but it changes no answer today and the comment says
+  so. What is live is the **gate**, which is a property of the fid rather than
+  of the identity and is wrong at any uid.
+- **SECOND STEP RUNNING WHERE THE GUARD HAD TO BE A WIRE-LEVEL CASE.** The
+  client opens with V7's three modes, has no spelling for OEXEC, and would
+  never write to a fid it opened for reading — so no shipped binary can ask the
+  question. Same as the owner-name guard one commit earlier. When a defect
+  lives in what a *foreign* client could send, the probe is the only instrument.
 
 **AND THE MUTATION RULES GAINED TWO, BOTH FROM THE HARNESS RATHER THAN THE
 CODE.** The existing entries cover the restore side; these are new:

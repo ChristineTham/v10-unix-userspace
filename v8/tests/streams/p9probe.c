@@ -212,6 +212,130 @@ wstat_uid(p9_u32 fid, const char *uid)
  * reading of the owner, because a wstat that refused AFTER assigning would
  * satisfy a reply-only assertion perfectly.
  */
+/* Open `hello' on a fresh fid at `nf' with the given 9P mode; 1 on Ropen. */
+static int
+openas(p9_u32 nf, int omode)
+{
+	char *w1[1];
+
+	w1[0] = "hello";
+	if (walk(nf, 1, w1) != 1) return (0);
+	begin(P9_Topen);
+	p9_p32(&tb, nf);
+	p9_p8(&tb, (p9_u32)omode);
+	return (xact() == P9_Ropen);
+}
+
+/* Tread 8 bytes; the count on Rread, or -1 on Rerror. */
+static long
+tryread(p9_u32 nf)
+{
+	begin(P9_Tread);
+	p9_p32(&tb, nf);
+	p9_p64(&tb, 0);
+	p9_p32(&tb, 8);
+	if (xact() != P9_Rread) return (-1);
+	return ((long)p9_g32(&rb));
+}
+
+/* Twrite one byte at offset 0; the count on Rwrite, or -1 on Rerror. */
+static long
+trywriteb(p9_u32 nf, char b)
+{
+	begin(P9_Twrite);
+	p9_p32(&tb, nf);
+	p9_p64(&tb, 0);
+	p9_p32(&tb, 1);
+	p9_pdata(&tb, &b, 1);
+	if (xact() != P9_Rwrite) return (-1);
+	return ((long)p9_g32(&rb));
+}
+
+/*
+ * THE BYTE HAS TO GO BACK, and that is not tidiness: the cases below write to
+ * `hello' on the shared writable image, and everything after this section
+ * reads it -- the chmod cases, the owner control, and the round-trip
+ * accounting at the end.  A probe that leaves its litter behind is the shape
+ * this suite has been bitten by three times (between programs sharing a
+ * directory, between cases sharing a stream, between sections sharing an
+ * artefact), so the original byte is read first and written back last.
+ */
+static char firstbyte;
+
+static long
+trywrite(p9_u32 nf)
+{
+	return (trywriteb(nf, 'Z'));
+}
+
+/* The first byte of the file on `nf', or -1. */
+static int
+readfirst(p9_u32 nf)
+{
+	unsigned char *d;
+
+	begin(P9_Tread);
+	p9_p32(&tb, nf);
+	p9_p64(&tb, 0);
+	p9_p32(&tb, 1);
+	if (xact() != P9_Rread) return (-1);
+	if (p9_g32(&rb) != 1) return (-1);
+	d = p9_gdata(&rb, 1);
+	return (d ? (int)d[0] : -1);
+}
+
+/*
+ * THE OPEN MODE, RE-CHECKED ON EVERY TRANSFER, which is rdwri.c's one line --
+ * `if((fp->f_flag&mode) == 0) { u.u_error = EBADF; return; }' -- and which
+ * this server had one third of: do_read checked nothing and do_write refused
+ * OREAD but not OEXEC.
+ *
+ * ONLY A PROBE CAN ASK.  The client opens with V7's O_RDONLY/O_WRONLY/O_RDWR
+ * and has no spelling for OEXEC at all, and it would never write to a fid it
+ * opened for reading -- so every one of these is a message no client of ours
+ * emits, which is exactly the class p9probe exists for.
+ *
+ * OEXEC READS AND DOES NOT WRITE, and that is 9P's definition rather than a
+ * choice: open(5) gives mode 3 as "execute (read, but check execute
+ * permission)", because Plan 9's kernel must read a binary to run it.  So the
+ * two gates are not complements, and a case for each direction is the only
+ * way to say so -- a server that refused OEXEC outright would pass a
+ * write-only suite.
+ */
+static void
+openmodecases(void)
+{
+	/* OREAD: reads, does not write.  Also where the byte is saved. */
+	printf("om-read-open %d\n", openas(20, P9_OREAD));
+	firstbyte = (char)readfirst(20);
+	printf("om-read-reads %ld\n", tryread(20));
+	printf("om-read-writes %ld\n", trywrite(20));
+
+	/* OWRITE: writes, does NOT read -- the half do_read did not check. */
+	printf("om-write-open %d\n", openas(21, P9_OWRITE));
+	printf("om-write-reads %ld\n", tryread(21));
+	printf("om-write-writes %ld\n", trywrite(21));
+
+	/* ORDWR: both, which is the control that says the gates are not just
+	 * refusals. */
+	printf("om-rdwr-open %d\n", openas(22, P9_ORDWR));
+	printf("om-rdwr-reads %ld\n", tryread(22));
+	printf("om-rdwr-writes %ld\n", trywrite(22));
+
+	/* OEXEC: reads (9P's own rule), does NOT write -- the half do_write
+	 * did not check, and the one that let a fid holding only execute
+	 * permission modify the file. */
+	printf("om-exec-open %d\n", openas(23, P9_OEXEC));
+	printf("om-exec-reads %ld\n", tryread(23));
+	printf("om-exec-writes %ld\n", trywrite(23));
+
+	/* Put the byte back through the one fid that may write it, and say so
+	 * out loud -- a restore nothing checks is a restore that stops
+	 * happening. */
+	printf("om-restored %ld\n", trywriteb(22, firstbyte));
+	printf("om-restored-byte %d\n", readfirst(22));
+}
+
 static void
 writecases(void)
 {
@@ -260,6 +384,7 @@ writecases(void)
 		printf("w-sync %d\n", xact() == P9_Rwstat);
 	}
 	printf("w-alive %s\n", uid_of(1));
+	openmodecases();
 }
 
 static int

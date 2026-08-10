@@ -1158,7 +1158,24 @@ do_open(struct conn *c, p9_u32 tag, struct p9buf *in)
 	 * one refuse it identically, and the client never sets it.
 	 */
 	if (mode & P9_ORCLOSE) { rerror(c, tag, EINVAL); return; }
-	if (mntronly && ((want & IWRITE) || (mode & P9_OTRUNC))) {
+	/*
+	 * OTRUNC IS A WRITE, AND 9P SAYS SO IN THE SAME WORDS open1 DOES.
+	 * open(5): the OTRUNC bit means the file is to be truncated,
+	 * "requiring write permission even if the mode is OREAD".  So it adds
+	 * IWRITE to what access() is asked rather than being a separate test,
+	 * and the mntronly arm below then needs only `want & IWRITE' -- it used
+	 * to spell OTRUNC out again, which was one rule written twice.
+	 *
+	 * IT CHANGES NO ANSWER TODAY AND THE HONEST NOTE SAYS SO.  u_uid is 0,
+	 * so access() takes fio.c:193's root bypass and grants IWRITE on every
+	 * file of every image -- an `OEXEC|OTRUNC' open truncates before this
+	 * line and after it.  An auditor measured exactly that (length 7 before,
+	 * 3 after) and it is NOT what the gates below fix; what they fix is the
+	 * Twrite that the same fid was then allowed to do.  This line is right
+	 * for the day a uid arrives over the wire, in the same way wowner() is.
+	 */
+	if (mode & P9_OTRUNC) want |= IWRITE;
+	if (mntronly && (want & IWRITE)) {
 		rerror(c, tag, EROFS);
 		return;
 	}
@@ -1201,6 +1218,43 @@ do_open(struct conn *c, p9_u32 tag, struct p9buf *in)
 	reply(c, &b);
 }
 
+/*
+ * WHAT THE FID WAS OPENED FOR, WHICH V7 SPENDS ONE LINE ON AND THIS SERVER
+ * HAD ONE THIRD OF.  rdwri.c's rdwr() is
+ *
+ *	if((fp->f_flag&mode) == 0) { u.u_error = EBADF; return; }
+ *
+ * -- the open mode re-checked on EVERY read and EVERY write, not just at
+ * open.  do_read checked nothing at all, and do_write refused P9_OREAD and
+ * not P9_OEXEC.  Measured by an auditor against a real server: a fid opened
+ * 0x03 (OEXEC) accepted a Tread AND a Twrite, and 0x13 (OEXEC|OTRUNC) ran
+ * itrunc -- so a handle that had proved only EXECUTE permission could destroy
+ * the file.  The plain half is reachable by an ordinary program:
+ * `open("/mnt/f", 1)' then `read()' returned the bytes.
+ *
+ * OEXEC READS AND DOES NOT WRITE, and that is 9P's own definition rather than
+ * a choice made here: open(5) gives mode 3 as "execute (read, but check
+ * execute permission)", because Plan 9's kernel has to read a binary in order
+ * to run it.  So the read gate is "anything but OWRITE" and the write gate is
+ * "OWRITE or ORDWR", and neither is the complement of the other.
+ *
+ * NOTE WHAT IS *NOT* THE POINT.  u_uid is 0 here, so Bell Labs' access()
+ * takes fio.c:193's root bypass and the PERMISSION dimension is moot; the
+ * defect is the missing gate, which is a property of the fid rather than of
+ * the identity and is live whatever the uid.
+ */
+static int
+canread(int omode)
+{
+	return ((omode & 3) != P9_OWRITE);
+}
+
+static int
+canwrite(int omode)
+{
+	return ((omode & 3) == P9_OWRITE || (omode & 3) == P9_ORDWR);
+}
+
 static void
 do_read(struct conn *c, p9_u32 tag, struct p9buf *in)
 {
@@ -1218,6 +1272,7 @@ do_read(struct conn *c, p9_u32 tag, struct p9buf *in)
 	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
 	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
 	if (f->f_omode < 0) { rerror(c, tag, EBADF); return; }
+	if (!canread(f->f_omode)) { rerror(c, tag, EBADF); return; }
 
 	/*
 	 * THE SENTINEL, AND IT IS RESOLVED HERE SO THAT EVERYTHING BELOW IS
@@ -1405,7 +1460,7 @@ do_write(struct conn *c, p9_u32 tag, struct p9buf *in)
 	if (mntronly) { rerror(c, tag, EROFS); return; }
 	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
 	if (f->f_omode < 0) { rerror(c, tag, EBADF); return; }
-	if ((f->f_omode & 3) == P9_OREAD) { rerror(c, tag, EBADF); return; }
+	if (!canwrite(f->f_omode)) { rerror(c, tag, EBADF); return; }
 
 	/*
 	 * A DIRECTORY IS NOT WRITABLE THROUGH 9P AND MUST NOT BE HERE EITHER.
