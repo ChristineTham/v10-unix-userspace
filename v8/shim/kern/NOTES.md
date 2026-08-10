@@ -1043,3 +1043,118 @@ are meaningless there.
   hash) before it was used as the check.
 - **And the harness littered the repo root**, because a script `exec`'d from
   stdin has no `__file__` worth trusting. `tests/deps` caught it.
+
+## Filling the image killed the server, and two defects were hiding each other
+
+Found by the `lp64-auditor` on the 5f/5f-b diff, reproduced here before being
+believed. `cat big > /mnt/x` on a 200-block image:
+
+```
+/: file system full
+
+/: write failed, file system is full
+panic: tsleep: no device below, and no timeout
+```
+
+Server exit 2, every client's connection dropped mid-transaction — not just the
+writer's. Reachable from an ordinary unprivileged program. The image survives
+(`icheck` and `fsck` clean afterwards), so it is **availability, not
+corruption**.
+
+### The chain, and why every link looked right
+
+Bell Labs' out-of-space path is a kludge and they label it one in capitals:
+
+```c
+nospace:					/* alloc.c:187-195 */
+	fserr(fp, "file system full");
+	/* THIS IS A KLUDGE... */
+	for (i = 0; i < 5; i++)
+		sleep((caddr_t)&lbolt, PRIBIO);
+	u.u_error = ENOSPC;
+```
+
+`v8fs.c`'s `sleep()` maps onto `tsleep(chan, pri, 0)`; `tsleep`'s third
+argument is **seconds**, and `seconds > 0 ? seconds*1000 : -1` turns 0 into "no
+timeout"; `slp.c` then panics on `ndrvfd == 0 && timeout < 0`, and `v8fsd`
+registers a *block* driver so `ndrvfd` is 0.
+
+**Every one of those is correct for the caller it was written for.** The
+panic's own comment reasons entirely about streams — *"a test's mistake, or a
+driver that forgot `v8k_drvfd()`"* — and that was a true and complete account
+of every caller in existence when it was written. This is a **second consumer
+arriving at a guard argued for the first one**, which is the shape this file
+records more than any other.
+
+### The survey that should have caught it listed everything except the one that fires
+
+`v8fs.c`'s `sleep()` comment enumerates the sleeping callers as *"iget.c:93 and
+alloc.c:89,215,295 … waiting for a locked inode"* and attributes the PRIBIO
+waits to "bio.c's". All four PINOD waits are **unreachable in a
+single-threaded server** — nothing else is running to hold a lock.
+`alloc.c:194`, the only one that can fire, is in neither list.
+
+### The fix is the channel, and it is provable rather than probable
+
+Two greps settle it:
+
+- `alloc.c:194` is the **only** sleeper on `lbolt` in the imported tree.
+- `clock.c:290` is the **only** waker of `lbolt` in the whole 18k-line kernel —
+  the clock interrupt handler — and this port has no clock interrupt and does
+  not import `clock.c`.
+
+So a sleep on `lbolt` here can never wake. That is the same *form* of argument
+`slp.c`'s panic makes about a stream with no device, reaching the opposite
+verdict because the caller is different. `sleep()` returns immediately for that
+one channel.
+
+**Returning is not a semantic change**, because the wait is futile by
+construction: upstream sleeps hoping *another process* frees a block, and here
+the caller is the only thing running, so the loop is guaranteed to fall through
+to ENOSPC. Same observable, without five seconds of dead time in a file server.
+What is *not* safe is a future caller that sleeps on `lbolt` inside a condition
+loop — `alloc.c`'s is a bounded `for` — and there is no way to detect that here,
+so it is written down instead. Re-run both greps after importing more of `sys/`.
+
+### And the second defect only became reachable once the first was fixed
+
+`kmkdir` writes `.` and `..` with `writei` and never consulted `u.u_error`;
+`do_create` tests only `nip == NULL`. On a full image, **`mkdir /mnt/d` exited
+0** and `fsck` said:
+
+```
+LINK COUNT DIR I=2  ... COUNT 3 SHOULD BE 2
+LINK COUNT DIR I=47 ... COUNT 2 SHOULD BE 1
+SIZE=0
+```
+
+— the parent's link count bumped for a `..` that was never written, and a
+directory with no entries at all. Upstream's `mkdir()` ignores the same return
+and **can afford to**: it *is* the system call, so `u_error` reaches the user
+and `mkdir(1)` prints something. Here the value died in the wrapper.
+
+So this reports rather than unwinds. The damaged directory is not the defect —
+it is exactly what a V7 kernel leaves when that write fails, and what `fsck`
+exists to repair. The **success reply** was the defect. `u_error` is saved
+across the `iput`, because a filesystem that has just refused a write will
+likely refuse the inode flush too, and the second failure would otherwise
+overwrite the first.
+
+The two hid each other exactly as the audit predicted: the panic fired first, so
+nothing ever reached the `mkdir`.
+
+### The test, and which case is the guard
+
+Its own 200-block image and its own server, because the point is to exhaust the
+free list and every other case depends on the shared image's accounting being
+exact. Five cases; `streams` 592 → 597.
+
+**"The write fails" is not the guard.** It passes whether or not the server
+survives, because a server that dies mid-write also looks like a failed write
+from the client. The guards are *the server is still alive* and *it still
+answers a read* — measured by mutation: reverting the `lbolt` guard fires those
+two and leaves the write case green.
+
+And the image is deliberately **not** asserted clean afterwards, only still
+*readable* by `icheck` — a server that died mid-write could have left a
+superblock nothing can parse, and that is the thing worth ruling out.

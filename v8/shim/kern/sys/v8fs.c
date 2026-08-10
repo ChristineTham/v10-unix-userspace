@@ -350,10 +350,61 @@ fustrlen(caddr_t addr)
  *
  * At pri <= PZERO (bio.c's PSWP and PRIBIO waits) it always returns normally,
  * which is upstream slp.c:61-65.
+ *
+ * ------------------------------------------------------------------------
+ * AND THE SURVEY ABOVE MISSED THE ONE CALLER THAT CAN ACTUALLY FIRE, WHICH
+ * KILLED THE SERVER.
+ *
+ * It lists the four PINOD waits -- all unreachable in a single-threaded
+ * server, because nothing else is running to hold a lock -- and attributes the
+ * PRIBIO waits to bio.c's.  `alloc.c:194' is in neither list.  It is the
+ * out-of-space kludge, and Bell Labs label it one in capitals:
+ *
+ *	nospace:
+ *		fserr(fp, "file system full");
+ *		/-* THIS IS A KLUDGE... *-/
+ *		for (i = 0; i < 5; i++)
+ *			sleep((caddr_t)&lbolt, PRIBIO);
+ *		u.u_error = ENOSPC;
+ *
+ * MEASURED, not reasoned: `cat big > /mnt/x' on a 200-block image printed
+ * "file system full" and then `panic: tsleep: no device below, and no
+ * timeout', and the server exited 2 -- taking every other client's connection
+ * with it, not just the writer's.  The image survived (icheck and fsck clean
+ * afterwards), so it is availability rather than corruption, and it is
+ * reachable from an ordinary program with no privilege at all.
+ *
+ * WHY IT WAS INVISIBLE UNTIL NOW: before §8a step 5f nothing could write, so
+ * alloc() could never reach nospace.  A second consumer arriving at a guard
+ * argued for the first one -- slp.c's panic comment reasons entirely about
+ * streams ("a driver that forgot v8k_drvfd()"), which is a true and complete
+ * account of every caller that existed when it was written.
+ *
+ * THE FIX IS THE CHANNEL, AND IT IS PROVABLE RATHER THAN PROBABLE.  `lbolt' is
+ * woken in exactly one place in the whole 18k-line kernel -- clock.c:290, the
+ * clock interrupt handler -- and this port has no clock interrupt and does not
+ * import clock.c.  So a sleep on lbolt here can never wake, which is the same
+ * form of argument slp.c's panic makes about a stream with no device, reaching
+ * the opposite verdict because the caller is different.  alloc.c:194 is the
+ * only sleeper on it in the imported tree; both facts are greps, re-run them
+ * after importing more of sys/.
+ *
+ * RETURNING IS NOT A SEMANTIC CHANGE, because the wait is futile by
+ * construction.  Upstream sleeps five ticks hoping ANOTHER PROCESS frees a
+ * block; here the caller is the only thing running, so nothing can free one
+ * while it waits, and the loop is guaranteed to fall through to ENOSPC.  Same
+ * observable, without five seconds of dead time in a file server.  What is
+ * NOT safe is a future caller that sleeps on lbolt inside a condition loop --
+ * alloc.c's is a bounded `for' -- and there is no way to detect that here, so
+ * it is written down instead.
  */
+extern int lbolt;			/* systm.h:11, a common; clock.c:290 wakes it */
+
 void
 sleep(caddr_t chan, int pri)
 {
+	if (chan == (caddr_t)&lbolt)
+		return;
 	if (tsleep(chan, pri, 0) == TS_SIG && pri > PZERO)
 		longjmp(u.u_qsav);	/* slp.c:78 -- NOTREACHED */
 }

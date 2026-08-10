@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2085 cases, 2084 on a host whose $TMPDIR
+make test             # all 17 suites (2090 cases, 2089 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -754,6 +754,47 @@ things generalise, and three are about a sentence rather than about code:
   while the declaration still said `int iinit()`. Deleted rather than corrected:
   the fix for an unconsumed declaration is not a better declaration. A mixed line
   is how the dead ones keep cover.
+
+**AND FILLING THE IMAGE KILLED THE SERVER, WHICH IS A GUARD ARGUED FOR ONE
+CONSUMER MEETING A SECOND WITH THE OPPOSITE ANSWER.** `cat big > /mnt/x` on a
+200-block image printed `file system full` and then `panic: tsleep: no device
+below, and no timeout`; the server exited 2 and **every** client's connection
+dropped, not just the writer's. Reachable from an unprivileged program; the
+image survives, so it is availability rather than corruption. Bell Labs'
+out-of-space path is a kludge they label one in capitals — `alloc.c:187-195`
+sleeps five clock ticks on `lbolt` hoping another process frees a block — and
+`v8fs.c`'s `sleep()` maps that onto a `tsleep` whose panic comment reasons
+**entirely about streams**, which was a true and complete account of every
+caller that existed when it was written. Four things:
+
+- **THE SURVEY LISTED EVERYTHING EXCEPT THE ONE THAT CAN FIRE.** `v8fs.c`'s
+  comment enumerates the sleepers as `iget.c:93` and `alloc.c:89,215,295`
+  "waiting for a locked inode" and attributes the rest to "bio.c's". All four
+  of those are unreachable in a single-threaded server — nothing else is
+  running to hold a lock — and `alloc.c:194`, the only reachable one, is in
+  neither list. A survey that enumerates callers can miss the only live one.
+- **THE FIX IS PROVABLE, NOT PROBABLE, AND IT IS TWO GREPS.** `alloc.c:194` is
+  the only sleeper on `lbolt` in the imported tree, and `clock.c:290` — the
+  clock interrupt — is the only waker in the whole 18k-line kernel, which this
+  port neither has nor imports. So that sleep can never wake, which is the same
+  *form* of argument `slp.c`'s panic makes about a stream with no device,
+  reaching the opposite verdict because the caller is different. Returning
+  immediately is not a semantic change: upstream waits for **another process**
+  to free a block, and here the caller is the only thing running, so the loop is
+  guaranteed to fall through to ENOSPC either way.
+- **TWO DEFECTS WERE HIDING EACH OTHER, and fixing the first made the second
+  live** — predicted by the auditor and then confirmed. `kmkdir` never consulted
+  `u.u_error` after `writei`, so on a full image **`mkdir` exited 0** for a
+  directory `fsck` calls damaged. Upstream ignores the same return and **can
+  afford to**, because it *is* the system call and `u_error` reaches the user;
+  here it died in the wrapper. The damaged directory is not the defect — it is
+  what a V7 kernel leaves and what `fsck` repairs — the **success reply** was.
+- **"THE WRITE FAILS" IS NOT THE GUARD; "THE SERVER IS ALIVE" IS.** A server
+  that dies mid-write looks exactly like a failed write from the client, so the
+  obvious case passes either way. Measured: reverting the fix fires *the server
+  is still alive* and *it still answers a read*, and leaves the write case
+  green. Nor is the image asserted clean afterwards — only still **readable**,
+  which is the thing a mid-write death would actually have destroyed.
 
 **AND THE MUTATION RULES GAINED TWO, BOTH FROM THE HARNESS RATHER THAN THE
 CODE.** The existing entries cover the restore side; these are new:

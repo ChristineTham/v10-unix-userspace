@@ -2989,6 +2989,87 @@ if [ "$wready" = 1 ]; then
 fi
 fi	# the writable server section
 
+# ===========================================================================
+# 11. WHAT HAPPENS WHEN THE DISK FILLS UP, which before this was: the server
+#     DIED, and took every other client's connection with it.
+#
+# Its own image and its own server, because the whole point is to exhaust the
+# free list and every case above depends on wimg's accounting being exact.
+# 200 blocks is enough to reach nospace in about a second.
+#
+# WHY IT WAS UNREACHABLE UNTIL NOW.  Bell Labs' out-of-space path is a kludge
+# they label one in capitals (alloc.c:187-195): print a message, sleep five
+# clock ticks in the hope another process frees a block, then ENOSPC.  This
+# port maps sleep() onto tsleep(), which PANICS when there is no device below
+# and no timeout -- correctly, for the streams that were its only caller when
+# it was written.  alloc.c:194 is a second caller with a different answer:
+# `lbolt' is woken in exactly one place in the whole kernel (clock.c:290, the
+# clock interrupt) and this port has neither the interrupt nor the file, so
+# the sleep can never wake, and the wait is futile anyway because the caller
+# is the only thing running.  Before §8a step 5f nothing could write, so
+# alloc() could never reach nospace at all.
+FILLTMP=$TMP/fill
+mkdir -p "$FILLTMP"
+printf 'x\n' > "$FILLTMP/seed"
+printf '/dev/null\n200 32\nd--777 0 0\nhello\n---644 0 0 %s\n$\n' \
+	"$FILLTMP/seed" > "$FILLTMP/proto"
+if ! ( cd "$FILLTMP" && V8ROOT=$ROOT/rootfs "$MKFS" img proto ) \
+     >"$FILLTMP/mkfs.log" 2>&1; then
+	bad "fill: mkfs failed" "$(head -3 "$FILLTMP/mkfs.log")"
+else
+rm -f "$FILLTMP/sock"
+( cd "$FILLTMP" && exec "$V8FSD" sock img ) > "$TMP/fill.out" 2>&1 &
+FPID=$!
+fready=0
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+	grep -q "^v8fsd ready" "$TMP/fill.out" 2>/dev/null && { fready=1; break; }
+	kill -0 $FPID 2>/dev/null || break
+	sleep 0.2
+done
+if [ "$fready" != 1 ]; then
+	bad "fill: the server did not come up" "$(head -3 "$TMP/fill.out")"
+else
+f8() { ( cd "$FILLTMP"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/mnt=sock"
+	 export V8ROOT V8MOUNT; deadline "$@" ); }
+
+awk 'BEGIN{for(i=0;i<20000;i++) printf "line %05d padding padding padding\n", i}' \
+	> "$FILLTMP/big"
+f8 "$SH" -c 'cat big > /mnt/fill' >/dev/null 2>&1
+check "a write that fills the image fails"	"1" \
+	"$(f8 "$SH" -c 'cat big > /mnt/fill' >/dev/null 2>&1; echo $?)"
+# THE LOUD ONE.  Measured before the fix: `panic: tsleep: no device below, and
+# no timeout', server exit 2, and every OTHER client's connection dropped
+# mid-transaction -- so this is availability rather than a wrong answer, and
+# reachable by an unprivileged program.
+check "and the server is still alive"		"alive" \
+	"$(kill -0 $FPID 2>/dev/null && echo alive || echo dead)"
+# ...and alive is not the same as working.  A server that survived the write
+# but lost its buffer cache would pass the case above.
+check "...and still answers a read"		"x" \
+	"$(f8 "$CAT" /mnt/hello 2>&1)"
+# AND THE SECOND DEFECT, WHICH THE FIRST ONE HID.  kmkdir calls writei for the
+# `.' and `..' entries and never looked at u.u_error, and do_create tests only
+# for a null inode -- so on a full image the server answered SUCCESS for a
+# directory fsck calls damaged (parent link count bumped for a `..' that was
+# never written; the directory itself SIZE=0).  Upstream's mkdir() ignores the
+# same return, and can afford to: it IS the system call, so u_error reaches the
+# user.  Here it died in the wrapper.
+check "mkdir on a full image reports failure"	"1" \
+	"$(f8 "$ROOT/rootfs/bin/mkdir" /mnt/d >/dev/null 2>&1; echo $?)"
+
+sleep 0.3
+kill $FPID 2>/dev/null; wait $FPID 2>/dev/null
+# The image is NOT clean here and must not be asserted so: namei's NI_MKDIR arm
+# had already made the entry before writei failed, which is exactly the state a
+# V7 kernel leaves and what fsck exists to repair.  What IS asserted is that
+# icheck can still read it -- a server that died mid-write could have left a
+# superblock nothing can parse.
+check "and the image is still readable by icheck"	"1" \
+	"$( cd "$FILLTMP" && fsdeadline "$ROOT/rootfs/etc/icheck" img 2>&1 |
+	    head -200 | grep -c '^img' )"
+fi
+fi	# the fill section
+
 fi	# mkfs succeeded
 fi	# mkfs exists
 

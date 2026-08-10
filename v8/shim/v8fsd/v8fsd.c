@@ -686,6 +686,41 @@ kmkdir(struct inode *dir, char *name, int mode)
 	u.u_segflg = 1;
 	iupdat(ip, &v8k_time, &v8k_time, 1);	/* sys2.c:253, see above */
 	writei(ip);
+	/*
+	 * writei's ERROR IS ONE UPSTREAM CAN AFFORD TO DROP AND THIS WRAPPER
+	 * CANNOT, and the difference is that upstream's mkdir() IS the system
+	 * call.  sys2.c:254 ignores the return too -- but u.u_error is the
+	 * syscall's own error slot, so it reaches the user and mkdir(1) prints
+	 * something.  Here the value dies in this function, do_create tests
+	 * only `nip == NULL', and the server answers Rcreate.
+	 *
+	 * MEASURED, and only after the lbolt panic beside it was fixed --
+	 * the two hid each other exactly as the audit predicted.  On a full
+	 * image, `mkdir /mnt/d' exited 0 and fsck said:
+	 *
+	 *	LINK COUNT DIR I=2  ... COUNT 3 SHOULD BE 2
+	 *	LINK COUNT DIR I=47 ... COUNT 2 SHOULD BE 1
+	 *	SIZE=0
+	 *
+	 * -- the parent's link count bumped for a `..' that was never written,
+	 * and a directory with no entries at all.  The success reply is the
+	 * defect; the damaged directory is not, because it is exactly what a
+	 * V7 kernel leaves when this write fails and what fsck exists to
+	 * repair.  So this reports rather than unwinds.
+	 *
+	 * u_error IS SAVED ACROSS iput, because iput runs IUPDAT and this is
+	 * a filesystem that has just refused a write -- letting the second
+	 * failure overwrite the first would report ENOSPC as whatever the
+	 * inode flush hit.  The iput itself mirrors the `it existed' arm
+	 * above, which also releases a locked inode without clearing ILOCK.
+	 */
+	if (u.u_error) {
+		int e = u.u_error;
+
+		iput(ip);
+		u.u_error = e;
+		return (NULL);
+	}
 	ip->i_flag &= ~ILOCK;
 	return (ip);
 }

@@ -2833,6 +2833,23 @@ Ordered so that value lands before risk, and so each step is testable alone.
    `chdir` is still the one gap the client cannot close alone, because nothing
    in the shim tracks a working directory.
 
+   **AND FILLING THE IMAGE KILLED THE SERVER**, which 5f made reachable and
+   5f-b's audit found. Bell Labs' out-of-space path is a kludge they label one
+   in capitals -- `alloc.c:187-195` sleeps five clock ticks on `lbolt` hoping
+   another process frees a block -- and this port maps `sleep()` onto a
+   `tsleep` that PANICS with no device below and no timeout. `cat big > /mnt/x`
+   on a 200-block image took the whole server down, dropping every client's
+   connection rather than only the writer's. The panic is right for the streams
+   its comment reasons about; `alloc.c:194` is a second caller with a different
+   answer, and the answer is provable in two greps: that line is the only
+   sleeper on `lbolt` in the imported tree, and `clock.c:290` -- the clock
+   interrupt -- is its only waker in the whole kernel, which this port neither
+   has nor imports. **And a second defect was hiding behind it**: `kmkdir`
+   never consulted `u.u_error` after `writei`, so once the panic was gone,
+   `mkdir` on a full image exited **0** for a directory `fsck` calls damaged.
+   Upstream ignores the same return and can afford to, because it IS the
+   syscall and `u_error` reaches the user. `streams` 592 -> 597.
+
    **Step 5f-b closed those three, and they are ONE MESSAGE.** A Twstat carries
    a whole stat and the server applies whichever fields are not the all-ones
    "do not touch" sentinel, so chmod is a wstat setting `s_mode`, chown one

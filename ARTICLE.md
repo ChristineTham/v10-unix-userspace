@@ -2333,6 +2333,58 @@ that had never been changed. They were caught only because the harness hashes
 the artefact and checks it moved — which is the difference between "the
 mutation did not compile" and a comfortable, false "the guard did not fire".
 
+### And then the disk filled up
+
+The auditor's other finding was not a wrong answer but a dead server. Writing
+until a mounted image runs out of space printed `file system full` and then
+`panic: tsleep: no device below, and no timeout`, and the process exited —
+dropping *every* client's connection, not just the writer's. An ordinary
+program with no privileges could do it.
+
+Every link in that chain was correct for the caller it was written for, which
+is what makes it worth describing. Bell Labs' out-of-space path is a kludge and
+they say so in capitals: print a message, sleep five clock ticks in the hope
+that some other process frees a block, then fail with ENOSPC. This port maps
+`sleep` onto its own `tsleep`, which panics when there is no device underneath
+and no timeout — and the comment above that panic reasons, carefully and at
+length, entirely about *streams*. It was a complete account of every caller
+that existed when it was written. Then a filesystem arrived.
+
+The fix turned out to be provable rather than a judgement call, and it took two
+greps. The channel being slept on is `lbolt`, the clock tick. Exactly one line
+in the imported tree sleeps on it — the out-of-space kludge — and exactly one
+line in the entire eighteen-thousand-line kernel wakes it: the clock interrupt
+handler, in a file this port does not have and does not import. So a sleep on
+that channel can never wake. That is the same shape of argument the panic
+itself makes about a stream with nothing below it, reaching the opposite
+verdict because the caller is different. And returning immediately changes no
+observable, because the wait is futile by construction: upstream is waiting for
+*another process*, and in a single-threaded file server the caller is the only
+thing running, so the loop was always going to fall through to ENOSPC.
+
+Behind it was a second defect that the first one had been hiding, which the
+audit predicted in so many words. The server's directory-creation wrapper calls
+`writei` to lay down `.` and `..` and never looked at the error. Upstream's
+`mkdir` ignores the same return value and can afford to, because upstream's
+*is* the system call — the error lands in `u_error`, which is where the user's
+`mkdir` reads it from. Here it died in the wrapper, and the server replied
+success. With the panic gone, this became reachable for the first time: `mkdir`
+on a full image exited 0, and `fsck` found a parent whose link count had been
+incremented for a `..` that was never written, and a directory of size zero.
+
+The damaged directory is not the bug. It is precisely what a V7 kernel leaves
+behind when that write fails, and repairing it is what `fsck` is for. The
+success reply was the bug.
+
+One more thing about the test for it, because the obvious case is worthless.
+"Writing until full fails" passes whether or not the server survives — a
+process that dies mid-write looks exactly like a failed write from the other
+end of the socket. What discriminates is asking whether the server is *still
+there*, and then whether it can still answer a read; mutation confirms that
+reverting the fix turns those two red and leaves the write case green. And the
+image is not asserted clean afterwards, only still readable, because a clean
+image is not what a mid-write death would have taken away.
+
 
 ## What is left
 
