@@ -576,7 +576,20 @@ because there is nothing to inherit.
   one line each, rather than getting slots — a slot claims the operation is
   implemented. `access()` is implemented over `t_stat`; `readlink` is `EINVAL`
   (a V7 image holds no symlink); **`chdir` is the one genuine gap**, since
-  nothing tracks a working directory.
+  nothing tracks a working directory — and the costing for closing it was
+  **too small**, re-measured. `..` AT A MOUNT POINT DOES NOT ESCAPE AND THE
+  SERVER CANNOT MAKE IT: `ls /mnt/sub/..` correctly gives the mount root, and
+  `ls /mnt/..` gives **the image root again**, not the jail's `/`. That is V7
+  being right — a filesystem root's `..` points at itself — and on a real Unix
+  it is `namei`'s mount table that fixes it when a walk crosses a mount
+  upward. There is no kernel here, and the image does not know it is mounted,
+  so the client must resolve `..` at the mount point **lexically**. And
+  `getwd(3)` is the hard consumer because it *writes*: `getwd.c` opens `..`,
+  reads it, **`chdir("..")`s**, repeats, and chdirs back — every level is
+  another chdir to intercept, and its loop matches `d_ino` against `stat(".")`,
+  which puts the folded-inode machinery on the same comparison. Plus the cwd
+  must survive `exec`, which is `vfs.c:167`'s lesson: it has to live in the
+  ENVIRONMENT like `V8MOUNT`, and then two things there have to agree.
 
   **§8a step 5f TURNED FOUR OF THEM INTO SLOTS AND THE COUNT WAS NEVER ELEVEN.**
   An auditor counted fourteen: nine that refuse (ten `MOUNTED()` calls, because

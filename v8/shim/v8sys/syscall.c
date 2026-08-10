@@ -766,6 +766,36 @@ int v8s_unlink(char *p)
  * would find every relative name resolving against the host.  That is the one
  * gap the client cannot close on its own -- PLAN.md §8a step 5f -- and until
  * it is closed the honest answer is no.
+ *
+ * AND THE COSTING FOR CLOSING IT WAS TOO SMALL, RE-MEASURED.  The first
+ * estimate was "one function plus chdir": a v8fs_cwd[] that is empty whenever
+ * the process sits in a real host directory, consulted by v8fs_typefor for a
+ * relative path only.  Three things say it is bigger, and the first two were
+ * measured rather than reasoned:
+ *
+ *   `..' AT A MOUNT POINT DOES NOT ESCAPE, AND THE SERVER CANNOT MAKE IT.
+ *   Measured against a real v8fsd: `ls /mnt/sub/..' correctly lists the mount
+ *   root, and `ls /mnt/..' lists THE IMAGE ROOT AGAIN rather than the jail's /
+ *   (bin dev etc lib unix usr).  That is V7 being right -- a filesystem root's
+ *   `..' points at itself -- and on a real Unix it is namei's mount table that
+ *   fixes it up when a walk crosses a mount upward.  There is no kernel here to
+ *   do that, and the image does not know it is mounted anywhere, so `cd /mnt &&
+ *   cd ..' would leave a program stuck inside the image.  The client has to
+ *   resolve `..' at the mount point LEXICALLY, before the walk.
+ *
+ *   getwd(3) IS THE HARD CONSUMER AND IT WRITES.  src/libc/gen/getwd.c does not
+ *   merely read its way up: it opens `..', reads it, `chdir("..")'s, repeats,
+ *   and chdirs back at the end -- so every level of a pwd(1) inside a mount is
+ *   another chdir to intercept, and its central loop matches a directory
+ *   entry's d_ino against stat(".")  , which puts the folded-inode machinery
+ *   and the mount's qid paths on the same comparison.
+ *
+ *   AND THE cwd MUST SURVIVE exec, which is vfs.c:167's recorded lesson about
+ *   the descriptor table: a table in process memory dies when a program
+ *   replaces its image.  V8MOUNT survives because it is in the ENVIRONMENT; a
+ *   tracked cwd would have to be too, written on every chdir and carried by
+ *   v8s_execve -- which is a second thing in the environment that has to agree
+ *   with the first.
  */
 int v8s_chdir(char *p)
 {
