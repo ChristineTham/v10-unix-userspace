@@ -1704,6 +1704,100 @@ Which is the whole argument for the acceptance test, arriving from the
 direction I had not expected. I put those three programs there to catch the
 kernel lying. Within an hour they caught the probe.
 
+### `cat` has a buffer called `buf`, and so does the kernel
+
+The last piece was supposed to be small. Everything above is reached by calling
+the kernel's functions directly from a test harness; what was missing was
+*dispatch* — a fourth filesystem type in the shim, so that an ordinary V8
+program's `open("/mnt/something")` lands in `namei` instead of on the Mac.
+Three types already existed. This was going to be the fourth.
+
+The fourth type has to call `namei` and `iget` and `readi`, so whichever
+program opens the file has to be linked against the kernel. I tried it on the
+smallest program I could think of. `cat`.
+
+```
+ld: warning: tentative definition of '_buf' with size 4096
+    from bin/cat.o is being replaced by real definition of
+    smaller size 8 from libv8kern.a[18](main.o)
+```
+
+`cat.c`, line 10, is `char buf[BLOCK]` with `BLOCK` defined as 4096. The
+kernel's `main.c` has `struct buf *buf`, a pointer to the head of the buffer
+cache. In K&R C, `char buf[4096]` with no initialiser is a *tentative*
+definition — a common symbol — and a linker presented with a common on one side
+and a real definition on the other is supposed to prefer the real one. That is
+not a bug in `ld`. That is `ld` working.
+
+So `cat`'s four-kilobyte buffer became an eight-byte pointer, and
+`read(0, buf, 4096)` began writing four kilobytes into it.
+
+I ran it. It printed its input back, byte for byte, and died of SIGSEGV.
+
+Then I linked it a second way — not forcing the whole archive in, just letting
+one undefined reference pull the kernel object in the way a real build would.
+Same warning, same eight-byte `buf`. This time it printed its input back, byte
+for byte, and **exited 0**.
+
+The difference is where the other 4088 bytes landed. `nm -n` on the binary:
+
+```
+000000010001d588 D _buf
+000000010001d590 D _buffers
+000000010001d598 D _nbuf
+```
+
+Eight bytes past `buf` is `buffers`. Sixteen bytes past is `nbuf`. `cat`'s first
+read overwrites the buffer cache's own pointers and returns success.
+
+I swept the rest of the world: 297 program objects against the archive's 266
+names. **Fifty-six collisions, across twenty-nine programs, on twenty-seven
+distinct names — and twenty-five of the fifty-six are silent.** The names are
+not exotic. They are `buf`, `bread`, `alloc`, `bmap`, `tty`, `file`, `bwrite`,
+`getblk`, `iput`, `itrunc`, `panic`, `copyin`, `copyout`. `buf` alone hits eight
+programs. The filesystem checkers are the worst affected, for a reason that is
+almost funny: `icheck`, `dcheck`, `fsck`, `mkfs`, `clri` and `restor` are
+programs that reimplement the kernel's algorithms, so of course they use the
+kernel's variable names.
+
+There is a way to hide symbols — merge the archive into one object and export
+only the handful of names beginning `v8k_`. It works for twenty-two of the
+twenty-seven. The other five are common symbols, and `ld` will not make a common
+symbol private. Two commons of the same name merge silently, taking the larger
+size, with no warning at all. So the mitigation converts the loud half of the
+problem into the quiet half of the problem.
+
+And then, reading back through the shim for something else, I found this comment
+sitting in `vfs.c`, written months earlier for a different reason:
+
+> IT DOES NOT SURVIVE A PROGRAM REPLACING ITSELF, and that is fine today and
+> will not be later.
+
+Which settles it independently of every symbol. A descriptor into a mounted
+image would be an inode pointer and an offset held in the program's own memory.
+`exec` throws that memory away. So `cat /mnt/a > /mnt/b` — where the shell opens
+the destination and `cat` inherits it — cannot work in the client, no matter how
+the linker is persuaded to behave.
+
+Two roads, and they arrive at the same place: the kernel has to be in a
+different process from the programs, which is what the plan said the wire
+protocol was for, filed under "eventually". It is not eventually. It is the
+requirement, and the mount is the thing that forces it.
+
+I did not build the mount. What I built instead is the sweep that killed it,
+as a test — because the argument for the server is a measurement, and a
+measurement nobody re-runs is just a story I told myself in August. It asserts
+two things: that no V8 binary links the kernel archive, and, more generally,
+that no program's common symbol has resolved into a library's text. Six such
+pairs exist in the live build today — `od`'s `max`, `dc`'s `log10`, `mkfs`'s
+`utime`, `nroff` and `troff`'s `nlist`, `sh`'s `tmpnam` — and all six are
+correct, purely because nothing currently pulls the library member in. I proved
+the guard can fail by relinking `od` so that the library's `max()` wins, and
+watching it go red.
+
+The thing I keep having to relearn is that the interesting output of costing a
+step is not always the step.
+
 
 ## What is left
 
@@ -1728,9 +1822,13 @@ What remains, in rough order:
   name, grown past the superblock's cached free list so the on-disk chain has to
   be followed, deleted, and the block and inode accounting exactly restored,
   with `icheck`, `dcheck` and `fsck` pronouncing the result a filesystem. What
-  remains is the **mount**: the shim's `vfs.c` gaining a fourth filesystem type,
-  so that an ordinary V8 program's `open(2)` lands in this code instead of on
-  the host, and `cat` can read a file out of an image without a probe.
+  remains is the **mount** — and costing it is what produced the section above.
+  It cannot be a fourth type in the shim's `vfs.c`, because that puts the kernel
+  in the client and twenty-nine programs share a global name with it; and it
+  could not survive `exec` even if they did not. So the mount is a **server**,
+  one connection per open file so that the socket itself is the descriptor and
+  nothing has to be inherited through a table. That is the next real piece of
+  work, and it is bigger than the step it replaces.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.
