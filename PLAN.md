@@ -2721,6 +2721,44 @@ Ordered so that value lands before risk, and so each step is testable alone.
    about the shim's dispatch rather than about Bell Labs' code, and because it
    needs `smount`, which is not imported.
 
+   **STEP 5e WAS COSTED AND IT CANNOT BE BUILT IN-PROCESS. The mount is the
+   thing that forces the server, and there are two independent reasons.**
+
+   The fourth type has to call `namei`, `iget` and `readi`, so the client has
+   to link `libv8kern`. Measured, 297 program objects against the archive's
+   266 defined names: **56 collisions, 33 objects, 29 programs, 27 names** —
+   and **25 of the 56 are silent**. `cat.c:10`'s `char buf[4096]` is a K&R
+   tentative definition, i.e. a common; `shim/kern/sys/main.c:213`'s
+   `struct buf *buf` is a real definition; the linker prefers the real one, and
+   `cat`'s buffer becomes an eight-byte pointer. It needs no `-force_load` — one
+   undefined reference to a kernel entry point pulls `main.o` in. Whether you
+   *notice* is a property of the layout: under `-force_load` it is SIGSEGV, and
+   in the natural link it is **exit 0 with byte-identical output**, having
+   scribbled 4088 bytes over `_buffers` and `_nbuf`, the buffer cache's own
+   pointers. The names are the 1985 vocabulary — `buf bread alloc bmap tty file
+   bwrite getblk iput itrunc panic copyin copyout` — and the checkers are
+   over-represented because they reimplement the kernel's algorithms under the
+   kernel's names. `ld -r -exported_symbols_list` hides 22 of the 27 and cannot
+   hide the other five, because a common cannot be made a private extern.
+
+   The second reason needs no measurement and `shim/v8sys/vfs.c:167` had already
+   written it down: the descriptor table **does not survive `exec`**. A v8fs
+   descriptor is an inode pointer and an offset in process memory, so
+   `cat /mnt/a > /mnt/b` — `sh` opens the target, `cat` inherits it — is
+   impossible in the client however the symbols are arranged.
+
+   So the mount is **step 5e: a v8fs server**, and the 9P seam this section
+   opens with stops being the eventual shape and becomes the requirement. Three
+   things are decided by the above rather than left open: the server is a host
+   binary, so the collisions never arise; it is the single authority for the
+   buffer cache, so two writers cannot corrupt an image; and **the fid must live
+   in something that survives `exec`**, which points at one connection per open
+   file — the socket then *is* the descriptor, `getpeername(2)` identifies it
+   after an exec, and no client-side table has to be inherited.
+   `shim/kern/NOTES.md` has the full measurement; `tests/kmemu` asserts that no
+   V8 binary links `libv8kern`, so re-opening the in-process option means
+   deleting a case that says why it was closed.
+
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
 7. **FSKit host client**, with Phase 5. Public API since macOS 15.4, no kernel
    extension; lets the host mount a V8 image in Finder and disposes of the
@@ -2823,7 +2861,7 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
 | 8a.4 `mkfs` | **done** | `mkfs` writes a real free-list/1024 V8 filesystem and **all ten of the "raw VAX disk" programs run** — `mkfs icheck dcheck clri fsck ncheck quot dump restor dumpdir`, none of which needed a mount, because each takes its subject as an argument. The round trip closes: dump → tape → restor → a second filesystem the other five pronounce clean. `mkfs` 146/146. It began by finding that **every on-disk struct in the tree was the wrong size** and ended by finding that **an `int` never wrapped at 32 bits** — plus, on the way, two of this port's own `time_t`-seam bugs in both directions, three of upstream's address-0 assumptions, and one in our `doprnt` |
 
-| 8a.5 v8fs | **done, less a mount** | V8's own filesystem code RUNS. Step 5c reads: `mkfs(8)` writes an image and Bell Labs' kernel walks `namei → fsnami → dsearch → iget → bmap → readi → bread` to a driver, with `cmp` confirming 28000 bytes two directories down and 28 blocks long — so a subdirectory and `bmap`'s **indirect** arm. Step 5d writes: `writei`, `bmap`'s **allocating** arm, `alloc()`/`free()` including the **free-list chain**, `ialloc()`/`ifree()`, `itrunc`, and `namei` with `NI_CREAT`/`NI_DEL` — a file created by name, grown past the superblock's cached free list, deleted, and the accounting exactly restored. The acceptance test is **icheck, dcheck and fsck**, three programs that know nothing about the probe. `streams` 111 → 372. Six imported files, one new stand-in (`shim/kern/sys/main.c`, for `sys/main.c` + `machdep.c` + `param.c`). **No MOUNT yet**: everything is reached by calling the kernel directly, so a fourth type in `vfs.c` is the next step. See S8a step 5 |
+| 8a.5 v8fs | **done, less a mount** | V8's own filesystem code RUNS. Step 5c reads: `mkfs(8)` writes an image and Bell Labs' kernel walks `namei → fsnami → dsearch → iget → bmap → readi → bread` to a driver, with `cmp` confirming 28000 bytes two directories down and 28 blocks long — so a subdirectory and `bmap`'s **indirect** arm. Step 5d writes: `writei`, `bmap`'s **allocating** arm, `alloc()`/`free()` including the **free-list chain**, `ialloc()`/`ifree()`, `itrunc`, and `namei` with `NI_CREAT`/`NI_DEL` — a file created by name, grown past the superblock's cached free list, deleted, and the accounting exactly restored. The acceptance test is **icheck, dcheck and fsck**, three programs that know nothing about the probe. `streams` 111 → 372. Six imported files, one new stand-in (`shim/kern/sys/main.c`, for `sys/main.c` + `machdep.c` + `param.c`). **No MOUNT, and step 5e costed it and found it needs the SERVER**: a fourth type in `vfs.c` would have to link `libv8kern` into every client, and that is **56 symbol collisions over 29 programs, 25 of them silent** — `cat`'s `char buf[4096]` becomes an eight-byte pointer and the program exits 0 having overwritten the buffer cache's own pointers. Independently, `vfs.c:167` had already recorded that the descriptor table does not survive `exec`, so `> /mnt/f` could never work in the client. Both roads lead to the 9P server this section opens with. See S8a step 5 |
 
 `make test` runs everything — seventeen suites, **1767 cases**.
 

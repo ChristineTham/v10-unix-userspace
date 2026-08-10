@@ -378,7 +378,11 @@ argument arriving from the other direction. So: send the auditor at new shim
 code, and read its report for the sentences as well as the code.
 
 `libv8kern.a` is separate from `libv8sys.a` for libkmemu's reason plus a
-storage one: **240.7 KB** of zero-initialised storage, and `qinit()` dirties
+storage one — **and §8a step 5e found a third that is not a matter of degree at
+all: it cannot be linked into a V8 program, at any cost, because 29 of them
+share a global name with it and 25 of the 56 collisions are silent.** See the
+duplicate-definition entry above and `shim/kern/NOTES.md`. The storage figure:
+**240.7 KB** of zero-initialised storage, and `qinit()` dirties
 ~60 KB of pages. That figure said 85 KB, then 94 KB, then 95.8 KB; it grew when
 `streamio.c` brought `_streams`, `_u` and `_file`, again by exactly 1792 when
 `ttyld.c` brought `tty[NTTY]`, and now by **145 KB** when §8a step 5c gave the
@@ -1728,6 +1732,51 @@ with `libv8sys.a` by a deliberate arrangement `noprocfs.c:10` documents and
 nothing asserted. **A fix to a population bug is itself a population claim** —
 count with `find`, do not recall. Same shape as the crash probe's fix that
 added `/etc` and `/usr/lib/refer` and stopped one directory short.
+
+**AND THE POPULATION WAS WRONG AGAIN, FOR A THIRD TIME, AND THIS ONE KILLED A
+DESIGN.** "Pairwise between our own archives" is two of the three populations.
+The third is **a PROGRAM's own objects against an archive**, and nothing had
+ever swept it. §8a step 5e began by linking `libv8kern` into `cat`, since a
+v8fs mount needs `namei` in the client. `ld`:
+
+```
+tentative definition of '_buf' with size 4096 from bin/cat.o
+  is being replaced by real definition of smaller size 8
+  from libv8kern.a[18](main.o)
+```
+
+`cat.c:10` is `char buf[BLOCK]`, 4096. `shim/kern/sys/main.c:213` is
+`struct buf *buf`. Swept: **56 pairs, 33 objects, 29 programs, 27 names, and 25
+of the 56 are silent** — on the 1985 vocabulary (`buf bread alloc bmap tty file
+bwrite getblk iput itrunc panic copyin copyout`), with the checkers
+over-represented because they reimplement the kernel's algorithms under the
+kernel's names. Four things generalise:
+
+- **It needs no `-force_load`.** One undefined reference to a kernel entry
+  point pulls `main.o` in, and the collision is a consequence of the natural
+  link. The `-force_load` in `KMEMU_LDADD` makes it *more* likely, not
+  necessary.
+- **Whether you notice is a property of the LAYOUT.** The same two objects:
+  under `-force_load`, SIGSEGV (exit 139); in the natural link, **exit 0 with
+  byte-identical output**, having written 4088 bytes over `_buffers` and
+  `_nbuf` — the buffer cache's own pointers, which `nm -n` puts 8 and 16 bytes
+  past `_buf`. A test on the output passes either way.
+- **Hiding the symbols gets 22 of 27 and stops at exactly the wrong five.**
+  `ld -r -exported_symbols_list` makes the `T`/`D` names private; it **cannot
+  make a common a private extern**, so `bootime ecmx nswap runout tty` survive
+  — and common-against-common merges by taking the larger size with no
+  diagnostic at all. The mitigation converts the loud half into the quiet half.
+- **The verdict table needs two more rows.** Beside `T`/`T`, `C`/`T` and
+  `C`/`C`, the sweep found **`C`/`D`** (13 — the `cat` case, a common against
+  an *initialised* definition, which warns) and **`T`/`C`** (1, the same thing
+  inverted and silent).
+
+`tests/kmemu` now sweeps this third population too, and asserts the thing that
+actually matters: **in the built binary, a name the program declared as a common
+must live in program storage and not in `__TEXT`.** Six such pairs exist in the
+live link lines today (`od/max`, `dc/log10`, `mkfs/utime`, `nroff` and
+`troff/nlist`, `sh/tmpnam`) and all six resolve correctly — only because nothing
+pulls the archive member in. Derived every run, never transcribed.
 
 **AND A SUPPRESSION ARGUED FOR ONE THING COVERS A DIFFERENT THING: FOURTEEN
 MACROS WERE COMPILED AS CALLS TO UNDEFINED FUNCTIONS.** `KERNFLAGS` carries
