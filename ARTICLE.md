@@ -2385,6 +2385,40 @@ reverting the fix turns those two red and leaves the write case green. And the
 image is not asserted clean afterwards, only still readable, because a clean
 image is not what a mid-write death would have taken away.
 
+### Two smaller ones, and an honest nothing
+
+The audit's remaining two are worth a paragraph each, for opposite reasons.
+
+V7 re-checks what a file was opened for on *every* transfer, in a single line
+of `rdwr()`, and the server had a third of it: the read path checked only that
+the file was open at all, and the write path refused a read-only handle but not
+an execute-only one. So a handle that had proved nothing but execute permission
+could write to the file, and a program that opened a file write-only could read
+it. The interesting part is the shape of the fix. 9P defines its execute mode
+as "read, but check execute permission" — Plan 9's kernel has to read a binary
+in order to run it — so the two gates are *not* complements, and each direction
+needs a refusal case and a success case. A server that simply refused the
+execute mode outright would sail through a suite made only of refusals.
+
+It also needed a note about what it does *not* fix. The server runs as uid 0,
+so the kernel's own `access()` takes its root bypass and grants write
+permission on everything; the truncation the auditor measured happens before
+the change and after it. Only the gate is live, because a gate is a property of
+the handle rather than of the identity. Writing that down was more work than
+the fix, and it is the part that will still be true in a year.
+
+The last finding had no observable at all: one path-taking call still
+special-cased mounted paths inline instead of going through the switch, which
+left part of the switch with no caller and sent one operation to the host where
+its sibling went to the filesystem type. Nothing misbehaved, because the two
+roads happened to meet — which is exactly why an auditor found it and no test
+did. It gets no new test case, because a case for a change that alters no
+behaviour cannot fail, and this project's own rule is that a mutation which
+does not fire means the case is vacuous. What *does* have coverage is the one
+arm the move brought to life, and mutation says so: delete it, and a case about
+`rmdir` written years ago goes red, because V7's `rmdir` ends by unlinking a
+directory and macOS will not do that.
+
 
 ## What is left
 
