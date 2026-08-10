@@ -155,6 +155,14 @@ static const struct { int e; const char *name; } errnames[] = {
 	{ EFBIG, "EFBIG" },	{ ENOSPC, "ENOSPC" },	{ EROFS, "EROFS" },
 	{ EMLINK, "EMLINK" },	{ ENOTEMPTY, "ENOTEMPTY" },
 	{ ENAMETOOLONG, "ENAMETOOLONG" },
+	/*
+	 * ENOMEM is the server's OWN error -- gendir sets it when a listing
+	 * will not fit -- and it was missing, so it reached the client as
+	 * "EIO" through the fallback below.  That fallback is documented for a
+	 * FOREIGN server's prose; letting our own errno take it means the one
+	 * case where the string is exactly reversible was not.
+	 */
+	{ ENOMEM, "ENOMEM" },
 	{ 0, 0 }
 };
 
@@ -217,7 +225,7 @@ fidnew(struct conn *c, p9_u32 f)
 	struct fid *p;
 	int i;
 
-	if (f == P9_NOFID || fidof(c, f)) return (0);
+	if (f == P9_NOFID) return (0);
 	for (i = 0; i < NFID; i++) {
 		if (c->c_fid[i].f_fid != P9_NOFID) continue;
 		p = &c->c_fid[i];
@@ -298,8 +306,15 @@ itimes(struct inode *ip, p9_u32 *at, p9_u32 *mt)
 	struct dinode *dp;
 
 	*at = *mt = 0;
+	/*
+	 * bread does not return NULL -- bio.c has only `return(bp)', and getblk
+	 * sleeps rather than failing -- so the error is in the flags and there
+	 * is no pointer to check.  A NULL test was here and is gone: an
+	 * unconsumed guard standing in for a hazard that does not exist is the
+	 * unconsumed-component rule applied to a line, which fsprobe.c records
+	 * having got wrong the same way.
+	 */
 	bp = bread(ip->i_dev, itod(ip->i_dev, ip->i_number));
-	if (bp == NULL) return;
 	if (!(bp->b_flags & B_ERROR)) {
 		dp = bp->b_un.b_dino + itoo(ip->i_dev, ip->i_number);
 		*at = (p9_u32)dp->di_atime;
@@ -468,6 +483,31 @@ gendir(struct fid *f)
 	return (0);
 }
 
+/*
+ * Is `off' the start of an entry in the generated listing (or its end)?  Each
+ * entry begins with its own size[2], so the only way to know is to walk from
+ * the beginning -- there is no index, and building one would be a second
+ * description of the same bytes.
+ */
+static int
+dirboundary(struct fid *f, p9_u64 off)
+{
+	long pos = 0, sz;
+
+	/*
+	 * UNSIGNED, AND THE CAST TO long HAPPENS ONLY AFTER THIS TEST.  `off'
+	 * comes off the wire as a p9_u64; converting it to a signed long first
+	 * is what let every offset at or above 2^63 read as negative and pass.
+	 */
+	if (off > (p9_u64)f->f_dirlen) return (0);
+	while (pos < (long)off) {
+		if (f->f_dirlen - pos < 2) return (0);
+		sz = (long)f->f_dir[pos] | ((long)f->f_dir[pos + 1] << 8);
+		pos += 2 + sz;
+	}
+	return (pos == (long)off);
+}
+
 /* -------------------------------------------------------- 9P dispatch */
 
 /*
@@ -508,18 +548,22 @@ do_version(struct conn *c, p9_u32 tag, struct p9buf *in)
 		return;
 	}
 	/*
-	 * Tversion RESETS the connection -- the spec says every outstanding
-	 * fid is clunked.  It is the one message that may arrive in the middle
-	 * of a conversation and mean "start again".
+	 * VALIDATE BEFORE RESETTING, and the order is the fix rather than the
+	 * style.  Tversion resets the connection -- the spec says every
+	 * outstanding fid is clunked -- but the clunk loop used to run FIRST,
+	 * so a Tversion this server then refused had already thrown the
+	 * client's state away: it was told the negotiation failed and silently
+	 * lost every fid it held.  Measured by a review subagent.
 	 */
+	want = (long)msize;
+	if (want > P9_MSIZE) want = P9_MSIZE;
+	if (want < P9_HDRSZ + 64) { rerror(c, tag, EINVAL); return; }
+
 	{
 		int i;
 		for (i = 0; i < NFID; i++)
 			if (c->c_fid[i].f_fid != P9_NOFID) fidfree(&c->c_fid[i]);
 	}
-	want = (long)msize;
-	if (want > P9_MSIZE) want = P9_MSIZE;
-	if (want < P9_HDRSZ + 64) { rerror(c, tag, EINVAL); return; }
 	c->c_msize = want;
 
 	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rversion, tag);
@@ -556,7 +600,14 @@ do_attach(struct conn *c, p9_u32 tag, struct p9buf *in)
 	 * never negotiated.  Tauth answers Rerror for the same reason.
 	 */
 	if (afid != P9_NOFID) { rerror(c, tag, EPERM); return; }
-	if ((f = fidnew(c, fid)) == 0) { rerror(c, tag, EEXIST); return; }
+	/*
+	 * TWO WAYS TO FAIL, AND THEY WERE ONE.  fidnew used to refuse both a
+	 * fid already in use and a full table, and the caller reported EEXIST
+	 * for either -- so a client that had leaked fids was told it had made
+	 * a naming mistake.  Asked separately now.
+	 */
+	if (fidof(c, fid)) { rerror(c, tag, EEXIST); return; }
+	if ((f = fidnew(c, fid)) == 0) { rerror(c, tag, EMFILE); return; }
 
 	if ((ip = iget(rootdev, (ino_t)ROOTINO, 0)) == NULL) {
 		fidfree(f);
@@ -600,11 +651,28 @@ do_walk(struct conn *c, p9_u32 tag, struct p9buf *in)
 	if (f->f_omode >= 0) { rerror(c, tag, EINVAL); return; }
 
 	if (newfid == fid) nf = f;
-	else if ((nf = fidnew(c, newfid)) == 0) { rerror(c, tag, EEXIST); return; }
+	else if (fidof(c, newfid)) { rerror(c, tag, EEXIST); return; }
+	else if ((nf = fidnew(c, newfid)) == 0) { rerror(c, tag, EMFILE); return; }
 
 	ip = f->f_ip;
 	walked = 0;
 	for (i = 0; i < (int)nwname; i++) {
+		/*
+		 * A WALK ELEMENT IS ONE PATH COMPONENT, and nothing enforced
+		 * it.  kwalk hands the name to namei, which splits on `/' and
+		 * RESTARTS AT rootdir for a leading one (nami.c:65-71) -- so
+		 * "sub/deep" traversed two components and reported one qid, and
+		 * "/hello" from a fid on /sub escaped the directory it was
+		 * walked from.  Not a containment hole, because namei cannot
+		 * leave the served image, but the Rwalk qid count stops
+		 * describing the traversal, which is the thing a client uses to
+		 * tell how much of its path exists.  The empty name is refused
+		 * for the same reason: it is not a component.
+		 */
+		if (names[i][0] == '\0' || strchr(names[i], '/') != 0) {
+			u.u_error = ENOENT;
+			break;
+		}
 		if ((ip->i_mode & IFMT) != IFDIR) { u.u_error = ENOTDIR; break; }
 		if ((nip = kwalk(ip, names[i])) == NULL) break;
 		if (walked) iput(ip);		/* an intermediate we made */
@@ -767,7 +835,38 @@ do_read(struct conn *c, p9_u32 tag, struct p9buf *in)
 				return;
 			}
 		}
-		if ((long)off > f->f_dirlen) { rerror(c, tag, EINVAL); return; }
+		/*
+		 * ONE GUARD, AND IT WAS TWO UNTIL A MUTATION SAID SO.
+		 *
+		 * The bug was a REMOTE CRASH IN FOUR MESSAGES: `off' is a
+		 * p9_u64 off the wire and the test here was
+		 * `(long)off > f->f_dirlen', so every offset at or above 2^63
+		 * read as negative and passed.  `f_dirlen - off' then exceeded
+		 * the buffer and `f_dir + off' pointed BELOW it.  Measured on a
+		 * 219-byte listing: 2^64-1 returned 220 bytes starting one byte
+		 * before the buffer, -7973 returned 7973 bytes of heap, and
+		 * -2^40 was a SIGSEGV that took every other connection with it.
+		 * The file arm eight lines down had the guard all along
+		 * (`off > 0x7fffffffULL') -- the fix landed on one line and the
+		 * line beside it kept the assumption, which is this port's most
+		 * repeated shape.  Found by a review subagent, not by a case.
+		 *
+		 * The first fix was an unsigned range test HERE plus the
+		 * boundary walk below, and reverting the range test changed
+		 * nothing: the walk rejects a negative offset too, so the line
+		 * that looked like the fix was dead.  A mutation that does not
+		 * fire is the informative one.  So the range test moved INSIDE
+		 * dirboundary, where it happens before any cast to a signed
+		 * type, and there is one guard rather than two with one of them
+		 * unexercised.
+		 *
+		 * What it enforces is 9P's own rule, which the comment above
+		 * this function claimed and nothing implemented: a directory
+		 * offset must be 0 or one a previous read returned.  A read
+		 * three bytes into a stat does not return a truncated entry --
+		 * it returns a length field taken from the middle of a name.
+		 */
+		if (!dirboundary(f, off)) { rerror(c, tag, EINVAL); return; }
 		n = f->f_dirlen - (long)off;
 		if (n > (long)count) {
 			/*
@@ -952,7 +1051,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "v8fsd: cannot open %s\n", image);
 		return (2);
 	}
-	if ((i = v8k_imgattach(imgfd)) < 0) {
+	if (v8k_imgattach(imgfd) < 0) {
 		fprintf(stderr, "v8fsd: cannot register the image driver\n");
 		return (2);
 	}
@@ -962,8 +1061,25 @@ main(int argc, char **argv)
 	 * over a 1024-byte one.  mkfs writes 1024-byte blocks here, so the
 	 * minor must keep that bit clear or every BSIZE/BMASK/itod in the
 	 * kernel would describe a different disk.
+	 *
+	 * AND THE PACKING IS DONE IN imgdev.c, NOT HERE, BECAUSE makedev IN
+	 * THIS FILE IS THE HOST'S.  shim/kern/h/param.h defines makedev, major
+	 * and minor and warns that they "must not be replaced by the host's
+	 * <sys/types.h> versions, which unpack Darwin's 32-bit dev_t at a
+	 * different shift" -- and <sys/socket.h> above pulls in <sys/types.h>,
+	 * which redefines all three with no -Wmacro-redefined, because the
+	 * redefinition is inside a system header.  V8 shifts the major by 8 and
+	 * Darwin by 24, and dev_t here is a u_short, so `makedev(i, 0)' in this
+	 * translation unit is ZERO for every i.
+	 *
+	 * Latent rather than live -- imgdev is the first driver registered, so
+	 * i is 0 and both packings agree -- and structurally removed rather
+	 * than guarded: imgdev.c includes no host header, so it still has V8's
+	 * macros, and it is the only place that knows the number anyway.  Found
+	 * by a review subagent, and it is exactly the trap param.h claims a
+	 * guard for, arriving through the three names it does not claim.
 	 */
-	dev = makedev(i, 0);
+	dev = v8k_imgdev();
 	if (v8k_kinit(dev) < 0) {
 		fprintf(stderr, "v8fsd: %s is not a V8 filesystem\n", image);
 		return (2);
@@ -999,9 +1115,12 @@ main(int argc, char **argv)
 	 * READY, AND SAID SO ON STDOUT.  A test that starts this server has to
 	 * know when the socket will accept, and the alternatives are both bad:
 	 * sleeping is a race dressed as a delay, and retrying a connect() in a
-	 * loop cannot tell "not yet" from "died on the image".  One line, then
-	 * the stream is closed from the writer's side by fflush so a reader
-	 * blocked on it is released immediately.
+	 * loop cannot tell "not yet" from "died on the image".  One line, and
+	 * then a FLUSH -- which is all it is.  This sentence used to say the
+	 * flush closed the stream and released a reader blocked on it; fflush
+	 * does no such thing, and a test that read to EOF on the strength of it
+	 * would hang.  tests/streams polls with `grep -q', which is what the
+	 * flush actually supports.
 	 */
 	printf("v8fsd ready %s\n", sockpath);
 	fflush(stdout);
@@ -1059,6 +1178,25 @@ main(int argc, char **argv)
 					tv.tv_sec = 30;
 					tv.tv_usec = 0;
 					setsockopt(nfd, SOL_SOCKET, SO_RCVTIMEO,
+					    &tv, sizeof tv);
+					/*
+					 * AND THE SEND SIDE, WHICH THE
+					 * PARAGRAPH ABOVE ARGUED AT LENGTH AND
+					 * THEN DID NOT DO.  It is the same
+					 * hazard in the other direction and it
+					 * needs no malice: the socket buffer
+					 * here is 8192 bytes and an Rread reply
+					 * is up to 8203, so ONE client that
+					 * stops reading blocks this server in
+					 * write(2) for every other client.
+					 * Measured by a review subagent -- a
+					 * victim's latency went from 0.0000s
+					 * to a 5-second timeout while another
+					 * client pipelined reads and drained
+					 * nothing, and recovered the instant
+					 * it did.
+					 */
+					setsockopt(nfd, SOL_SOCKET, SO_SNDTIMEO,
 					    &tv, sizeof tv);
 				}
 			}

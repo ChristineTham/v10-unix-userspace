@@ -43,6 +43,7 @@ int	iodone();
 int	v8k_bdconf(struct bdevsw *bd);
 
 static int	imgfd = -1;
+static int	imgmaj = -1;
 static long	nread;			/* transfers the driver actually served */
 static long	nwrite;
 
@@ -117,7 +118,18 @@ v8k_imgattach(int fd)
 	imgfd = fd;
 	nread = nwrite = 0;
 	v8k_imgrow(&bd);
-	return (v8k_bdconf(&bd));
+	return (imgmaj = v8k_bdconf(&bd));
+}
+
+/*
+ * imgdev.h says why the packing is here.  Minor 0 keeps BITFS(dev) -- param.h's
+ * `dev & 64' -- clear, which is what says this is a 1024-byte filesystem
+ * rather than a 4096-byte one.
+ */
+dev_t
+v8k_imgdev(void)
+{
+	return (imgmaj < 0 ? (dev_t)0 : makedev(imgmaj, 0));
 }
 
 /*
@@ -129,6 +141,7 @@ void
 v8k_imgdetach(void)
 {
 	imgfd = -1;
+	imgmaj = -1;
 }
 
 long

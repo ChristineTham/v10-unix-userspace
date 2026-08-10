@@ -1808,7 +1808,40 @@ check "and the fid is gone afterwards"		"-1"	"$(q stat-after-clunk)"
 check "an unknown message type is refused"	"EINVAL" "$(q unknown-type)"
 check "and Tauth, which this server does not offer" "EPERM" "$(q auth-refused)"
 
-# 7. A SECOND CONNECTION, which is what the poll() loop is FOR and what nothing
+# 7. WHAT A HOSTILE OFFSET MUST NOT DO.  A directory offset is unsigned on the
+# wire and the server's bound was signed, so every offset at or above 2^63 read
+# as negative and passed: measured before the fix, 2^64-1 returned the listing
+# shifted one byte below its buffer, -7973 returned 7973 bytes of heap, and
+# -2^40 was a SIGSEGV that took every other connection down with it.  Four
+# messages, no authentication.  The file arm eight lines away in the server had
+# the guard all along -- the fix landed on one line and the line beside it kept
+# the assumption, which is this port's most repeated shape.
+check "a directory read at 2^64-1 is refused"	"EINVAL" "$(q dir-read-huge-offset)"
+check "and one that reads as negative"		"EINVAL" "$(q dir-read-negative-offset)"
+# ...and an offset INSIDE an entry, which the server's own comment claimed was
+# refused while nothing enforced it.  Three bytes in returns a length field out
+# of the middle of a name.
+check "and one inside an entry"			"EINVAL" "$(q dir-read-mid-entry)"
+# The loudest of the three: if any of the above crashed the server, every case
+# from here down fails as well.
+check "and the server is still there"		"1"	"$(q alive-after-bad-offsets)"
+
+# A WALK ELEMENT IS ONE PATH COMPONENT.  namei splits on `/' and restarts at the
+# root for a leading one, so an unvalidated wname let "sub/deep" traverse two
+# components while reporting one qid, and "/hello" escape the directory the fid
+# was walked from.  Not a containment hole -- namei cannot leave the image --
+# but the qid count is how a client tells how much of its path exists.
+check "a wname containing a slash is refused"	"-1"	"$(q walk-embedded-slash)"
+check "and one beginning with a slash"		"-1"	"$(q walk-leading-slash)"
+check "and the empty name"			"-1"	"$(q walk-empty-name)"
+
+# A REFUSED Tversion MUST NOT HAVE RESET THE CONNECTION.  The clunk loop ran
+# before the msize was validated, so a client whose proposal was rejected was
+# told the negotiation failed and silently lost every fid it held.
+check "a tiny msize is refused"			"EINVAL" "$(q version-tiny-msize)"
+check "and the fids survive the refusal"	"1"	"$(q fid-survives-failed-version)"
+
+# 8. A SECOND CONNECTION, which is what the poll() loop is FOR and what nothing
 # above touches: every case so far uses one, so a server that accepted a second
 # and then ignored it would have passed all of them.  One connection per open
 # file is the design -- the socket IS the descriptor -- so two at once is the

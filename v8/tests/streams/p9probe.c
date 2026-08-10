@@ -415,6 +415,74 @@ main(int argc, char **argv)
 	p9_pstr(&tb, "");
 	printf("auth-refused %s\n", errname(xact()));
 
+	/* --------------------------------- what a hostile offset must not do
+	 *
+	 * A DIRECTORY OFFSET IS UNSIGNED ON THE WIRE, and the server's bound
+	 * used to be signed -- so every offset at or above 2^63 read as
+	 * negative and passed.  Measured before the fix: 2^64-1 returned the
+	 * listing shifted one byte below the buffer, -7973 returned 7973 bytes
+	 * of heap, and -2^40 was a SIGSEGV that took every other connection
+	 * with it.  Four messages, no authentication.
+	 *
+	 * These cases are therefore about the SERVER STILL BEING THERE as much
+	 * as about the reply: a crash makes every case after them fail too,
+	 * which is the loudest possible signal and the reason they sit here
+	 * rather than at the end.
+	 */
+	begin(P9_Tread);
+	p9_p32(&tb, 8);				/* the root, opened above */
+	p9_p64(&tb, 0xffffffffffffffffULL);
+	p9_p32(&tb, 64);
+	printf("dir-read-huge-offset %s\n", errname(xact()));
+
+	begin(P9_Tread);
+	p9_p32(&tb, 8);
+	p9_p64(&tb, 0xffffff0000000000ULL);	/* -2^40 read as signed */
+	p9_p32(&tb, 64);
+	printf("dir-read-negative-offset %s\n", errname(xact()));
+
+	/*
+	 * ...and an offset inside an entry.  The server's own comment claimed
+	 * this was refused and nothing enforced it: a read three bytes into a
+	 * stat returns a length field taken from the middle of a name, which a
+	 * client decoder either throws on or resynchronises against garbage.
+	 * Offset 3 is inside the first entry, whatever the listing holds.
+	 */
+	begin(P9_Tread);
+	p9_p32(&tb, 8);
+	p9_p64(&tb, 3);
+	p9_p32(&tb, 64);
+	printf("dir-read-mid-entry %s\n", errname(xact()));
+
+	/* ...and the server is still answering. */
+	printf("alive-after-bad-offsets %d\n", qtype_of(8));
+
+	/*
+	 * A WALK ELEMENT IS ONE PATH COMPONENT.  namei splits on `/' and
+	 * restarts at the root for a leading one, so an unvalidated wname let
+	 * "sub/deep" traverse two components while reporting one qid, and
+	 * "/hello" escape the directory the fid was walked from.  Both are
+	 * ENOENT now; the empty name is not a component either.
+	 */
+	w1[0] = "sub/deep";
+	printf("walk-embedded-slash %d\n", walk(9, 1, w1));
+	w1[0] = "/hello";
+	printf("walk-leading-slash %d\n", walk(10, 1, w1));
+	w1[0] = "";
+	printf("walk-empty-name %d\n", walk(11, 1, w1));
+
+	/*
+	 * A REFUSED Tversion MUST NOT HAVE RESET THE CONNECTION.  The clunk
+	 * loop used to run before the msize was validated, so a client whose
+	 * proposal this server rejected was told the negotiation failed and
+	 * silently lost every fid it held.
+	 */
+	begin(P9_Tversion);
+	p9_p32(&tb, 10);			/* far below the header size */
+	p9_pstr(&tb, P9_VERSION);
+	printf("version-tiny-msize %s\n", errname(xact()));
+	printf("fid-survives-failed-version %d\n", qtype_of(8));
+
 	/* ------------------------------------------- a SECOND connection
 	 *
 	 * THE WHOLE REASON THE SERVER HAS A poll() LOOP, and until this it was

@@ -267,3 +267,70 @@ rather than a gap in the port, and splitting it the way 5c and 5d were split
 keeps a failure attributable. **And no client speaks to it yet**: the fourth
 type in `shim/v8sys/vfs.c` is the next piece, and the sweep run before writing
 it found eleven entry points with no slot in `struct v8fstyp` at all.
+
+### And a review of it found a remote crash in four messages
+
+A review subagent read the server the day it landed. Inode accounting came back
+clean — measured, not read: twelve request shapes × 400 iterations with
+`NINODE` at 80, plus 400 hard disconnects holding three fids, and nothing
+leaks. The poll-array indexing is clean too, and for a reason worth knowing:
+`accept` runs *before* the serve loop and nothing in the serve loop opens a
+descriptor, so no fd number can be freed and re-issued inside one cycle.
+
+What it found instead was eight things, and the first is the reason to send a
+reviewer at new code rather than only at imported code.
+
+**A directory `Tread` at any offset ≥ 2^63 was an out-of-bounds heap read and,
+a little further out, a SIGSEGV.** The offset is a `p9_u64` on the wire and the
+bound cast it to a signed `long`, so every such offset read as negative and
+passed; `f_dirlen - off` then exceeded the buffer and `f_dir + off` pointed
+below it. Measured on a 219-byte listing: 2^64-1 returned 220 bytes starting
+one byte early, -7973 returned 7973 bytes of heap, and -2^40 crashed the
+server — **taking every other connection with it**, verified with a second
+client attached. Four messages, no authentication. The *file* arm eight lines
+away had the guard all along (`off > 0x7fffffffULL`): the fix landed on one line
+and the line beside it kept the assumption.
+
+**AND THE FIRST FIX WAS TWO GUARDS, ONE OF THEM DEAD.** An unsigned range test
+plus an entry-boundary walk — and reverting the range test changed nothing,
+because the walk rejects a negative offset too. A mutation that does not fire
+is the informative one. The range test moved *inside* `dirboundary`, where it
+runs before any cast to a signed type, and there is one guard instead of two
+with one unexercised. Mutating to the pre-fix line now takes the suite from 429
+to 374 with the probe dead.
+
+The other seven, briefly:
+
+- **No send-side deadline**, while the comment beside it argued the read side at
+  length. The socket buffer is 8192 and an `Rread` is up to 8203, so one client
+  that stops reading blocks the whole server in `write(2)` — measured, a
+  victim's latency went from 0.0000s to a 5-second timeout and recovered the
+  instant the other client drained. It needs no malice.
+- **A stale ALL-CAPS claim**: the comment said a mid-entry offset got `EINVAL`
+  and nothing enforced it. Now it does.
+- **"Read only" is a claim about the PROTOCOL, not about the filesystem.**
+  `readi` sets `IACC`, so `iput` at `i_count == 1` runs `IUPDAT` and dirties the
+  disk inode. Two accidents hide it — the fd is `O_RDONLY` so `pwrite` fails and
+  `bdwrite` discards the error, and nothing calls `bflush()` — and **both stop
+  applying at step 5f**, which needs `O_RDWR`. Measured on an image whose
+  `di_atime` had been touched: the read path changed four bytes.
+- **`makedev`/`major`/`minor` were silently the HOST's in `v8fsd.c`**, because
+  `<sys/socket.h>` pulls `<sys/types.h>` and the redefinition is inside a
+  system header, so there is no `-Wmacro-redefined`. V8 shifts the major by 8
+  and Darwin by 24, and `dev_t` is a `u_short`, so `makedev(i, 0)` was **zero
+  for every i**. Latent only because the image driver registers first and 0
+  packs the same either way. It is precisely the trap `param.h` claims a guard
+  for, arriving through the three names it does not claim. Fixed structurally:
+  `v8k_imgdev()` does the packing in `imgdev.c`, which includes no host header.
+- **A refused `Tversion` had already clunked every fid**, because the reset ran
+  before the validation. The client was told the negotiation failed and lost its
+  state anyway.
+- **A `Twalk` element was not checked to be one path component.** `namei` splits
+  on `/` and restarts at the root for a leading one, so `sub/deep` traversed two
+  components and reported one qid, and `/hello` escaped the directory the fid
+  was walked from. Not a containment hole — `namei` cannot leave the image — but
+  the qid count is exactly how a client tells how much of its path exists.
+- Three small ones: `ENOMEM` was missing from the error table so the server's
+  own error reached clients as `EIO`; fid-table exhaustion was reported as
+  `EEXIST`, indistinguishable from a naming clash; and a `NULL` check on
+  `bread`, which cannot return one.

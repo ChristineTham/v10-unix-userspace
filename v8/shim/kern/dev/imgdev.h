@@ -47,6 +47,19 @@ int	v8k_imgattach(int fd);
 void	v8k_imgdetach(void);
 
 /*
+ * The device number, PACKED HERE rather than by the caller, and that is a
+ * structural fix rather than a convenience.  shim/kern/h/param.h defines
+ * makedev/major/minor and warns they must not be replaced by the host's, which
+ * shift a 32-bit dev_t differently -- and any file that includes
+ * <sys/socket.h> gets <sys/types.h> with it and is silently redefined, with no
+ * -Wmacro-redefined because it happens inside a system header.  V8 shifts the
+ * major by 8, Darwin by 24, and dev_t here is a u_short, so makedev in such a
+ * file is ZERO for every major.  This file includes no host header, so it
+ * still has V8's macros; asking it removes the question.
+ */
+dev_t	v8k_imgdev(void);
+
+/*
  * Transfers the driver actually served.  The probe asserts on these -- that a
  * second read of the same block does NOT reach the disk, which is the only
  * externally visible evidence the buffer cache is a cache.
