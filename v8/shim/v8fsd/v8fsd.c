@@ -1753,6 +1753,13 @@ wuid(const char *s, short *out)
 		if (s[i] < '0' || s[i] > '9') return (-1);
 		v = v * 10 + (s[i] - '0');
 		if (v > 2147483647L) return (-1);	/* wider than chown's int */
+						/* ...and this refuses INT_MIN too,
+						 * which is NOT the range talking:
+						 * (short)INT_MIN is 0, measured, so
+						 * V7's own truncation would hand it
+						 * ROOT.  The one value where being
+						 * faithful and keeping the contract
+						 * disagree, and the contract wins. */
 	}
 	*out = (short)(neg ? -v : v);		/* V7's truncation, deliberately */
 	return (0);

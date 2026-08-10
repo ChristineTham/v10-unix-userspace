@@ -414,7 +414,14 @@ MISSED ENTIRELY.** Commons are 104242 bytes (`_blkdata` 36736, `_queue` 28672,
 `_cblock` 23232 the largest three) — but `shim/kern/sys/main.c` holds another
 **142208 bytes of static `__bss`**, which is `NBUF * BUFSIZE` plus
 `inode[NINODE]`, and a sweep of `nm`'s `C` symbols cannot see a `static` array.
-Measure both: `nm -g` for the commons and `size -m` on `main.o` for the rest.
+Measure both: `nm -g` for the commons and `size -m` on `main.o` for the rest —
+and **the path is `build/stage0/kern/v8fs/main.o`**, which is worth spelling
+out because guessing `build/stage0/kern/main.o` gives `size` no file and it
+prints NOTHING, which reads as "no static bss" rather than as a wrong path.
+(Same shape: `nm -u` on an ARCHIVE prints `member.o:` headers and BARE symbol
+names, so an awk filtering on `/^ *U /` matches nothing and reports a clean
+sweep. Both cost a measurement here; both fail silent.) Re-measured and
+unchanged: 104242 + 142208 = 246450 = 240.7 KB.
 
 **AND `nm -g` OVER AN ARCHIVE DOUBLE-COUNTS, so dedupe by name.** A common
 declared in a header emits a symbol in *every* object that includes it, so

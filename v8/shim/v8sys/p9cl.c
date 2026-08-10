@@ -1332,6 +1332,8 @@ p9dec(char *d, long max, int v)
 	long n = 0, i = 0;
 	unsigned long u;
 
+	if (max < 1) return;		/* d[0] would be the terminator's slot */
+
 	if (v < 0) {
 		if (i + 1 < max) d[i++] = '-';
 		u = (unsigned long)(-(long)v);
@@ -1442,6 +1444,12 @@ p9_t_chown(char *p, int uid, int gid)
  * timeval to SYS_utimes and that is what macOS means by it.  Reproduced rather
  * than widened: the mount gives the same answer the passthrough type already
  * gives, so a program cannot tell the two apart by asking.
+ *
+ * THE 32-BIT TRUNCATION IS THE DISK'S WIDTH, NOT A LOSS THIS INTRODUCES:
+ * di_atime and di_mtime are v8_i32 on the image, so a time_t past 2038 could
+ * not be stored whatever this line did.  Worth saying because the passthrough
+ * type does NOT truncate -- the host keeps 64 bits -- so the two filesystems
+ * genuinely differ up there, and the difference belongs to the format.
  *
  * THE SENTINEL COLLIDES WITH A REAL TIME, at exactly one value.  "Do not
  * touch" is all ones, and a time_t of -1 -- 31 December 1969, which a signed
