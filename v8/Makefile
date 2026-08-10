@@ -208,6 +208,15 @@ SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
 # putting it in the archive means signal.c's reference to it is what pulls it in.
 SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
 
+# The 9P codec, and it is OUTSIDE shim/v8sys on purpose.  It is compiled twice
+# -- once into libv8sys.a for the client, once into the v8fs server, which is a
+# host binary and cannot link libv8sys -- so it belongs to neither.  Naming it
+# here rather than letting the wildcard above find it is the same reason the
+# wildcard is warned about beside nokmemu.o: a file in shim/v8sys joins every
+# V8 binary silently, and this one's second consumer would not be visible at
+# all.  Defined above first use for the reason SHIM_ASM gives.
+P9_SRC = $(ROOT)shim/p9/p9.c
+
 # CANCEL GNU MAKE'S BUILT-IN yacc AND lex RULES.  A pattern rule with no recipe
 # deletes the built-in one.
 #
@@ -322,7 +331,12 @@ test-hooks:
 # $(SHIM_ASM) is on this line for the signal-delivery cases: without the
 # trampoline linked in, v8s_signal installs a handler the kernel cannot enter,
 # which is the whole fault those cases exist to catch.
-$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC) $(SHIM_ASM)
+#
+# $(P9_SRC) because the framing cases call p9_send and p9_recv, which live in
+# the shared codec rather than in shim/v8sys -- $(SHIM_SRC) brings only p9io.c,
+# the transport half of that seam.  Both halves or neither: this suite is the
+# first thing that exercises them against a real socket.
+$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC) $(P9_SRC) $(SHIM_ASM)
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable \
 	    -fno-stack-protector -fno-stack-check -o $@ $^
@@ -438,6 +452,7 @@ $(A64BUILD)/cgram.o: $(CCOM_M)/cgram.c
 # it is the seam, not authentic V8 code.
 # ---------------------------------------------------------------------------
 SHIM_OBJ = $(patsubst $(ROOT)shim/v8sys/%.c,$(BUILD)/v8sys/%.o,$(SHIM_SRC)) \
+           $(patsubst $(ROOT)shim/p9/%.c,$(BUILD)/v8sys/%.o,$(P9_SRC)) \
            $(patsubst $(ROOT)shim/v8sys/%.s,$(BUILD)/v8sys/%.o,$(SHIM_ASM))
 
 # crt0 and the V8-named stub layer: the two pieces a freestanding V8 program
@@ -536,6 +551,13 @@ SHIMFLAGS = -std=gnu99 -Wall -Wno-unused-function \
             -DV8ROOT_DEFAULT='"$(V8ROOT_DEFAULT)"'
 
 $(BUILD)/v8sys/%.o: $(ROOT)shim/v8sys/%.c
+	@mkdir -p $(BUILD)/v8sys
+	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# The shared codec, built with SHIMFLAGS like the rest of the client half -- in
+# particular with NO -O, which is what keeps its byte loops from being rewritten
+# as calls to memcpy.  The server compiles the same source with its own flags.
+$(BUILD)/v8sys/%.o: $(ROOT)shim/p9/%.c
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -c $< -o $@
 

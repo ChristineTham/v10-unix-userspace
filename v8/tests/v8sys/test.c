@@ -14,8 +14,10 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include "../../shim/v8sys/v8sys.h"
 #include "../../shim/v8sys/vfs.h"
+#include "../../shim/p9/p9.h"
 
 typedef void (*v8handler)();
 
@@ -328,6 +330,406 @@ ino_exhaust(void)
 	/* an assignment made before it filled is still honoured */
 	if (v8sys_fold_ino(keep) != first) _exit(6);
 	_exit(0);
+}
+
+/*
+ * ---------------------------------------------------------------- 9P2000
+ *
+ * The codec in shim/p9, which is the wire between a V8 program and the v8fs
+ * server -- §8a step 5e, and shim/kern/NOTES.md says why there has to be a
+ * wire.  It is tested HERE rather than in a suite of its own because this is
+ * already the place that links the shim's sources directly and calls them as
+ * C, and because the transport half (shim/v8sys/p9io.c) is raw-syscall code
+ * that belongs to libv8sys.
+ *
+ * THE ROUND TRIP IS THE WEAKEST THING THAT COULD BE ASSERTED HERE, so it is
+ * not what most of these do.  Encode-then-decode agrees with itself under any
+ * self-consistent byte order, including a wrong one -- and a wrong one is
+ * invisible until the day something on the far end is not this codec (u9fs,
+ * 9pfuse, a Plan 9 client).  So the width cases assert the BYTES.  Same
+ * discipline as comparing a generated image against what the clock alone
+ * does, rather than against another run of the same program.
+ */
+static void
+p9_widths(void)
+{
+	unsigned char buf[256];
+	struct p9buf b;
+	struct p9qid q, q2;
+	char s[P9_NAMELEN];
+
+	p9_init(&b, buf, sizeof buf);
+	p9_p16(&b, 0x1234);
+	ok(p9_len(&b) == 2 && buf[0] == 0x34 && buf[1] == 0x12,
+	    "p16 puts the low byte first");
+
+	p9_init(&b, buf, sizeof buf);
+	p9_p32(&b, 0x12345678U);
+	ok(p9_len(&b) == 4 && buf[0] == 0x78 && buf[1] == 0x56 &&
+	    buf[2] == 0x34 && buf[3] == 0x12, "p32 puts the low byte first");
+
+	p9_init(&b, buf, sizeof buf);
+	p9_p64(&b, 0x0123456789abcdefULL);
+	ok(p9_len(&b) == 8 && buf[0] == 0xef && buf[1] == 0xcd &&
+	    buf[2] == 0xab && buf[3] == 0x89 && buf[4] == 0x67 &&
+	    buf[5] == 0x45 && buf[6] == 0x23 && buf[7] == 0x01,
+	    "p64 puts the low byte first");
+
+	/*
+	 * A string is count[2] and then the bytes, with NO terminator.  The
+	 * absence is the assertion: a codec that wrote one would round-trip
+	 * perfectly against itself and be one byte long everywhere else.
+	 */
+	p9_init(&b, buf, sizeof buf);
+	p9_pstr(&b, "abc");
+	ok(p9_len(&b) == 5 && buf[0] == 3 && buf[1] == 0 && buf[2] == 'a' &&
+	    buf[3] == 'b' && buf[4] == 'c', "a string is counted, not terminated");
+
+	p9_init(&b, buf, sizeof buf);
+	p9_pstr(&b, "");
+	ok(p9_len(&b) == 2 && buf[0] == 0 && buf[1] == 0, "the empty string is two bytes");
+
+	p9_init(&b, buf, sizeof buf);
+	p9_pstr(&b, (char *)0);
+	ok(p9_len(&b) == 2 && buf[0] == 0, "a null string encodes as the empty one");
+
+	/* ...and the far side reads back what was written. */
+	p9_init(&b, buf, sizeof buf);
+	p9_p8(&b, 0xa5); p9_p16(&b, 0xbeef); p9_p32(&b, 0xdeadbeefU);
+	p9_p64(&b, 0xfeedfacecafebabeULL); p9_pstr(&b, "hello");
+	ok(p9_ok(&b), "the mixed encode fitted");
+	p9_init(&b, buf, sizeof buf);
+	ok(p9_g8(&b) == 0xa5 && p9_g16(&b) == 0xbeef &&
+	    p9_g32(&b) == 0xdeadbeefU && p9_g64(&b) == 0xfeedfacecafebabeULL &&
+	    p9_gstr(&b, s, sizeof s) == 5 && strcmp(s, "hello") == 0 && p9_ok(&b),
+	    "every width decodes to what was encoded");
+
+	q.q_type = P9_QTDIR; q.q_vers = 7; q.q_path = 0x1122334455667788ULL;
+	p9_init(&b, buf, sizeof buf);
+	p9_pqid(&b, &q);
+	ok(p9_len(&b) == P9_QIDSZ, "a qid is thirteen bytes");
+	p9_init(&b, buf, sizeof buf);
+	p9_gqid(&b, &q2);
+	ok(q2.q_type == q.q_type && q2.q_vers == q.q_vers &&
+	    q2.q_path == q.q_path && p9_ok(&b), "a qid round-trips");
+}
+
+/*
+ * The stat, and its two length prefixes.  9P2000's one real wart: the message
+ * field is stat[n] -- a 2-byte count -- and the bytes inside it begin with the
+ * structure's OWN size[2], counting everything after itself.  The two numbers
+ * differ by exactly two, and a reader that conflates them lands two bytes into
+ * the name, which decodes as a plausible short string rather than as an error.
+ * So the difference is asserted rather than described.
+ */
+static void
+p9_stats(void)
+{
+	unsigned char buf[1024];
+	struct p9buf b;
+	struct p9stat s, t;
+	long inner, outer;
+
+	memset(&s, 0, sizeof s);
+	s.s_type = 0; s.s_dev = 0;
+	s.s_qid.q_type = P9_QTFILE; s.s_qid.q_vers = 0; s.s_qid.q_path = 42;
+	s.s_mode = 0644; s.s_atime = 1000; s.s_mtime = 2000; s.s_length = 28000;
+	strcpy(s.s_name, "hello"); strcpy(s.s_uid, "root");
+	strcpy(s.s_gid, "root"); strcpy(s.s_muid, "root");
+
+	p9_init(&b, buf, sizeof buf);
+	p9_pstat(&b, &s);
+	inner = (long)buf[0] | ((long)buf[1] << 8);
+	outer = p9_len(&b);
+	ok(p9_ok(&b) && inner == outer - 2,
+	    "the stat's own size counts everything after itself");
+
+	p9_init(&b, buf, sizeof buf);
+	ok(p9_gstat(&b, &t) == 0 && p9_ok(&b), "a stat decodes");
+	ok(t.s_qid.q_path == 42 && t.s_mode == 0644 && t.s_length == 28000 &&
+	    strcmp(t.s_name, "hello") == 0 && strcmp(t.s_uid, "root") == 0,
+	    "...to the fields that went in");
+	ok(p9_len(&b) == outer, "...consuming exactly the bytes it was given");
+
+	/*
+	 * AND IT STEPS OVER A FIELD IT DOES NOT KNOW.  A 9P2000 stat is
+	 * explicitly extensible, so a reader that ignores the inner size works
+	 * against our own server and desynchronises against u9fs -- with the
+	 * damage landing on the NEXT message, which is the hardest place to
+	 * diagnose.  Four extra bytes are appended and the inner count raised
+	 * to cover them; the decode must still end where the stat ends.
+	 */
+	p9_init(&b, buf, sizeof buf);
+	p9_pstat(&b, &s);
+	p9_p32(&b, 0xffffffffU);
+	inner += 4;
+	buf[0] = (unsigned char)(inner & 0xff);
+	buf[1] = (unsigned char)((inner >> 8) & 0xff);
+	outer = p9_len(&b);
+	p9_init(&b, buf, sizeof buf);
+	ok(p9_gstat(&b, &t) == 0 && strcmp(t.s_name, "hello") == 0 &&
+	    p9_len(&b) == outer,
+	    "an unknown trailing field is stepped over, not tripped on");
+}
+
+/*
+ * THE BOUNDS, which is what this codec is really for.  A server reads its
+ * messages off a socket: the length in the header and the fields inside it are
+ * two claims by the same untrusted party and need not agree.  Every get and
+ * put goes through one `room()' and sets a sticky flag, so these cases are
+ * about that flag rather than about forty call sites.
+ */
+static void
+p9_bounds(void)
+{
+	unsigned char buf[64];
+	struct p9buf b;
+	char s[P9_NAMELEN];
+	char small[4];
+
+	p9_init(&b, buf, 4);
+	p9_p32(&b, 1);
+	ok(p9_ok(&b), "four bytes fit in four");
+	p9_p8(&b, 1);
+	ok(!p9_ok(&b), "the fifth does not");
+	ok(p9_fin(&b) == -1, "and a message that did not fit cannot be finished");
+
+	/* A get past the end returns 0 rather than whatever was there. */
+	p9_init(&b, buf, sizeof buf);
+	p9_p32(&b, 0xdeadbeefU);
+	p9_init(&b, buf, 2);
+	ok(p9_g32(&b) == 0 && !p9_ok(&b), "a short read decodes as zero, not as junk");
+
+	/* ...and the flag is sticky, so a later get cannot look successful. */
+	ok(p9_g8(&b) == 0 && !p9_ok(&b), "the failure is sticky");
+
+	/*
+	 * A NAME THAT DOES NOT FIT IS REFUSED, NOT TRUNCATED.  FSNMLG's lesson
+	 * from src/include/PORTING.md: a truncated path does not shorten a
+	 * column, it sends the reader down the arm for a different kind of
+	 * object.  Here the caller would get a valid-looking short name for a
+	 * file that is not the one the server named.
+	 */
+	p9_init(&b, buf, sizeof buf);
+	p9_pstr(&b, "abcdefgh");
+	p9_init(&b, buf, sizeof buf);
+	ok(p9_gstr(&b, small, sizeof small) == -1 && !p9_ok(&b),
+	    "a name too long for the caller's buffer is refused");
+	ok(small[0] == '\0', "...and the buffer is left empty rather than partial");
+
+	/* A count that runs past the message is the same class, one level up. */
+	buf[0] = 40; buf[1] = 0;		/* claims 40 bytes ... */
+	p9_init(&b, buf, 10);			/* ... in a 10-byte message */
+	ok(p9_gstr(&b, s, sizeof s) == -1 && !p9_ok(&b),
+	    "a string longer than the message it is in is refused");
+
+	p9_init(&b, buf, 10);
+	ok(p9_gdata(&b, 20) == 0 && !p9_ok(&b),
+	    "p9_gdata refuses rather than pointing past the message");
+	p9_init(&b, buf, 10);
+	ok(p9_gdata(&b, 10) == buf && p9_ok(&b), "...and yields the bytes when they are there");
+
+	/* The header the framing writes, read back field by field. */
+	p9_hdr(&b, buf, sizeof buf, P9_Tversion, P9_NOTAG);
+	p9_p32(&b, P9_MSIZE);
+	p9_pstr(&b, P9_VERSION);
+	ok(p9_fin(&b) == 4 + 1 + 2 + 4 + 2 + 6, "Tversion is the length it should be");
+	p9_init(&b, buf, sizeof buf);
+	ok(p9_g32(&b) == (p9_u32)(4 + 1 + 2 + 4 + 2 + 6) &&
+	    p9_g8(&b) == P9_Tversion && p9_g16(&b) == P9_NOTAG &&
+	    p9_g32(&b) == P9_MSIZE && p9_gstr(&b, s, sizeof s) == 6 &&
+	    strcmp(s, P9_VERSION) == 0,
+	    "...and its size, type and tag are where the spec puts them");
+}
+
+/*
+ * THE FRAMING, over a real socket rather than a fake read.
+ *
+ * The property is that one read is not one message, and it fails in both
+ * directions.  A message can arrive in pieces, and two messages can arrive in
+ * one piece -- the second is the deterministic one and is asserted first: both
+ * are written with a single write(2), so a p9_recv that returned everything it
+ * read would swallow the second and the tag comparison would fail.
+ *
+ * The short-read half needs the socket buffer to be smaller than the message,
+ * which the host may refuse to arrange.  So the relation is MEASURED and the
+ * case says "not exercised" rather than passing silently -- tests/kmemu's rule
+ * about asserting a property of the machine.
+ *
+ * EVERY RECEIVING SOCKET HERE CARRIES A DEADLINE, and it is not decoration --
+ * it was put there by a mutation.  Breaking p9_recv so it trusts one read
+ * makes the FIRST receive swallow both messages and the second block forever:
+ * the harness hung, `make test' would have hung with it, and a suite that
+ * hangs reports nothing at all.  That is the ttyprobe lesson (the failure mode
+ * of the thing under you is a hang) arriving in a socket rather than in a
+ * stream.  SO_RCVTIMEO turns it into a -1, so the case goes red.  It is a
+ * property of a socket this function created, not of the machine.
+ *
+ * AND THE DEADLINE ON THE SOCKET WAS NOT ENOUGH, which is worth recording
+ * because the second hang looked exactly like the first.  The same mutation
+ * leaves the CHILD blocked in write(2) -- it is pushing 8216 bytes into a
+ * 512-byte socket that the parent has stopped draining -- so the parent then
+ * hung in waitpid instead of in read.  A deadline on one end of a pipe is not
+ * a deadline on the pipe.  p9_reap bounds the wait and kills, which is the
+ * pattern runchild() above already uses for the signal cases.
+ */
+#define P9_DEADLINE	5		/* seconds; a correct run never waits */
+
+static void
+p9_deadline(int fd)
+{
+	struct timeval tv;
+
+	tv.tv_sec = P9_DEADLINE;
+	tv.tv_usec = 0;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+}
+
+static void
+p9_reap(pid_t pid)
+{
+	int status, waited;
+
+	for (waited = 0; waited < P9_DEADLINE * 1000; waited += 10) {
+		if (waitpid(pid, &status, WNOHANG) == pid) return;
+		usleep(10000);
+	}
+	kill(pid, SIGKILL);
+	waitpid(pid, &status, 0);
+}
+
+static void
+p9_framing(void)
+{
+	unsigned char out[P9_MSIZE], in[P9_MSIZE];
+	struct p9buf b;
+	int sv[2], want = 512, got;
+	socklen_t glen;
+	long n, n2, i;
+	pid_t pid;
+	int status;
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+		ok(0, "socketpair for the 9P framing cases");
+		return;
+	}
+	p9_deadline(sv[0]);
+
+	/* two messages, one write */
+	p9_hdr(&b, out, sizeof out, P9_Tclunk, 1);
+	p9_p32(&b, 11);
+	n = p9_fin(&b);
+	p9_hdr(&b, out + n, sizeof out - n, P9_Tclunk, 2);
+	p9_p32(&b, 22);
+	n2 = p9_fin(&b);
+	ok(write(sv[1], out, n + n2) == n + n2, "two messages written as one");
+
+	ok(p9_recv(sv[0], in, sizeof in) == n, "p9_recv returns the first message's length");
+	p9_init(&b, in, n);
+	(void)p9_g32(&b);
+	ok(p9_g8(&b) == P9_Tclunk && p9_g16(&b) == 1 && p9_g32(&b) == 11,
+	    "...and it is the FIRST message, not both");
+	ok(p9_recv(sv[0], in, sizeof in) == n2, "the second is still there");
+	p9_init(&b, in, n2);
+	(void)p9_g32(&b);
+	ok(p9_g8(&b) == P9_Tclunk && p9_g16(&b) == 2 && p9_g32(&b) == 22,
+	    "...and it is the second");
+
+	/* a message bigger than the socket buffer, so the reads must be short */
+	setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &want, sizeof want);
+	setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &want, sizeof want);
+	glen = sizeof got;
+	if (getsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &got, &glen) < 0) got = 0;
+
+	p9_hdr(&b, out, sizeof out, P9_Rread, 3);
+	p9_p32(&b, (p9_u32)(P9_MSIZE - 4 - 1 - 2 - 4));
+	for (i = p9_len(&b); i < (long)sizeof out; i++)
+		p9_p8(&b, (p9_u32)(i & 0xff));
+	n = p9_fin(&b);
+
+	if (got >= n) {
+		printf("  (9P short-read case NOT EXERCISED: the host would not "
+		    "shrink SO_RCVBUF below %ld, got %d)\n", n, got);
+	} else if ((pid = fork()) == 0) {
+		for (i = 0; i < n; ) {
+			long k = write(sv[1], out + i, n - i);
+			if (k <= 0) _exit(1);
+			i += k;
+		}
+		_exit(0);
+	} else {
+		ok(p9_recv(sv[0], in, sizeof in) == n,
+		    "a message larger than the socket buffer arrives whole");
+		ok(memcmp(in, out, (size_t)n) == 0, "...byte for byte");
+		p9_reap(pid);
+	}
+
+	close(sv[0]); close(sv[1]);
+
+	/*
+	 * SIZE FIELDS THE RECEIVER MUST REJECT, and the second of these was
+	 * VACUOUS in its first form -- which the mutation said and no green run
+	 * ever would.  It asserted only that p9_recv returned -1, and with no
+	 * body in the socket a p9_recv WITHOUT the bound also returns -1, on the
+	 * deadline rather than on the check.  The mutation that deletes `n > max'
+	 * changed nothing.
+	 *
+	 * So the body is supplied, and what is asserted is the thing the bound is
+	 * actually for: nothing was written past the caller's buffer.  The canary
+	 * is a real array after a short one, and a p9_recv that trusted the
+	 * header would put 196 bytes into a hundred-byte buffer and land in it.
+	 */
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+		ok(0, "socketpair for the size-bound cases");
+		return;
+	}
+	p9_deadline(sv[0]);
+
+	out[0] = 3; out[1] = out[2] = out[3] = 0;
+	ok(write(sv[1], out, 4) == 4, "a header claiming three bytes is written");
+	ok(p9_recv(sv[0], in, sizeof in) == -1, "...and refused: under the header size");
+
+	{
+		struct { unsigned char buf[100]; unsigned char guard[128]; } g;
+		int clean = 1;
+
+		memset(&g, 0x5a, sizeof g);
+		out[0] = 200; out[1] = out[2] = out[3] = 0;
+		for (i = 4; i < 200; i++) out[i] = 0xa5;
+		ok(write(sv[1], out, 200) == 200,
+		    "a 200-byte message is written whole");
+		ok(p9_recv(sv[0], g.buf, (long)sizeof g.buf) == -1,
+		    "...and refused: over the caller's buffer");
+		for (i = 0; i < (long)sizeof g.guard; i++)
+			if (g.guard[i] != 0x5a) clean = 0;
+		ok(clean, "...with nothing written past the end of it");
+	}
+
+	close(sv[0]); close(sv[1]);
+
+	/*
+	 * A CLEAN END OF FILE AND A TRUNCATED MESSAGE ARE DIFFERENT ANSWERS,
+	 * and the server's main loop turns on the difference: a client that has
+	 * gone away is not a protocol error, but a client that sent half a
+	 * header has broken the stream and the connection cannot be resumed.
+	 */
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0) {
+		p9_deadline(sv[0]);
+		close(sv[1]);
+		ok(p9_recv(sv[0], in, sizeof in) == 0, "a clean close reads as end of file");
+		close(sv[0]);
+	} else
+		ok(0, "socketpair for the end-of-file case");
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0) {
+		p9_deadline(sv[0]);
+		ok(write(sv[1], "\003\000", 2) == 2, "two bytes of a header are written");
+		close(sv[1]);
+		ok(p9_recv(sv[0], in, sizeof in) == -1,
+		    "...and a close after them is an error, not end of file");
+		close(sv[0]);
+	} else
+		ok(0, "socketpair for the truncated-header case");
 }
 
 int
@@ -837,6 +1239,19 @@ main(void)
 		v8s_close(3);
 		v8s_unlink(sub);
 	}
+
+	/*
+	 * ------------------------------------------------------------ 9P
+	 *
+	 * Last, and the position is not arbitrary: these are the only cases
+	 * here that fork, and one of them writes into a socket whose buffer it
+	 * has deliberately shrunk.  Running them after the filesystem cases
+	 * keeps a failure in either from being read as a failure in the other.
+	 */
+	p9_widths();
+	p9_stats();
+	p9_bounds();
+	p9_framing();
 
 	/* ------------------------------------------------------- cleanup */
 	snprintf(sub, sizeof sub, "%s/a", tmpl); v8s_unlink(sub);
