@@ -2753,11 +2753,27 @@ Ordered so that value lands before risk, and so each step is testable alone.
    binary, so the collisions never arise; it is the single authority for the
    buffer cache, so two writers cannot corrupt an image; and **the fid must live
    in something that survives `exec`**, which points at one connection per open
-   file — the socket then *is* the descriptor, `getpeername(2)` identifies it
-   after an exec, and no client-side table has to be inherited.
-   `shim/kern/NOTES.md` has the full measurement; `tests/kmemu` asserts that no
-   V8 binary links `libv8kern`, so re-opening the in-process option means
-   deleting a case that says why it was closed.
+   file — the socket then *is* the descriptor and no client-side table has to be
+   inherited.
+
+   **That last one rests on `getpeername(2)` and it was measured before being
+   relied on**, because the design has no fallback if it is wrong. A client
+   `connect`ed to a bound `AF_UNIX` path, `dup2`'d to fd 7, and `exec`'d:
+
+   | descriptor | `fstat` | `getpeername` |
+   |---|---|---|
+   | client side, after `exec` | `S_IFSOCK` | **the bound path**, len 106 |
+   | server side (`accept`ed) | `S_IFSOCK` | empty, len 16 |
+   | `socketpair` | `S_IFSOCK` | empty, len 16 |
+
+   So a program that has just replaced itself can identify its own inherited
+   mount descriptors positively, without writing a byte to them — and the
+   asymmetry is a feature rather than a limitation, because a pipe-like
+   `socketpair` or an `accept`ed connection **cannot** be mistaken for one.
+
+   `shim/kern/NOTES.md` has the full collision measurement; `tests/kmemu`
+   asserts that no V8 binary links `libv8kern`, so re-opening the in-process
+   option means deleting a case that says why it was closed.
 
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
 7. **FSKit host client**, with Phase 5. Public API since macOS 15.4, no kernel
