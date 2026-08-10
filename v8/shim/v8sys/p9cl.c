@@ -427,6 +427,37 @@ p9dial(struct p9mnt *m)
 	}
 
 	/*
+	 * A DEAD SERVER MUST BE AN I/O ERROR AND NOT A SIGNAL, and without this
+	 * it was a signal.
+	 *
+	 * The transport is a socket and the caller is a V7 program that has no
+	 * idea it is one.  Writing a request to a peer that has gone away raises
+	 * SIGPIPE, whose default disposition is to terminate -- so a v8fsd that
+	 * died mid-conversation killed `cat' with signal 13 rather than giving
+	 * it a failed read.  Measured: exit 141, from tests/streams' sanitized
+	 * server aborting on a deliberately broken guard.  That is the pipe's
+	 * semantics leaking through a filesystem, and on a real V8 a disk that
+	 * stopped answering is EIO.
+	 *
+	 * SO_NOSIGPIPE IS PER SOCKET, WHICH IS THE WHOLE REASON TO USE IT rather
+	 * than signal(SIGPIPE, SIG_IGN).  Ignoring the signal would change the
+	 * program's own disposition, and a V8 program in a pipeline MUST still
+	 * die when its reader goes away -- that is how `yes | head' terminates.
+	 * The option changes one descriptor, so write(2) on this socket returns
+	 * EPIPE and everything else about the process is untouched.
+	 *
+	 * Failure is not fatal: an older kernel without the option leaves the
+	 * older behaviour, which is worse but not wrong enough to refuse a mount
+	 * over.  Darwin has had it since 10.2.
+	 */
+	{
+		int on = 1;
+
+		(void)rawsys5(SYS_setsockopt, fd, SOL_SOCKET, SO_NOSIGPIPE,
+		    (long)&on, (long)sizeof on);
+	}
+
+	/*
 	 * TAG IS P9_NOTAG, WHICH THE SPEC ASKS FOR AND THE FIRST DRAFT DID NOT
 	 * DO -- it sent tag 1 like every other message, and P9_NOTAG was
 	 * defined in p9.h and used nowhere.  Harmless against this server,
@@ -491,11 +522,28 @@ fail:
  * itself, which the spec allows for an unopened fid and v8fsd.c implements
  * (`if (newfid == fid) nf = f').
  *
- * A SHORT Rwalk IS ENOENT HERE.  The server distinguishes "the first name does
- * not exist" (an error) from "the path stopped part way" (a short reply), and
- * that distinction is for a client that is resolving a path a piece at a time.
- * open(2) is not: it asked for the whole name, and a partial answer means the
- * name is not there.
+ * A SHORT Rwalk IS A FAILED OPEN HERE.  The server distinguishes "the first
+ * name does not exist" (an error) from "the path stopped part way" (a short
+ * reply), and that distinction is for a client that is resolving a path a piece
+ * at a time.  open(2) is not: it asked for the whole name, and a partial answer
+ * means the name is not there.
+ *
+ * ...BUT WHICH FAILURE IT IS HAS TO BE RECONSTRUCTED, AND THE ABOVE USED TO
+ * ANSWER ENOENT FOR BOTH.  V7's namei has two answers, one line apart, and so
+ * does this server -- nami.c's "not a directory" arm is do_walk's
+ * `if ((ip->i_mode & IFMT) != IFDIR) u.u_error = ENOTDIR' at v8fsd.c:699.  A
+ * short Rwalk CARRIES NO ERRNO, so that answer is lost on the wire, and
+ * `open("/mnt/hello/beyond")' reported ENOENT where a V7 kernel reports
+ * ENOTDIR.  Measured with tests/streams' client probe, which is the first thing
+ * in this port to ask.
+ *
+ * The information is in the reply, in the qids this function used to discard:
+ * a short walk means the components before `got' succeeded and the one AT `got'
+ * did not, so the last qid returned describes what the failed component was
+ * looked up in.  If that is not a directory, the reason is ENOTDIR; otherwise
+ * the name really is absent.  Only the short arm needs this -- a walk that
+ * fails on its FIRST name is an Rerror and already carries the server's own
+ * errno through enumber().
  */
 static int
 p9walk(int fd, const char *rel)
@@ -541,7 +589,31 @@ p9walk(int fd, const char *rel)
 
 		if (xact(fd, &b, P9_Rwalk, &r) < 0) return (-1);
 		got = p9_g16(&r);
-		if (!p9_ok(&r) || got != nw) { v8_errno = V8_ENOENT; return (-1); }
+		if (!p9_ok(&r) || got > nw) { v8_errno = V8_ENOENT; return (-1); }
+		if (got != nw) {
+			struct p9qid q;
+			p9_u32 k;
+			int isdir = 1;
+
+			/*
+			 * `got' is 0 only from a server that answered a failed
+			 * FIRST name with a short reply instead of an Rerror.
+			 * There is then nothing to read a reason out of, so the
+			 * loop does not run and ENOENT stands.
+			 *
+			 * p9_gqid returns void and reports an underrun through
+			 * p9_ok, which is checked once after the loop: a buffer
+			 * that ran out stays short for every later get, so one
+			 * test at the end sees any failure in it.
+			 */
+			for (k = 0; k < got; k++) {
+				p9_gqid(&r, &q);
+				isdir = (q.q_type & P9_QTDIR) != 0;
+			}
+			if (!p9_ok(&r)) { v8_errno = V8_EIO; return (-1); }
+			v8_errno = isdir ? V8_ENOENT : V8_ENOTDIR;
+			return (-1);
+		}
 		first = 0;
 	} while (*p);
 
@@ -875,7 +947,12 @@ p9statfid(int fd, struct v8_stat *st)
  * SERVER'S.  This is dir.c:114's rule arriving in a second filesystem: what
  * read(2) will produce for a directory descriptor is a run of 256-byte V7
  * records, and the number the thing underneath charges for the same directory
- * is unrelated -- 64 bytes on the image against 768 of records, here.
+ * is unrelated -- for the root of tests/streams' image, 64 bytes against 1024
+ * of records.  (This said 768, and 768 belongs to the SUBDIRECTORY, which has
+ * three entries where the root has four.  The pair 64/768 describes neither
+ * directory: 64 bytes of 16-byte entries is four of them, which is 1024 bytes
+ * of records.  Two numbers from two places, written down as a measurement --
+ * which is why the probe below prints the ratio and the case asserts THAT.)
  *
  * The port already learned what the difference costs: every reader that loops
  * to EOF never notices, and ps(1)'s getdir() sizes an array from st_size and

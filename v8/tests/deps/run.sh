@@ -51,7 +51,12 @@ mkdir -p "$TMP"; trap 'rm -rf "$TMP"' EXIT
 # which is right, so it has to be here rather than left to whoever ran make
 # last.  Before the sleep, or its mtime lands in the same second as the touches
 # that follow and make 3.81 cannot tell them apart.
-if ! $MAKE >/dev/null 2>&1 || ! $MAKE "$ROOT/$B/v8sys/test" >/dev/null 2>&1; then
+# p9clprobe and the sanitized server are named for the same reason: neither is
+# part of the world, both are prerequisites of test-streams, and the cases below
+# assert their edges.
+if ! $MAKE >/dev/null 2>&1 || ! $MAKE "$ROOT/$B/v8sys/test" >/dev/null 2>&1 ||
+   ! $MAKE "$ROOT/$B/v8sys/p9clprobe" >/dev/null 2>&1 ||
+   ! $MAKE "$ROOT/$B/v8fsd/v8fsd-ubsan" >/dev/null 2>&1; then
 	echo "FAIL cannot settle the build -- run make and fix that first"
 	exit 1
 fi
@@ -833,6 +838,26 @@ dep 'syscalls.def -> stubs'    shim/v8sys/syscalls.def         $B/v8sys/libv8stu
 dep 'sigtramp -> shim archive' shim/v8sys/sigtramp.s           $B/v8sys/libv8sys.a
 dep 'sigtramp -> v8sys test'   shim/v8sys/sigtramp.s           $B/v8sys/test
 dep 'signal.c -> v8sys test'   shim/v8sys/signal.c             $B/v8sys/test
+dep 'sigtramp -> client probe' shim/v8sys/sigtramp.s           $B/v8sys/p9clprobe
+
+# THE CLIENT PROBE COMPILES p9cl.c A SECOND TIME, and that is what these edges
+# are about.  It links $(SHIM_SRC) straight into a host binary rather than using
+# libv8sys.a, so a change to the client is compiled twice into two artefacts --
+# and a probe built from a stale copy would test the code that was there
+# yesterday while the shipped binaries tested today's.  That is not a build
+# failure; it is a green suite measuring two different programs.
+dep 'p9cl.c -> client probe'   shim/v8sys/p9cl.c               $B/v8sys/p9clprobe
+dep 'the codec -> client probe' shim/p9/p9.c                   $B/v8sys/p9clprobe
+dep 'the probe -> its binary'  tests/streams/p9clprobe.c       $B/v8sys/p9clprobe
+# ...and the probe is NOT in the shipped archive, which is the other half: it
+# has a main() and it is a test.
+nodep 'the probe is not shipped' tests/streams/p9clprobe.c     $B/v8sys/libv8sys.a
+
+# THE SANITIZED SERVER MUST TRACK THE REAL ONE.  It exists to catch undefined
+# behaviour no behavioural case can see, so a stale copy is the worst possible
+# failure: it would report the OLD source clean and say nothing.
+dep 'v8fsd.c -> ubsan server'  shim/v8fsd/v8fsd.c              $B/v8fsd/v8fsd-ubsan
+dep 'the codec -> ubsan server' shim/p9/p9.c                   $B/v8fsd/v8fsd-ubsan
 # ...and it is the SHIM's, not startup code: crt0.o must not acquire it.
 nodep 'sigtramp is not crt0'   shim/v8sys/sigtramp.s           $B/crt0.o
 

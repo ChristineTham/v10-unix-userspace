@@ -242,7 +242,7 @@ P9_HOSTIO = $(ROOT)shim/p9/p9io_libc.c
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern v8fsd cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin srctree clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern v8fsd v8fsd-ubsan cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin srctree clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
@@ -325,7 +325,13 @@ test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
 # this port against itself.  It is the phony rather than $(BINDIR)/mkfs for the
 # reason test-mkfs gives above -- BINDIR is defined hundreds of lines below and
 # would expand to nothing here.
-test-streams: libv8kern libv8c imgbin v8fsd $(BUILD)/kern/imgdev.o
+# v8fsd-ubsan IS THE PHONY, NOT $(V8FSD_UBSAN), for the reason test-mkfs gives
+# above and check-makefile.sh caught within the second: that variable is defined
+# 700 lines below here, so naming it would expand to nothing and the dependency
+# silently would not exist.  $(BUILD)/v8sys/p9clprobe is spelled out because
+# $(BUILD) is defined at the top.
+test-streams: libv8kern libv8c imgbin v8fsd v8fsd-ubsan $(BUILD)/kern/imgdev.o \
+	     $(BUILD)/v8sys/p9clprobe
 	@$(ROOT)tests/streams/run.sh
 # The on-disk formats, and the image mkfs writes from them.  It asserts widths
 # from the V8 side -- a _Static_assert in the shim would see only clang, and
@@ -352,6 +358,24 @@ test-hooks:
 # the transport half of that seam.  Both halves or neither: this suite is the
 # first thing that exercises them against a real socket.
 $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC) $(P9_SRC) $(SHIM_ASM)
+	@mkdir -p $(BUILD)/v8sys
+	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable \
+	    -fno-stack-protector -fno-stack-check -o $@ $^
+
+# The v8fs CLIENT probe -- the same link line, and it is HERE rather than built
+# inside tests/streams/run.sh the way that suite's other four probes are.  They
+# compile against libv8kern, which is one archive the script can name; this one
+# needs $(SHIM_SRC), and a second copy of that wildcard in a shell script is the
+# two-lists-that-must-agree shape kmem.c's one-table rule exists to refuse.
+#
+# It links the SHIM and not the kernel, which is not an omission: §8a step 5e
+# measured 56 symbol collisions between libv8kern and a program's own objects,
+# 25 of them silent.  The kernel is in the other process -- that is the design.
+#
+# tests/streams runs it against a v8fsd it has already started, to reach the
+# three paths no V8 program in the tree performs: fstat on a directory
+# descriptor, lseek in all three whences, and dup sharing one offset.
+$(BUILD)/v8sys/p9clprobe: $(ROOT)tests/streams/p9clprobe.c $(SHIM_SRC) $(P9_SRC) $(SHIM_ASM)
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable \
 	    -fno-stack-protector -fno-stack-check -o $@ $^
@@ -999,6 +1023,42 @@ $(V8FSD): $(ROOT)shim/v8fsd/v8fsd.c $(P9_SRC) $(P9_HOSTIO) $(ROOT)shim/p9/p9.h \
           $(KERN_AUTH_H) $(KERN_SHIM_H)
 	@mkdir -p $(BUILD)/v8fsd
 	$(HOSTCC) $(V8FSFLAGS) -I$(ROOT)shim/kern/dev -o $@ \
+	    $(ROOT)shim/v8fsd/v8fsd.c $(P9_SRC) $(P9_HOSTIO) \
+	    $(IMGDEV_OBJ) $(KERN_LIB) $(BUILD)/libc/setjmp.o
+
+# THE SAME SERVER UNDER UndefinedBehaviorSanitizer, AND IT EXISTS BECAUSE A
+# MUTATION WOULD NOT FIRE.
+#
+# do_seek's overflow guard tests before adding; an auditor found the first
+# version adding and then testing, which is signed overflow.  Reverting it was
+# mutated and the suite stayed green -- and for once that means neither of the
+# two usual things.  The case is not vacuous and the code is not dead: every
+# reachable overflow here wraps to a NEGATIVE value, so the broken form reaches
+# the same EINVAL by executing undefined behaviour.  The defect is that the
+# compiler is entitled to assume the overflow cannot happen and delete the
+# check, which no behavioural test can see.
+#
+# A sanitizer can.  Measured: with the guard restored to its broken form this
+# binary prints `signed integer overflow: 4611686018427387904 +
+# 4611686018427387904' at v8fsd.c and dies; with the guard as written it is
+# silent through the whole probe, `ls -l' and a 28000-byte cat.
+#
+# -fno-sanitize-recover=all so the FIRST diagnostic kills the process: a server
+# that survives its own UB report would leave the suite asserting on stderr
+# alone, and stderr is easier to lose than a dead peer.
+#
+# ONLY OUR OWN CODE IS INSTRUMENTED, and that is deliberate rather than a
+# limitation.  $(KERN_LIB) is already compiled, so Bell Labs' 1985 kernel is
+# linked in uninstrumented -- UB in imported source is upstream's and would be
+# a different project.  What this covers is v8fsd.c and the codec.
+V8FSD_UBSAN = $(BUILD)/v8fsd/v8fsd-ubsan
+v8fsd-ubsan: $(V8FSD_UBSAN)
+$(V8FSD_UBSAN): $(ROOT)shim/v8fsd/v8fsd.c $(P9_SRC) $(P9_HOSTIO) $(ROOT)shim/p9/p9.h \
+          $(IMGDEV_OBJ) $(KERN_LIB) $(BUILD)/libc/setjmp.o \
+          $(KERN_AUTH_H) $(KERN_SHIM_H)
+	@mkdir -p $(BUILD)/v8fsd
+	$(HOSTCC) $(V8FSFLAGS) -fsanitize=undefined -fno-sanitize-recover=all \
+	    -I$(ROOT)shim/kern/dev -o $@ \
 	    $(ROOT)shim/v8fsd/v8fsd.c $(P9_SRC) $(P9_HOSTIO) \
 	    $(IMGDEV_OBJ) $(KERN_LIB) $(BUILD)/libc/setjmp.o
 

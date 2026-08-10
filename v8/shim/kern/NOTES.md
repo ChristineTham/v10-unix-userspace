@@ -551,3 +551,112 @@ buf, BUFSIZ)) > 0)` — an error is not `> 0`, so the loop ends and `cat` exits
 that reason, *including the passthrough control*, which is what gave it away.
 The property that actually matters is the bytes, and it is the bytes that are
 asserted.
+
+## §8a step 5e, second pass: a client probe, and what it found
+
+The client section above drives `p9cl.c` through the **shipped binaries** —
+`cat`, `ls`, `tail`, `wc`, `sh`, `chmod`. That is the right headline claim and
+it is why those cases are written that way. It left three paths with no case at
+all, because nothing in this tree performs them, and `p9_t_fstat`'s comment said
+so out loud: fstat on a directory descriptor, `lseek` in all three whences, and
+`dup` sharing one offset.
+
+`tests/streams/p9clprobe.c` is the shim's own sources linked into a host binary
+— the shape `tests/v8sys/test.c` already has — run under the same mount, jail
+and deadline every program above got. **The Makefile builds it, not `run.sh`**,
+because the other four probes in that suite link one archive the script can name
+and this one needs `$(SHIM_SRC)`; a second copy of that wildcard in a shell
+script is the two-lists-that-must-agree shape `kmem.c`'s one-table rule refuses.
+It links the shim and **not** `libv8kern` — 56 collisions, 25 silent, and the
+kernel is in the other process, which is the design.
+
+Five things came out of it, and only the first was the one it was written for.
+
+### 1. The vacuous guard, and the observable nobody had used
+
+Deleting `p9_t_fstat`'s `st_size` override left the suite green last session.
+The code is not dead: it is `dir.c:114`'s rule, and every existing reader loops
+to EOF and never looks. What was missing is that **nothing had ever asked both
+questions**. `stat` reports what the image charges and `fstat` what `read(2)`
+will produce, and the observable is that the two *differ*.
+
+**And the pair recorded in the comment was a measurement of no directory at
+all.** It said "64 bytes on the image against 768 of records". 768 is three
+records and belongs to the **subdirectory**; the root has four entries, so its
+pair is 64/1024. Neither number is wrong alone and the sentence is
+arithmetically impossible — 64 bytes of 16-byte entries cannot be three records
+— which is the tell, and a pair of plausible numbers reads as one measurement.
+
+So the case asserts a **ratio** over **two** directories of different sizes:
+`stat/16 == readable/(V8_DIRSIZ+2)`, the same count in two units. No transcribed
+pair satisfies that by accident. The mutation now fires on five cases.
+
+### 2. `ENOENT` where V7 says `ENOTDIR`
+
+A short Rwalk carries no errno. `namei` has two answers one line apart and so
+does this server — `do_walk`'s `if ((ip->i_mode & IFMT) != IFDIR) u.u_error =
+ENOTDIR` at `v8fsd.c:699` — but the reply cannot say which, so `p9walk`
+flattened both to `ENOENT`.
+
+The information is in the qids the reply carries, which `p9walk` was discarding:
+components before `got` succeeded and the one **at** `got` did not, so the last
+qid describes what the failed component was looked up *in*. Not a directory
+means `ENOTDIR`.
+
+**Three cases, not two.** A missing name at the top is an *Rerror* and already
+carried the server's own errno; the other two are short walks on the same code
+path and must come out differently. The middle one — a missing name inside a
+real subdirectory — is the discriminator, and both one-sided mutations fire on
+exactly one case each.
+
+### 3. A transport leaking its signal semantics into the filesystem
+
+Found at one remove, which is the argument for the sanitized server below: when
+that server aborts, the probe came back **141 = 128 + SIGPIPE**. The connection
+is a socket and the caller is a V7 program that has no idea it is one, so a
+server that died mid-conversation *killed* `cat` instead of failing its read. On
+a real V8 a disk that stops answering is `EIO`.
+
+`p9dial` sets `SO_NOSIGPIPE`, and **per-socket is the whole reason** rather than
+`signal(SIGPIPE, SIG_IGN)`: ignoring the signal changes the program's own
+disposition, and a V8 program in a pipeline must still die when its reader goes
+away — that is how `yes | head` terminates. `rawsys5()` is new in `rawsys.h` for
+it; the gap between 4 and 6 was not a decision, nothing had taken five
+arguments.
+
+The case produces the condition with **`shutdown(2)` on the client's own
+descriptor**, which puts it in exactly the state a dead peer would: no second
+server, no process to kill, no timing. The assertion is that the probe reaches
+its last line.
+
+### 4. A mutation that would not fire, for a third reason
+
+`do_seek`'s overflow guard tests before adding. Reverting it to the auditor's
+original — add, then test for negative — left all 525 cases green, and this is
+**neither** of the two reasons a mutation usually survives. The case is not
+vacuous and the code is not dead: both operands are in `[0, LLONG_MAX]`, so
+every reachable overflow wraps to a negative value and the broken form lands on
+the same `EINVAL`. It gets there by executing undefined behaviour, which
+licenses the compiler to delete the check.
+
+`$(BUILD)/v8fsd/v8fsd-ubsan` is the same server under
+`-fsanitize=undefined -fno-sanitize-recover=all`, and the suite runs the probe,
+`ls -l` and a 28000-byte `cat` through it. Current code: silent. Guard
+reverted: `signed integer overflow: 4611686018427387904 + 4611686018427387904`
+and the process dies. **Only our own code is instrumented** — `libv8kern.a` is
+already compiled, so Bell Labs' 1985 kernel is linked in uninstrumented, and UB
+in imported source would be a different project.
+
+### 5. Two tables that cite each other and were never compared
+
+`v8fsd`'s `errnames[]` and `p9cl.c`'s `enames[]` are the two halves of one seam,
+each file's comment citing the other. The suite now compares them as text, and
+**the direction is not symmetric**, so it is two cases and not a `diff`: a name
+the server can send that the client does not know falls into `enumber()`'s
+`EIO` fallback, which is documented for a *foreign* server's prose and is
+therefore silent. The values are deliberately **not** compared — `ENAMETOOLONG`
+is `V8_ENOENT` and `ENOTEMPTY` is `V8_EEXIST` because V7 has neither, so a value
+comparison would fail on exactly the entries whose collapse is the considered
+answer. What has to agree is the name set.
+
+`streams` 466 → 535; nine mutations, nine fire.

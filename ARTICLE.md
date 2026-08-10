@@ -1957,6 +1957,81 @@ and assert two things the absent directory cannot fake: that the read is
 shadowed by the image, and that the host file's mode is unchanged.
 
 
+### The probe, and the mutation that would not fire
+
+All of those cases drive the client through the shipped binaries — `cat`, `ls`,
+`tail`, `wc`, `sh`. That is the claim worth making, and it is also the reason
+three things had no test at all: nothing in a 1985 userspace calls `fstat` on a
+directory descriptor, nothing seeks backwards from the current position, and
+nothing dups a descriptor purely to prove two of them share one offset. The
+last of those is the *central* claim of the design. It followed structurally
+from the offset living on the server, and following structurally is not the
+same as being true.
+
+So I wrote a probe: the shim's own source compiled into an ordinary host
+binary, calling `v8s_open` and `v8s_read` directly, run against the same server
+under the same mount. It found four things I was not looking for.
+
+The first was the guard I built it for. Deleting the line that fixes a
+directory's reported size had left the suite green — and the code is not dead,
+it is a rule this port learned the hard way. What was missing is that nothing
+had ever asked *both* questions. `stat` reports what the image charges for a
+directory; `fstat` reports what `read(2)` will actually produce. They
+deliberately disagree, and the disagreement is the observable. Nobody had put
+them side by side.
+
+Which is how I found that the pair of numbers in my own comment — "64 bytes on
+the image against 768 of records" — describes no directory in existence. 768 is
+three records and belongs to the subdirectory; the root has four entries, so
+its pair is 64 and 1024. Neither number is wrong on its own. The sentence is
+arithmetically impossible, because 64 bytes of 16-byte entries cannot be three
+records, and I had never done that arithmetic because two plausible numbers
+side by side read as one measurement. The test now asserts the *ratio* over two
+directories of different sizes, which no transcribed pair can satisfy by
+accident.
+
+The second was an errno. V7's `namei` distinguishes "no such file" from "not a
+directory" — two answers, one line apart — and so does my server. But 9P's
+reply for a walk that stops part way is silent about *why*, so the client
+flattened both to `ENOENT`. The reason was in the message all along, in the
+qids I was throwing away: the last one describes what the failed component was
+looked up in, and if that is not a directory the answer is `ENOTDIR`. Fixing it
+needs three test cases rather than two, and the middle one is the whole point —
+a missing name inside a *real* subdirectory takes the same code path as a walk
+through a file, so a client that simply always said `ENOTDIR` would pass the
+obvious case and fail nothing.
+
+The third I found by accident, and the accident is the fourth.
+
+I had a mutation that would not fire. The server's seek code checks for
+overflow before adding rather than after; reverting it to the broken form left
+all 525 cases green. This project has a rule for that — a mutation that does
+not fire means the test is vacuous or the code is dead — and here it was
+neither. Every overflow reachable in that function wraps to a negative number,
+so the broken version arrives at the same refusal. It gets there by executing
+undefined behaviour, which is precisely the problem: a compiler is entitled to
+assume the overflow cannot happen and delete the check. No behavioural test can
+see that, ever.
+
+The instrument for it is a sanitizer, and it turned out to be cheap enough to
+keep: the same server built a second time with UBSan, with the suite's traffic
+run through it. Silent today; with the guard reverted, it prints the overflow
+and dies. And because it dies, the client on the other end came back with exit
+status 141 — which is 128 plus 13, which is SIGPIPE.
+
+That is the fourth finding, and it is the one I would not have reached any
+other way. The connection is a socket. The program using it is `cat`, which has
+no idea it is talking over one. When the server died, the next request raised
+SIGPIPE and *killed* the program — where a V8 machine whose disk stops
+answering gives you an I/O error. A transport had leaked its signal semantics
+into a filesystem. The fix is one socket option, and it has to be the
+per-socket one rather than ignoring SIGPIPE process-wide: a V8 program in a
+pipeline must still die when its reader goes away, because that is how
+`yes | head` terminates.
+
+Nine mutations now, and nine of them fire.
+
+
 ## What is left
 
 Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix
@@ -1990,12 +2065,14 @@ What remains, in rough order:
   the client half, plus the writes. **The client now exists too**: with one
   environment variable set, `cat /mnt/sub/deep` returns those same 28000 bytes,
   and `ls`, `tail`, `wc`, `grep` and shell redirection all work against the
-  image unmodified. What is genuinely left is the **write half of the server** —
-  `Twrite`, `Tcreate`, `Tremove` and `Twstat` answer `EROFS` today, while the
-  kernel code underneath them is written and tested — and the one gap the
-  client cannot close on its own, which is `chdir` into a mount: nothing in the
-  shim tracks a working directory, so a relative name inside a mount would
-  resolve against the host.
+  image unmodified, and a probe compiled against the shim reaches the three
+  paths no 1985 program does — `fstat` on a directory descriptor, `lseek` in
+  all three whences, and two descriptors sharing one offset. What is genuinely
+  left is the **write half of the server** — `Twrite`, `Tcreate`, `Tremove` and
+  `Twstat` answer `EROFS` today, while the kernel code underneath them is
+  written and tested — and the one gap the client cannot close on its own,
+  which is `chdir` into a mount: nothing in the shim tracks a working
+  directory, so a relative name inside a mount would resolve against the host.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.

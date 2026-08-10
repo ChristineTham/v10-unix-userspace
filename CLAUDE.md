@@ -535,10 +535,21 @@ because there is nothing to inherit.
 - **`dir.c:114`'s RULE HAD TO BE APPLIED A SECOND TIME, IN A SECOND
   FILESYSTEM.** A directory's `st_size` is the length of the V7 record
   snapshot, not what the thing underneath charges — 64 bytes on the image
-  against 768 of records. The port fixed this once for passthrough; a new type
-  implementing the same interface does not inherit the fix. That is "the line
-  beside it kept the assumption" where the line beside it is a whole second
+  against **1024** of records. The port fixed this once for passthrough; a new
+  type implementing the same interface does not inherit the fix. That is "the
+  line beside it kept the assumption" where the line beside it is a whole second
   implementation.
+
+  **And that pair said 64/768 for a fortnight, which is a measurement of no
+  directory at all.** 768 is three records and belongs to the *subdirectory*;
+  the root has four entries, so its pair is 64/1024. Neither number was wrong on
+  its own and the sentence was arithmetically impossible — 64 bytes of 16-byte
+  entries cannot be three records — which is the tell nobody looked for, because
+  a pair of plausible numbers reads as one measurement. Found by the client
+  probe printing both. The fix is not a corrected constant: `tests/streams`
+  asserts the **ratio** (`stat/16 == readable/(V8_DIRSIZ+2)`, the same count in
+  two units) over **two** directories of different sizes, so the case cannot
+  encode one image's shape.
 - **ELEVEN SYSCALLS HAVE NO SLOT IN `struct v8fstyp` AND THAT STOPPED BEING
   CONTAINABLE.** `link unlink rmdir mkdir mknod symlink readlink chmod chown
   utime` are passthrough by construction. Survivable while every type answered
@@ -559,6 +570,31 @@ because there is nothing to inherit.
   MEANT.** `flags & 01000` was written for `O_TRUNC`; 01000 is 0x200, which is
   `O_CREAT`. `syscall.c` spells both in hex side by side for exactly this
   reason.
+- **A TRANSPORT MUST NOT LEAK ITS SIGNAL SEMANTICS INTO THE FILESYSTEM.** The
+  connection is a socket and the caller is a V7 program that has no idea it is
+  one — so a `v8fsd` that died mid-conversation raised **SIGPIPE** on the next
+  request and *killed* `cat`, where a V8 disk that stops answering is `EIO`.
+  Found at one remove: the sanitized server above aborts on a broken guard, and
+  the client came back 141. The fix is `SO_NOSIGPIPE` in `p9dial`, and **it has
+  to be per-socket rather than `signal(SIGPIPE, SIG_IGN)`** — ignoring the
+  signal changes the program's own disposition, and a V8 program in a pipeline
+  must still die when its reader goes away, which is how `yes | head`
+  terminates. The case produces the condition with `shutdown(2)` on the
+  client's *own* descriptor: no second process, no timing, and the assertion is
+  that the probe reaches its last line.
+- **AND `p9walk` ANSWERED ENOENT WHERE V7 ANSWERS ENOTDIR, BECAUSE A SHORT
+  Rwalk CARRIES NO ERRNO.** `namei` has two answers one line apart and so does
+  the server (`v8fsd.c:699` sets `ENOTDIR`), but 9P's short reply is silent
+  about *why* it stopped — so the client flattened both to `ENOENT` and
+  `open("/mnt/hello/beyond")` reported the wrong one. The information is in the
+  qids the reply carries and the client was discarding them: the last one
+  describes what the failed component was looked up *in*, and if it is not a
+  directory the reason is `ENOTDIR`. **The guard needs three cases, not two** —
+  a missing name at the top (an Rerror, carrying the server's own errno), a
+  missing name inside a real subdirectory, and a walk through a plain file. The
+  middle one is the discriminator: it shares its code path with the third, so a
+  client that simply always said `ENOTDIR` passes the third alone. Both
+  one-sided mutations fire on exactly one case each.
 
 **AND THE AUDITOR FOUND TWELVE MORE, NOT ONE OF THEM AN LP64 BUG.** Run on the
 client the hour it was written — the rule that the subagent earns its keep on
@@ -2398,6 +2434,35 @@ not testable until it is installed.
   the code it targeted does anything. Then delete the dead call, re-aim the case
   at the property that is load-bearing (here: `v8fs_bind` clearing the row
   rather than merging into it), and re-mutate to prove the new one fires.
+
+  **AND THERE IS A THIRD REASON A MUTATION DOES NOT FIRE, WHICH IS NEITHER OF
+  THE TWO ABOVE: THE DEFECT IS UNDEFINED BEHAVIOUR THAT HAPPENS TO GIVE THE
+  RIGHT ANSWER.** `v8fsd`'s `do_seek` tests its overflow guard *before* the
+  addition; an auditor had found the first version adding and then testing for
+  negative. Reverting it left all 525 cases green — and the case is not vacuous
+  and the code is not dead. Every overflow reachable there wraps to a
+  **negative** value (both operands are in `[0, LLONG_MAX]`, so any sum past
+  the top lands in `[-2^63, -2]`), so the broken form reaches the same `EINVAL`
+  by executing UB. The defect is that the compiler is entitled to assume the
+  overflow cannot happen and **delete the check** — invisible to every
+  behavioural test, the `strncat` shape exactly.
+
+  **The instrument for that class is a sanitizer, and it is cheap enough to be
+  a permanent case.** `make` builds a second `v8fsd` with
+  `-fsanitize=undefined -fno-sanitize-recover=all` and `tests/streams` runs the
+  probe, `ls -l` and a 28000-byte `cat` through it. Current code: silent.
+  Guard reverted: `signed integer overflow: 4611686018427387904 +
+  4611686018427387904` and the process dies. Two things make it practical —
+  **only our own code is instrumented**, because `libv8kern.a` is already
+  compiled and Bell Labs' UB would be a different project; and the assertion is
+  that the **server is still alive**, since `-fno-sanitize-recover` makes a
+  dead peer the observable and a dead peer is harder to lose than stderr.
+
+  **And it immediately found something it was not built for**, which is the
+  argument for having it: when that server aborts, the client came back **141 =
+  128 + SIGPIPE**. See the transport-semantics entry in the v8fs section — a
+  socket's signal behaviour was reaching a V7 program that has no idea it is
+  talking over one.
 
   **AND THE MUTATION THAT FIRES ONLY IN THE INDEPENDENT CHECKER IS THE ONE THAT
   JUSTIFIES HAVING ONE.** §8a step 5d broke `alloc()`'s free-list refill so that

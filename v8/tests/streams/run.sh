@@ -1055,6 +1055,47 @@ if [ -f "$PH" ] && [ -f "$HO" ]; then
 		"$(comm -13 "$TMP/redir" "$TMP/undone" | tr '\n' ' ' | sed 's/ $//')"
 else bad "param.h or hostok.h missing -- cannot check the redirect list"; fi
 
+# --- THE TWO ERRNO TABLES ARE THE SAME SEAM, AND NOTHING COMPARED THEM ------
+# v8fsd's errnames[] turns a host errno into a symbolic name for the wire and
+# p9cl.c's enames[] turns it back; each file's comment cites the other and calls
+# the mapping "exactly reversible by the client".  That is a claim about two
+# lists in two directories, and it is the shape the block above exists for.
+#
+# THE DIRECTION IS NOT SYMMETRIC, which is why this is two cases and not one
+# `diff'.  A name the SERVER can send that the CLIENT does not know falls into
+# enumber()'s EIO fallback -- documented for a foreign server's own prose, so it
+# is silent, and an errno the port controls would be quietly flattened.  That is
+# the direction that must be empty.  The reverse is harmless and is asserted
+# separately: a client entry for a name this server never sends is either dead
+# or deliberate, and there is nothing dead here today, so a new one should have
+# to be noticed.
+#
+# The client's V8_ values are NOT compared, deliberately.  Two of them collapse
+# on purpose -- ENAMETOOLONG is V8_ENOENT and ENOTEMPTY is V8_EEXIST, because
+# V7 has neither errno -- so a value comparison would fail on the very entries
+# whose collapse is the considered answer.  What has to agree is the NAME SET.
+FSD=$ROOT/shim/v8fsd/v8fsd.c
+CLI=$ROOT/shim/v8sys/p9cl.c
+if [ -f "$FSD" ] && [ -f "$CLI" ]; then
+	# The tables are the only place in either file where a bare "E..." name
+	# appears in braces beside a value, which is what makes a grep enough.
+	sed -n '/^static const struct { int e; const char \*name; } errnames\[\]/,/^};/p' \
+		"$FSD" | grep -oE '"E[A-Z]+"' | tr -d '"' | sort -u > "$TMP/esrv"
+	sed -n '/^static const struct { const char \*n; int e; } enames\[\]/,/^};/p' \
+		"$CLI" | grep -oE '"E[A-Z]+"' | tr -d '"' | sort -u > "$TMP/ecli"
+	# Neither extraction may be vacuous: a pattern that has drifted matches
+	# nothing, both comm results come out empty, and the block passes while
+	# measuring nothing at all.
+	ns=$(wc -l < "$TMP/esrv" | tr -d ' ')
+	nc=$(wc -l < "$TMP/ecli" | tr -d ' ')
+	[ "$ns" -ge 15 ] && ok || bad "only $ns names found in v8fsd's errnames[]"
+	[ "$nc" -ge 15 ] && ok || bad "only $nc names found in p9cl's enames[]"
+	check "every errno the server can send, the client knows" "" \
+		"$(comm -23 "$TMP/esrv" "$TMP/ecli" | tr '\n' ' ' | sed 's/ $//')"
+	check "and the client knows no name the server cannot send" "" \
+		"$(comm -13 "$TMP/esrv" "$TMP/ecli" | tr '\n' ' ' | sed 's/ $//')"
+else bad "v8fsd.c or p9cl.c missing -- cannot compare the errno tables"; fi
+
 # --- §8a step 5: the six are BUILT, and what the archive imports ------------
 # A hash guard says a file is upstream's.  It says nothing about whether the
 # build ever reads it, and for a whole release the answer here was "no".
@@ -2169,6 +2210,240 @@ check "a directory read that lost its snapshot yields nothing" "0" \
 check "and passthrough does the same on /etc"	"0" \
 	"$(v8run "$SH" -c 'cat < /etc' 2>/dev/null | wc -c | tr -d ' ')"
 
+# ---------------------------------------------------------------------------
+# THE PATHS NO V8 PROGRAM PERFORMS.
+#
+# Everything above drives the client through SHIPPED BINARIES, which is the
+# right headline claim and is why those cases are written that way.  It leaves
+# three things with no case at all, because nothing in this tree does them:
+# fstat on a directory descriptor, lseek in all three whences, and dup sharing
+# one offset.  The last is the CENTRAL claim of the design -- the connection is
+# the open file description -- and it had been argued rather than tested.
+#
+# $(BUILD)/v8sys/p9clprobe is the shim's own sources linked into a host binary,
+# the shape tests/v8sys/test.c already has, and the Makefile builds it there
+# rather than here so that $(SHIM_SRC) is not spelled twice.  It runs under
+# v8run, so it gets the same mount, the same jail and the same deadline every
+# program above got.
+CLPROBE=$BUILD/v8sys/p9clprobe
+if [ ! -x "$CLPROBE" ]; then
+	bad "v8fs client: p9clprobe was not built" "$CLPROBE"
+else
+v8run "$CLPROBE" main > "$TMP/p9clout" 2>"$TMP/p9clerr"
+clrc=$?
+if [ $clrc -ne 0 ]; then
+	bad "p9clprobe exited nonzero ($clrc)" "$(head -3 "$TMP/p9clerr")"
+else
+# The whole remainder of the line, not $2: pbytes renders a read as characters
+# and one of them is a single space.
+cq() { awk -v k="$1" '$1 == k { sub(/^[^ ]+ /, ""); print }' "$TMP/p9clout"; }
+
+# FIRST, THAT THE PROBE IS TALKING TO THE IMAGE THESE CASES DESCRIBE.  Every
+# offset below indexes into `hello from a V8 filesystem\n'; against a different
+# image they would all be plausible wrong bytes rather than one clear failure.
+check "the probe reads the image these cases assume" "1" "$(cq hello-is-expected)"
+check "and hello is 27 bytes"			"27"	"$(cq hello-len)"
+
+# --- 1. A DIRECTORY HAS TWO SIZES, AND THEY MUST DISAGREE -------------------
+#
+# THIS IS THE GUARD THAT WAS MEASURED VACUOUS.  p9_t_fstat overrides the
+# server's i_size with the length of the V7 record snapshot -- dir.c:114's rule
+# in a second filesystem -- and deleting that line left the suite at 466 passed,
+# 0 failed, because every existing reader loops to EOF and never looks.  What
+# was missing is that nothing had ever asked BOTH questions: stat reports what
+# the image charges and fstat what read(2) will produce, and the observable is
+# that the two differ.
+#
+# THE ASSERTION IS A RATIO, NOT A CONSTANT, and the reason is a bug this found.
+# p9cl.c recorded the pair as "64 bytes on the image against 768 of records";
+# 768 is three records and belongs to the SUBdirectory, while 64 bytes of
+# 16-byte entries is four -- 1024.  The sentence was arithmetically impossible
+# and described no directory at all.  So the case checks that the same count
+# comes out of both units (stat/16 == readable/256) over TWO directories of
+# different sizes, which no transcribed pair can satisfy by accident.
+check "a directory's stat and fstat sizes differ" "1"	"$(cq dir-two-sizes-differ)"
+check "and fstat is what read(2) will produce"	"1"	"$(cq dir-fstat-is-readable-bytes)"
+check "and that is a whole number of V7 records" "1"	"$(cq dir-total-is-whole-records)"
+check "and both units count the same entries"	"1"	"$(cq dir-entry-counts-agree)"
+check "the mount root holds four of them"	"4"	"$(cq dir-entries)"
+check "reading the directory to EOF gives no error" "0"	"$(cq dir-read-err)"
+# ...and the subdirectory, which is where 768 actually came from.  Three
+# entries, so both numbers move and the ratio does not.
+check "the subdirectory's two sizes differ too"	"1"	"$(cq subdir-two-sizes-differ)"
+check "and its units agree as well"		"1"	"$(cq subdir-entry-counts-agree)"
+check "and it holds three entries"		"3"	"$(cq subdir-entries)"
+# The numbers themselves, so a failure above is diagnosable rather than a bare
+# 0 -- and so the pair this port got wrong is written down correctly once.
+check "the root charges 64 bytes on the image"	"64"	"$(cq dir-stat-size)"
+check "and offers 1024 of records"		"1024"	"$(cq dir-fstat-size)"
+check "the subdirectory charges 48"		"48"	"$(cq subdir-stat-size)"
+check "and offers 768"				"768"	"$(cq subdir-fstat-size)"
+
+# --- 2. lseek, ALL THREE WHENCES --------------------------------------------
+#
+# tail(1) reaches Tseek end to end but only ever SEEK_END with a non-positive
+# offset.  Nothing sent a negative SEEK_CUR -- which is the shape v8fsd's
+# do_seek says produced its one remote crash, a p9_u64 in a signed comparison --
+# and nothing reached the overflow guard at all.
+check "lseek SEEK_SET"				"6"	"$(cq seek-set-6)"
+check "and reads what is at the offset"		"from"	"$(cq seek-set-bytes)"
+check "lseek SEEK_CUR forward"			"12"	"$(cq seek-cur-fwd)"
+check "and lands on the space"			"_"	"$(cq seek-cur-fwd-byte)"
+# THE ARM NOTHING ELSE REACHES.  Legal lseek(2), and the one the server's
+# signed/unsigned seam is about.
+check "lseek SEEK_CUR backwards"		"0"	"$(cq seek-cur-back)"
+check "and is back at the start"		"hello"	"$(cq seek-cur-back-bytes)"
+check "lseek SEEK_END is the file's length"	"27"	"$(cq seek-end-0)"
+check "and SEEK_END with a negative offset"	"26"	"$(cq seek-end-neg)"
+check "which is the trailing newline"		"."	"$(cq seek-end-neg-byte)"
+check "a read at end of file is 0, not an error" "0"	"$(cq seek-read-at-eof)"
+# Past the end is legal -- V7 files have holes -- and reads nothing.
+check "seeking past the end is allowed"		"1000"	"$(cq seek-past-end)"
+check "and reading there yields nothing"	"0"	"$(cq seek-read-past-end)"
+# A negative RESULT is EINVAL, which is lseek(2)'s own answer, and 22 is it.
+check "a negative result is refused"		"-1"	"$(cq seek-negative)"
+check "with EINVAL"				"22"	"$(cq seek-negative-errno)"
+# An unknown whence never leaves the process.
+check "an unknown whence is refused"		"-1"	"$(cq seek-bad-whence)"
+check "with EINVAL too"				"22"	"$(cq seek-bad-whence-errno)"
+
+# THE OVERFLOW GUARD, WHICH AN AUDITOR FOUND COMPUTING base+off BEFORE TESTING
+# FOR NEGATIVE.  That is signed overflow -- undefined -- and reachable from an
+# ordinary lseek: 2^62 twice.  The PAIR is what makes the case meaningful: the
+# SET must succeed, because a guard that simply refused large offsets would pass
+# a case that only checked the second call.
+check "lseek to 2^62 succeeds"		"4611686018427387904"	"$(cq seek-huge-set)"
+check "and 2^62 again from there is refused"	"-1"	"$(cq seek-huge-cur)"
+check "with EINVAL, not a wrapped offset"	"22"	"$(cq seek-huge-cur-errno)"
+# ...and the fid still works, which says the guard refused the operation rather
+# than leaving f_off somewhere unspeakable.  do_seek assigns only after the test.
+check "and the descriptor still works after"	"0"	"$(cq seek-after-refusal)"
+check "reading from the start again"		"hello"	"$(cq seek-after-refusal-bytes)"
+
+# --- 3. dup SHARES ONE OFFSET, WHICH IS THE DESIGN --------------------------
+#
+# p9cl.c's header is one sentence -- the connection IS the open file
+# description -- and dup is the first of the three consequences it names.  It
+# follows structurally from the offset living on the server, and nothing
+# asserted it: a shell cannot, because two stdio readers of one descriptor each
+# pull a whole block, so the second sees end of file wherever the offset is.
+check "a dup is a different descriptor"		"1"	"$(cq dup-is-a-new-fd)"
+check "reading six bytes"			"hello_" "$(cq dup-first-read)"
+check "the dup continues where it stopped"	"from"	"$(cq dup-continues)"
+check "and the original sees the dup's move"	"_a"	"$(cq dup-original-sees-it)"
+check "an lseek on one is an lseek on both"	"hello"	"$(cq dup-seek-is-shared)"
+# THE CLUNK BUG, STATED DIRECTLY.  A Tclunk in t_close destroys a fid every dup
+# shares, which is what made `cat < /mnt/hello' print nothing; the right number
+# of clunks is zero, and the kernel drops the connection at the LAST close.
+check "closing one does not close the file"	"_fro"	"$(cq dup-survives-sibling-close)"
+check "and dup2 shares the offset as well"	"from"	"$(cq dup2-shares-offset-too)"
+
+# --- 4. THE ERRNOS THAT CROSS THE WIRE --------------------------------------
+#
+# V7's namei has two answers one line apart and so does this server
+# (v8fsd.c:699), but a SHORT Rwalk carries no errno -- so the reason is lost
+# unless the client reconstructs it from the last qid.  It did not, and
+# `open("/mnt/hello/beyond")' reported ENOENT where a V7 kernel reports ENOTDIR.
+# Found here, fixed in p9walk.
+#
+# THE THREE ARE A SET, and the middle one is the reason it is not two.  The
+# first fails on its first name and is an Rerror carrying the server's own
+# errno; the other two are SHORT WALKS taking the same code path, and they must
+# come out differently -- a client that always answered ENOTDIR would pass the
+# third case on its own.
+check "a missing name is ENOENT"		"2"	"$(cq err-open-missing-errno)"
+check "missing inside a real directory is too"	"2"	"$(cq err-open-missing-deep-errno)"
+check "but through a plain file it is ENOTDIR"	"20"	"$(cq err-walk-thru-file-errno)"
+# The server refuses a write at the OPEN today, with EROFS (30).  §8a step 5f is
+# what changes this, and it changes the SERVER: p9_t_write already sends its
+# Twrite rather than refusing locally, so this number moves without the client
+# being touched.
+check "opening for write is EROFS"		"30"	"$(cq err-open-for-write)"
+check "and the write itself fails"		"-1"	"$(cq err-write)"
+# A directory descriptor is not writable, and this one never leaves the process.
+check "writing to a directory is EISDIR"	"21"	"$(cq err-write-dir-errno)"
+
+# --- 5. A DEAD SERVER IS AN I/O ERROR, NOT A SIGNAL -------------------------
+#
+# FOUND BY THE SANITIZED SERVER BELOW, WHICH IS WHY IT IS HERE.  When that
+# server aborts, the probe came back 141 -- 128 + 13, SIGPIPE.  The transport is
+# a socket and the caller is a V7 program that has no idea it is one, so a
+# server that dies mid-conversation was killing `cat' with a signal instead of
+# failing its read.  On a real V8, a disk that stops answering is EIO.
+#
+# p9dial now sets SO_NOSIGPIPE, which is PER SOCKET and that is the point:
+# signal(SIGPIPE, SIG_IGN) would change the program's own disposition, and a V8
+# program in a pipeline must still die when its reader goes away -- that is how
+# `yes | head' terminates.
+#
+# The probe produces the condition with shutdown(2) on its own descriptor rather
+# than by killing a server, so there is no second process and no timing.
+check "the client socket refuses SIGPIPE"	"1"	"$(cq pipe-nosigpipe-set)"
+check "and the descriptor worked before"	"hello"	"$(cq pipe-read-before)"
+check "a read against a dead peer fails"	"-1"	"$(cq pipe-read-after)"
+check "with EIO, which is what a disk would say" "5"	"$(cq pipe-read-after-errno)"
+# The real assertion: the probe reached its last line.  A process killed by
+# signal 13 never prints this, and its exit status is 141.
+check "and the program is still alive"		"1"	"$(cq pipe-survived)"
+
+# --- 6. THE SAME TRAFFIC, AGAINST A SANITIZED SERVER ------------------------
+#
+# THIS SECTION EXISTS BECAUSE A MUTATION WOULD NOT FIRE, which by this repo's
+# rule means the case is vacuous or the code is dead -- and here it is neither.
+# do_seek's overflow guard tests before adding; reverting it to the auditor's
+# original (add, then test for negative) leaves all 525 cases green, because
+# every overflow reachable here wraps to a NEGATIVE value and the broken form
+# lands on the same EINVAL.  It gets there by executing undefined behaviour,
+# which licenses the compiler to delete the check -- and no behavioural test
+# can see that.  It is the strncat shape: the answer was right the whole time.
+#
+# So the instrument is a sanitizer rather than an assertion.  Measured, with the
+# guard broken: `signed integer overflow: 4611686018427387904 +
+# 4611686018427387904 cannot be represented in type long long' at v8fsd.c, and
+# the process dies.  With it as written: silent.
+#
+# THE ASSERTION IS THAT THE SERVER IS STILL ALIVE, not that stderr is empty --
+# -fno-sanitize-recover=all means the first diagnostic kills it, and a dead peer
+# is harder to lose than a line of stderr.  Both are checked, in that order.
+UBFSD=$BUILD/v8fsd/v8fsd-ubsan
+if [ ! -x "$UBFSD" ]; then
+	bad "v8fs client: the sanitized server was not built" "$UBFSD"
+else
+rm -f "$P9DIR/ubsock"
+( cd "$P9DIR" && exec "$UBFSD" ubsock p9img ) > "$TMP/p9ub.out" 2>&1 &
+UBPID=$!
+ubready=0
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+	grep -q "^v8fsd ready" "$TMP/p9ub.out" 2>/dev/null && { ubready=1; break; }
+	kill -0 $UBPID 2>/dev/null || break
+	sleep 0.2
+done
+check "a sanitized server comes up"		"1"	"$ubready"
+if [ "$ubready" = 1 ]; then
+	v8ub() { ( cd "$P9DIR"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/mnt=ubsock"
+		   export V8ROOT V8MOUNT; deadline "$@" ); }
+	# The probe first -- it is the only thing that reaches the seek guard --
+	# and then two shipped binaries, because `ls -l' is a connection per
+	# entry and `cat' of the 28000-byte file is bmap's indirect arm.  Three
+	# different shapes of traffic through one instrumented server.
+	v8ub "$CLPROBE" main > "$TMP/p9ubout" 2>&1
+	check "the probe's whole run against it"	"0"	"$?"
+	v8ub "$LS" -l /mnt > /dev/null 2>&1
+	v8ub "$CAT" /mnt/sub/deep > "$TMP/ubdeep" 2>/dev/null
+	check "and 28000 bytes still come back"		"28000" \
+		"$(wc -c < "$TMP/ubdeep" | tr -d ' ')"
+	# The two halves of the verdict.
+	check "the sanitized server reported no UB"	"" \
+		"$(grep -c 'runtime error' "$TMP/p9ub.out" | tr -d ' ' | sed 's/^0$//')"
+	check "and it is still running"			"0" \
+		"$(kill -0 $UBPID 2>/dev/null; echo $?)"
+fi
+kill $UBPID 2>/dev/null; wait $UBPID 2>/dev/null
+fi	# the sanitized server was built
+
+fi	# the client probe ran
+fi	# the client probe was built
+
 # 6. A SECOND IMAGE, FOR TWO PROPERTIES THE FIRST ONE CANNOT EXPRESS -- and
 # both cases were written against the first image, ran green, and were shown
 # VACUOUS by mutation.  That is the informative outcome and it is why they are
@@ -2216,6 +2491,34 @@ check "a uid V8 cannot hold does not read as root" "0" \
 # ...and a uid that IS root still does.
 check "and a root-owned file still does"	"1" \
 	"$(v8uid "$LS" -l /m/secret 2>&1 | awk '{print $3}' | grep -c '^root$')"
+
+# THE SAME CONTRACT AS A NUMBER RATHER THAN AS A LOGIN NAME.  `ls -l' resolves
+# the uid through /etc/passwd, so what the two cases above really compare is
+# "root" against some other string -- they would pass against a parser that
+# returned 1, or 40000, or anything else that is not 0.  The contract is
+# narrower than that: P9UID_BAD is (short)-1, i.e. 65535, a value no V8 system
+# issues, so an owner this port cannot represent reads as one it cannot
+# represent.  The probe asks stat(2) directly.
+if [ -x "$CLPROBE" ]; then
+	v8uid "$CLPROBE" uid > "$TMP/p9uidout" 2>"$TMP/p9uiderr"
+	uqrc=$?
+	uq() { awk -v k="$1" '$1 == k { sub(/^[^ ]+ /, ""); print }' "$TMP/p9uidout"; }
+	if [ $uqrc -ne 0 ]; then
+		bad "p9clprobe uid exited nonzero ($uqrc)" \
+		    "$(head -3 "$TMP/p9uiderr")"
+	else
+	check "root maps to root, as the number 0"	"0"	"$(uq uid-root-file)"
+	check "and a uid V8 cannot hold is the sentinel" "65535" "$(uq uid-wide-file)"
+	check "which is not root"			"1"	"$(uq uid-wide-is-not-root)"
+	# ...and the 0600 file opens, because the server takes fio.c's root
+	# bypass.  This is what v8s_access was rewritten to REPORT rather than
+	# to recompute, asked of open(2) itself rather than through test -r.
+	check "a 0600 root-owned file opens"		"1"	"$(uq uid-0600-opens)"
+	check "and its bytes come back"			"secret" "$(uq uid-0600-bytes)"
+	check "and its mode is what mkfs was given"	"600"	"$(uq uid-root-mode)"
+	fi
+fi
+
 kill $UPID 2>/dev/null; wait $UPID 2>/dev/null
 fi	# the uid image built
 

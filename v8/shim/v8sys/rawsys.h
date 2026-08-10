@@ -153,6 +153,40 @@ rawsys4(long n, long a, long b, long c, long d)
 #endif
 }
 
+/*
+ * FIVE, WHICH THE FILE SKIPPED UNTIL setsockopt(2) NEEDED IT.  The gap was not
+ * a decision -- nothing had taken five arguments -- and the tempting shortcut
+ * is rawsys6 with a trailing zero, since the kernel reads only the registers
+ * the syscall declares.  It is written out instead because a 6-argument call
+ * with five real arguments says the wrong thing about the syscall to the next
+ * reader, and the cost of being honest is fourteen lines that already exist
+ * four times above.
+ */
+static inline long
+rawsys5(long n, long a, long b, long c, long d, long e)
+{
+	register long r0 __asm__("x0") = a;
+	register long r1 __asm__("x1") = b;
+	register long r2 __asm__("x2") = c;
+	register long r3 __asm__("x3") = d;
+	register long r4 __asm__("x4") = e;
+#if defined(__APPLE__)
+	register long x16 __asm__("x16") = n;
+	register long err __asm__("x8");
+	__asm__ volatile("svc #0x80\n\tcset x8, cs"
+	    : "+r"(r0), "=r"(err)
+	    : "r"(x16), "r"(r1), "r"(r2), "r"(r3), "r"(r4)
+	    : "memory", "cc");
+	return (err ? -r0 : r0);
+#else
+	register long x8 __asm__("x8") = n;
+	__asm__ volatile("svc #0"
+	    : "+r"(r0) : "r"(x8), "r"(r1), "r"(r2), "r"(r3), "r"(r4)
+	    : "memory", "cc");
+	return (r0);
+#endif
+}
+
 static inline long
 rawsys6(long n, long a, long b, long c, long d, long e, long f)
 {
