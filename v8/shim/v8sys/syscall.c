@@ -721,30 +721,32 @@ int v8s_unlink(char *p)
 	}
 
 	/*
-	 * A MOUNT ANSWERS FOR ITSELF, and none of the macOS reasoning below
-	 * applies to it: an image is a V7 filesystem, so unlink(2) on a
-	 * directory is what the SERVER's suser() decides and Bell Labs' nami.c
-	 * NI_DEL arm is what performs it.  isdir is -1 -- "no opinion" --
-	 * because that is exactly what unlink(2) has: V7's unlink removes an
-	 * entry of any kind if the caller is privileged enough, and turning it
-	 * into a stat-then-choose here would invent a rule the far end does not
-	 * have.
+	 * AND THEN IT DISPATCHES LIKE EVERY OTHER PATH-TAKING CALL, which it
+	 * was the LAST one not to do.  It used to test v8fs_mounted() and reach
+	 * into v8fs_p9 by name, then fall through to a raw SYS_rmdir/SYS_unlink
+	 * on a vpath()-resolved name -- so /proc and /dev/fd never saw an
+	 * unlink at all, and pt_remove's unlink arm had no caller anywhere
+	 * (v8s_rmdir always passes isdir 1).  That is the v8s_creat shape this
+	 * file already records: path resolution without dispatch, so no second
+	 * type can ever see the operation, and the slot is a claim nothing can
+	 * check.  Nothing misbehaved, because pt_path(p, V8P_LOOK) IS vpath(p)
+	 * and the two roads met -- which is exactly why an auditor found it and
+	 * no test did.
+	 *
+	 * isdir IS -1, "no opinion", because that is precisely what unlink(2)
+	 * has: V7's unlink removes an entry of any kind if the caller is
+	 * privileged enough.  The macOS reasoning that used to be here -- its
+	 * unlink refuses a directory, so the choice V7 declines to make must be
+	 * made anyway -- moved into pt_remove unchanged, because it is a fact
+	 * about the host filesystem and that is what the passthrough type is.
+	 * A mount needs none of it: the SERVER's suser() decides, and Bell
+	 * Labs' nami.c NI_DEL arm performs it.
 	 */
-	if (v8fs_mounted(p)) return (v8fs_p9.t_remove(p, -1));
+	{
+		struct v8fstyp *t = FSFOR(p);
 
-	/*
-	 * THE DOT-ENTRY BLOCK USED TO BE REPEATED HERE, against the resolved
-	 * path, and the copy is gone rather than kept.  It tested the same
-	 * thing twice: v8s_stat above already dispatches and resolves, so the
-	 * second copy could only ever be reached when the first had decided the
-	 * parent was not a directory -- in which case falling through to the
-	 * unlink below is the answer either way.  Two copies of a rule is how
-	 * one of them goes stale.
-	 */
-	p = vpath(p);
-	if (v8s_lstat(p, &st) == 0 && (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
-		RET(rawsys1(SYS_rmdir, (long)p));
-	RET(rawsys1(SYS_unlink, (long)p));
+		return (t->t_remove(t->t_path(p, V8P_LOOK), -1));
+	}
 }
 /*
  * chdir INTO A MOUNT IS REFUSED, and until it was, it was a JAIL ESCAPE.

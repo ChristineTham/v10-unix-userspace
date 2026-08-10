@@ -376,9 +376,34 @@ pt_access(char *rp, int mode)
 	RET(rawsys2(SYS_access, (long)rp, mode));
 }
 
+/*
+ * isdir < 0 IS "NO OPINION", AND ON THIS HOST IT NEEDS ONE.
+ *
+ * V7's unlink(2) removes a directory entry of ANY kind if the caller is
+ * privileged enough -- that is how rmdir(1) works, and why it was setuid root.
+ * macOS refuses a directory outright, so the choice V7 does not make has to be
+ * made somewhere, and the somewhere is HERE rather than in v8s_unlink: it is
+ * a fact about the host filesystem, which is what this type is.
+ *
+ * IT MOVED HERE UNCHANGED FROM v8s_unlink, §8a step 5f-b's follow-on, and the
+ * move is what gave this function's unlink arm a caller at all.  v8s_rmdir
+ * always passes 1 and v8s_unlink did not dispatch, so the arm below was dead
+ * -- the recorded v8s_creat shape, "path resolution without dispatch, so no
+ * second type could ever see it".  An auditor found it; nothing misbehaved,
+ * because pt_path(p, V8P_LOOK) is vpath(p) and the two roads met.
+ *
+ * lstat AND NOT stat, which is the same choice the code made before the move:
+ * unlinking a symlink to a directory removes the LINK, so following it here
+ * would pick rmdir and fail with ENOTDIR on a name that unlink handles.
+ */
 static int
 pt_remove(char *rp, int isdir)
 {
+	struct v8_stat st;
+
+	if (isdir < 0 && v8sys_pt_stat(rp, &st, 0) == 0 &&
+	    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
+		isdir = 1;
 	if (isdir > 0) RET(rawsys1(SYS_rmdir, (long)rp));
 	RET(rawsys1(SYS_unlink, (long)rp));
 }

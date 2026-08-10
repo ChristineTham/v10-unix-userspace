@@ -1226,3 +1226,54 @@ has met three times (between programs sharing a directory, between cases
 sharing a stream, between sections sharing an image). The original byte is read
 first and written back last, and the restore is **asserted** rather than
 assumed, because a restore nothing checks is a restore that stops happening.
+
+## v8s_unlink was the last path-taking call that did not dispatch
+
+The fourth of the auditor's findings and the only one with **no observable at
+all** — which is the reason to record it rather than to skip it.
+
+It tested `v8fs_mounted(p)` and reached into `v8fs_p9` by name, then fell
+through to a raw `SYS_rmdir`/`SYS_unlink` on a `vpath()`-resolved path. Every
+sibling added by 5f and 5f-b goes through `FSFOR(p)` and `t->t_path(...)`. Two
+consequences, both structural:
+
+- **`pt_remove`'s unlink arm had no caller anywhere.** `v8s_rmdir` always passes
+  `isdir = 1`, and `v8s_unlink` never dispatched. Same for `pr_remove`'s and
+  `/dev/fd`'s.
+- **`unlink()` on a `/proc` path reached the host verbatim**, where `rmdir()` on
+  the same path got the type's answer. Two operations on one path, two worlds.
+
+This is the recorded `v8s_creat` shape exactly: *path resolution without
+dispatch, so no second type could ever see it.* And nothing misbehaved, because
+`pt_path(p, V8P_LOOK)` **is** `vpath(p)` and the two roads met — which is
+precisely why an auditor found it and no test did.
+
+### What moved, and what deliberately did not
+
+The macOS reasoning moved into `pt_remove` unchanged: V7's `unlink(2)` removes
+an entry of *any* kind if the caller is privileged enough (that is how `rmdir(1)`
+works, and why it was setuid root), and macOS refuses a directory outright, so
+the choice V7 declines to make has to be made somewhere. That somewhere is the
+passthrough type, because it is a fact about the **host** filesystem. A mount
+needs none of it — the server's `suser()` decides and `nami.c`'s NI_DEL arm
+performs it — so `isdir` stays `-1`, "no opinion", which is exactly what
+`unlink(2)` has.
+
+The dot-entry block stays **above** the dispatch and untouched. `rmdir(1)` is
+`unlink("d/..")`, `unlink("d/.")`, `unlink("d")`, and an earlier version of this
+function had that arm on the wrong side of the guard, which made `mkdir(1)`
+print "cannot link /mnt/d/." after successfully creating the directory.
+
+### No new case, and that is the disciplined answer
+
+The change is behaviour-identical today: passthrough resolves the same way it
+did, and the `/proc` difference is invisible because only a groveler links the
+real `procfs.c` and no groveler unlinks anything (`SHIM_SRC` gives
+`tests/v8sys` `noprocfs.c`). A case written for it could not fail, and this
+repository's own rule is that a mutation which does not fire means the case is
+vacuous.
+
+**What does have coverage is the arm the move activated**, and mutation says so:
+delete `pt_remove`'s `isdir < 0` stat-then-choose and `tests/jail`'s *"rmdir(1)
+removes it from the jail"* goes red — because V7's `rmdir(1)` ends by unlinking
+a **directory**, which macOS will not do. One case, and it was already there.
