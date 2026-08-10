@@ -16,11 +16,28 @@
 
 /*
  * No libc, so the two things every codec borrows are here.  They are byte
- * loops on purpose and the shim is built with no -O for exactly this reason --
- * clang's loop-idiom pass turns them into calls to memcpy, which is the one
- * name libv8sys may not import.  See the note beside SHIMFLAGS in the Makefile.
- * On the server side -O is on and the rewrite is harmless, because there libc
- * is present and memcpy is what we would have written anyway.
+ * loops on purpose and every rule that compiles this file passes no -O, for
+ * exactly this reason: clang's loop-idiom pass rewrites them as calls to the
+ * C library, which is the one thing libv8sys may not import.  The Makefile
+ * argues it at SHIMFLAGS.
+ *
+ * MEASURED, BECAUSE THE FIRST VERSION OF THIS COMMENT NAMED THE WRONG LOOP AND
+ * THE WRONG SYMBOL.  It said the copy becomes `memcpy'.  Compiling this file
+ * at -O2, -O3 and -Os, the symbol that appears is `_strlen', every time, and
+ * never memcpy -- `scopy' survives as a byte loop at every level, because
+ * clang cannot prove d and s do not alias, and it is `slen', inlined into
+ * p9_pstr and p9_pstat, that gets rewritten.  It also said the server is
+ * built with -O and the rewrite is harmless there; V8FSFLAGS is SHIMFLAGS
+ * plus four -D and -Wno- flags and carries no -O either, so there is no
+ * optimised build of this file anywhere.
+ *
+ * AND THE SAFETY NET IS NOT UNDER THIS FILE YET.  dir.c can afford the same
+ * byte loops because tests/kmemu sweeps every Mach-O in the rootfs with nm -u
+ * against an empty allowed list, so a leak lands as a red suite.  That sweep
+ * sees a name only if some binary PULLS THE MEMBER IN, and nothing references
+ * p9_* until the client type exists -- so p9.o is in libv8sys.a and in none of
+ * the 98 binaries.  Adding -O to SHIMFLAGS today would put _strlen in the
+ * archive and every suite would stay green.  The client closes it.
  */
 static long
 slen(const char *s)
@@ -381,6 +398,25 @@ p9_recv(int fd, void *buf, long max)
 {
 	unsigned char *p = (unsigned char *)buf;
 	long off = 0, k, n;
+
+	/*
+	 * THE CALLER'S BOUND IS CHECKED BEFORE THE FIRST READ, AND THE FIRST
+	 * VERSION OF THIS FUNCTION DID NOT DO THAT.  The size field has to be
+	 * in the buffer before it can be parsed, so the header read below is
+	 * issued against p + off -- and `max' was not consulted until the test
+	 * twenty lines down, by which time four bytes were already written.
+	 * With max 2 that put two bytes past the end of a two-byte buffer;
+	 * with max 0, four.  The return value was a correct -1 either way, so
+	 * a caller checking it learned nothing.
+	 *
+	 * It was latent rather than live -- every caller today passes a whole
+	 * message buffer -- and it becomes live the first time a program's own
+	 * count reaches here, which is what a V8 `read(fd, buf, 1)' on a
+	 * server-backed descriptor is.  Found by the lp64-auditor, which is
+	 * the third time that subagent has found its bug in the shim code
+	 * written that hour rather than in the 1985 half.
+	 */
+	if (max < P9_HDRSZ) return (-1);
 
 	while (off < 4) {
 		k = p9_io_read(fd, p + off, 4 - off);

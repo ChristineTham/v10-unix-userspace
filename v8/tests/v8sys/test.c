@@ -705,6 +705,30 @@ p9_framing(void)
 		ok(clean, "...with nothing written past the end of it");
 	}
 
+	/*
+	 * AND THE BOUND HAS TO BE CHECKED BEFORE THE FIRST READ, which the case
+	 * above structurally cannot see: it passes 100, so the four header
+	 * bytes land inside the buffer whether or not anything checked.  The
+	 * size field must be in the buffer before it can be parsed, so the
+	 * header read is the one transfer that cannot be bounded by the size --
+	 * it has to be bounded by the caller's buffer instead, up front.
+	 * p9_recv did not, and with max 2 it put two bytes past a two-byte
+	 * buffer while returning a perfectly correct -1.
+	 */
+	{
+		struct { unsigned char buf[2]; unsigned char guard[64]; } g;
+		int clean = 1;
+
+		memset(&g, 0x5a, sizeof g);
+		out[0] = 0xc8; out[1] = out[2] = out[3] = 0;	/* claims 200 */
+		ok(write(sv[1], out, 4) == 4, "a four-byte header is written");
+		ok(p9_recv(sv[0], g.buf, (long)sizeof g.buf) == -1,
+		    "...and a buffer too small to hold a header is refused");
+		for (i = 0; i < (long)sizeof g.guard; i++)
+			if (g.guard[i] != 0x5a) clean = 0;
+		ok(clean, "...having read nothing into it at all");
+	}
+
 	close(sv[0]); close(sv[1]);
 
 	/*
