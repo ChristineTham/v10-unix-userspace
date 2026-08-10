@@ -1195,6 +1195,18 @@ if ! (cd "$FSTMP" && V8ROOT=$ROOT/rootfs "$MKFS" "$FSTMP/img" "$FSTMP/proto") \
 	bad "filesystem: mkfs failed" "$(head -3 "$FSTMP/mkfs.log")"
 else
 
+# A PRISTINE COPY, TAKEN HERE AND NOT LATER, for the §8a step 5e section at the
+# bottom of this file.  fsprobe WRITES to $FSTMP/img -- step 5d creates a file,
+# grows it past the superblock's cached free list and deletes it -- so a server
+# started on that image at the end of the run is reading a filesystem an earlier
+# section modified.  Measured, and it is not subtle: the 9P section first
+# reported hello's length as 10248 against the 27 bytes mkfs put there.
+#
+# That is tests/crash-probe.sh's lesson arriving between two sections of one
+# suite rather than between two programs in one directory: a case has to be a
+# pure function of what it was given.
+cp "$FSTMP/img" "$FSTMP/p9img"
+
 # -DKERNEL IS NOT OPTIONAL FOR THIS PROBE and fsprobe.c says why at length:
 # inode.h and buf.h declare namei, iget, bread and geteblk -- all
 # pointer-returning -- inside #ifdef KERNEL, and KFLAGS carries
@@ -1202,8 +1214,16 @@ else
 # flag every one of those calls is an implicit int and the returned pointer is
 # TRUNCATED to 32 bits, which is this port's ps -T bug exactly.  fsprobe.c has
 # an #error so the flag cannot be dropped silently.
-if ! clang $KFLAGS -DKERNEL -fcommon -o "$TMP/fsprobe" \
-     "$ROOT/tests/streams/fsprobe.c" "$KERN" "$SETJMP" \
+# THE DRIVER OBJECT IS ON THE LINK LINE, not in the archive, and both probe and
+# server get the same one.  A driver set is part of a CONFIGURATION -- config(8)
+# is what chooses one on a real V8, and v8k_bdconf stands in for config(8) --
+# so putting imgdev.o in libv8kern.a would make the kernel library name _pread
+# and _pwrite, which is what the "imports only V8's own three" case above exists
+# to refuse.  Measured: it did, the first time it was tried.
+IMGDEV=$BUILD/kern/imgdev.o
+[ -e "$IMGDEV" ] || { echo "missing $IMGDEV -- run make"; exit 1; }
+if ! clang $KFLAGS -DKERNEL -fcommon -I"$ROOT/shim/kern/dev" -o "$TMP/fsprobe" \
+     "$ROOT/tests/streams/fsprobe.c" "$IMGDEV" "$KERN" "$SETJMP" \
      > "$TMP/fsbuild.log" 2>&1; then
 	grep -qv 'reducing alignment' "$TMP/fsbuild.log" &&
 		{ echo "fsprobe build failed:"; head -5 "$TMP/fsbuild.log"; exit 1; }
@@ -1545,6 +1565,27 @@ check "and the run wrote something overall"	"1"	"$(f w-writes-total-positive)"
 fsdeadline() { perl -e 'alarm 40; exec @ARGV' env V8ROOT=$ROOT/rootfs "$@"; }
 
 icout=$(fsdeadline "$ROOT/rootfs/etc/icheck" "$FSTMP/img" 2>&1 | head -200)
+# A POSITIVE CONTROL, AND IT WAS MISSING FROM THE ONE BLOCK OF THE THREE THAT
+# NEEDED IT MOST.  The dcheck block below argues at length that a silence case
+# needs one, because a checker that failed to run at all is also silent -- and
+# icheck's cases are not silence cases, they are VALUE cases, which look immune
+# and are not: `awk $1=="missing"' over no output at all yields the empty
+# string, so the failure reads as `want [0] got []' and says nothing about why.
+#
+# Seen twice, consecutively, on a loaded machine and then not again in four
+# runs: icheck produced NOTHING, while dcheck and fsck on the same image in the
+# same run were fine.  Empty output with a `perl alarm' wrapper is what a
+# deadline looks like from outside.  This does not explain it; it makes the
+# next occurrence say which of "did not run", "died" and "ran and printed
+# nothing" it was.  icheck names the image whatever it finds, so that line is
+# the proof it ran -- the same control, and the same sentence, dcheck has.
+if [ -z "$icout" ]; then
+	bad "icheck produced no output at all" \
+	    "the three value cases below cannot mean anything; deadline was 40s"
+else
+	check "icheck ran on the image" "1" \
+	    "$(printf '%s\n' "$icout" | grep -c "^$FSTMP/img")"
+fi
 # `missing' is icheck's count of blocks that are in neither a file nor the free
 # list -- exactly what a leak in alloc/free/itrunc produces, and the reason this
 # is the first line to look at.
@@ -1606,6 +1647,193 @@ check "and it is the root, held twice"		"2"	"$(f root-count-final)"
 # Reaching the last line means none of v8fs.c's five PANIC services ran and
 # neither getfs nor namei panicked, since panic() does not return.
 check "no panic service was reached"		"1"	"$(f completed)"
+
+# --- §8a step 5e: THE SERVER --------------------------------------------------
+#
+# Everything above drives the kernel IN PROCESS.  These cases drive it over a
+# socket: shim/v8fsd/v8fsd.c holds an image open, speaks 9P2000, and
+# tests/streams/p9probe.c asks it for the same file fsprobe read and compares
+# the bytes.
+#
+# WHY THERE IS A SERVER AT ALL is the previous commit's measurement, not a
+# preference: linking libv8kern beside a V8 program is 56 symbol collisions
+# over 29 programs, 25 of them silent, and a descriptor table in process memory
+# does not survive exec.  shim/kern/NOTES.md has both.
+#
+# THE PROBE IS AN INDEPENDENT READER, which is the property §8a step 5d had to
+# learn the hard way: a probe that writes and reads is one program sharing its
+# own beliefs, and the mutation that made alloc() hand out a block twice was
+# caught only by icheck, fsck and cmp.  This one speaks the wire, so it can ask
+# for a clunked fid, a walk off the end of a path and a write to a read-only
+# server -- none of which the shim would ever send.
+P9PROBE=$TMP/p9probe
+V8FSD=$BUILD/v8fsd/v8fsd
+
+if [ ! -x "$V8FSD" ]; then
+	bad "9P: $V8FSD not built (run make first)"
+elif [ ! -f "$FSTMP/p9img" ]; then
+	bad "9P: no image -- the step 5c section did not get that far"
+elif ! clang -std=gnu99 -Wall -o "$P9PROBE" "$ROOT/tests/streams/p9probe.c" \
+     "$ROOT/shim/p9/p9.c" "$ROOT/shim/p9/p9io_libc.c" > "$TMP/p9build.log" 2>&1; then
+	bad "9P: p9probe build failed" "$(head -3 "$TMP/p9build.log")"
+else
+
+# THE SOCKET PATH IS BOUND RELATIVE, AND THAT IS NOT TIDINESS.  sun_path is 104
+# bytes on Darwin and $TMPDIR alone is around 50 on a Mac, so an absolute path
+# here would be a case that passes on one machine and fails on another for a
+# reason nothing in the output would name -- the host-property trap, arriving
+# through a struct field.  cd into the directory and the length is bounded by
+# the name.  (The server checks and says so; it is how this was found.)
+P9DIR=$FSTMP
+rm -f "$P9DIR/sock"
+( cd "$P9DIR" && exec "$V8FSD" sock p9img ) > "$TMP/p9srv.out" 2>&1 &
+P9PID=$!
+
+# READY IS READ FROM THE SERVER, not waited for.  A sleep is a race dressed as
+# a delay, and a connect() retry loop cannot tell "not yet" from "died on the
+# image" -- which is the failure this would most like to report clearly.  The
+# server prints one line and flushes; ten tries at 0.2s is five seconds, which
+# is two orders of magnitude more than it takes.
+p9ready=0
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+	grep -q "^v8fsd ready" "$TMP/p9srv.out" 2>/dev/null && { p9ready=1; break; }
+	kill -0 $P9PID 2>/dev/null || break
+	sleep 0.2
+done
+
+if [ "$p9ready" != 1 ]; then
+	bad "9P: the server did not come up" "$(head -3 "$TMP/p9srv.out")"
+else
+check "the server announces itself" "1" "$p9ready"
+
+# A DEADLINE, for fsprobe's reason and one of its own: every case here is a
+# round trip, so a server that answers nothing leaves the probe blocked in
+# read(2) forever and the suite reports nothing at all.
+( cd "$P9DIR" && perl -e 'alarm 60; exec @ARGV' "$P9PROBE" sock p9readback ) \
+	> "$TMP/p9out" 2>"$TMP/p9err"
+p9rc=$?
+kill $P9PID 2>/dev/null; wait $P9PID 2>/dev/null
+
+if [ $p9rc -ne 0 ]; then
+	bad "p9probe exited nonzero ($p9rc)" "$(head -3 "$TMP/p9err")"
+else
+q() { awk -v k="$1" '$1 == k {print $2}' "$TMP/p9out"; }
+
+# 1. The handshake.  Tversion is the one message that may arrive mid-stream and
+# mean "start again", so getting it right is what makes every case below
+# meaningful rather than accidental.
+check "the server speaks 9P2000"		"9P2000" "$(q version)"
+check "and never proposes a larger msize than ours" "1"	"$(q msize-le-ours)"
+check "attach gives a directory qid"		"1"	"$(q root-qtdir)"
+# ROOTINO is 2 on a V7 filesystem (h/param.h:73), not 1 -- inode 1 was the
+# bad-block file.  The qid path IS the inode number, so this is the assertion
+# that the server named the file rather than invented a handle for it.
+check "and its qid path is the root inode"	"2"	"$(q root-qpath)"
+
+# 2. Walking, through Bell Labs' own namei -- v8fsd.c's kwalk moves u_cdir and
+# hands it one name, so the lookup a Twalk performs IS the lookup the kernel
+# performs.
+check "a one-name walk returns one qid"		"1"	"$(q walk-hello)"
+check "and hello is not a directory"		"0"	"$(q hello-isdir)"
+check "a two-name walk returns two"		"2"	"$(q walk-sub-deep)"
+check "and sub/deep is not a directory"		"0"	"$(q deep-isdir)"
+check "a zero-name walk clones"			"0"	"$(q walk-clone)"
+check "and the clone is the root"		"1"	"$(q clone-isdir)"
+
+# THE PAIR IS THE POINT.  9P says a walk that fails on the FIRST name is an
+# Rerror and one that fails later is a SHORT Rwalk, and a server that answered
+# them the same way would be indistinguishable from a correct one on every path
+# that exists.  A client tells "no such file" from "no such directory on the
+# way to it" by exactly this difference.
+check "a missing first name is an error"	"-1"	"$(q walk-missing)"
+check "and it is ENOENT"			"ENOENT" "$(q walk-missing-err)"
+check "a missing later name is a SHORT walk"	"1"	"$(q walk-short)"
+check "and so is walking through a plain file"	"1"	"$(q walk-thru-file)"
+# An open fid may not be walked -- the spec, and the reason is that a walk
+# would move the file an offset already refers to.
+check "an opened fid cannot be walked"		"-1"	"$(q walk-open-fid)"
+
+# 3. Stat.  The two length prefixes are 9P2000's one real wart and the
+# difference is asserted rather than described: conflating them lands two bytes
+# into the name, which decodes as a plausible short string rather than an error.
+check "a stat's two counts differ by exactly two" "1"	"$(q stat-outer-inner-differ-by-2)"
+# THE QID PATH IS THE ONLY FIELD THAT IDENTIFIES THE FILE, and the case beside
+# it cannot: s_name is the name the client sent in the Twalk, echoed back out of
+# the fid, so a server that walked to the wrong inode would still print it.
+# ncheck says /hello is inode 3 on this image, independently of anything here.
+check "stat's qid path is the inode ncheck names" "3"	"$(q stat-qpath)"
+check "stat names the file"			"hello"	"$(q stat-name)"
+# 27 bytes is `hello from a V8 filesystem\n', which the section above wrote.
+check "and reports its length"			"27"	"$(q stat-len)"
+check "and its mode"				"644"	"$(q stat-mode)"
+# A DECIMAL STRING, not a login name: 9P wants a name and a V7 inode stores a
+# number, and turning one into the other means reading a passwd file -- of
+# which there are two here, with no principled way to choose.  v8fsd.c argues it.
+check "and its owner as a number"		"0"	"$(q stat-uid)"
+check "and does not call it a directory"	"0"	"$(q stat-isdir)"
+
+# 4. Reading.  THE CENTRAL CLAIM, and it is a cmp rather than a checksum.
+check "a read on an unopened fid is refused"	"EBADF"	"$(q read-unopened)"
+check "open succeeds"				"1"	"$(q open-deep)"
+check "and reports an iounit"			"1"	"$(q open-iounit-positive)"
+check "the whole file comes back"		"28000"	"$(q read-total)"
+# A read PAST the end is zero bytes and not an error -- V8's own readi does the
+# same, and every copy loop in the tree terminates on it.
+check "a read past the end is zero bytes"	"0"	"$(q read-past-end)"
+if cmp -s "$FSTMP/big.txt" "$P9DIR/p9readback"; then pass=$((pass+1))
+else bad "the 28000 bytes that came over the wire are not the ones that went in" \
+	 "$(cmp "$FSTMP/big.txt" "$P9DIR/p9readback" 2>&1 | head -2)"; fi
+
+# 5. Directory reads, which are 9P STATS and not the raw 16-byte records the
+# image holds -- that is what makes this plain 9P2000 rather than a private
+# protocol.  "." and ".." are in the listing against the Plan 9 convention,
+# because they are entries this filesystem CONTAINS and hiding them would be
+# adopting Plan 9 semantics above the seam, which PLAN.md §8a rules out.
+check "the root directory opens"		"1"	"$(q open-root)"
+check "and lists four entries"			"4"	"$(q dir-entries)"
+check "including ."				"1"	"$(q dir-dot)"
+check "and .."					"1"	"$(q dir-dotdot)"
+check "and hello"				"1"	"$(q dir-hello)"
+check "and sub"					"1"	"$(q dir-sub)"
+
+# 6. What it refuses.  The write half is §8a step 5f; the kernel underneath it
+# is written and tested, so this is a boundary in the server rather than a gap
+# in the port, and EROFS is the honest word for it.
+check "a write is refused"			"EROFS"	"$(q write-refused)"
+check "clunk succeeds"				"1"	"$(q clunk)"
+check "and the fid is gone afterwards"		"-1"	"$(q stat-after-clunk)"
+# A message type the server does not know must be an Rerror rather than
+# silence: a server that ignored one would leave the client waiting forever,
+# which reads as a hang rather than as an error.
+check "an unknown message type is refused"	"EINVAL" "$(q unknown-type)"
+check "and Tauth, which this server does not offer" "EPERM" "$(q auth-refused)"
+
+# 7. A SECOND CONNECTION, which is what the poll() loop is FOR and what nothing
+# above touches: every case so far uses one, so a server that accepted a second
+# and then ignored it would have passed all of them.  One connection per open
+# file is the design -- the socket IS the descriptor -- so two at once is the
+# ordinary case rather than the exotic one.
+check "a second connection negotiates"		"1"	"$(q conn2-version)"
+# THE SHARP ONE.  It attaches as fid 0, which is in use on the first
+# connection.  9P fid spaces are per connection, so this must succeed; a server
+# with one shared table would answer EEXIST and would have looked correct to
+# every case above.
+check "and attaches as a fid the OTHER one holds" "1"	"$(q conn2-attach-same-fid)"
+check "and walks"				"1"	"$(q conn2-walk)"
+check "and opens"				"1"	"$(q conn2-open)"
+check "and reads hello's 27 bytes"		"27"	"$(q conn2-read)"
+# Interleaved deliberately: six messages have gone by on the second connection
+# since the first said anything, so a fid table belonging to the server rather
+# than to the connection would have been overwritten by now.
+check "the first connection still knows its fids" "1"	"$(q conn1-still-alive)"
+# A close is the ordinary end of a connection -- a V8 program exiting closes
+# every descriptor it holds -- so a server that took SIGPIPE or dropped its
+# poll loop here would take every other client with it.
+check "and survives the second one closing"	"1"	"$(q conn1-after-conn2-closed)"
+
+fi	# the probe ran
+fi	# the server came up
+fi	# p9probe built
 
 fi	# mkfs succeeded
 fi	# mkfs exists

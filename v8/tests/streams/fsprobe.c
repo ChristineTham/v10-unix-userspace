@@ -20,13 +20,20 @@
  * believes a V8 filesystem is, and a shared misunderstanding would satisfy both
  * halves of that.  V8's own kernel is the independent reader.
  *
- * WHY THE DRIVER IS HERE AND NOT IN shim/kern/.  CLAUDE.md's unconsumed-
- * component rule: nothing in this port consumes a block device -- the image
- * tools open the image as an ordinary file through v8s_open -- so a driver in
- * the shim would be a component with no caller, which "invents a difference the
- * kernel does not have".  sioprobe.c's loopback and pipe drivers and
- * ttyprobe.c's tty driver are the precedents, and shim/kern/sys/ioconf.c's
- * v8k_bdconf() is the registration hook, argued there.
+ * THE DRIVER USED TO BE HERE AND IS NOW IN shim/kern/dev/imgdev.c, and both
+ * halves of that are the unconsumed-component rule rather than a change of
+ * mind.  It was here because nothing in this port consumed a block device -- so
+ * a driver in the shim would have been a component with no caller, which
+ * "invents a difference the kernel does not have".  §8a step 5e supplies the
+ * caller: the v8fs server holds an image open and serves it over 9P.
+ *
+ * SHARING IT WITH THE SERVER IS THE PART WORTH HAVING.  The cases below drive
+ * namei/iget/bmap/readi/writei down to a driver 236 times; if the server had
+ * one of its own, not one of them would say anything about it.  The three
+ * bdevsw rejection cases still build their rows from the REAL pointers, via
+ * v8k_imgrow, so they stay cases about v8k_bdconf rather than about three local
+ * stubs.  sioprobe.c's loopback and pipe drivers and ttyprobe.c's tty driver
+ * are still the precedent for a driver that has no consumer outside its probe.
  *
  * WHY IT IS IN THE STREAMS SUITE.  Because tests/streams is already the
  * src/sys/ suite despite its name: the provenance hashes for stream.c, ttyld.c
@@ -126,64 +133,14 @@ int	v8k_bdconf(struct bdevsw *bd);
 void	v8k_bdunconf(void);
 int	v8k_kinit(dev_t dev);
 
-/* ------------------------------------------------------------------------
- * THE BLOCK DRIVER
- *
- * The smallest honest one: a host file, read and written where the buffer
- * header says.  It is SYNCHRONOUS -- the transfer happens inside strategy and
- * iodone() runs before it returns -- which means iowait() at bio.c:426 finds
- * B_DONE already set and never sleeps.  That is a real property of this device
- * rather than a shortcut: a file on APFS has no rotational latency to wait for,
- * and pretending otherwise would need a thread to make tsleep/wakeup do
- * something, i.e. a second machine to be wrong about.
- *
- * THE UNITS ARE THE ONE THING THAT CAN BE QUIETLY WRONG.  b_blkno is in
- * 512-byte DISK blocks, not filesystem blocks: getblk stores fsbtodb(dev,blkno)
- * and param.h defines that as `b * CLSIZE' with CLSIZE 2 for a 1024-byte
- * filesystem.  So the byte offset is b_blkno * 512, and a driver that used
- * BSIZE(dev) there would read every block at twice its address -- which for
- * block 1 would land on block 2 and return a plausible-looking wrong
- * superblock.
+/*
+ * The block driver is shim/kern/dev/imgdev.c now -- see the header comment.
+ * imgdev.h is reached through -Ishim/kern/dev, the same way the seam's other
+ * machine-dependent headers are.
  */
+#include "imgdev.h"
+
 static int	imgfd = -1;
-static long	nread;			/* transfers the driver actually served */
-static long	nwrite;
-
-static int
-diskopen(dev_t dev, int rw)
-{
-	return (0);
-}
-
-static int
-diskclose(dev_t dev, int rw)
-{
-	return (0);
-}
-
-static int
-diskstrategy(struct buf *bp)
-{
-	off_t off;
-	ssize_t n;
-
-	off = (off_t)bp->b_blkno * 512;		/* see the units note above */
-	if (bp->b_flags & B_READ) {
-		n = pread(imgfd, bp->b_un.b_addr, (size_t)bp->b_bcount, off);
-		nread++;
-	} else {
-		n = pwrite(imgfd, bp->b_un.b_addr, (size_t)bp->b_bcount, off);
-		nwrite++;
-	}
-	if (n < 0) {
-		bp->b_flags |= B_ERROR;
-		bp->b_error = EIO;
-		bp->b_resid = bp->b_bcount;
-	} else
-		bp->b_resid = bp->b_bcount - n;
-	iodone(bp);
-	return (0);
-}
 
 /* ------------------------------------------------------------------------
  * Helpers.  Each namei() below is a fresh call with u_error cleared, because
@@ -306,7 +263,6 @@ static char	big[64 * 1024];
 int
 main(int argc, char **argv)
 {
-	struct bdevsw	bd;
 	struct bdevsw	bad;
 	struct filsys	*fp;
 	struct inode	*ip;
@@ -336,24 +292,16 @@ main(int argc, char **argv)
 	 * table on a null d_open, so a row without one could not have come out
 	 * of config(8); ioconf.c refuses it, and this asks whether it does.
 	 */
+	v8k_imgrow(&bad);
 	bad.d_open = 0;
-	bad.d_close = diskclose;
-	bad.d_strategy = diskstrategy;
-	bad.d_dump = 0;
-	bad.d_flags = 0;
 	printf("bdconf-rejects-nullopen %d\n", v8k_bdconf(&bad));
 
-	bad.d_open = diskopen;
+	v8k_imgrow(&bad);
 	bad.d_strategy = 0;
 	printf("bdconf-rejects-nullstrat %d\n", v8k_bdconf(&bad));
 	printf("nblkdev-after-rejects %d\n", nblkdev);
 
-	bd.d_open = diskopen;
-	bd.d_close = diskclose;
-	bd.d_strategy = diskstrategy;
-	bd.d_dump = 0;
-	bd.d_flags = 0;
-	bdmaj = v8k_bdconf(&bd);
+	bdmaj = v8k_imgattach(imgfd);
 	printf("bdconf-major %d\n", bdmaj);
 	printf("nblkdev-after %d\n", nblkdev);
 
@@ -379,7 +327,7 @@ main(int argc, char **argv)
 		return (1);
 	}
 	printf("kinit 0\n");
-	printf("reads-after-kinit %ld\n", nread);
+	printf("reads-after-kinit %ld\n", v8k_imgreads());
 
 	/*
 	 * getfs() is the function that PANICS ("getfs") when nothing is
@@ -522,9 +470,9 @@ main(int argc, char **argv)
 
 		bp = bread(dev, (daddr_t)SUPERB);
 		brelse(bp);
-		before = nread;
+		before = v8k_imgreads();
 		bp = bread(dev, (daddr_t)SUPERB);
-		after = nread;
+		after = v8k_imgreads();
 		printf("cache-b-cache %d\n", (bp->b_flags & B_CACHE) ? 1 : 0);
 		printf("cache-no-io %d\n", after == before ? 1 : 0);
 		brelse(bp);
@@ -534,9 +482,9 @@ main(int argc, char **argv)
 		 * driver.  Without this the case above passes on a cache that
 		 * never does any I/O at all.
 		 */
-		before = nread;
+		before = v8k_imgreads();
 		bp = bread(dev, (daddr_t)(fp->s_isize + 3));
-		after = nread;
+		after = v8k_imgreads();
 		printf("cache-miss-io %d\n", after == before + 1 ? 1 : 0);
 		brelse(bp);
 	}
@@ -567,8 +515,8 @@ main(int argc, char **argv)
 	 * pair to `w-inplace-delayed' below, which asserts the same thing for a
 	 * write and is the case that names it.
 	 */
-	printf("writes-after-read %ld\n", nwrite);
-	printf("reads-total-positive %d\n", nread > 0 ? 1 : 0);
+	printf("writes-after-read %ld\n", v8k_imgwrites());
+	printf("reads-total-positive %d\n", v8k_imgreads() > 0 ? 1 : 0);
 
 	/* ---------------------------------------------------------------
 	 * 8. THE WRITE HALF -- §8a step 5d, and none of it had ever executed.
@@ -656,13 +604,13 @@ main(int argc, char **argv)
 			printf("w-hello-found 0\n");
 		} else {
 			printf("w-hello-found 1\n");
-			w0 = nwrite;
+			w0 = v8k_imgwrites();
 			n = writefile(ip, (off_t)0, "HELLO", 5);
 			printf("w-inplace-n %d\n", n);
 			printf("w-inplace-noalloc %d\n",
 			    (long)fp->s_tfree == tfree0 ? 1 : 0);
 			printf("w-inplace-delayed %d\n",
-			    nwrite == w0 ? 1 : 0);
+			    v8k_imgwrites() == w0 ? 1 : 0);
 
 			got = readat(ip, (off_t)0, small, 5);
 			small[got > 0 ? got : 0] = '\0';
@@ -1083,10 +1031,10 @@ main(int argc, char **argv)
 		 * Labs' that know nothing about this one -- are given the
 		 * image and asked whether it is a filesystem.
 		 */
-		w0 = nwrite;
+		w0 = v8k_imgwrites();
 		update();
-		printf("w-flush-wrote %d\n", nwrite > w0 ? 1 : 0);
-		printf("w-writes-total-positive %d\n", nwrite > 0 ? 1 : 0);
+		printf("w-flush-wrote %d\n", v8k_imgwrites() > w0 ? 1 : 0);
+		printf("w-writes-total-positive %d\n", v8k_imgwrites() > 0 ? 1 : 0);
 	}
 
 	/*

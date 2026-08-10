@@ -206,3 +206,64 @@ hand-written list of the names it exports. The list would have had to grow by
 every name `streamio.c` and `shim/kern/sys/` added, and a name-by-name allow
 list is exactly how `tests/kmemu`'s allowed leaks went stale. The answer is
 `_memcpy`, `_setjmp`, `_longjmp`, and all three are checked to be V8's own.
+
+## AND THE SERVER IS BUILT, so the section above is a design and not just a refusal
+
+§8a step 5e. `shim/v8fsd/v8fsd.c` is a host binary that holds a disk image
+open, links this archive, and answers **9P2000** on a Unix-domain socket. A
+client walks a path, opens a file and reads it; `namei → fsnami → dsearch →
+iget → bmap → readi → bread` runs on the far side of the socket, and `cmp`
+says the 28000 bytes that come back are the ones that went in.
+
+`tests/streams` 372 → 412. The probe is `tests/streams/p9probe.c`, which
+speaks the wire directly rather than through the shim — the same
+independent-reader argument step 5d had to learn, where a mutation that made
+`alloc()` hand out one block twice left every case in `fsprobe` green and was
+caught only by `icheck`, `fsck` and a `cmp`.
+
+Three things came out of building it that were not in the costing.
+
+- **A DRIVER SET IS PART OF A CONFIGURATION, NOT OF THE KERNEL LIBRARY.** The
+  image driver moved out of `tests/streams/fsprobe.c` — the unconsumed-component
+  rule finally has a consumer — and the obvious place to put it was
+  `KERN_OBJ`. That immediately broke the case asserting this archive imports
+  only `_memcpy`, `_setjmp` and `_longjmp`: a block driver does host I/O by
+  definition, so it brought `_pread` and `_pwrite` in with it. The guard was
+  right and the placement was wrong. `config(8)` is what chooses a driver set
+  on a real V8 and `v8k_bdconf` already stands in for `config(8)`, so
+  `imgdev.o` belongs on the link line of whatever is being configured. The
+  probe and the server now get the same object, which makes the probe's 236
+  cases coverage for the server's block layer.
+
+  **And removing it from the archive did not remove it from the archive.**
+  Dropping an object from `KERN_OBJ` leaves the target newer than every
+  remaining prerequisite, so the `rm -f && ar rcs` rule never re-ran and
+  `nm -u` still showed both names. That is the `ar r` note in the Makefile one
+  level up: there, dropping a *source* leaves a stale member; here, dropping an
+  *object* leaves a stale archive.
+
+- **NOTHING IN THE PATH SLEEPS, WHICH IS WHAT MAKES ONE PROCESS ENOUGH.** The
+  server must be single-threaded — the buffer cache needs exactly one authority,
+  and V8's kernel keeps its per-call state in a global u-area, so it cannot be
+  re-entered at all. What makes that *sufficient* rather than merely necessary
+  is the synchronous driver: `iodone()` runs inside `strategy`, so `iowait()` at
+  `bio.c:426` finds `B_DONE` already set and never sleeps. Every request is
+  carried to completion between two `poll()` returns.
+
+- **A DEADLINE THAT APPLIES ONLY MID-MESSAGE, and the two halves are what make
+  it right.** A connection here *is* an open file and may idle for as long as
+  the program holds it, so it must never be dropped for saying nothing;
+  `poll()` is what protects that, since an idle connection is never read. Once
+  poll reports data the first read cannot block, so `SO_RCVTIMEO` can only fire
+  part-way through a message — which means the peer died between two writes,
+  and a single-threaded server that waited would be wedged by one dead client.
+
+Two things it does *not* do, stated rather than left to be discovered.
+**It is read-only**: `Twrite`, `Tcreate`, `Tremove` and `Twstat` answer
+`EROFS`. The kernel underneath them is written and tested — step 5d did
+`writei`, `bmap`'s allocating arm, `alloc`/`free`, `ialloc`/`ifree`, `itrunc`
+and `namei` with `NI_CREAT`/`NI_DEL` — so that is a boundary in the server
+rather than a gap in the port, and splitting it the way 5c and 5d were split
+keeps a failure attributable. **And no client speaks to it yet**: the fourth
+type in `shim/v8sys/vfs.c` is the next piece, and the sweep run before writing
+it found eleven entry points with no slot in `struct v8fstyp` at all.

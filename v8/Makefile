@@ -216,6 +216,11 @@ SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
 # V8 binary silently, and this one's second consumer would not be visible at
 # all.  Defined above first use for the reason SHIM_ASM gives.
 P9_SRC = $(ROOT)shim/p9/p9.c
+# ...and the host half of its transport seam, which the client does NOT get:
+# libv8sys reaches the kernel through rawsys and may name no libc function, so
+# shim/v8sys/p9io.c is its p9_io_read.  This one is shared by the server and by
+# tests/streams/p9probe.c, which are both ordinary host binaries.
+P9_HOSTIO = $(ROOT)shim/p9/p9io_libc.c
 
 # CANCEL GNU MAKE'S BUILT-IN yacc AND lex RULES.  A pattern rule with no recipe
 # deletes the built-in one.
@@ -237,12 +242,12 @@ P9_SRC = $(ROOT)shim/p9/p9.c
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin srctree clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern v8fsd cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin srctree clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys libv8kern crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex srctree
+stage0: cpp v8ccom v8cc libv8sys libv8kern v8fsd crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex srctree
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
@@ -310,7 +315,7 @@ test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
 # this port against itself.  It is the phony rather than $(BINDIR)/mkfs for the
 # reason test-mkfs gives above -- BINDIR is defined hundreds of lines below and
 # would expand to nothing here.
-test-streams: libv8kern libv8c imgbin
+test-streams: libv8kern libv8c imgbin v8fsd $(BUILD)/kern/imgdev.o
 	@$(ROOT)tests/streams/run.sh
 # The on-disk formats, and the image mkfs writes from them.  It asserts widths
 # from the V8 side -- a _Static_assert in the shim would see only clang, and
@@ -740,6 +745,17 @@ KERN_OBJ = $(BUILD)/kern/stream.o $(BUILD)/kern/machdep.o \
            $(BUILD)/kern/fio.o $(BUILD)/kern/subr.o $(BUILD)/kern/ioconf.o \
            $(BUILD)/kern/ttyld.o $(BUILD)/kern/partab.o $(V8FS_OBJ)
 
+# imgdev.o IS NOT IN THE ARCHIVE, AND THAT IS THE SECOND PLACE IT HAS BEEN PUT.
+# Adding it there broke the case asserting libv8kern imports only _memcpy,
+# _setjmp and _longjmp -- the driver does host I/O by definition, so it brought
+# _pread and _pwrite in with it.  The guard was right and the placement was
+# wrong: a DRIVER SET IS PART OF A CONFIGURATION, not of the kernel library.
+# config(8) is what chooses one on a real V8, and v8k_bdconf already stands in
+# for config(8), so the object belongs on the link line of whatever is being
+# configured -- the server, and the probe.  Keeping it out is what lets the
+# archive keep saying it names nothing of the host's.
+IMGDEV_OBJ = $(BUILD)/kern/imgdev.o
+
 # The headers streamio.c reaches, split by who wrote them.  Seven are AUTHENTIC
 # and live in src/sys/h/, so a quoted "../h/x.h" from src/sys/sys/ finds them
 # first; four are OURS in shim/kern/h/, reached only because the authentic ones
@@ -932,6 +948,49 @@ $(BUILD)/kern/machdep.o: $(ROOT)shim/kern/dev/machdep.c \
                          $(ROOT)shim/v8sys/rawsys.h
 	@mkdir -p $(BUILD)/kern
 	$(HOSTCC) $(SHIMFLAGS) $(DEPFLAGS) -I$(ROOT)shim/kern/dev -c $< -o $@
+
+# imgdev.o -- the block device whose platter is a host file.  It was in
+# tests/streams/fsprobe.c until §8a step 5e, held out of the shim by the
+# unconsumed-component rule; the v8fs server is the consumer that rule was
+# waiting for, and the probe now uses the same one so its 236 cases are
+# coverage for the server's block layer too.
+#
+# -DKERNEL and -fcommon for v8fs.o's reasons: struct buf's B_ flags and the
+# bdevsw row come from behind the same guard, and the authentic headers it
+# reaches declare tentative definitions.
+$(BUILD)/kern/imgdev.o: $(ROOT)shim/kern/dev/imgdev.c \
+                        $(ROOT)shim/kern/dev/imgdev.h $(KERN_AUTH_H) \
+                        $(KERN_SHIM_H)
+	@mkdir -p $(BUILD)/kern
+	$(HOSTCC) $(V8FSFLAGS) $(DEPFLAGS) -I$(ROOT)shim/kern/dev -c $< -o $@
+
+# ---------------------------------------------------------------------------
+# v8fsd -- the v8fs file server.  §8a step 5e.
+#
+# A HOST BINARY, and that is the whole design rather than a convenience.  §8a
+# step 5e was costed as a fourth type inside vfs.c and cannot be built: linking
+# libv8kern beside a V8 program is 56 symbol collisions over 29 programs, 25 of
+# them silent, and a descriptor table in process memory does not survive exec.
+# Out here neither arises -- the same relationship tests/streams/fsprobe.c
+# already has to this archive, which is what says it links cleanly in a program
+# that is not a V8 one.
+#
+# It links $(P9_SRC), the same codec source libv8sys.a gets, compiled here with
+# the server's flags.  shim/p9/p9.h says why one file rather than two.
+#
+# setjmp.o for fsprobe's reason: libv8kern imports _setjmp and _longjmp, which
+# are V8's own (slp.c's tsleep), and tests/kmemu asserts the archive imports
+# exactly those two plus _memcpy.
+# ---------------------------------------------------------------------------
+V8FSD = $(BUILD)/v8fsd/v8fsd
+v8fsd: $(V8FSD)
+$(V8FSD): $(ROOT)shim/v8fsd/v8fsd.c $(P9_SRC) $(P9_HOSTIO) $(ROOT)shim/p9/p9.h \
+          $(IMGDEV_OBJ) $(KERN_LIB) $(BUILD)/libc/setjmp.o \
+          $(KERN_AUTH_H) $(KERN_SHIM_H)
+	@mkdir -p $(BUILD)/v8fsd
+	$(HOSTCC) $(V8FSFLAGS) -I$(ROOT)shim/kern/dev -o $@ \
+	    $(ROOT)shim/v8fsd/v8fsd.c $(P9_SRC) $(P9_HOSTIO) \
+	    $(IMGDEV_OBJ) $(KERN_LIB) $(BUILD)/libc/setjmp.o
 
 # The machine-dependent half of the SYSCALL side.  Modern C, like machdep.c and
 # for the same reason: it is ours.  slp.c is tsleep/wakeup, fio.c the u-area

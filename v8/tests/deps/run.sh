@@ -762,6 +762,45 @@ dep 'fio.c -> kern archive'      shim/kern/sys/fio.c       $B/kern/libv8kern.a
 dep 'subr.c -> kern archive'     shim/kern/sys/subr.c      $B/kern/libv8kern.a
 dep 'ioconf.c -> kern archive'   shim/kern/sys/ioconf.c    $B/kern/libv8kern.a
 dep 'our user.h -> slp.o'        shim/kern/h/user.h        $B/kern/slp.o
+
+# --- §8a step 5e: the image driver, the 9P codec and the server ---------------
+#
+# THE FIRST EDGE HERE IS A NEGATIVE ONE AND IT IS THE POINT.  imgdev.c is a
+# block driver -- it does host I/O by definition -- so putting its object in
+# libv8kern.a made the archive import _pread and _pwrite and broke the case
+# asserting it imports only V8's own three.  A driver set is part of a
+# CONFIGURATION rather than of the kernel library: config(8) chooses one on a
+# real V8, v8k_bdconf stands in for config(8), and the object belongs on the
+# link line of whatever is being configured.  This says so as an assertion.
+#
+# It also guards the way the mistake HID.  Removing the object from KERN_OBJ
+# left the archive newer than every remaining prerequisite, so the `rm -f && ar
+# rcs' rule never re-ran and nm -u still showed both names -- the fix looked
+# like it had not worked.  A later re-addition would fail this case rather than
+# the externals case, and this one names the reason.
+nodep 'the kernel archive does NOT carry the image driver' \
+                                 shim/kern/dev/imgdev.c    $B/kern/libv8kern.a
+dep 'imgdev.h -> imgdev.o'       shim/kern/dev/imgdev.h    $B/kern/imgdev.o
+dep 'our param.h -> imgdev.o'    shim/kern/h/param.h       $B/kern/imgdev.o
+dep 'buf.h -> imgdev.o'          src/sys/h/buf.h           $B/kern/imgdev.o
+
+# The codec is compiled TWICE from one source -- once into libv8sys.a for the
+# client, once into the server -- so both edges are named.  shim/p9/p9.h says
+# why one file rather than two, and the reason is the same one-table rule that
+# keeps vfs.c from growing a second prefix list.
+dep 'p9.c -> the shim object'    shim/p9/p9.c              $B/v8sys/p9.o
+dep 'p9.h -> the shim object'    shim/p9/p9.h              $B/v8sys/p9.o
+dep 'p9.o -> libv8sys'           shim/p9/p9.c              $B/v8sys/libv8sys.a
+dep 'p9.c -> the server'         shim/p9/p9.c              $B/v8fsd/v8fsd
+dep 'p9.h -> the server'         shim/p9/p9.h              $B/v8fsd/v8fsd
+# ...and the host half of the transport seam, which the client does NOT get:
+# libv8sys reaches the kernel through rawsys and may name no libc function.
+dep 'p9io_libc.c -> the server'  shim/p9/p9io_libc.c       $B/v8fsd/v8fsd
+dep 'p9io.c -> libv8sys'         shim/v8sys/p9io.c         $B/v8sys/libv8sys.a
+dep 'v8fsd.c -> the server'      shim/v8fsd/v8fsd.c        $B/v8fsd/v8fsd
+dep 'the driver -> the server'   shim/kern/dev/imgdev.c    $B/v8fsd/v8fsd
+dep 'kern archive -> the server' shim/kern/sys/v8fs.c      $B/v8fsd/v8fsd
+
 dep 'file.h -> fio.o'            src/sys/h/file.h          $B/kern/fio.o
 dep 'rawsys.h -> fio.o'          shim/v8sys/rawsys.h       $B/kern/fio.o
 

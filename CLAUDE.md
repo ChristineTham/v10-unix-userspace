@@ -226,6 +226,25 @@ written against those 145 bytes before anyone asked where they came from.
 `readline()` now reads whole lines and every canonical read goes through it.
 **A case has to be a pure function of what it sent.**
 
+**AND THE THIRD INSTANCE IS BETWEEN TWO SECTIONS OF ONE SUITE, SHARING A FILE.**
+§8a step 5e's 9P cases run at the bottom of `tests/streams`, against the image
+`mkfs` wrote at the top — and `fsprobe` **writes** to that image in between,
+because step 5d creates a file, grows it past the superblock's cached free list
+and deletes it. The first run reported `hello`'s length as **10248** against
+the 27 bytes `mkfs` put there. So the progression is: between programs sharing
+a directory, between cases sharing a stream, and now between sections sharing
+an artefact. The fix is the same each time — the 9P section gets `cp img p9img`
+taken at the moment `mkfs` succeeds, not a later copy.
+
+**And the case that should have caught it could not, because it asserted a
+field the CLIENT supplied.** `stat-name` came back `hello` throughout: 9P's
+stat carries the name out of the fid, which is the name the client sent in the
+Twalk, so a server that walked to the wrong inode entirely still prints the
+name asked for. The qid path is `i_number` and comes from the directory entry,
+which is why it is the field the case now checks — against what `ncheck` says
+independently. **Ask which end of the wire a field came from before asserting
+on it.**
+
 **AND MEASURE A MUTATION IN ISOLATION BEFORE BELIEVING ITS COUNT.** A batch
 harness scored two of them at one failure; re-run alone, each produced two —
 the right two. The guards were fine and the reading was not, which is the same
@@ -419,6 +438,54 @@ defines from what it undefines** rather than by grepping away a hand-written
 list of exported names. The hand-written version would have had to grow by
 every name `streamio.c` added, and a name-by-name allow list is exactly how
 `tests/kmemu`'s allowed leaks went stale.
+
+**AND THAT GUARD IMMEDIATELY EARNED ITS KEEP, BY REFUSING A PLACEMENT RATHER
+THAN A BUG.** §8a step 5e moved the image block driver out of
+`tests/streams/fsprobe.c` — the unconsumed-component rule finally has a
+consumer, the v8fs server — and the obvious home was `KERN_OBJ`. The archive
+then imported `_pread` and `_pwrite`, because a block driver does host I/O by
+definition. **A DRIVER SET IS PART OF A CONFIGURATION, NOT OF THE KERNEL
+LIBRARY**: `config(8)` is what chooses one on a real V8, `v8k_bdconf` already
+stands in for `config(8)`, so `imgdev.o` goes on the link line of whatever is
+being configured. Probe and server now share one driver, which makes
+`fsprobe`'s 236 cases coverage for the server's block layer.
+
+**And removing it from the archive did not remove it from the archive.**
+Dropping an object from `KERN_OBJ` leaves the target newer than every remaining
+prerequisite, so the `rm -f && ar rcs` rule never re-ran and `nm -u` still
+showed both names. That is the `ar r` note in the Makefile arriving one level
+up — there a dropped *source* leaves a stale member, here a dropped *object*
+leaves a stale archive — and both read as "the fix did not work".
+
+**AND `hostok.h` HANDS `access` BACK TO libc, WHICH FSPROBE'S OWN COMMENT
+PREDICTED AND NOBODY HAD WALKED INTO.** `param.h` renames thirteen kernel names
+aside (`#define access v8k_access`) and `hostok.h` undoes all thirteen so a file
+can have the host's headers too. `fsprobe.c` records the trap for `free` and
+`ialloc` — "calling `free(dev, bno)` would compile and hand a device number to
+the C library's allocator". The server hit it with `access`: a K&R
+`int access();` declaration plus `access(ip, IREAD)` binds to
+`access(const char *, int)`, compiles clean, and asks the *host* whether a path
+built out of an inode pointer is readable. Spell the `v8k_` name in any file
+that includes `hostok.h`.
+
+**AND A K&R FUNCTION-POINTER SLOT WILL NOT TAKE A PROMOTED PARAMETER TYPE.**
+`struct bdevsw`'s slots are `int (*)()` and `bio.c` calls them as
+`(*bdp->d_open)(dev, rw)`, so the arguments get the default argument
+promotions and a `dev_t` (u_short) arrives as an `int`. A driver declaring
+`imgopen(dev_t, int)` is therefore describing something the caller never sends,
+and clang says so. Declare the parameter `int` — that is the fix, not a
+suppression. Worth knowing where it was hiding: `fsprobe.c` had the same two
+functions spelled `dev_t` and built fine, because the suite's `KFLAGS` carry
+`-Wno-incompatible-function-pointer-types` for the *imported* half's sake. **A
+flag argued for 1985 code was covering ours** — the same shape as
+`-Wno-implicit-function-declaration` hiding fourteen missing macros.
+
+**AND THE IN-CORE INODE HAS NO TIMESTAMPS, which is easy to assume it does.**
+`struct inode` (`src/sys/h/inode.h:15-53`) carries `i_mode`, `i_nlink`,
+`i_uid`, `i_gid`, `i_size` and the block addresses — and no times at all. V7
+keeps `di_atime`, `di_mtime` and `di_ctime` only in the **disk** inode, and
+`iupdat` (`iget.c:250-273`) is what breads it to write them back. Anything that
+reports a timestamp has to do that read itself.
 
 ## Architecture: three layers, three different rules
 
@@ -2153,6 +2220,23 @@ not testable until it is installed.
   fire, confirm against the **backup**, not `git diff` — a file holding
   uncommitted work is dirty against HEAD no matter how clean the restore was,
   which produced a third false alarm in the same session.
+
+  **AND THE SAME SENTENCE HAS A WORSE DIRECTION: `git diff` ON AN UNTRACKED
+  FILE READS CLEAN UNCONDITIONALLY.** A mutation of a brand-new file wedged the
+  suite, the run was killed, and `git diff --stat` on it printed nothing — not
+  because the restore had happened but because the file was new and git had
+  never seen it. The source sat mutated and the check said fine. The first
+  direction cries wolf; this one reads as success, which is the direction that
+  outlives the experiment. **Diff against the backup, or grep the content.**
+
+  **AND A MUTATION CAN HANG THE HARNESS IN TWO PLACES, THE SECOND LOOKING
+  EXACTLY LIKE THE FIRST.** Breaking a framing loop so it trusted one read made
+  a receive block forever; a `SO_RCVTIMEO` on the reading socket fixed that and
+  the very next run hung again — in `waitpid`, because the same mutation leaves
+  the *child* blocked writing into a socket nobody is draining. **A deadline on
+  one end of a pipe is not a deadline on the pipe.** Bound the wait as well as
+  the read, and put both in the SUITE rather than only in the harness: a hang
+  in `make test` reports nothing at all, which is strictly worse than a failure.
 
   **AND THE TRAP RUNS THE OTHER WAY TOO: THE RESTORE CAN BE THE THING THAT DOES
   NOT COMPILE.** Measured — `hunt1.o` and `hunt1.c` ended up with the same

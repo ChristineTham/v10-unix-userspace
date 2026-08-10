@@ -1799,6 +1799,73 @@ The thing I keep having to relearn is that the interesting output of costing a
 step is not always the step.
 
 
+### And then the server, which the costing had already designed
+
+Once the mount has to be a separate process, most of the design is settled by
+things already measured. The kernel is single-threaded because it keeps its
+state in a global u-area, so there is no choice about threads. It is the sole
+authority for the buffer cache, so there is no choice about forking per
+connection either. What makes one process *sufficient* rather than merely
+necessary is a property the probe had relied on for two steps without anyone
+naming it: the image driver is synchronous, `iodone()` runs inside `strategy`,
+so `iowait()` finds `B_DONE` already set and never sleeps. Every request can be
+carried to completion between two `poll()` returns.
+
+So: `v8fsd`, a host binary that links the kernel archive, holds a disk image
+open and speaks plain 9P2000 on a Unix socket. Attach, walk, open, read, stat,
+clunk. The write half answers `EROFS` for now — the kernel underneath it works,
+step 5d did all of it, so that is a boundary in the server rather than a gap in
+the port, and splitting it the way the read and write halves were split keeps a
+failure attributable to one of them.
+
+It reads a file two directories down, 28 blocks long, through `namei` and
+`bmap`'s indirect arm, over a socket, and `cmp` says the 28000 bytes are the
+ones that went in.
+
+Three things surprised me, and only one of them was about 9P.
+
+**A driver set belongs to a configuration, not to a library.** Moving the block
+driver out of the probe was overdue — it finally has a consumer — and the
+obvious place was the kernel archive. That instantly broke a test asserting the
+archive imports exactly `memcpy`, `setjmp` and `longjmp`, because a block
+driver does host I/O by definition and brought `pread` and `pwrite` with it.
+The guard was right and my placement was wrong: `config(8)` is what chooses a
+driver set on a real V8, and the object belongs on the link line of whatever is
+being configured. The nice consequence is that the probe and the server now
+share one driver, so the probe's 236 cases are coverage for the server's block
+layer.
+
+And then removing it from the archive didn't remove it from the archive.
+Dropping an object from a list leaves the target newer than everything left in
+it, so the rule never re-ran. Make has told me this before, in the other
+direction, and the Makefile even has a comment about it.
+
+**A trap that a comment predicted, walked into for the first time.** The kernel
+headers rename thirteen names aside — `access` becomes `v8k_access` — and there
+is a header that undoes all thirteen so a file can also have the host's
+`<unistd.h>`. The probe's comment warns that this makes `free` and `ialloc`
+belong to libc, and that calling `free(dev, bno)` "would compile and hand a
+device number to the C library's allocator". I wrote `access(ip, IREAD)`. It
+compiled, because K&R, and asked the operating system whether a path built out
+of an inode pointer was readable.
+
+**And a case that could not see what it was named for.** The stat case checked
+that the server reported the file's name, and it did — `hello`, every time,
+including while the length came back as 10248 against the 27 bytes `mkfs` wrote.
+9P carries the name out of the fid, which is the name *the client sent in the
+walk*. A server that had walked to entirely the wrong inode would still print
+it. The field that identifies the file is the qid path, which is the inode
+number out of the directory entry, and `ncheck` will say independently what it
+ought to be.
+
+The 10248 turned out to be the same lesson a third time. The 9P cases run at the
+bottom of a suite whose top hands the image to `fsprobe`, and `fsprobe` writes
+to it — that is what step 5d does. So the server was reading a filesystem an
+earlier section had modified. I have now had this bug between two programs
+sharing a directory, between two cases sharing a stream, and between two
+sections sharing a file.
+
+
 ## What is left
 
 Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix
@@ -1827,8 +1894,12 @@ What remains, in rough order:
   in the client and twenty-nine programs share a global name with it; and it
   could not survive `exec` even if they did not. So the mount is a **server**,
   one connection per open file so that the socket itself is the descriptor and
-  nothing has to be inherited through a table. That is the next real piece of
-  work, and it is bigger than the step it replaces.
+  nothing has to be inherited through a table. **That server now exists** — it
+  reads a file out of an image over 9P and `cmp` agrees — and what is left is
+  the client half, plus the writes. The sweep run before starting the client
+  found eleven entry points in the shim with no slot in the filesystem-type
+  table at all, and two of them (`utime`, `readlink`) resolve no path today and
+  are holes in the jail as it stands.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.
