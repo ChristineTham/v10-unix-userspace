@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (1767 cases, 1766 on a host whose $TMPDIR
+make test             # all 17 suites (2060 cases, 2059 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -468,6 +468,17 @@ the C library's allocator". The server hit it with `access`: a K&R
 built out of an inode pointer is readable. Spell the `v8k_` name in any file
 that includes `hostok.h`.
 
+**AND THE FOURTH INSTANCE IS A VARIABLE RATHER THAN A CALL, WHICH IS WORSE.**
+§8a step 5f transcribed `mkdir()` from `sys/sys2.c:223-257` into the server,
+including upstream's own `iupdat(ip, &time, &time, 1)`. In a file that has
+included `hostok.h`, **`time` is libc's `time()`** — so that line passes the
+ADDRESS OF A FUNCTION as a `time_t *`, and `iupdat` writes four bytes of its
+instructions into an inode as a timestamp. It compiles, because `iupdat` is
+declared K&R. `access`, `free` and `ialloc` are all *calls*, where a reader
+looking for the trap has a call to look at; the kernel's most-read global has
+no unqualified spelling in such a file at all, and `&time` reads like the
+kernel's clock in every V8 source file ever written. Spell it `v8k_time`.
+
 **AND A K&R FUNCTION-POINTER SLOT WILL NOT TAKE A PROMOTED PARAMETER TYPE.**
 `struct bdevsw`'s slots are `int (*)()` and `bio.c` calls them as
 `(*bdp->d_open)(dev, rw)`, so the arguments get the default argument
@@ -559,6 +570,17 @@ because there is nothing to inherit.
   implemented. `access()` is implemented over `t_stat`; `readlink` is `EINVAL`
   (a V7 image holds no symlink); **`chdir` is the one genuine gap**, since
   nothing tracks a working directory.
+
+  **§8a step 5f TURNED FOUR OF THEM INTO SLOTS AND THE COUNT WAS NEVER ELEVEN.**
+  An auditor counted fourteen: nine that refuse (ten `MOUNTED()` calls, because
+  `link` guards both names), plus `access`, `readlink` and `chdir` which answer
+  instead, plus `chroot` — which passes its path **completely unresolved**,
+  mounted or not — and `execve`. Counting names while describing calls is a
+  shape this file has recorded before. `access`, `unlink`, `mkdir` and `rmdir`
+  are slots now, and `mknod`'s directory arm with them; `chmod`, `chown` and
+  `utime` are one `Twstat` away and deferred to keep the step reviewable;
+  `link` and `symlink` have no 9P2000 message and a V7 image holds no symlink
+  anyway; `mknod` for a *device* is meaningless on an image no kernel mounts.
 - **AND THE CASE FOR THAT GUARD PASSED FOR THE WRONG REASON.** `chmod 777
   /mnt/hello` exits 1 whether or not the guard exists, because this machine has
   no `/mnt` and the host's `chmod` fails too — the guard and the absence of the
@@ -596,6 +618,46 @@ because there is nothing to inherit.
   client that simply always said `ENOTDIR` passes the third alone. Both
   one-sided mutations fire on exactly one case each.
 
+**AND IT WRITES NOW — §8a step 5f — WHERE "READ ONLY" HAD MEANT THE PROTOCOL
+AND NOT THE FILESYSTEM.** `sh -c 'echo x > /mnt/fresh'` creates a file on a
+disk image through Bell Labs' `namei`/`ialloc`/`writei` in another process;
+`rm`, `mkdir` and `rmdir` work; `icheck`, `dcheck` and `fsck` say the result is
+clean with the block count back to exactly what it started at. Four things
+generalise and three of them are about a claim rather than about code:
+
+- **THE READ PATH HAD BEEN WRITING ALL ALONG, AND THE WRITE WAS INVISIBLE
+  BECAUSE THE CLOCK WAS FROZEN.** `readi` sets `IACC` (`rdwri.c:50`), so `iput`
+  runs `IUPDAT` and dirties the disk inode on every read. The recorded finding
+  named two accidents hiding it — `O_RDONLY` and no `bflush()`. Re-measured
+  with an instrumented driver: `O_RDONLY` was doing **no work at all** (O_RDWR
+  with no flush = zero pwrites across twenty-two reads; the buffer just sits),
+  and there is a **third**: `time` is set once by `iinit` from the superblock's
+  `s_time` and nothing advances it, while `mkfs` writes `di_atime == s_time` on
+  every inode — so `dp->di_atime = *ta` stores the bytes already there. The
+  driver prints the write and `cmp` prints nothing. Perturb one `di_atime`
+  first and exactly four bytes move. Round-trip class, third instance after
+  `ttldioc` and `strncat`, and the first in an *artefact* rather than in memory.
+- **A FROZEN CLOCK IS ONLY INVISIBLE UNTIL SOMETHING WRITES**, at which point
+  every `mtime` a create lays down is the moment the image was made — a
+  plausible wrong answer. `v8fs_clock()` is the other half of the substitution
+  `iinit` already makes for `clkinit`, and it is a **raw `gettimeofday`**
+  because `tests/kmemu` asserts `libv8kern.a` imports exactly three names.
+- **"READ ONLY" IS A MOUNT FLAG AND BELL LABS WROTE BOTH LINES.**
+  `fsmount()` at `sys3.c:299,316` opens the device `!ronly` and stores
+  `ronly & 1` in the superblock; `v8k_kinit(dev, ronly)` and `v8fsd -r` are
+  those two lines. With it set, `iupdat` returns at `iget.c:248` before it
+  breads anything, so not even an atime moves — a guarantee an `EROFS` arm in
+  the dispatch never gave. The three servers `tests/streams` already ran on one
+  shared image now run `-r`, which turns a contamination hazard into a guard
+  and changes not one existing expectation.
+- **`do_remove` TOOK THE ROOT AS THE PARENT**, which is right only for names
+  directly under the mount: a Tremove carries a fid and V7's unlink names a
+  *directory* and an *entry*, and `..` is an entry, so it exists for a directory
+  and not for a plain file. `rm /mnt/d/f` asked the server to unlink `f` from
+  the root. The fid records the directory each walk stepped through now.
+  **Found by running it** — the walk and the remove are in different functions
+  and each reads correctly alone.
+
 **AND THE AUDITOR FOUND TWELVE MORE, NOT ONE OF THEM AN LP64 BUG.** Run on the
 client the hour it was written — the rule that the subagent earns its keep on
 *new shim code* held for the fourth time. It came back clean on every hazard it
@@ -627,6 +689,16 @@ that generalise:
   > 0)` ends the loop on −1 and exits **0**. Two cases written to assert a
   failing read both passed for that reason — *including the passthrough
   control*, which is what gave it away. Assert the bytes.
+- **AND `rm` IS NOT ONE FOR WRITE ERRORS, IN TWO DIFFERENT DIRECTIONS AT ONCE.**
+  §8a step 5f asserted that a read-only mount refuses `rm /ro/hello` by reading
+  the exit status, and it is **0** whichever way you run it. Plain: `rm.c:101`
+  is `if(!fflg) if(access(arg,02)<0) { print the mode; if(!yes()) return; }` —
+  so on a file it may not write V7's rm *asks*, gets no answer from a non-tty,
+  and returns having done nothing and set no error. With `-f`: the question is
+  skipped, the unlink fails with EROFS, and `if(unlink(arg) && (fflg==0 ||
+  iflg))` suppresses both the message and the error count. Both are correct rm.
+  So the two obvious ways to run it agree on the one answer that means nothing.
+  Assert the file.
 
 ## Architecture: three layers, three different rules
 
@@ -2200,6 +2272,17 @@ changing it:
   prerequisite* when it reads the rule, so a variable defined lower down expands
   to nothing and the dependency silently is not there. This has happened three
   times. `tests/deps` now fails on any `--warn-undefined-variables` warning.
+- **A RULE THAT LINKS SOURCES DIRECTLY PRODUCES NO `.d`, SO ITS HEADER EDGES DO
+  NOT EXIST.** `$(DEPFLAGS)` gives every ordinary object its header
+  dependencies; `$(BUILD)/v8sys/test` and `$(BUILD)/v8sys/p9clprobe` compile
+  `$(SHIM_SRC)` straight into a host binary in one step, so they get none, and
+  for a long time listed no headers at all. What that costs is not a build
+  failure: §8a step 5f added three slots to `struct v8fstyp`, and a binary built
+  from a stale `vfs.h` has a **table with the wrong number of entries** —
+  `t_access` becomes whatever field sat at that offset before, it links, and it
+  dispatches into the wrong function. `$(SHIM_HDR)` is named on both rules now,
+  with the recipes changed from `$^` to `$(filter %.c %.s,$^)` so a header can
+  be a prerequisite without becoming a compiler input.
 - **macOS ships GNU Make 3.81.** No grouped targets (`&:`) — a two-target rule is
   two rules sharing a recipe, which races under `-j`. Mtimes compare at
   **whole-second** granularity though APFS records nanoseconds, so a file edited
@@ -2456,6 +2539,20 @@ not testable until it is installed.
   one suite the mutation targeted. `touch` the source after restoring, or diff
   the built binary — and never end a mutation run without a full `make test`.
 
+  **AND `git stash push` / `git stash pop` IS A MUTATION HARNESS, WHICH IS NOT
+  WHAT IT LOOKS LIKE.** Stashing to measure a baseline — "how many warnings did
+  this file have before my change?" — is mutate, build, measure, restore, and
+  the same-second trap applies in full. Measured: a stash, a `make -B` of one
+  object, and a pop all finished inside second `17:56:03`, `syscall.o` and
+  `syscall.c` came out with the identical mtime, `make -q` said up to date, and
+  the next full build linked **the pre-change object into every binary**. What
+  that looks like is not a build problem: `access()` and `unlink()` behaved
+  exactly as they had before the change, on a tree where every source file read
+  correctly, and half an hour went into reading the new code for a bug that was
+  not in it. The tell was on the wire — a server trace showing `Tstat` where the
+  new code sends `Taccess`, i.e. the OLD code path, which no amount of reading
+  the new source could have explained. `touch` every file the stash touched.
+
   **AND THE MUTATION THAT DOES NOT FIRE IS THE INFORMATIVE ONE — it says the
   guard is VACUOUS, which no green run ever will.** Seven mutations were run
   against the `/dev/fd` cases and six went red. The seventh deleted a
@@ -2569,6 +2666,17 @@ not testable until it is installed.
   difference between two processes, a field width — and where coverage genuinely
   depends on the host, print "not exercised" rather than passing silently or
   failing. `tests/kmemu`'s nice and pid checks are the worked examples.
+
+  **AND A RELATION IS NOT ENOUGH IF THE INSTRUMENT'S RESOLUTION IS COARSER THAN
+  THE EFFECT.** §8a step 5f gave the kernel a clock and asserted it with
+  `ls -l`: a file written now must be newer than one `mkfs` wrote. The relation
+  is right and the instrument prints **minutes**, and the section runs seconds
+  after `mkfs` — so both read `Aug 10 18:13` whether or not the fix existed,
+  and the case could only fail by crossing a minute boundary. It reads the
+  superblock's `s_time` at `SB+216` before and after instead, in seconds, which
+  is the same relation with two more digits. Before writing a comparison, ask
+  what the smallest difference the instrument can show is, and whether the
+  effect is bigger than that.
 
   **It runs the other way too, and that direction is easier to miss.** `who -i`
   compared `who | head -1` — one line — against *every* line of `who -i`, an

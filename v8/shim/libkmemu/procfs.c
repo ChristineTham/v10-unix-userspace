@@ -916,13 +916,57 @@ pr_fstat(int fd, struct v8_stat *st)
 	return (0);
 }
 
+/*
+ * THE THREE §8a STEP 5f ADDED, and /proc answers them the way it answers
+ * pr_write: it is a read-only view of the process table that this shim
+ * MANUFACTURES, so there is nothing here to unlink and nowhere to make a
+ * directory.  Killian's /proc does have writable process files -- prwrite
+ * needs the process image, which pr_write's comment records -- but no
+ * arrangement of it has ever let you unlink /proc/1.
+ *
+ * pr_access IS THE ONE WITH REAL WORK, because "may I" has a real answer here
+ * and it is not always yes: prstat gives a process file mode 0600 owned by
+ * uid 0, and the honest report for a reader is whether the file EXISTS, which
+ * is exactly what pr_stat already decides through prlive().  Recomputing
+ * permission from those mode bits would be the mistake v8s_access made against
+ * the mount and had to be rewritten out of -- the bits are synthesised here
+ * and the identity is the host's, so comparing them means nothing.
+ */
+static int
+pr_access(char *rp, int mode)
+{
+	struct v8_stat st;
+
+	if (pr_stat(rp, &st, 1) < 0) return (-1);
+	if (mode & 01) { v8_errno = V8_EACCES; return (-1); }	/* X_OK */
+	if (mode & 02) { v8_errno = V8_EACCES; return (-1); }	/* W_OK */
+	return (0);
+}
+
+static int
+pr_remove(char *rp, int isdir)
+{
+	(void)rp; (void)isdir;
+	v8_errno = V8_EPERM;
+	return (-1);
+}
+
+static int
+pr_mkdir(char *rp, int mode)
+{
+	(void)rp; (void)mode;
+	v8_errno = V8_EPERM;
+	return (-1);
+}
+
 static struct v8fstyp procfs = {
 	"proc",
 	pr_path,
 	pr_open, pr_close,
 	pr_read, pr_write, pr_seek,
 	pr_stat, pr_fstat,
-	pr_ioctl
+	pr_ioctl,
+	pr_access, pr_remove, pr_mkdir
 };
 
 /*

@@ -153,11 +153,11 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
  * THE EXTENSION IS ONE CONCEPT AND IT IS CONFINED TO A SENTINEL.  A fid has a
  * cursor.  Tread with offset == P9_OFFCUR uses it and advances it; any other
  * offset is 9P's own pread, byte for byte, and DOES NOT TOUCH the cursor.
- * Twrite is written into the rule and NOT YET IMPLEMENTED BY THE SERVER --
- * v8fsd answers EROFS to it until S8a step 5f -- and that is a trap rather
- * than a gap: the client already sends P9_OFFCUR on Twrite, so a do_write
- * that does not carry do_read's two lines will write every byte at offset
- * 0xFFFFFFFFFFFFFFFF.  Found by an auditor reading the two files together.
+ * Twrite is in the rule too, and §8a step 5f is where it stopped being a trap:
+ * the client had always sent P9_OFFCUR on Twrite while only do_read resolved
+ * it, so a do_write missing do_read's two lines would have written every byte
+ * at offset 0xFFFFFFFFFFFFFFFF.  Found by an auditor reading the two files
+ * together, one step before anything could reach it.
  *
  * THE FIRST DRAFT OF THIS NOTE SAID A CONFORMING CLIENT COULD NOT TELL, AND
  * tests/streams/p9probe.c REFUTED IT WITHIN THE HOUR -- which is the right way
@@ -171,9 +171,45 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
  *
  * Tseek/Rseek then read and set that cursor, and they are numbered outside
  * 100..127 so that no conforming client can collide with them.
+ *
+ * ------------------------------------------------ AND THE SECOND EXTENSION,
+ * WHICH IS THE SAME SENTENCE ABOUT A DIFFERENT SYSCALL.  9P HAS NO ACCESS,
+ * and for the reason it has no seek: Plan 9's kernel decides permission when
+ * it opens the file, and Plan 9 has no access(2) at all to ask in advance.
+ * V7 does -- sys/sys2.c's saccess() -- and `test -r' and `test -w' are ordinary
+ * programs in this world that call it.
+ *
+ * THE CLIENT CANNOT COMPUTE THE ANSWER AND HAS ALREADY BEEN WRONG TRYING.
+ * v8s_access's first version recomputed permission from the image's mode bits
+ * against the HOST's uid, while the server was running Bell Labs' access()
+ * with u.u_uid == 0 and taking fio.c's root bypass -- so `test -r' said no on
+ * every file of every image and `cat' printed it.  The bits were the server's
+ * and the identity was the host's.  §8a step 5e replaced the computation with
+ * a report of what the operations would do, which was right while every write
+ * answered EROFS and stops being right at 5f.
+ *
+ * So the question goes over the wire and Bell Labs' own access() answers it,
+ * with the server's identity on both sides.  Taccess carries a fid and V7's
+ * three mode bits; Raccess carries nothing, because 9P already has Rerror and
+ * "may I" is a question whose negative answer IS an errno.  Numbered beside
+ * Tseek and outside 100..127 for the same reason.
  */
 #define P9_Tseek	128
 #define P9_Rseek	129
+#define P9_Taccess	130
+#define P9_Raccess	131
+
+/*
+ * Taccess mode, which is V7's access(2) numbering exactly.  sys/sys2.c:541-546
+ * is three tests of the form `if (uap->fmode & (IREAD>>6)) access(ip, IREAD)',
+ * so the syscall's bits are the owner-position mode bits shifted DOWN by six:
+ * 4, 2, 1.  Read rather than recalled -- a first draft of this comment had the
+ * shift the other way round.  Spelled out here rather than reached through
+ * <sys/stat.h> so that both ends read the same three numbers.
+ */
+#define P9_AREAD	4
+#define P9_AWRITE	2
+#define P9_AEXEC	1
 
 /*
  * The sentinel.  All ones is the right choice rather than a free one: it is

@@ -35,12 +35,45 @@
  * is synchronous, so iowait() at bio.c:426 finds B_DONE already set.  Each
  * request is carried to completion between two poll() returns.
  *
- * READ ONLY, IN THIS STEP.  Twrite, Tcreate, Tremove and Twstat answer
- * Rerror; the kernel underneath them is written and tested (§8a step 5d did
- * writei, the allocating arm of bmap, alloc/free, ialloc/ifree, itrunc and
- * namei with NI_CREAT/NI_DEL), so this is a boundary in the server rather than
- * a gap in the port.  Splitting it the same way step 5c and 5d were split
- * keeps the unit reviewable and keeps a failure attributable.
+ * WRITABLE SINCE §8a STEP 5f, AND "READ ONLY" MEANS SOMETHING DIFFERENT NOW.
+ * Until 5f this file answered Rerror to Twrite, Tcreate, Tremove and Twstat --
+ * a boundary in the PROTOCOL, with a filesystem underneath it that was never
+ * read-only at all.  readi sets IACC (rdwri.c:50), so iput ran IUPDAT and
+ * dirtied the disk inode on every read; the only reason nothing reached the
+ * image was that nothing called bflush().
+ *
+ * THREE THINGS CHANGED AND EACH ONE IS BELL LABS' OWN ANSWER TO A QUESTION 5f
+ * had to ask:
+ *
+ *   -r IS A MOUNT FLAG, NOT A DISPATCH ARM.  fsmount() at sys/sys3.c:299-316
+ *   opens the device `!ronly' and stores `ronly & 1' in the superblock, and
+ *   v8k_kinit now takes the same argument.  With it set, iupdat returns at
+ *   iget.c:248 before it breads anything and access() refuses IWRITE through
+ *   the arm §8a step 5d restored -- so not even an atime moves.  That is a
+ *   guarantee the EROFS arm never gave.
+ *
+ *   THE CLOCK ADVANCES.  `time' was set once, by iinit from the superblock's
+ *   s_time, and nothing moved it -- upstream's clock interrupt is in
+ *   sys/clock.c, about a VAX interval timer, and is not imported.  So every
+ *   stamp a write laid down would have been the moment mkfs wrote the image.
+ *   v8fs_clock() is the substitution's other half and serve1 calls it once per
+ *   request, which is what a clock interrupt would have done for free.
+ *
+ *   SOMETHING FLUSHES.  iupdat and writei mostly bdwrite, which marks the
+ *   buffer B_DELWRI and returns; the write reaches the disk when the cache
+ *   recycles the buffer, which on an image this size is never.  Measured:
+ *   O_RDWR with no flush produced ZERO pwrites across twenty-two reads.
+ *   update() -- alloc.c:486, the body of sync(2) -- is what upstream's
+ *   sched() runs every thirty seconds, and the poll loop runs it once per
+ *   wakeup.
+ *
+ * SPLITTING IT the same way steps 5c and 5d were split keeps the unit
+ * reviewable and keeps a failure attributable, so what 5f does NOT do is give
+ * the ten path-taking syscalls their v8fstyp slots -- link, mknod, unlink,
+ * chmod, chown, mkdir, rmdir, symlink, utime.  MOUNTED() in syscall.c still
+ * refuses all of them with EROFS, which is now a lie about a writable
+ * filesystem rather than the truth about a read-only one, and is deliberately
+ * left loud so that the follow-on step has to remove it one call at a time.
  */
 
 #include "../kern/h/param.h"
@@ -107,11 +140,27 @@
  * `access(ip, IREAD)' here binds to LIBC's access(const char *, int) and
  * compiles, because K&R.  fsprobe.c records the identical trap for `free' and
  * `ialloc'; this is the first time it has actually been walked into.
+ *
+ * §8a step 5f ADDS writei, itrunc AND iupdat AND NO MORE THAN THAT, because a
+ * declaration with no call site is an unconsumed component standing in for a
+ * trap instead of defending against one -- fsprobe.c had to delete two of
+ * exactly that shape.  In particular the create and delete paths go through
+ * namei with NI_CREAT and NI_DEL, so ialloc, ifree and free are reached only
+ * by Bell Labs' own code and are not named here.  Which is just as well for
+ * `free': hostok.h has given that name back to the C library in this file, so
+ * `free(dev, bno)' would compile -- K&R, one argument too many -- and hand a
+ * device number to malloc's partner.
+ *
+ * AND `time' IS libc's time(2) HERE, NOT THE KERNEL'S CLOCK, which is why the
+ * clock is advanced by calling v8fs_clock() rather than by an assignment in
+ * this file.  The same #undef that makes access() a trap makes the kernel's
+ * most-read global unreachable by its own name.
  */
-int		readi(), iput(), schar();
+int		readi(), writei(), iput(), schar(), itrunc(), iupdat();
 int		iinit(), binit(), bhinit(), ihinit(), update(), brelse();
 int		v8k_access();
-int		v8k_kinit(dev_t dev);
+int		v8k_kinit(dev_t dev, int ronly);
+extern void	v8fs_clock(void);		/* shim/kern/sys/v8fs.c */
 
 /*
  * rootdev is systm.h's -- a K&R tentative definition, so every object that
@@ -121,6 +170,17 @@ int		v8k_kinit(dev_t dev);
  * and two tentative arrays) for the sake of one dev_t.
  */
 extern dev_t	rootdev;
+
+/*
+ * THE KERNEL'S CLOCK, BY ITS RENAMED NAME, and the rename is the only reason
+ * this declaration is here rather than being had from systm.h with the rest.
+ * param.h maps `time' to v8k_time so the variable does not collide with
+ * libv8stubs' time(2); hostok.h #undefs that so this file can have <unistd.h>.
+ * Between them, the kernel's most-read global has no unqualified spelling in
+ * this translation unit -- so it is named once, here, and kmkdir below is the
+ * one place that needs its address.
+ */
+extern time_t	v8k_time;
 
 /*
  * P9_NAMELEN must exceed the longest name the image can hold, and p9.h says
@@ -208,6 +268,32 @@ struct fid {
 	 * use this server without discovering the extension exists.
 	 */
 	p9_u64		 f_off;
+
+	/*
+	 * THE PARENT, AS A NUMBER, AND Tremove IS WHY -- §8a step 5f.
+	 *
+	 * 9P's Tremove carries a fid and nothing else; V7's unlink takes a
+	 * DIRECTORY and a NAME, because what it removes is an entry rather than
+	 * a file.  Nothing in a struct inode can bridge that: `..' is a
+	 * directory entry, so it exists for a directory and not for a plain
+	 * file, and there is no parent pointer in core.
+	 *
+	 * A FIRST VERSION USED THE ROOT for a plain file and it was wrong the
+	 * moment anything lived one level down -- `rm /mnt/newdir/f' asked the
+	 * server to unlink `f' from the ROOT, found nothing there, and reported
+	 * a failure the shell's rm swallowed.  Found by running it, not by
+	 * reading it: the walk and the remove are in different functions and
+	 * each looks right alone.
+	 *
+	 * A NUMBER RATHER THAN A POINTER, so that a fid holds no reference it
+	 * would have to release: iget() answers from its own hash for a
+	 * directory the client has just walked through, and the alternative is
+	 * an i_count this file has to balance across clone, walk and clunk.
+	 * ZERO means "no parent known" -- an attach, or a clone that has not
+	 * walked -- and Tremove refuses it rather than guessing, which is also
+	 * what refuses a remove of the root.
+	 */
+	ino_t		 f_pino;
 };
 
 struct conn {
@@ -219,6 +305,19 @@ struct conn {
 static struct conn	conns[NCONN];
 static unsigned char	rxbuf[P9_MSIZE], txbuf[P9_MSIZE];
 static int		verbose;
+
+/*
+ * THE MOUNT'S READ-ONLY FLAG, KEPT HERE AS WELL AS IN THE SUPERBLOCK, and the
+ * duplication is deliberate rather than sloppy.  s_ronly is the kernel's copy
+ * and is what iupdat and access() consult; this one is the SERVER's, and it
+ * exists so that a refusal can be reported before Bell Labs' code is entered
+ * at all.  The difference shows in the errno: reaching access() with s_ronly
+ * set gives EROFS from inside a create that has already walked the path, while
+ * refusing here answers the same EROFS having touched nothing.  Both are
+ * correct and only the second can be relied on for Twstat, which does not go
+ * through access() at all.
+ */
+static int		mntronly;
 
 static struct fid *
 fidof(struct conn *c, p9_u32 f)
@@ -248,6 +347,7 @@ fidnew(struct conn *c, p9_u32 f)
 		p->f_dir = 0;
 		p->f_dirlen = 0;
 		p->f_off = 0;
+		p->f_pino = 0;
 		return (p);
 	}
 	return (0);
@@ -394,6 +494,36 @@ kread(struct inode *ip, long off, char *dst, long len)
 }
 
 /*
+ * The write half of kread, §8a step 5f, and u_segflg matters MORE here than it
+ * does for a read.  rdwri.c:191-197 is
+ *
+ *	if (u.u_segflg != 1) { if (copyin(...)) { u.u_error = EFAULT; ... } }
+ *	else bcopy(u.u_base, bp->b_un.b_addr+on, n);
+ *
+ * -- so a server that left it 0 would send the server's own buffer address
+ * through copyin as though it were a user address.  fsprobe.c's writefile()
+ * records the same thing and this is the same four lines.
+ *
+ * THE RETURN IS WHAT WAS TRANSFERRED, not what was asked for, because writei
+ * decrements u_count as it goes and can stop early -- on ENOSPC with some
+ * blocks already written, which is exactly the case a Twrite has to report
+ * honestly.  A short count is not an error and the caller must not turn it
+ * into one.
+ */
+static long
+kwrite(struct inode *ip, long off, char *src, long len)
+{
+	u.u_base = src;
+	u.u_count = len;
+	u.u_offset = off;
+	u.u_segflg = 1;
+	u.u_error = 0;
+	writei(ip);
+	if (u.u_error && (long)u.u_count == len) return (-1);
+	return (len - (long)u.u_count);
+}
+
+/*
  * ONE COMPONENT, THROUGH BELL LABS' OWN namei, and doing it that way rather
  * than calling dsearch directly is the point of the exercise: the lookup a 9P
  * Twalk performs has to be the lookup the kernel performs.
@@ -424,6 +554,141 @@ kwalk(struct inode *dir, char *name)
 	u.u_cdir = save;
 	if (nip) nip->i_flag &= ~ILOCK;
 	return (nip);
+}
+
+/*
+ * kwalk's write-side siblings, §8a step 5f.  All three drive namei with a
+ * flag, in the same one-component-relative-to-a-directory shape kwalk uses,
+ * because a Tcreate names a directory fid and one name and so does a Tremove
+ * from the parent's side.
+ *
+ * NI_NXCREAT RATHER THAN NI_CREAT, and the difference is 9P's rather than
+ * ours.  The two arms are one `case' apart at nami.c:494-495 and differ only
+ * at nami.c:91, where an existing name is EEXIST for NXCREAT and a plain
+ * lookup for CREAT.  9P's Tcreate is defined to fail if the name exists -- it
+ * is creat(2)'s cousin only in name -- so NXCREAT is the arm that matches, and
+ * O_CREAT's tolerate-it-if-present behaviour is assembled on the CLIENT out of
+ * a walk and a Tcreate.  Getting this backwards would make `> file' silently
+ * truncate a name a concurrent client had just made.
+ */
+static struct inode *
+kcreate(struct inode *dir, char *name, int mode)
+{
+	struct inode *save = u.u_cdir, *nip;
+	struct argnamei arg;
+	char buf[P9_NAMELEN];
+
+	strncpy(buf, name, sizeof buf - 1);
+	buf[sizeof buf - 1] = '\0';
+	arg.flag = NI_NXCREAT;
+	arg.ino = 0;
+	arg.idev = 0;
+	arg.mode = (short)mode;
+	u.u_cdir = dir;
+	u.u_dirp = buf;
+	u.u_error = 0;
+	nip = namei(schar, &arg, 1);	/* follow, as creat does: sys2.c:154 */
+	u.u_cdir = save;
+	if (nip) nip->i_flag &= ~ILOCK;
+	return (nip);
+}
+
+/*
+ * mkdir -- sys/sys2.c:223-257, transcribed, and the transcription is what
+ * makes it worth doing at all.  NI_MKDIR allocates the inode, sets i_nlink to
+ * 2 and bumps the parent's, and writes the NAME into the parent -- and stops
+ * there.  It does NOT write `.' and `..' into the new directory: that is the
+ * syscall's own eleven lines, and a server that called namei and returned
+ * would have made a directory fsck calls unattached and dcheck calls a
+ * link-count mismatch.
+ *
+ * nmarg.ino IS THE PARENT'S NUMBER ON THE WAY OUT, which reads like a bug and
+ * is not.  nami.c's NI_MKDIR arm does `flagp->ino = dp->i_number' while dp is
+ * still the parent, and only then `dp = dip'.  So x[1] -- `..' -- takes it,
+ * and x[0] -- `.' -- takes ip->i_number, the inode namei returned.  Upstream's
+ * two lines, in upstream's order, because reasoning about which is which from
+ * the names alone gets it the wrong way round.
+ *
+ * AND THE TIMESTAMP ARGUMENTS ARE SPELLED v8k_time, WHICH IS THE FILE'S OWN
+ * TRAP AND WAS WALKED INTO WRITING THIS FUNCTION.  Upstream's line is
+ * `iupdat(ip, &time, &time, 1)'.  Here hostok.h has handed `time' back to the
+ * C library, so that line passes THE ADDRESS OF libc's time() as a time_t* --
+ * and it compiles, because iupdat is declared K&R.  iupdat would then read
+ * four bytes of the function's instructions as a timestamp and write them into
+ * the inode.  Third instance of the hostok.h class after access() and free(),
+ * and the first where the wrong thing is a variable rather than a call.
+ */
+static struct inode *
+kmkdir(struct inode *dir, char *name, int mode)
+{
+	struct inode *save = u.u_cdir, *ip;
+	struct argnamei arg;
+	struct direct x[2];
+	char buf[P9_NAMELEN];
+	int i;
+
+	strncpy(buf, name, sizeof buf - 1);
+	buf[sizeof buf - 1] = '\0';
+	arg.flag = NI_MKDIR;
+	arg.mode = (short)((mode & 0777) | IFDIR);	/* sys2.c:234 */
+	arg.ino = 0;
+	arg.idev = 0;
+	u.u_cdir = dir;
+	u.u_dirp = buf;
+	u.u_error = 0;
+	ip = namei(schar, &arg, 0);
+	u.u_cdir = save;
+	if (ip == NULL)
+		return (NULL);
+	if (arg.ino == 0) {			/* sys2.c:240-245: it existed */
+		if (u.u_error == 0) u.u_error = EEXIST;
+		iput(ip);
+		return (NULL);
+	}
+	x[0].d_ino = ip->i_number;
+	x[1].d_ino = arg.ino;
+	for (i = 0; i < DIRSIZ; i++)
+		x[0].d_name[i] = x[1].d_name[i] = 0;
+	x[0].d_name[0] = x[1].d_name[0] = x[1].d_name[1] = '.';
+	u.u_count = 2 * sizeof(struct direct);
+	u.u_base = (caddr_t)x;
+	u.u_offset = 0;
+	u.u_segflg = 1;
+	iupdat(ip, &v8k_time, &v8k_time, 1);	/* sys2.c:253, see above */
+	writei(ip);
+	ip->i_flag &= ~ILOCK;
+	return (ip);
+}
+
+/*
+ * unlink and rmdir, which are one function here because 9P's Tremove is one
+ * message.  sys/nami.c:298 and :330 are the two arms and sys2.c's rmdir() is
+ * literally `nmarg.flag = NI_RMDIR; namei(uchar, &nmarg, 0)'.
+ *
+ * A SUCCESSFUL DELETE RETURNS NULL AND THAT IS NOT A FAILURE -- fsnami's NI_DEL
+ * arm ends `goto out' and namei's case 1 iputs the parent and returns NULL, so
+ * u_error is the only thing separating done from refused.  fsprobe.c records
+ * the same shape; it is the enoent/notdir pair again.
+ */
+static int
+kremove(struct inode *dir, char *name, int isdir)
+{
+	struct inode *save = u.u_cdir;
+	struct argnamei arg;
+	char buf[P9_NAMELEN];
+
+	strncpy(buf, name, sizeof buf - 1);
+	buf[sizeof buf - 1] = '\0';
+	arg.flag = (short)(isdir ? NI_RMDIR : NI_DEL);
+	arg.ino = 0;
+	arg.idev = 0;
+	arg.mode = 0;
+	u.u_cdir = dir;
+	u.u_dirp = buf;
+	u.u_error = 0;
+	(void)namei(schar, &arg, 0);
+	u.u_cdir = save;
+	return (u.u_error ? -1 : 0);
 }
 
 /*
@@ -655,6 +920,7 @@ do_walk(struct conn *c, p9_u32 tag, struct p9buf *in)
 	char names[P9_MAXWELEM][P9_NAMELEN];
 	struct p9qid qids[P9_MAXWELEM];
 	p9_u32 fid, newfid, nwname;
+	ino_t pino;
 	int i, walked;
 
 	fid = p9_g32(in);
@@ -678,6 +944,7 @@ do_walk(struct conn *c, p9_u32 tag, struct p9buf *in)
 	else if ((nf = fidnew(c, newfid)) == 0) { rerror(c, tag, EMFILE); return; }
 
 	ip = f->f_ip;
+	pino = f->f_pino;		/* inherited by a clone; see f_pino */
 	walked = 0;
 	for (i = 0; i < (int)nwname; i++) {
 		/*
@@ -698,6 +965,19 @@ do_walk(struct conn *c, p9_u32 tag, struct p9buf *in)
 		}
 		if ((ip->i_mode & IFMT) != IFDIR) { u.u_error = ENOTDIR; break; }
 		if ((nip = kwalk(ip, names[i])) == NULL) break;
+		/*
+		 * RECORDED BEFORE ip MOVES, which is the whole trick -- one line
+		 * further down and it would be the child's own number.
+		 *
+		 * `.' AND `..' SET IT TO ZERO rather than to the directory they
+		 * were looked up in, because for those two the fid's NAME is not
+		 * an entry anybody may remove.  A fid walked to `sub/..' points
+		 * at the root and is called `..'; without this a Tremove through
+		 * it would ask to unlink an entry named `..'.  Zero is the "no
+		 * parent known" value and Tremove refuses it.
+		 */
+		pino = (strcmp(names[i], ".") == 0 || strcmp(names[i], "..") == 0)
+		    ? (ino_t)0 : ip->i_number;
 		if (walked) iput(ip);		/* an intermediate we made */
 		ip = nip;
 		qidof(ip, &qids[i]);
@@ -752,6 +1032,7 @@ do_walk(struct conn *c, p9_u32 tag, struct p9buf *in)
 			cip->i_flag &= ~ILOCK;
 			nf->f_ip = cip;
 			strcpy(nf->f_name, f->f_name);
+			nf->f_pino = f->f_pino;
 		}
 	} else {
 		/*
@@ -763,6 +1044,7 @@ do_walk(struct conn *c, p9_u32 tag, struct p9buf *in)
 		if (nf == f) iput(f->f_ip);
 		nf->f_ip = ip;
 		strcpy(nf->f_name, names[nwname - 1]);
+		nf->f_pino = pino;	/* the directory the last name was found in */
 	}
 
 	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rwalk, tag);
@@ -798,14 +1080,49 @@ do_open(struct conn *c, p9_u32 tag, struct p9buf *in)
 	case P9_ORDWR:	want = IREAD | IWRITE; break;
 	default:	want = IEXEC; break;
 	}
-	if (mode & (P9_OTRUNC | P9_ORCLOSE)) { rerror(c, tag, EROFS); return; }
-	if (want & IWRITE) { rerror(c, tag, EROFS); return; }
+	/*
+	 * ORCLOSE IS REFUSED AND OTRUNC IS NOT, §8a step 5f, and the pair used
+	 * to be one EROFS line for both.
+	 *
+	 * ORCLOSE means "remove this file when the fid is clunked" -- Plan 9's
+	 * temporary-file idiom, and there is nothing in a V7 userspace that
+	 * asks for it.  Implementing it would put a Tremove inside a clunk,
+	 * which is the one place this server must not fail: a clunk is how a
+	 * client says goodbye.  EINVAL rather than EROFS, because it is not
+	 * about the mount being writable -- a read-only mount and a writable
+	 * one refuse it identically, and the client never sets it.
+	 */
+	if (mode & P9_ORCLOSE) { rerror(c, tag, EINVAL); return; }
+	if (mntronly && ((want & IWRITE) || (mode & P9_OTRUNC))) {
+		rerror(c, tag, EROFS);
+		return;
+	}
 
 	u.u_error = 0;
 	if (v8k_access(f->f_ip, want)) {
 		rerror(c, tag, u.u_error ? u.u_error : EACCES);
 		return;
 	}
+
+	/*
+	 * OTRUNC IS itrunc() AND NOTHING ELSE, AFTER access() AND NOT BEFORE.
+	 * open1 at sys/sys2.c:188-200 is the model: the three access() calls,
+	 * `if(u.u_error) goto out', and only then `if(trf == 1) itrunc(ip)'.
+	 * A truncation performed on a file the caller may not write would be a
+	 * destroyed file and a returned error.
+	 *
+	 * A DRAFT OF THIS ALSO ZEROED i_size AND SET IUPD|ICHG, on the theory
+	 * that itrunc only frees blocks.  It does not: iget.c:349 is
+	 * `ip->i_size = 0' and the three lines above it are a comment saying
+	 * the inode has already been written and the flags already updated.
+	 * itrunc writes a ZEROED COPY of the inode synchronously BEFORE it
+	 * frees anything -- iget.c:311-319, so a crash mid-free leaves harmless
+	 * missing blocks rather than a duplicate claim -- and then clears
+	 * IUPD|IACC|ICHG deliberately.  Setting them again would undo exactly
+	 * that reasoning.  Read, not recalled.
+	 */
+	if (mode & P9_OTRUNC)
+		itrunc(f->f_ip);
 	f->f_omode = mode;
 
 	p9_hdr(&b, txbuf, sizeof txbuf, P9_Ropen, tag);
@@ -962,6 +1279,422 @@ do_read(struct conn *c, p9_u32 tag, struct p9buf *in)
 	txbuf[9] = (unsigned char)((n >> 16) & 0xff);
 	txbuf[10] = (unsigned char)((n >> 24) & 0xff);
 	b.b_p = dst + n;
+	reply(c, &b);
+}
+
+/*
+ * Twrite -- §8a step 5f, and it is do_read's mirror in three places that are
+ * each a trap if they are not mirrored.
+ *
+ *   THE SENTINEL.  The client has ALWAYS sent P9_OFFCUR on Twrite (p9cl.c's
+ *   p9_t_write) while only do_read resolved it, and p9.h has carried the
+ *   warning since an auditor read the two files together: a do_write without
+ *   these two lines writes every byte at offset 0xFFFFFFFFFFFFFFFF.  That is
+ *   not a wild pointer, it is a request to make a file 16 exabytes long, and
+ *   what it would actually have done is grow the inode through bmap's
+ *   allocating arm until the image filled.
+ *
+ *   THE ADVANCE IS WHAT WAS TRANSFERRED.  writei decrements u_count and can
+ *   stop early -- ENOSPC with some blocks already written is the real case --
+ *   so the cursor moves by the count in the Rwrite, not by the count in the
+ *   Twrite.  Same sentence as do_read's, for the same reason.
+ *
+ *   THE UPPER-BOUND GUARD.  do_read's file arm refuses `off > 0x7fffffff'
+ *   because u_offset is an off_t the kernel treats as signed and a V7
+ *   filesystem cannot address past 2^31 anyway.  A write needs it MORE: a
+ *   read past the end returns nothing, while a write past it asks bmap to
+ *   allocate.  Note the order -- the sentinel is resolved first, so that the
+ *   guard tests the offset that will actually be used.
+ */
+static void
+do_write(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	struct p9buf b;
+	struct fid *f;
+	p9_u32 fid, count;
+	p9_u64 off;
+	long n;
+	int atcur;
+	char *src;
+
+	fid = p9_g32(in);
+	off = p9_g64(in);
+	count = p9_g32(in);
+	src = (char *)p9_gdata(in, count);
+	if (!p9_ok(in) || src == 0) { rerror(c, tag, EINVAL); return; }
+
+	/*
+	 * READ-ONLY IS TESTED BEFORE THE FID, and the order is a decision.  9P
+	 * would have EBADF for a write to an unopened or read-opened fid, and
+	 * that is what the two lines below give on a writable mount.  But on a
+	 * read-only one the fid's state cannot change the answer -- no fid on
+	 * this connection will ever accept a write -- and EROFS says WHY where
+	 * EBADF says only that this attempt was malformed.  do_open makes the
+	 * same choice one message earlier.
+	 *
+	 * It is also what keeps p9probe's raw Twrite meaningful: the probe
+	 * opens a fid for READ and then writes to it on purpose, which is a
+	 * thing no client of ours would do, and the answer it is asking about
+	 * is the server's read-only-ness rather than its fid bookkeeping.
+	 */
+	if (mntronly) { rerror(c, tag, EROFS); return; }
+	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
+	if (f->f_omode < 0) { rerror(c, tag, EBADF); return; }
+	if ((f->f_omode & 3) == P9_OREAD) { rerror(c, tag, EBADF); return; }
+
+	/*
+	 * A DIRECTORY IS NOT WRITABLE THROUGH 9P AND MUST NOT BE HERE EITHER.
+	 * writei would do it -- the kernel writes directories with exactly this
+	 * call -- and the result would be a filesystem whose entries a client
+	 * had composed.  V7 says the same thing one layer up, at open1's
+	 * `if((ip->i_mode&IFMT) == IFDIR) u.u_error = EISDIR'.
+	 */
+	if ((f->f_ip->i_mode & IFMT) == IFDIR) { rerror(c, tag, EISDIR); return; }
+
+	atcur = (off == P9_OFFCUR);
+	if (atcur) off = f->f_off;
+	if (off > 0x7fffffffULL) { rerror(c, tag, EINVAL); return; }
+
+	n = kwrite(f->f_ip, (long)off, src, (long)count);
+	if (n < 0) { rerror(c, tag, u.u_error ? u.u_error : EIO); return; }
+	if (atcur) f->f_off = off + (p9_u64)n;
+
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rwrite, tag);
+	p9_p32(&b, (p9_u32)n);
+	reply(c, &b);
+}
+
+/*
+ * Tcreate -- make a name in the directory the fid names, and leave the fid
+ * pointing at the new file, opened.  That last clause is 9P's, not V7's, and
+ * it is the whole reason this is not just "creat with extra steps": the fid
+ * that named the PARENT comes back naming the CHILD, so the parent's inode
+ * must be released exactly once and only on success.
+ *
+ * NAME VALIDATION IS THE SERVER'S JOB BECAUSE THE WIRE PUTS NO LIMIT ON IT.
+ * A 9P name is a counted string up to 65535 bytes; a V7 directory entry holds
+ * fourteen.  namei would silently truncate -- fsnami compares DIRSIZ bytes --
+ * so two different Tcreates could make one entry, and the second would get
+ * EEXIST for a name it had never seen.  `.' and `..' are refused for the same
+ * class of reason: mkfs put them there and nami.c's dsearch would find them,
+ * so a create would return EEXIST rather than corrupt anything, but the errno
+ * 9P asks for is EINVAL and the two are worth telling apart.
+ */
+static void
+do_create(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	struct p9buf b;
+	struct fid *f;
+	struct inode *nip, *parent;
+	struct p9qid q;
+	char name[P9_NAMELEN];
+	p9_u32 fid, perm;
+	int mode;
+
+	fid = p9_g32(in);
+	if (p9_gstr(in, name, sizeof name) < 0) { rerror(c, tag, EINVAL); return; }
+	perm = p9_g32(in);
+	mode = (int)p9_g8(in);
+	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
+	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
+	if (f->f_omode >= 0) { rerror(c, tag, EINVAL); return; }
+	if ((f->f_ip->i_mode & IFMT) != IFDIR) { rerror(c, tag, ENOTDIR); return; }
+	if (mntronly) { rerror(c, tag, EROFS); return; }
+	if (name[0] == '\0' || strlen(name) > DIRSIZ ||
+	    strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+		rerror(c, tag, EINVAL);
+		return;
+	}
+	if (mode & P9_ORCLOSE) { rerror(c, tag, EINVAL); return; }
+
+	/*
+	 * THE PERMISSION WORD IS 9P's AND THE LOW NINE BITS ARE V7's, which is
+	 * true of every 9P server and is why DMDIR sits in the TOP bit rather
+	 * than in IFMT's position.  Everything above 0777 that is not DMDIR --
+	 * DMAPPEND, DMEXCL, the setuid bits 9P does not define -- is dropped,
+	 * because a bit this server does not implement must not be recorded in
+	 * an inode as though it had been.
+	 */
+	parent = f->f_ip;
+	if (perm & P9_DMDIR)
+		nip = kmkdir(parent, name, (int)(perm & 0777));
+	else
+		nip = kcreate(parent, name, (int)(perm & 0777));
+	if (nip == NULL) { rerror(c, tag, u.u_error ? u.u_error : EIO); return; }
+
+	/*
+	 * OPENED WITHOUT AN access() CALL, and that is V7's rule rather than an
+	 * omission -- so there is deliberately no mode-to-IREAD/IWRITE switch
+	 * here, and a draft that had one (computed, then thrown away) has been
+	 * removed rather than left to read as a check.  The permission that
+	 * governs a create is the PARENT's write bit, which kcreate has just
+	 * been through in nami.c's `if(access(dp, IWRITE)) goto out'; the file
+	 * did not exist a moment ago, so its own mode cannot deny its maker.
+	 * creat() says the same thing by calling open1 with trf 2, and open1's
+	 * `if(trf != 2)' at sys2.c:188 skips exactly those checks.
+	 */
+	/*
+	 * f_pino IS TAKEN BEFORE THE iput, and it is the create's own parent
+	 * rather than whatever the fid was walked from -- the fid named the
+	 * DIRECTORY on the way in and names the new FILE on the way out, so its
+	 * recorded parent has to move with it.  Without this a Tcreate followed
+	 * by a Tremove on the same fid, which is what O_CREAT then unlink is,
+	 * would unlink the new name from the wrong directory.
+	 */
+	f->f_pino = parent->i_number;
+	iput(parent);
+	f->f_ip = nip;
+	f->f_omode = mode;
+	f->f_off = 0;
+	strncpy(f->f_name, name, sizeof f->f_name - 1);
+	f->f_name[sizeof f->f_name - 1] = '\0';
+
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rcreate, tag);
+	qidof(nip, &q);
+	p9_pqid(&b, &q);
+	p9_p32(&b, (p9_u32)(c->c_msize - P9_IOHDRSZ));
+	reply(c, &b);
+}
+
+/*
+ * Tremove -- unlink, and 9P defines it as "remove the file AND clunk the fid,
+ * whether or not the removal succeeded".  The second half is not optional and
+ * is easy to get wrong: a client that sees Rerror must still not send Tclunk,
+ * so a server that left the fid alive would leak one per failed remove.
+ *
+ * THE PARENT COMES FROM THE FID, and f_pino's comment has the argument for
+ * why it has to be recorded during the walk rather than recovered here.  The
+ * short form: a fid names a FILE, V7's unlink names a DIRECTORY and an ENTRY,
+ * and nothing in a struct inode bridges the two -- `..' is an entry, so it
+ * exists for a directory and not for a plain file.
+ *
+ * A ZERO f_pino IS REFUSED RATHER THAN GUESSED, which covers three real cases
+ * with one test: the root (a client that attaches and immediately removes), a
+ * clone that has never walked, and a fid whose last component was `.' or `..'
+ * and whose name is therefore not an entry anybody may unlink.
+ */
+static void
+do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	struct p9buf b;
+	struct fid *f;
+	struct inode *parent;
+	p9_u32 fid;
+	int isdir, err;
+
+	fid = p9_g32(in);
+	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
+	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
+
+	/*
+	 * EVERY EXIT FROM HERE DOWN CLUNKS THE FID.  Written as one fidfree at
+	 * the bottom rather than one per arm, because 9P's rule is about the
+	 * fid and not about the outcome, and an arm that forgot would be
+	 * invisible until a client ran out of fids.
+	 */
+	if (mntronly) {
+		err = EROFS;
+	} else if (f->f_pino == 0) {
+		err = EINVAL;
+	} else if ((parent = iget(f->f_ip->i_dev, f->f_pino, 0)) == NULL) {
+		err = u.u_error ? u.u_error : EIO;
+	} else {
+		parent->i_flag &= ~ILOCK;	/* kwalk's reason exactly */
+		isdir = (f->f_ip->i_mode & IFMT) == IFDIR;
+		/*
+		 * THE TARGET IS RELEASED BEFORE THE REMOVE, and it has to be.
+		 * nami.c's NI_DEL arm does its own iget on the entry it found
+		 * and then iput()s it -- and it is THAT iput, at i_count 1,
+		 * which sees i_nlink drop to 0 and runs itrunc and ifree.  A
+		 * fid still holding the inode keeps i_count at 2, so the
+		 * blocks would never come back and the image would leak one
+		 * file per remove.  Invisible to a reader and loud in icheck,
+		 * which is the step-5d lesson about independent checkers.
+		 */
+		iput(f->f_ip);
+		f->f_ip = 0;
+		err = kremove(parent, f->f_name, isdir) < 0
+		    ? (u.u_error ? u.u_error : EIO) : 0;
+		iput(parent);
+	}
+
+	fidfree(f);
+	if (err) { rerror(c, tag, err); return; }
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rremove, tag);
+	reply(c, &b);
+}
+
+/*
+ * Twstat -- the one message that carries a whole stat, and 9P's rule for it is
+ * that EVERY FIELD WHICH IS "DO NOT TOUCH" IS SENT AS ALL ONES.  So the work
+ * here is not applying a stat, it is deciding which of its fields the client
+ * actually meant, and a server that applied them all would zero a file's mode
+ * every time somebody set its length.
+ *
+ * FOUR FIELDS ARE HONOURED and each maps onto a V7 syscall this port already
+ * owes the mount: s_length is truncate, s_mode is chmod, s_uid/s_gid are
+ * chown, s_mtime is utime.  s_name is a rename and is NOT honoured -- V7's
+ * rename is unlink-and-link in the shell's own words, there is no syscall for
+ * it, and doing it here would mean composing directory entries by hand.
+ * s_atime is not honoured for a duller reason: V7's utime(2) takes both times
+ * and iupdat writes whichever flags are set, but nothing in this world sets
+ * atime alone, and an unexercised arm is a claim nothing can check.
+ *
+ * A ZERO-LENGTH NAME IS THE "DO NOT TOUCH" FORM for a string, not all ones,
+ * which is 9P's own asymmetry and the reason s_name gets a length test rather
+ * than a comparison against a sentinel.
+ */
+static void
+do_wstat(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	struct p9buf b;
+	struct fid *f;
+	struct p9stat st;
+	struct inode *ip;
+	p9_u32 fid;
+	int touched = 0;
+
+	fid = p9_g32(in);
+	(void)p9_g16(in);		/* the outer size[2] wrapper */
+	if (p9_gstat(in, &st) < 0 || !p9_ok(in)) { rerror(c, tag, EINVAL); return; }
+	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
+	if (mntronly) { rerror(c, tag, EROFS); return; }
+	if (st.s_name[0] != '\0') { rerror(c, tag, EPERM); return; }
+	ip = f->f_ip;
+
+	/*
+	 * PERMISSION FOR A wstat IS THE FILE'S OWN WRITE BIT for a truncation
+	 * and ownership for everything else -- V7's chmod(2) is `if(u.u_uid !=
+	 * ip->i_uid && !suser()) return' at sys3.c, and truncate is a write.
+	 * Both collapse to the same thing while u_uid is 0, and both are
+	 * written out anyway, because the day a uid arrives over the wire the
+	 * difference between them is the whole of the answer.
+	 */
+	if (st.s_length != (p9_u64)~0ULL) {
+		if ((ip->i_mode & IFMT) == IFDIR) { rerror(c, tag, EISDIR); return; }
+		u.u_error = 0;
+		if (v8k_access(ip, IWRITE)) {
+			rerror(c, tag, u.u_error ? u.u_error : EACCES);
+			return;
+		}
+		/*
+		 * ONLY TRUNCATION TO ZERO, and the refusal is honest rather
+		 * than lazy: V7 has no truncate(2) at all -- shortening a file
+		 * is `creat' -- so itrunc is the only mechanism here and it
+		 * frees every block.  A wstat to a non-zero length would have
+		 * to either grow the file with holes or free a suffix, and
+		 * neither has a V7 spelling to be faithful to.
+		 */
+		if (st.s_length != 0) { rerror(c, tag, EINVAL); return; }
+		itrunc(ip);
+		touched = 1;
+	}
+	/*
+	 * suser() RETURNS 1 FOR PERMITTED, which is the OPPOSITE polarity from
+	 * access() six lines above -- upstream's own inconsistency, reproduced
+	 * rather than harmonised, and v8fs.c:468-471 records it beside the
+	 * function.  Getting it the wrong way round here would make every wstat
+	 * succeed for every user.
+	 */
+	if (st.s_mode != (p9_u32)~0U) {
+		if (!suser()) { rerror(c, tag, EPERM); return; }
+		ip->i_mode = (ip->i_mode & IFMT) | (unsigned short)(st.s_mode & 07777);
+		ip->i_flag |= ICHG;
+		touched = 1;
+	}
+	/*
+	 * uid AND gid ARE DECIMAL STRINGS ON THE WIRE, because statof writes
+	 * them that way -- 9P wants a name, a V7 inode stores a number, and
+	 * there are two passwd files here with no principled way to choose.
+	 * The empty string is what a client sends for "do not touch", since
+	 * all-ones has no spelling in a string field.
+	 */
+	if (st.s_uid[0] != '\0') {
+		if (!suser()) { rerror(c, tag, EPERM); return; }
+		ip->i_uid = (short)atoi(st.s_uid);
+		ip->i_flag |= ICHG;
+		touched = 1;
+	}
+	if (st.s_gid[0] != '\0') {
+		if (!suser()) { rerror(c, tag, EPERM); return; }
+		ip->i_gid = (short)atoi(st.s_gid);
+		ip->i_flag |= ICHG;
+		touched = 1;
+	}
+	if (st.s_mtime != (p9_u32)~0U) {
+		p9_u32 oat, omt;
+		time_t at, mt;
+
+		if (!suser()) { rerror(c, tag, EPERM); return; }
+		/*
+		 * utime(2) IS THE ONLY WAY TO SET A TIME TO SOMETHING OTHER
+		 * THAN NOW, and it must go through iupdat with explicit ta/tm
+		 * rather than through the IUPD flag -- IUPD means "stamp it
+		 * with the clock" and this is the opposite request.
+		 *
+		 * THE ATIME ARGUMENT IS THE ONE ALREADY ON THE DISK, because
+		 * iupdat writes BOTH whenever both flags are set and there is
+		 * no way to ask it for one.  Setting IACC with `time' in ta
+		 * would move atime to now as a side effect of setting mtime,
+		 * which is a change nobody asked for and which no reader could
+		 * attribute.  itimes() is the read half of iupdat and is
+		 * already here for Tstat.
+		 */
+		itimes(ip, &oat, &omt);
+		at = (time_t)oat;
+		mt = (time_t)st.s_mtime;
+		ip->i_flag |= IACC | IUPD;
+		iupdat(ip, &at, &mt, 1);
+		touched = 1;
+	}
+
+	/*
+	 * A wstat THAT TOUCHED NOTHING IS NOT AN ERROR -- 9P uses an all-ones
+	 * stat as a "sync me" request, and this server has nothing per-file to
+	 * sync because the poll loop calls update() after every message.  The
+	 * variable exists so that the arms above have somewhere to record the
+	 * fact and so that adding an arm which forgets is visible; it is read
+	 * here rather than being dropped, because a write-only variable is the
+	 * unconsumed-component rule applied to a line.
+	 */
+	if (verbose && !touched)
+		fprintf(stderr, "v8fsd: Twstat touched nothing (a sync)\n");
+
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rwstat, tag);
+	reply(c, &b);
+}
+
+/*
+ * Taccess -- the second extension, and p9.h has the argument: 9P has no
+ * access(2) because Plan 9 has none, and V7 does.  The client used to compute
+ * an answer from the mode bits and got it wrong on every file of every image,
+ * because the bits were the server's and the identity was the host's.
+ *
+ * THIS IS FOUR LINES BECAUSE ALL THE WORK IS BELL LABS'.  access() is the
+ * function with the root bypass, the group shift and the s_ronly arm; the only
+ * thing this adds is the loop saccess() writes out three times, and the
+ * observation that a fid already IS the inode a path would have resolved to.
+ */
+static void
+do_access(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	struct p9buf b;
+	struct fid *f;
+	p9_u32 fid;
+	int mode;
+
+	fid = p9_g32(in);
+	mode = (int)p9_g8(in);
+	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
+	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
+
+	u.u_error = 0;
+	if (mode & P9_AREAD) (void)v8k_access(f->f_ip, IREAD);
+	if (mode & P9_AWRITE) (void)v8k_access(f->f_ip, IWRITE);
+	if (mode & P9_AEXEC) (void)v8k_access(f->f_ip, IEXEC);
+	if (u.u_error) { rerror(c, tag, u.u_error); return; }
+
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Raccess, tag);
 	reply(c, &b);
 }
 
@@ -1129,6 +1862,21 @@ serve1(struct conn *c)
 	if (!p9_ok(&in)) return (-1);
 	if (verbose) fprintf(stderr, "v8fsd: T%d tag %u len %ld\n", type, tag, n);
 
+	/*
+	 * THE CLOCK TICK, AND ONCE PER REQUEST IS THE RIGHT GRAIN RATHER THAN A
+	 * COMPROMISE.  A V8 kernel advances `time' from a clock interrupt and
+	 * every syscall therefore sees a fresh value; here a request IS the
+	 * syscall, and nothing can run between two of them.  Sampling it any
+	 * more often would be measuring a clock that cannot have moved.
+	 *
+	 * IT IS ON THE READ PATH TOO, DELIBERATELY, because a read stamps an
+	 * atime -- rdwri.c:50 sets IACC and iput runs IUPDAT.  A tick that
+	 * covered only the write messages would leave every atime on the
+	 * mount reading as the moment mkfs made the image, which is the exact
+	 * wrong answer this step exists to find and fix.
+	 */
+	v8fs_clock();
+
 	switch (type) {
 	case P9_Tversion:	do_version(c, tag, &in); break;
 	case P9_Tattach:	do_attach(c, tag, &in); break;
@@ -1153,10 +1901,12 @@ serve1(struct conn *c)
 		break;
 	}
 
-	/* the write half -- §8a step 5f; the header comment says why */
-	case P9_Twrite: case P9_Tcreate: case P9_Tremove: case P9_Twstat:
-		rerror(c, tag, EROFS);
-		break;
+	/* the write half -- §8a step 5f; the header comment says what changed */
+	case P9_Twrite:		do_write(c, tag, &in); break;
+	case P9_Tcreate:	do_create(c, tag, &in); break;
+	case P9_Tremove:	do_remove(c, tag, &in); break;
+	case P9_Twstat:		do_wstat(c, tag, &in); break;
+	case P9_Taccess:	do_access(c, tag, &in); break;
 	case P9_Tauth:
 		rerror(c, tag, EPERM);
 		break;
@@ -1172,7 +1922,7 @@ serve1(struct conn *c)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: v8fsd [-v] socket image\n");
+	fprintf(stderr, "usage: v8fsd [-v] [-r] socket image\n");
 	exit(2);
 }
 
@@ -1187,6 +1937,7 @@ main(int argc, char **argv)
 
 	while (argc > 1 && argv[1][0] == '-' && argv[1][1] != '\0') {
 		if (strcmp(argv[1], "-v") == 0) verbose = 1;
+		else if (strcmp(argv[1], "-r") == 0) mntronly = 1;
 		else usage();
 		argc--; argv++;
 	}
@@ -1200,7 +1951,23 @@ main(int argc, char **argv)
 		return (2);
 	}
 
-	if ((imgfd = open(image, O_RDONLY)) < 0) {
+	/*
+	 * THE OPEN MODE FOLLOWS THE MOUNT FLAG, and O_RDONLY under -r is a
+	 * SECOND guarantee rather than the same one twice.  s_ronly stops the
+	 * kernel from generating a write; this stops the host from performing
+	 * one.  Either alone would do on correct code, and the reason to have
+	 * both is that the failure they guard against is different: a bug in
+	 * the kernel path defeats s_ronly and cannot defeat O_RDONLY.
+	 *
+	 * IT IS NOT WHAT WAS PROTECTING THE IMAGE BEFORE 5f, though it looked
+	 * like it.  Measured with an instrumented driver: O_RDWR with no
+	 * bflush() produced ZERO pwrites across a small read, a 28000-byte read
+	 * and twenty more reads -- the atime bdwrite sat in the buffer cache
+	 * and nothing ever recycled it.  The old EROFS arm and the old
+	 * O_RDONLY were both belt to a brace that was doing all the work by
+	 * accident.
+	 */
+	if ((imgfd = open(image, mntronly ? O_RDONLY : O_RDWR)) < 0) {
 		fprintf(stderr, "v8fsd: cannot open %s\n", image);
 		return (2);
 	}
@@ -1233,7 +2000,7 @@ main(int argc, char **argv)
 	 * guard for, arriving through the three names it does not claim.
 	 */
 	dev = v8k_imgdev();
-	if (v8k_kinit(dev) < 0) {
+	if (v8k_kinit(dev, mntronly) < 0) {
 		fprintf(stderr, "v8fsd: %s is not a V8 filesystem\n", image);
 		return (2);
 	}
@@ -1275,7 +2042,7 @@ main(int argc, char **argv)
 	 * would hang.  tests/streams polls with `grep -q', which is what the
 	 * flush actually supports.
 	 */
-	printf("v8fsd ready %s\n", sockpath);
+	printf("v8fsd ready %s%s\n", sockpath, mntronly ? " ro" : "");
 	fflush(stdout);
 
 	for (;;) {
@@ -1364,6 +2131,36 @@ main(int argc, char **argv)
 			if (c == 0) continue;
 			if (serve1(c) < 0) connclose(c);
 		}
+
+		/*
+		 * sync(2), ONCE PER WAKEUP, AND IT IS THE LINE THAT MAKES THE
+		 * WHOLE STEP REAL.  writei and iupdat mostly bdwrite: the
+		 * buffer is marked B_DELWRI and the write happens when the
+		 * cache recycles it, which on a 2000-block image with NBUF
+		 * buffers is never.  Measured before this line existed --
+		 * O_RDWR, twenty-two reads and a create, ZERO pwrites.
+		 *
+		 * update() is alloc.c:486, which is the body of sync(2), and
+		 * upstream's sched() runs it every thirty seconds.  Here it is
+		 * per wakeup rather than on a timer, for two reasons that are
+		 * both about this being a server rather than a kernel: there
+		 * is no clock interrupt to hang a timer on, and a client that
+		 * writes a file and exits must find the bytes on the disk,
+		 * because the NEXT thing to open the image is usually fsck.
+		 *
+		 * AFTER THE CONNECTION LOOP RATHER THAN INSIDE serve1, because
+		 * connclose -> fidfree -> iput is where the last IUPDAT of a
+		 * file happens -- a flush inside serve1 runs BEFORE that and
+		 * leaves the final inode write in the cache.  That is not a
+		 * refinement: it is the difference between the measurement
+		 * above reading two writes and reading none.
+		 *
+		 * SKIPPED ENTIRELY ON A READ-ONLY MOUNT, where update() would
+		 * be a no-op it still walks NINODE inodes to discover -- and
+		 * where s_ronly has already stopped anything from being dirty.
+		 */
+		if (!mntronly)
+			update();
 	}
 	return (1);
 }

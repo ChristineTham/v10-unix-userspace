@@ -131,7 +131,7 @@ struct inode	*v8k_ialloc();
 
 int	v8k_bdconf(struct bdevsw *bd);
 void	v8k_bdunconf(void);
-int	v8k_kinit(dev_t dev);
+int	v8k_kinit(dev_t dev, int ronly);
 
 /*
  * The block driver is shim/kern/dev/imgdev.c now -- see the header comment.
@@ -322,7 +322,15 @@ main(int argc, char **argv)
 	 * driver and hangs it on a mount, and the two igets read the root
 	 * inode out of the ilist.
 	 */
-	if (v8k_kinit(dev) < 0) {
+	/*
+	 * RONLY 0, AND SECTION 8 IS WHY.  §8a step 5f gave kinit the argument
+	 * fsmount() reads out of mount(2); this probe creates a file, drains
+	 * the superblock's free list and deletes it again, so it is the
+	 * read-WRITE caller by construction.  Section 8h-bis sets s_ronly by
+	 * hand afterwards to reach access()'s arm and clears it again, which
+	 * is a different thing from mounting read-only and stays where it is.
+	 */
+	if (v8k_kinit(dev, 0) < 0) {
 		printf("kinit -1\n");
 		return (1);
 	}
@@ -943,11 +951,20 @@ main(int argc, char **argv)
 		 * "A guard that has never been seen to fail is not a guard."
 		 *
 		 * Setting the field by hand is legitimate rather than a
-		 * cheat: s_ronly is a superblock field, mount(2) is what
-		 * would normally set it, and smount is not imported -- so
-		 * this is the same shape as v8k_bdconf standing in for
-		 * config(8).  It is put BACK immediately, because everything
-		 * after it writes.
+		 * cheat: s_ronly is a superblock field and mount(2) is what
+		 * would normally set it -- the same shape as v8k_bdconf
+		 * standing in for config(8).  It is put BACK immediately,
+		 * because everything after it writes.
+		 *
+		 * THAT USED TO SAY `smount is not imported', which was
+		 * asking about a function that does not exist.  dev/conf.c's
+		 * row 0 names smount and the whole 18k-line kernel mentions
+		 * it in exactly two lines, both in that dead file; the live
+		 * mount syscall is fsmount() at sys/sys3.c:273.  §8a step 5f
+		 * transcribed its two s_ronly lines into iinit, so a server
+		 * now mounts read-only for real -- and this probe still sets
+		 * the field by hand, because it wants the flag to change
+		 * UNDER a filesystem it has already written to.
 		 *
 		 * EROFS rather than EACCES is the whole point: uid is 0
 		 * here, so every other arm of access() short-circuits at

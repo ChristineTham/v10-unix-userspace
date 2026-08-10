@@ -357,13 +357,46 @@ extern int v8sys_pt_fstat(int fd, struct v8_stat *st);
  */
 extern int v8sys_pt_ioctl(int fd, int cmd, char *arg);
 
+/*
+ * THE THREE §8a STEP 5f ADDED, and for passthrough each is the host syscall it
+ * always was -- these are not new behaviour, they are the behaviour syscall.c
+ * had inline moved behind the switch so that a second type can have its own.
+ *
+ * THE PATH ARRIVES ALREADY RESOLVED, exactly as t_stat's does, which is what
+ * makes them safe to call from here: the caller chose the type and resolved
+ * the path in one step.  Note the ASYMMETRY that is not an oversight --
+ * pt_remove's unlink arm takes a LOOK path and its rmdir arm takes one too,
+ * while pt_mkdir needs a MAKE path, because the name it is given does not
+ * exist yet.  syscall.c is where that choice is made and it is the same
+ * choice v8s_unlink and v8s_mkdir were already making inline.
+ */
+static int
+pt_access(char *rp, int mode)
+{
+	RET(rawsys2(SYS_access, (long)rp, mode));
+}
+
+static int
+pt_remove(char *rp, int isdir)
+{
+	if (isdir > 0) RET(rawsys1(SYS_rmdir, (long)rp));
+	RET(rawsys1(SYS_unlink, (long)rp));
+}
+
+static int
+pt_mkdir(char *rp, int mode)
+{
+	RET(rawsys2(SYS_mkdir, (long)rp, mode & 07777));
+}
+
 struct v8fstyp v8fs_pass = {
 	"pass",
 	pt_path,
 	pt_open, pt_close,
 	pt_read, pt_write, pt_seek,
 	v8sys_pt_stat, v8sys_pt_fstat,
-	v8sys_pt_ioctl
+	v8sys_pt_ioctl,
+	pt_access, pt_remove, pt_mkdir
 };
 
 /* ---------------------------------------------------------------- /dev/fd */
@@ -544,11 +577,22 @@ fd_stat(char *p, struct v8_stat *st, int follow)
 	return (0);
 }
 
+/*
+ * /dev/fd INHERITS ALL THREE, which is this type's whole argument arriving in
+ * three more slots.  A name under /dev/fd is a DESCRIPTOR NUMBER, and the
+ * directory it lives in is the host's real /dev/fd -- so `access("/dev/fd/1",
+ * R_OK)' is a question the host can answer and `unlink("/dev/fd/1")' is one
+ * the host will refuse, both correctly and for the right reason.  Giving this
+ * type implementations of its own would be inventing a difference the kernel
+ * does not have, which is exactly what fd_open declines to do by not calling
+ * v8fs_bind().
+ */
 struct v8fstyp v8fs_fdfs = {
 	"fd",
 	fd_path,
 	fd_open, pt_close,
 	pt_read, pt_write, pt_seek,
 	fd_stat, v8sys_pt_fstat,
-	v8sys_pt_ioctl
+	v8sys_pt_ioctl,
+	pt_access, pt_remove, pt_mkdir
 };

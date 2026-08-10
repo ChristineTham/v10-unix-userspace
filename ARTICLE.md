@@ -2087,6 +2087,139 @@ The answer was to stop asserting the consequence and assert the resolution: ask
 the function directly which path it returns.
 
 
+### "Read only" was a claim about the protocol, not about the filesystem
+
+The server had refused every write since it was built, and I had written the
+reason down twice: `Twrite`, `Tcreate`, `Tremove` and `Twstat` answer an error,
+and the kernel underneath them is finished and tested. What I had also written
+down, in the task for the next step, was a warning that this was not the same
+thing as the filesystem being read-only. Bell Labs' `readi` sets an
+"accessed" flag on the inode; releasing that inode writes the flag back to
+disk. So every read through the mount was dirtying a disk inode. Two accidents
+hid it, the note said: the image was opened read-only, and nothing ever flushed
+the buffer cache.
+
+I re-measured before building on it, and the note was wrong in a way that
+mattered. Building three copies of the server that differed only in those two
+details, and instrumenting the block driver to print every write along with a
+flag saying whether the bytes about to be written differed from the bytes
+already there, produced this: with the image open for writing and no flush, a
+small read, a 28000-byte read and twenty more reads produce **zero** writes.
+The dirty buffer simply sits in the cache; the cache is never under enough
+pressure to recycle it. Opening the file read-only had been doing nothing at
+all. There was one accident, not two.
+
+And there was a third that nobody had named, which is the interesting one. The
+kernel's clock is set exactly once, by the mount code, from a timestamp in the
+superblock — because upstream advances it from a clock interrupt, and the clock
+interrupt lives in a file about a VAX interval timer that this port has never
+imported. `mkfs` writes that same timestamp into every inode it creates. So
+when the read path stores the access time, it stores *the value that is already
+there*. The driver prints the write. `cmp` on the image prints nothing.
+
+I confirmed it the only way that distinguishes "no write" from "a write you
+cannot see": perturb one inode's access time to a distinctive value first, and
+run the same read. Exactly four bytes move, back to the superblock's timestamp.
+
+This is a shape the project has hit twice before — a line discipline writing
+sixteen bytes into a six-byte structure where the extra ten round-tripped
+through the caller's own memory, and a string function reading one byte past
+its bound and then overwriting it. The write is real, the result is correct,
+and no comparison of the artefact against itself can see it. What is new is
+that this time the artefact was a file on disk rather than memory, which felt
+like it ought to be easier to inspect and was not.
+
+The frozen clock stops being invisible the moment anything writes on purpose:
+every modification time a new file gets would be the moment the image was
+manufactured. So the first change of the step was not a protocol message. It
+was giving the kernel a clock — which is machine-dependent code, so it belongs
+in the shim, and it reads the time through a raw system call rather than the C
+library, because the kernel archive is asserted to import exactly three
+external names and `time` is not one of them.
+
+The second change is the one I liked best, because Bell Labs had already
+written it. Making the mount read-only *properly* — so that not even an access
+time reaches the disk — is not a new flag. It is `mount(2)`, whose
+implementation opens the device with a read-write argument of `!ronly` and
+stores `ronly & 1` in the superblock. Two lines, transcribed. With the bit set,
+the inode-update routine returns before it reads anything, and the permission
+check refuses writes through an arm that had been restored two steps earlier
+and never yet been able to fire in anger. The three servers the test suite
+already ran on one shared image now run with that flag, which turned a standing
+contamination hazard into a guarantee and changed not one existing expectation:
+a genuinely read-only mount refuses exactly what the protocol used to.
+
+Then the messages, and four defects that only running it could have found.
+
+The first was mine within minutes of writing it. Transcribing upstream's
+`mkdir` — eleven lines that write `.` and `..` into a new directory, because
+the syscall that allocates it does not — I copied its call to the
+inode-update routine verbatim, including `&time`. In this particular file,
+`time` is the C library's function, because a header deliberately hands
+thirteen kernel names back to libc so the file can also use host headers. So
+that line passes **the address of a function** where a pointer to a timestamp
+is wanted, and the routine would have written four bytes of machine
+instructions into an inode as a date. It compiles, because the function is
+declared in 1985 style and takes anything. The file's own comment block records
+this trap for three other names; this is the fourth, and the first where the
+wrong thing is a variable rather than a call — there is no call site for a
+reader to be suspicious of.
+
+The second was a comment I wrote confidently and then disproved by reading. I
+implemented open-with-truncate as "free the blocks, then zero the size and mark
+the inode dirty", on the reasoning that the truncation routine only handles
+blocks. It does not. It writes a zeroed copy of the inode *synchronously*
+first — so that a crash part-way through freeing leaves harmless orphaned
+blocks rather than blocks claimed twice — and then clears the dirty flags on
+purpose. My two extra lines would have undone exactly that reasoning. Upstream's
+own caller is one line: truncate, and nothing else.
+
+The third and fourth were found by running the thing rather than reading it,
+which is the honest summary. 9P's remove message carries a file handle and
+nothing else. V7's `unlink` names a *directory* and an *entry* — and there is
+no parent pointer in an inode, because `..` is a directory entry, so it exists
+for directories and not for plain files. My first version used the filesystem
+root as the parent for a plain file, which is correct only for names directly
+under the mount point. `rm /mnt/newdir/f` asked the server to unlink `f` from
+the root, found nothing, and reported a failure that `rm` swallowed. The walk
+and the remove are in different functions and each reads correctly on its own.
+And once that worked, the file's blocks leaked on every delete, because the
+handle still held the inode: upstream's unlink code takes its own reference and
+it is *that* release, at a count of one, which notices the link count has
+reached zero and frees the blocks. Neither would have been visible from inside
+the probe. The first showed up as a shell command that quietly did nothing; the
+second would have shown up only in `icheck`.
+
+There is a fifth thing, and it is a small argument I enjoyed. 9P has no
+`access` message, for exactly the reason it has no seek message: Plan 9's
+kernel decides permission when it opens a file, and has no `access` system call
+to ask in advance. V7 does, and `test -r` is an ordinary program in this world.
+The client had already been wrong about this twice — first computing the answer
+from the image's permission bits against the *host's* user id, which was wrong
+on every file of every image; then reporting what would actually happen, which
+was right only while every write was refused. Both of those explanations were
+still sitting above the function, one contradicting the other, because the
+rewrite had added its reasoning without removing what it replaced. The third
+answer is to ask, over a new message numbered beside the seek one, and let Bell
+Labs' own permission routine answer with the server's identity on both sides.
+
+It immediately told me something I had got wrong. `test -x` on a file with mode
+0644 returns **yes**, because upstream's permission check grants root
+everything with no special case for the execute bits — that refinement is
+BSD's, not V7's. I had written a test case expecting "no" and the code was
+right.
+
+The eight mutations all fire, but one of them needed a new test case first, and
+its reason is worth recording. Deleting the line that advances the server-side
+file offset after a write left the entire section green — and for none of the
+three reasons this project has previously catalogued. The guard was not
+vacuous and the code was not dead. Every write in the suite was a *single*
+write through one open file, because `echo` writes once, so an offset that
+never advances is never asked to. Copying a 28000-byte file within the mount is
+seven writes through one descriptor, and the second one lands on top of the
+first.
+
+
 ## What is left
 
 Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix

@@ -208,6 +208,26 @@ SHIM_SRC = $(filter-out $(ROOT)shim/v8sys/stubs.c $(ROOT)shim/v8sys/onestub.c, \
 # putting it in the archive means signal.c's reference to it is what pulls it in.
 SHIM_ASM = $(ROOT)shim/v8sys/sigtramp.s
 
+# THE SHIM'S HEADERS, AND THE TWO RULES THAT COMPILE $(SHIM_SRC) DIRECTLY HAD
+# NONE OF THEM AS PREREQUISITES.  Every .o under $(BUILD)/v8sys gets its header
+# edges from $(DEPFLAGS), but $(BUILD)/v8sys/test and $(BUILD)/v8sys/p9clprobe
+# link the SOURCES into a host binary in one step and never produce a .d, so
+# their edges have to be written out.
+#
+# WHAT A MISSING ONE COSTS IS NOT A BUILD FAILURE.  §8a step 5f added three
+# slots to `struct v8fstyp' in vfs.h; a probe built from a stale copy of that
+# header has a TABLE WITH THE WRONG NUMBER OF ENTRIES, so t_access is whatever
+# field sat at that offset before.  It links, it runs, and it dispatches into
+# the wrong function -- measured by accident on exactly this shape, where a
+# `git stash' baseline left one object stale and access() went to t_stat.
+#
+# Named rather than wildcarded, unlike SHIM_SRC, because a header appearing in
+# shim/v8sys is a smaller event than a .c appearing there and the list is four
+# long.  Defined HERE for SHIM_ASM's reason: the first rule that uses it is
+# below, and a variable defined lower down expands to nothing.
+SHIM_HDR = $(ROOT)shim/v8sys/v8sys.h $(ROOT)shim/v8sys/vfs.h \
+           $(ROOT)shim/v8sys/rawsys.h $(ROOT)shim/p9/p9.h
+
 # The 9P codec, and it is OUTSIDE shim/v8sys on purpose.  It is compiled twice
 # -- once into libv8sys.a for the client, once into the v8fs server, which is a
 # host binary and cannot link libv8sys -- so it belongs to neither.  Naming it
@@ -357,10 +377,11 @@ test-hooks:
 # the shared codec rather than in shim/v8sys -- $(SHIM_SRC) brings only p9io.c,
 # the transport half of that seam.  Both halves or neither: this suite is the
 # first thing that exercises them against a real socket.
-$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC) $(P9_SRC) $(SHIM_ASM)
+$(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC) $(P9_SRC) $(SHIM_ASM) \
+                    $(SHIM_HDR)
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable \
-	    -fno-stack-protector -fno-stack-check -o $@ $^
+	    -fno-stack-protector -fno-stack-check -o $@ $(filter %.c %.s,$^)
 
 # The v8fs CLIENT probe -- the same link line, and it is HERE rather than built
 # inside tests/streams/run.sh the way that suite's other four probes are.  They
@@ -375,10 +396,11 @@ $(BUILD)/v8sys/test: $(ROOT)tests/v8sys/test.c $(SHIM_SRC) $(P9_SRC) $(SHIM_ASM)
 # tests/streams runs it against a v8fsd it has already started, to reach the
 # three paths no V8 program in the tree performs: fstat on a directory
 # descriptor, lseek in all three whences, and dup sharing one offset.
-$(BUILD)/v8sys/p9clprobe: $(ROOT)tests/streams/p9clprobe.c $(SHIM_SRC) $(P9_SRC) $(SHIM_ASM)
+$(BUILD)/v8sys/p9clprobe: $(ROOT)tests/streams/p9clprobe.c $(SHIM_SRC) $(P9_SRC) \
+                          $(SHIM_ASM) $(SHIM_HDR)
 	@mkdir -p $(BUILD)/v8sys
 	$(HOSTCC) -std=gnu99 -Wall -Wno-unused-variable \
-	    -fno-stack-protector -fno-stack-check -o $@ $^
+	    -fno-stack-protector -fno-stack-check -o $@ $(filter %.c %.s,$^)
 
 # ---------------------------------------------------------------------------
 # cpp -- the C preprocessor (Reiser, 1978).  First pass of the compiler.

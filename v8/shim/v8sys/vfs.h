@@ -74,6 +74,37 @@ struct v8fstyp {
 	 * is what it always was in fact.  Only the dispatch is new.
 	 */
 	int   (*t_ioctl)(int fd, int cmd, char *arg);	/* t_ioctl */
+
+	/*
+	 * THE THREE §8a STEP 5f ADDED, AND THEY ARE THE FIRST OF THE FOURTEEN
+	 * SLOTLESS SYSCALLS TO ARRIVE.  syscall.c's MOUNTED() macro exists to
+	 * refuse the ones that have no slot, because without a slot a mutating
+	 * call resolves a mounted path through rootpath() and acts on the HOST.
+	 * That refusal was the truth while the server answered EROFS to every
+	 * write; from 5f it is a lie about a writable filesystem, so the calls
+	 * that can now be honoured are honoured and the rest still refuse.
+	 *
+	 * t_access IS NOT A MUTATOR and is here for a different reason: it is
+	 * the one READER whose answer the client cannot compute.  See p9cl.c.
+	 *
+	 * t_remove TAKES isdir FROM THE CALLER rather than stat-ing, because
+	 * unlink(2) on a directory and rmdir(2) on a file are different errors
+	 * and only the caller knows which syscall was made.  -1 means "do not
+	 * check", which nothing passes today and which exists so that a caller
+	 * with no opinion has a spelling other than a wrong one.
+	 *
+	 * WHAT STILL HAS NO SLOT AFTER THIS, and why, so that the next step
+	 * inherits a list rather than a survey: chmod, chown and utime are one
+	 * Twstat away and are deferred only to keep this step reviewable; link
+	 * and symlink have no 9P2000 message at all and a V7 image holds no
+	 * symlink either; mknod for a device is meaningless on an image no
+	 * kernel will mount; chdir needs a working directory this shim does not
+	 * track; chroot and execve are the two the enumeration in syscall.c had
+	 * missed and are their own questions.
+	 */
+	int   (*t_access)(char *rp, int mode);
+	int   (*t_remove)(char *rp, int isdir);
+	int   (*t_mkdir)(char *rp, int mode);
 };
 
 /*

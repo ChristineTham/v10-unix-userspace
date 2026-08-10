@@ -660,3 +660,228 @@ comparison would fail on exactly the entries whose collapse is the considered
 answer. What has to agree is the name set.
 
 `streams` 466 → 535; nine mutations, nine fire.
+
+---
+
+## §8a step 5f — the mount is writable, and three things were hiding behind one
+
+Twrite, Tcreate, Tremove, Twstat and Taccess are implemented; `v8fsd -r` mounts
+read-only. `sh -c 'echo x > /mnt/fresh'` creates a file on a disk image through
+Bell Labs' `namei`/`ialloc`/`writei` in another process, `cat` reads it back,
+`rm`, `mkdir` and `rmdir` work, and `icheck`, `dcheck` and `fsck` — three
+readers that know nothing about 9P — pronounce the result clean with the block
+count back to exactly what it was.
+
+### The atime finding, re-measured, and it was three accidents rather than two
+
+The task carried a measured claim: `readi` sets `IACC` (`rdwri.c:50`), so `iput`
+at `i_count == 1` runs `IUPDAT` and dirties the disk inode, and *two* accidents
+hid it — `O_RDONLY` on the image fd, and nothing calling `bflush()`. Re-measured
+with three scratch builds of the server differing only in the open mode and the
+flush, plus an `imgdev.c` instrumented to print every `pwrite` with a flag
+comparing what is about to be written against what is already at that offset:
+
+- **`O_RDONLY` was doing no work at all.** With `O_RDWR` and no flush, a small
+  read, a 28000-byte read and twenty more reads produced **zero** pwrites. The
+  `bdwrite`'d buffer sits in the cache and `NBUF` is never exhausted, so it is
+  never recycled. There was one accident, not two.
+- **AND THE WRITE IS INVISIBLE ON A PRISTINE IMAGE, WHICH IS THE THIRD.**
+  `time` is set once, by `iinit` from the superblock's `s_time`, and nothing
+  advances it — upstream's clock interrupt is `sys/clock.c`, about a VAX
+  interval timer, and is not imported. `mkfs` writes `di_atime == di_mtime ==
+  di_ctime == s_time` on every inode. So `dp->di_atime = *ta` stores the bytes
+  that are already there: the driver prints the write, `cmp` on the image
+  prints nothing. Perturb one `di_atime` first and **exactly four bytes move**
+  (offsets 2229-2232, inode 3's `di_atime`), with `same=0` on the first write
+  and `same=1` on the second.
+
+That is the round-trip class — `ttldioc`'s ten bytes, `strncat`'s overread —
+arriving in an artefact rather than in memory: **the write is real, the result
+is correct, and a byte comparison of the thing written cannot see it.**
+
+The recorded claim was right in substance and its measurement had been taken on
+a deliberately perturbed image, which is why it saw four bytes. What it did not
+say is why nobody had ever noticed on an ordinary one.
+
+### The frozen clock is a live defect the moment anything writes
+
+Every `mtime` and `ctime` a create or a write laid down would have been the
+moment `mkfs` made the image. `v8fs_clock()` in `v8fs.c` is the other half of
+the substitution `iinit` already makes for `clkinit`, and `serve1` calls it once
+per request — which is the right grain rather than a compromise, since a request
+here *is* a syscall and nothing can run between two of them. It is on the read
+path too, deliberately, because a read stamps an atime.
+
+**A raw `gettimeofday`, not `time(3)`**, because `tests/kmemu` asserts
+`libv8kern.a` imports exactly `_memcpy`, `_setjmp` and `_longjmp`. `rawsys.h`
+was already included in `v8fs.c` and had no consumer until now.
+
+### "Read only" is a mount flag, and Bell Labs wrote both lines
+
+`iinit(int ronly)` and `v8k_kinit(dev, ronly)`. `fsmount()` at `sys/sys3.c:299`
+and `:316` is the general form of what upstream's `iinit` hardcodes for the
+root:
+
+	(*bdevsw[major(dev)].d_open)(dev, !uap->ronly);
+	fp->s_ronly = uap->ronly & 1;
+
+With it set, `iupdat` returns at `iget.c:248` before it breads anything and
+`access()` refuses `IWRITE` through the arm §8a step 5d restored. So a
+read-only mount cannot move an atime — a guarantee the old `rerror(EROFS)` in
+the dispatch never gave, because that was a boundary in the *protocol* over a
+filesystem that was never read-only at all.
+
+`kinit` takes it as an argument because there is no `mount(2)` here: the one
+mount this kernel ever makes is the one `kinit` makes, so what `fsmount` reads
+out of `u_ap` has to arrive as a parameter.
+
+### Four things that were wrong in the writing, and how each was found
+
+- **`iupdat(ip, &time, &time, 1)` PASSES THE ADDRESS OF libc's `time()`.**
+  `hostok.h` gives thirteen names back to the C library so `v8fsd.c` can have
+  host headers, and `time` is one of them — so upstream's own line, transcribed
+  verbatim into `kmkdir`, would hand `iupdat` a function pointer as a `time_t *`
+  and write four bytes of instructions into an inode as a timestamp. It
+  compiles, because `iupdat` is declared K&R. Fourth instance of the `hostok.h`
+  class after `access`, `free` and `ialloc`, and the first where the wrong thing
+  is a **variable** rather than a call. Spelled `v8k_time`.
+- **`itrunc` ALREADY DOES WHAT A DRAFT ASSUMED IT DID NOT.** `do_open`'s OTRUNC
+  arm was written as `itrunc(ip); ip->i_size = 0; ip->i_flag |= IUPD|ICHG;` on
+  the theory that itrunc only frees blocks. `iget.c:349` is `ip->i_size = 0`,
+  and the three lines above it say the inode has already been written and the
+  flags already updated — itrunc writes a **zeroed copy** synchronously first,
+  so that a crash mid-free leaves harmless missing blocks rather than a
+  duplicate claim, and then clears `IUPD|IACC|ICHG` on purpose. Setting them
+  again would undo exactly that reasoning. `open1` at `sys2.c:200` calls
+  `itrunc(ip)` and nothing else, and so does this now.
+- **`do_remove` USED THE ROOT AS THE PARENT.** A Tremove carries a fid and
+  nothing else; V7's unlink names a *directory* and an *entry*, and nothing in
+  a `struct inode` bridges that — `..` is an entry, so it exists for a directory
+  and not for a plain file. The first version took `rootdir` for a plain file,
+  which is right only for names directly under the mount: `rm /mnt/newdir/f`
+  asked the server to unlink `f` from the **root**, found nothing, and reported
+  a failure `rm` swallowed. Fixed with `f_pino`, recorded during the walk — a
+  number rather than a pointer, so a fid holds no reference to balance, and
+  zero for `.`/`..`/attach/clone so that Tremove refuses rather than guessing.
+  **Found by running it**: the walk and the remove are in different functions
+  and each reads correctly alone.
+- **AND THE TARGET MUST BE `iput` BEFORE THE REMOVE.** `nami.c`'s NI_DEL arm
+  does its own `iget` on the entry and then `iput`s it, and it is *that* `iput`
+  at `i_count == 1` which sees `i_nlink` reach 0 and runs `itrunc` and `ifree`.
+  A fid still holding the inode keeps `i_count` at 2, so the blocks never come
+  back — one leaked file per remove, invisible to any reader and loud in
+  `icheck`. The step-5d lesson about independent checkers, arriving before it
+  could bite.
+
+### mkdir(1) is mknod plus two link()s, and the guard was in the way
+
+V7 has no `mkdir(2)`: `mkdir(1)` is `mknod(d, IFDIR|mode, 0)` and then `link`
+of `d/.` and `d/..`, which is why it was setuid root. Neither macOS nor a v8fs
+mount works that way — the host's `mkdir(2)` writes both entries, and so does
+`NI_MKDIR` plus the eleven lines of `sys2.c:246-256` that `kmkdir` transcribes.
+`syscall.c` already had the arm that makes those links succeed-and-do-nothing;
+it sat *below* `MOUNTED()`, so `mkdir /mnt/d` created the directory correctly
+and then printed `cannot link /mnt/d/.` and exited 1 — a failure message about
+a completed operation, which is the worst of the three possible answers. The
+arm moved above the guard unchanged, because it was already the same statement
+about a different filesystem.
+
+`kmkdir` is worth reading beside upstream for one detail that reads like a bug:
+`nmarg.ino` comes back holding the **parent's** number, because `nami.c` does
+`flagp->ino = dp->i_number` while `dp` is still the parent and only then
+`dp = dip`. So `x[1]` — `..` — takes it. Upstream's two lines in upstream's
+order, because reasoning about which is which from the names gets it backwards.
+
+### Taccess — the second extension, and the same sentence as Tseek
+
+9P has no `access(2)` for the reason it has no seek: Plan 9's kernel decides
+permission when it opens the file and has no `access(2)` to ask in advance. V7
+does, and `test -r` is an ordinary program in this world.
+
+`v8s_access` has now had three answers and the first two were both left standing
+above it, one contradicting the other — the stale-comment class arriving as a
+*pair*, where the rewrite added its reasoning and did not remove what it
+replaced. (1) Recomputed locally, from the image's mode bits against the host's
+uid: wrong on every file of every image. (2) Reported what would happen —
+R_OK from a stat, W_OK always `EROFS`: right while the server refused every
+write, and its own comment said the day 5f arrived it should be asked over the
+wire instead. (3) Asked.
+
+**And it answers V7's answer, which is not BSD's.** `fio.c:193` is
+`if(u.u_uid == 0) return(0)` with no `0111` special case, so `test -x` on a
+0644 file says **yes**. A case was written expecting `no` and the code was
+right. What the old `EACCES` was reaching for is real but belongs elsewhere:
+nothing can be *executed* off a mount, because `v8s_execve` is passthrough —
+a fact about execve rather than about the file, and no live caller asks, since
+V8's `sh` searches PATH by calling `execve` on each directory.
+
+### The uid question, settled by a note that was already written
+
+The server runs as root and a client cannot say otherwise. `main.c:370-379`
+had already argued it: folding the host's uid in would make `access()` compare
+against inodes `mkfs` wrote as uid 0, so **whether a write was permitted would
+depend on who ran the test** — the host-property class arriving through a
+u-area field. What 5f adds is that the mount now has a *real* read-only flag,
+so the interesting refusal is available without inventing an identity.
+
+### The test suite: three servers stopped sharing a mutable artefact
+
+`sock`, `csock` and `ubsock` all serve `$FSTMP/p9img` and all three now run
+`-r`. Before 5f they shared it "read-only by assumption"; now the superblock
+says so and the fd is `O_RDONLY` as well, which turns the contamination hazard
+into a guard — and every existing expectation is unchanged, because a
+read-only mount refuses exactly what the protocol used to.
+
+The writable section gets its own copy and its own server, and a **second**
+server `-r` on a second copy so the pair differs by one argument.
+
+Three of its cases were wrong on the first draft and each is a known shape:
+
+- **The read-only pair was VACUOUS**, because the first draft used `csock` —
+  killed a hundred lines above. Every "refused" was really a dial that could
+  not connect. The tell was `rm` exiting **0** where a refusal must exit 1: a
+  dead server and a strict one do not fail the same way.
+- **`ls -l` CANNOT MEASURE A CLOCK THAT ADVANCED SECONDS AGO.** Its output is
+  minute-granular and the section runs seconds after `mkfs`, so the new file
+  and the image both read `Aug 10 18:13` whether or not `v8fs_clock` existed.
+  A test whose resolution is coarser than the effect it measures is not a test.
+  It compares the superblock's `s_time` before and after instead — `update()`
+  writes `fp->s_time = time` whenever `s_fmod` is set — at `SB+216`, the offset
+  `tests/mkfs` already uses, and asserts only `before < after`.
+- **`rm`'s EXIT STATUS IS NOT AN INSTRUMENT**, which is the `cat`-and-read-errors
+  lesson with a second member. On a file it may not write, V7's `rm` *asks*,
+  gets no answer from a non-tty, and returns having done nothing and set no
+  error: exit 0. With `-f` it skips the question, the unlink fails with `EROFS`,
+  and `fflg` suppresses both the message and the count: exit 0 again. Both are
+  correct `rm`. Assert the file.
+
+And one expected value was a guess dressed as a measurement: the block count
+was asserted as `pristine + 4`, came out one off, and had no way to say which
+number was wrong. The section removes everything it made and asserts the
+**identity** instead, which is the shape `fsprobe`'s own round-trip case uses.
+
+`streams` 535 → 567; eight mutations, eight fire.
+
+### And two build edges that did not exist, found by adding the case for one
+
+`struct v8fstyp` grew three slots, so every object that compiles against
+`vfs.h` had to be rebuilt — and `tests/deps` had a case for three of the four
+implementations. `p9cl.c` had none, purely because it was written after that
+block. Adding it found something worse than a missing case: **the two rules
+that compile `$(SHIM_SRC)` straight into a host binary — `$(BUILD)/v8sys/test`
+and `$(BUILD)/v8sys/p9clprobe` — listed no headers at all.** Every ordinary
+object under `$(BUILD)/v8sys` gets its header edges from `$(DEPFLAGS)`; these
+two never produce a `.d`, so their edges have to be written out and never had
+been.
+
+What a stale header costs here is not a build failure. It is a **table with the
+wrong number of entries**: `v8fs_p9.t_access` becomes whatever field sat at
+that offset in the older layout, the binary links, and it dispatches into the
+wrong function. That is not hypothetical — it is exactly what happened by
+accident an hour earlier when a `git stash` baseline measurement left
+`syscall.o` stale, and the only place the truth showed was a server trace
+showing `Tstat` where the new code sends `Taccess`.
+
+`$(SHIM_HDR)` is four named headers rather than a wildcard, and the recipes
+changed from `$^` to `$(filter %.c %.s,$^)` so the headers are prerequisites
+without becoming compiler inputs. `deps` 353 → 357.

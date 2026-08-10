@@ -657,6 +657,75 @@ p9walk(int fd, const char *rel)
 	return (0);
 }
 
+/*
+ * ---------------------------------------------------------- §8a step 5f ---
+ *
+ * THE WRITE SIDE NEEDS THE PARENT, AND 9P IS WHY.  Tcreate names a directory
+ * fid and a single component; so does Tremove's useful form.  V7's syscalls
+ * name a whole path.  So every mutating operation here is "walk to all but the
+ * last component, then act on the last one" -- which is exactly what namei
+ * does on the far side, split across the wire.
+ *
+ * p9parent LEAVES FILEFID ON THE PARENT and copies the last component out.
+ * Trailing slashes are dropped first, because `rmdir /mnt/sub/' must name
+ * `sub' and not the empty string -- and the empty string would walk nowhere
+ * and then create a nameless entry.  A path with no parent component (a bare
+ * name directly under the mount) walks zero components, which is a legal
+ * Twalk and leaves FILEFID cloned onto the root.
+ */
+static int
+p9parent(int fd, const char *rel, char *base, long bmax)
+{
+	const char *end, *slash, *p;
+	char dir[1024];
+	long n;
+
+	end = rel;
+	while (*end) end++;
+	while (end > rel && end[-1] == '/') end--;	/* "sub/" -> "sub" */
+	if (end == rel) { v8_errno = V8_EINVAL; return (-1); }
+
+	slash = end;
+	while (slash > rel && slash[-1] != '/') slash--;
+	n = (long)(end - slash);
+	if (n >= bmax) { v8_errno = V8_ENOENT; return (-1); }
+	for (p = slash; p < end; p++) base[p - slash] = *p;
+	base[n] = '\0';
+	if (base[0] == '.' && (base[1] == '\0' ||
+	    (base[1] == '.' && base[2] == '\0'))) {
+		v8_errno = V8_EINVAL;
+		return (-1);
+	}
+
+	n = (long)(slash - rel);
+	if (n >= (long)sizeof dir) { v8_errno = V8_ENOENT; return (-1); }
+	for (p = rel; p < slash; p++) dir[p - rel] = *p;
+	dir[n] = '\0';
+	return (p9walk(fd, dir));
+}
+
+/*
+ * Tcreate on the fid p9parent left, and the two things it takes are 9P's
+ * permission word and 9P's open mode -- not V7's.  DMDIR is the top bit and
+ * the low nine are the mode; the server maps them back.
+ */
+static int
+p9create(int fd, const char *name, p9_u32 perm, int om)
+{
+	struct p9buf b, r;
+	struct p9qid q;
+
+	begin(&b, P9_Tcreate);
+	p9_p32(&b, P9CL_FILEFID);
+	p9_pstr(&b, name);
+	p9_p32(&b, perm);
+	p9_p8(&b, (p9_u32)om);
+	if (xact(fd, &b, P9_Rcreate, &r) < 0) return (-1);
+	p9_gqid(&r, &q);
+	if (!p9_ok(&r)) { v8_errno = V8_EIO; return (-1); }
+	return (0);
+}
+
 /* --------------------------------------------------------------- the type */
 
 /*
@@ -686,19 +755,29 @@ p9_t_open(char *p, int flags, int mode)
 	const char *rel;
 	int fd, om;
 
-	(void)mode;
 	if (m == 0 || (rel = p9rel(m, p)) == 0) { v8_errno = V8_ENOENT; return (-1); }
 	if ((fd = p9dial(m)) < 0) return (-1);
-	if (p9walk(fd, rel) < 0) goto fail;
 
 	/*
 	 * V8's open(2) flags ARE 9P's low two bits -- 0 read, 1 write, 2
 	 * read/write -- which is not a coincidence: Plan 9 inherited the
 	 * numbering from the same place V7 got it.  O_TRUNC is the one other
-	 * bit 9P has a name for, and the rest (O_CREAT, O_APPEND) are not
-	 * Topen's business: creation is Tcreate's and this server answers
-	 * EROFS to it until §8a step 5f.
+	 * bit 9P has a name for.
+	 *
+	 * O_APPEND IS REFUSED RATHER THAN DROPPED, and refusing it costs
+	 * nothing because the shell does not use it.  9P has no append OPEN
+	 * MODE -- DMAPPEND is an attribute of the file, set at create and
+	 * binding on every writer -- so honouring it would mean either seeking
+	 * to the end here (wrong the moment a second writer exists, which is
+	 * the entire reason O_APPEND is not a seek) or a third extension.
+	 * Dropping it would be worse than either: a program would believe it
+	 * had append semantics and silently overwrite from offset zero.
+	 * Measured before choosing: `>>' in V8's sh is sh/service.c:76,
+	 * `lseek(fd, 0L, 2)' after an ordinary open, which this client already
+	 * serves through Tseek.  The one O_APPEND in the whole tree is
+	 * sh/service.c:598's accounting file, which nothing here enables.
 	 */
+	if (flags & 0x0008) { v8_errno = V8_EINVAL; goto fail; }
 	om = flags & 3;
 	if (om == 3) om = P9_ORDWR;		/* V8 has no O_EXEC */
 	/*
@@ -710,12 +789,63 @@ p9_t_open(char *p, int flags, int mode)
 	 */
 	if (flags & 0x0400) om |= P9_OTRUNC;
 
+	/*
+	 * O_CREAT IS A WALK THEN A Tcreate, IN THAT ORDER, AND THE ORDER IS THE
+	 * WHOLE OF IT -- §8a step 5f.
+	 *
+	 * 9P's Tcreate FAILS if the name exists; V7's O_CREAT tolerates it.
+	 * The two are reconciled on this side rather than by loosening the
+	 * server, because the server's strictness is what a second client would
+	 * rely on.  So: try the walk first, and only if it fails go to the
+	 * parent and create.  A create that then loses a race gets the server's
+	 * EEXIST, which is the honest answer and not one this client invents.
+	 *
+	 * THE WALK IS TRIED FIRST RATHER THAN THE CREATE, which costs a round
+	 * trip on the create path and buys the common case: almost every
+	 * O_CREAT in a 1985 userspace is `> file' on a file that already
+	 * exists, and Tcreate-then-fall-back would send a doomed message every
+	 * time.  It also keeps O_TRUNC's meaning: truncation belongs to the
+	 * OPEN of an existing file, and a freshly created one is empty anyway.
+	 */
+	if ((flags & 0x0200) != 0) {		/* O_CREAT */
+		char base[P9_NAMELEN];
+
+		if (p9walk(fd, rel) < 0) {
+			if (p9parent(fd, rel, base, (long)sizeof base) < 0)
+				goto fail;
+			/*
+			 * MODE, NOT PERM, and the difference is one bit that
+			 * cannot be set from here: DMDIR.  open(2) cannot make
+			 * a directory, so the permission word is the V7 mode
+			 * with nothing added -- v8s_mkdir is the caller that
+			 * sets DMDIR, through t_mkdir.
+			 */
+			if (p9create(fd, base, (p9_u32)(mode & 07777), om) < 0)
+				goto fail;
+			goto opened;
+		}
+	} else if (p9walk(fd, rel) < 0) {
+		goto fail;
+	}
+
 	begin(&b, P9_Topen);
 	p9_p32(&b, P9CL_FILEFID);
 	p9_p8(&b, (p9_u32)om);
 	if (xact(fd, &b, P9_Ropen, &r) < 0) goto fail;
 	p9_gqid(&r, &q);
 	if (!p9_ok(&r)) { v8_errno = V8_EIO; goto fail; }
+	goto checked;
+
+opened:
+	/*
+	 * A Tcreate LEAVES THE FID OPEN, so there is no Topen after it -- 9P
+	 * says so and v8fsd's do_create sets f_omode.  What that costs is the
+	 * qid, which Rcreate carries and p9create discards: a freshly created
+	 * name cannot be a directory when open(2) made it, so the only thing
+	 * the qid would have been used for below is a question with one answer.
+	 */
+	q.q_type = P9_QTFILE;
+checked:
 
 	if (q.q_type & P9_QTDIR) {
 		extern int v8fs_p9dirsnap(int fd);
@@ -1071,13 +1201,116 @@ p9_t_ioctl(int fd, int cmd, char *arg)
 	return (-1);
 }
 
+/*
+ * t_access: ASKED, NOT COMPUTED, and p9.h has the argument for the extension
+ * that makes it possible.  In one sentence: the client cannot answer this,
+ * because the mode bits are the image's and the identity is the server's, and
+ * v8s_access got it wrong in both available directions before this existed --
+ * first by recomputing against the host uid (so `test -r' said no on every
+ * file of every image), then by reporting a fixed EROFS for write (right while
+ * the server refused every write, wrong from §8a step 5f onward).
+ */
+static int
+p9_t_access(char *p, int mode)
+{
+	struct p9mnt *m = p9mount();
+	struct p9buf b, r;
+	const char *rel;
+	int fd, rc;
+
+	if (m == 0 || (rel = p9rel(m, p)) == 0) { v8_errno = V8_ENOENT; return (-1); }
+	if ((fd = p9dial(m)) < 0) return (-1);
+	if (p9walk(fd, rel) < 0) { rawsys1(SYS_close, fd); return (-1); }
+
+	begin(&b, P9_Taccess);
+	p9_p32(&b, P9CL_FILEFID);
+	p9_p8(&b, (p9_u32)(mode & (P9_AREAD | P9_AWRITE | P9_AEXEC)));
+	rc = xact(fd, &b, P9_Raccess, &r) < 0 ? -1 : 0;
+	rawsys1(SYS_close, fd);
+	return (rc);
+}
+
+/*
+ * t_remove: unlink and rmdir, which are one message.  isdir picks the arm and
+ * comes from the CALLER rather than from a stat here, because unlink(2) on a
+ * directory and rmdir(2) on a file are different errors and the caller is the
+ * one that knows which syscall was made.
+ */
+static int
+p9_t_remove(char *p, int isdir)
+{
+	struct p9mnt *m = p9mount();
+	struct p9buf b, r;
+	const char *rel;
+	int fd, rc;
+
+	if (m == 0 || (rel = p9rel(m, p)) == 0) { v8_errno = V8_ENOENT; return (-1); }
+	if ((fd = p9dial(m)) < 0) return (-1);
+	if (p9walk(fd, rel) < 0) { rawsys1(SYS_close, fd); return (-1); }
+
+	/*
+	 * THE FID IS GONE WHETHER OR NOT THIS SUCCEEDS -- 9P says a Tremove
+	 * clunks the fid even on Rerror -- so there is nothing to clean up and
+	 * the connection close below is only the socket.  A client that sent a
+	 * Tclunk after a failed Tremove would get EBADF.
+	 *
+	 * isdir IS SENT BY NOT BEING SENT: 9P's Tremove has no flag, so the
+	 * server decides from the inode's own mode and picks NI_DEL or
+	 * NI_RMDIR.  What the caller's isdir does here is refuse the mismatch
+	 * BEFORE the wire, so that `rmdir /mnt/hello' is ENOTDIR rather than an
+	 * unlink the caller did not ask for.
+	 */
+	if (isdir >= 0) {
+		struct v8_stat st;
+
+		if (p9statfid(fd, &st) < 0) { rawsys1(SYS_close, fd); return (-1); }
+		if (((st.st_mode & V8_S_IFMT) == V8_S_IFDIR) != (isdir != 0)) {
+			v8_errno = isdir ? V8_ENOTDIR : V8_EISDIR;
+			rawsys1(SYS_close, fd);
+			return (-1);
+		}
+	}
+
+	begin(&b, P9_Tremove);
+	p9_p32(&b, P9CL_FILEFID);
+	rc = xact(fd, &b, P9_Rremove, &r) < 0 ? -1 : 0;
+	rawsys1(SYS_close, fd);
+	return (rc);
+}
+
+/*
+ * t_mkdir: Tcreate with DMDIR, on the parent.  The mode is masked to 0777
+ * here as well as on the server, because the bit above it in 9P's permission
+ * word IS DMDIR and a caller passing S_IFDIR in the mode -- which v8s_mknod
+ * legitimately does -- must not have it land there.
+ */
+static int
+p9_t_mkdir(char *p, int mode)
+{
+	struct p9mnt *m = p9mount();
+	const char *rel;
+	char base[P9_NAMELEN];
+	int fd, rc;
+
+	if (m == 0 || (rel = p9rel(m, p)) == 0) { v8_errno = V8_ENOENT; return (-1); }
+	if ((fd = p9dial(m)) < 0) return (-1);
+	if (p9parent(fd, rel, base, (long)sizeof base) < 0) {
+		rawsys1(SYS_close, fd);
+		return (-1);
+	}
+	rc = p9create(fd, base, P9_DMDIR | (p9_u32)(mode & 0777), P9_OREAD);
+	rawsys1(SYS_close, fd);
+	return (rc);
+}
+
 struct v8fstyp v8fs_p9 = {
 	"v8fs",
 	p9_t_path,
 	p9_t_open, p9_t_close,
 	p9_t_read, p9_t_write, p9_t_seek,
 	p9_t_stat, p9_t_fstat,
-	p9_t_ioctl
+	p9_t_ioctl,
+	p9_t_access, p9_t_remove, p9_t_mkdir
 };
 
 /* ------------------------------------------------------- directory reads */

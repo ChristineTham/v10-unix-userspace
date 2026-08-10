@@ -105,7 +105,7 @@
 void		brelse(struct buf *bp);		/* bio.c:233 */
 void		bhinit(void);			/* bio.c:48 */
 void		ihinit(void);			/* iget.c:26 */
-extern void	v8fs_settime(time_t now);	/* v8fs.c:137 */
+extern void	v8fs_settime(time_t now);	/* v8fs.c */
 
 /*
  * ---------------------------------------------------------------------------
@@ -276,23 +276,39 @@ binit(void)
  *
  * -- set the wall clock from the filesystem's last-update stamp, then record
  * the boot moment.  clkinit is in sys/clock.c, which is not imported and which
- * is about a VAX interval timer.  v8fs.c:137's v8fs_settime() is this port's
+ * is about a VAX interval timer.  v8fs_settime() in v8fs.c is this port's
  * single place for both assignments and does them in that order, so the call
  * below is the same two statements behind one name.  It is NOT a widening
  * hazard even though s_time is v8_i32 and time_t is 8 bytes here: the value is
  * PASSED, not addressed, so it widens by the ordinary conversion.  The
  * dangerous spelling is `&fp->s_time', which CLAUDE.md's narrowed-field sweep
  * exists to catch and which does not appear here.
+ *
+ * AND ONE ADDITION, §8a step 5f: THE MOUNT IS READ-WRITE OR READ-ONLY, AND THE
+ * FLAG IS BELL LABS' OWN.  Upstream's iinit hardcodes s_ronly = 0 because it
+ * describes the ROOT filesystem, which a VAX always mounted read-write.  The
+ * general form is fsmount() at sys/sys3.c:299-316, the mount(2) syscall:
+ *
+ *	(*bdevsw[major(dev)].d_open)(dev, !uap->ronly);
+ *	...
+ *	fp->s_ronly = uap->ronly & 1;
+ *
+ * -- two lines, and they are transcribed rather than invented.  What they buy
+ * is that "read only" becomes a property of the FILESYSTEM instead of a
+ * refusal in the protocol: iupdat returns early on s_ronly (iget.c:248), so
+ * not even an atime reaches the disk, and access() refuses IWRITE through the
+ * arm §8a step 5d restored (shim/kern/sys/v8fs.c).  A server that answered
+ * EROFS to Twrite while leaving s_ronly at 0 had neither guarantee.
  */
 void
-iinit(void)
+iinit(int ronly)
 {
 	register struct buf *bp;
 	register struct filsys *fp;
 	register int i;
 	register struct mount *mp;
 
-	(*bdevsw[major(rootdev)].d_open)(rootdev, 1);
+	(*bdevsw[major(rootdev)].d_open)(rootdev, !ronly);	/* sys3.c:299 */
 	bp = bread(rootdev, SUPERB);
 	if (u.u_error)
 		panic("iinit");
@@ -305,7 +321,7 @@ iinit(void)
 	fp = bp->b_un.b_filsys;
 	fp->s_flock = 0;
 	fp->s_ilock = 0;
-	fp->s_ronly = 0;
+	fp->s_ronly = ronly & 1;		/* sys3.c:316 */
 	fp->s_lasti = 1;
 	fp->s_nbehind = 0;
 	fp->s_fsmnt[0] = '/';
@@ -423,13 +439,22 @@ v8k_uinit(void)
  *   the major number it was given, so the number cannot be known before the
  *   call.  Same shape as v8k_stconf returning the discipline number.
  *
+ *   AND SO IS RONLY, §8a step 5f, for a reason one step removed from the
+ *   first.  Upstream cannot pass it here because upstream's root is always
+ *   read-write and the general case is mount(2), which this port does not
+ *   have -- there is no second filesystem to mount onto the first.  So the one
+ *   mount this kernel ever makes is the one kinit makes, and the argument
+ *   fsmount() reads out of the syscall's u_ap has to arrive as a parameter
+ *   instead.  It is handed straight to iinit, which is where both of Bell
+ *   Labs' uses of it are.
+ *
  * TWO INODES ARE TAKEN FOR ONE DIRECTORY AND THAT IS NOT REDUNDANT.  rootdir
  * and u_cdir are separate iget()s of the same (dev, ROOTINO), so i_count is 2
  * and releasing the current directory later cannot free the root.  Both are
  * unlocked immediately, which is what lets namei lock them again as it walks.
  */
 int
-v8k_kinit(dev_t dev)
+v8k_kinit(dev_t dev, int ronly)
 {
 	rootdev = dev;
 
@@ -438,7 +463,7 @@ v8k_kinit(dev_t dev)
 	ihinit();
 	bhinit();
 	binit();
-	iinit();
+	iinit(ronly);
 
 	rootdir = iget(rootdev, (ino_t)ROOTINO, 0);
 	if (rootdir == NULL)

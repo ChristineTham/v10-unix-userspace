@@ -1727,7 +1727,7 @@ else
 # the name.  (The server checks and says so; it is how this was found.)
 P9DIR=$FSTMP
 rm -f "$P9DIR/sock"
-( cd "$P9DIR" && exec "$V8FSD" sock p9img ) > "$TMP/p9srv.out" 2>&1 &
+( cd "$P9DIR" && exec "$V8FSD" -r sock p9img ) > "$TMP/p9srv.out" 2>&1 &
 P9PID=$!
 
 # READY IS READ FROM THE SERVER, not waited for.  A sleep is a race dressed as
@@ -1934,7 +1934,7 @@ check "and survives the second one closing"	"1"	"$(q conn1-after-conn2-closed)"
 # so they do.  Diagnosed by this section failing eleven times with "No such
 # file or directory" while the identical command worked by hand.
 rm -f "$P9DIR/csock"
-( cd "$P9DIR" && exec "$V8FSD" csock p9img ) > "$TMP/p9cli.out" 2>&1 &
+( cd "$P9DIR" && exec "$V8FSD" -r csock p9img ) > "$TMP/p9cli.out" 2>&1 &
 CPID=$!
 cready=0
 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
@@ -2410,7 +2410,7 @@ if [ ! -x "$UBFSD" ]; then
 	bad "v8fs client: the sanitized server was not built" "$UBFSD"
 else
 rm -f "$P9DIR/ubsock"
-( cd "$P9DIR" && exec "$UBFSD" ubsock p9img ) > "$TMP/p9ub.out" 2>&1 &
+( cd "$P9DIR" && exec "$UBFSD" -r ubsock p9img ) > "$TMP/p9ub.out" 2>&1 &
 UBPID=$!
 ubready=0
 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
@@ -2469,7 +2469,7 @@ if ! ( cd "$UIDDIR" && V8ROOT=$ROOT/rootfs "$MKFS" img proto ) >"$UIDDIR/mkfs.lo
 	bad "v8fs client: the uid image would not build" "$(head -3 "$UIDDIR/mkfs.log")"
 else
 rm -f "$UIDDIR/sk"
-( cd "$UIDDIR" && exec "$V8FSD" sk img ) > "$TMP/p9uid.out" 2>&1 &
+( cd "$UIDDIR" && exec "$V8FSD" -r sk img ) > "$TMP/p9uid.out" 2>&1 &
 UPID=$!
 uready=0
 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
@@ -2533,6 +2533,293 @@ kill $CPID 2>/dev/null; wait $CPID 2>/dev/null
 fi	# the probe ran
 fi	# the server came up
 fi	# p9probe built
+
+# --------------------------------------------------------------------------
+# §8a step 5f -- THE MOUNT IS WRITABLE, and every server above this line is
+# NOT.
+#
+# THREE SERVERS SHARE $FSTMP/p9img and each of them now runs with -r, which is
+# the change that made this section safe to add.  Before 5f they shared it
+# "read-only by assumption": the protocol refused Twrite, and the filesystem
+# underneath was never read-only at all -- readi sets IACC, so iput ran IUPDAT
+# and dirtied the disk inode on every read, and the only reason nothing reached
+# the image was that nothing called bflush().  With -r the superblock's s_ronly
+# is set, iupdat returns at iget.c:248 before it breads anything, and the image
+# fd is O_RDONLY as well.  So the shared artefact cannot change, for two
+# independent reasons, and this section gets an image of its own regardless.
+#
+# THE WRITE IS INVISIBLE ON A PRISTINE IMAGE, which is why this needs saying at
+# all.  `time' is set once by iinit from the superblock's s_time and upstream's
+# clock interrupt is not imported, so `dp->di_atime = *ta' stored the value
+# mkfs had already written -- measured with an instrumented driver: the pwrite
+# happens, cmp on the image prints nothing.  Perturb one di_atime first and
+# exactly four bytes move.  v8fs_clock() is what makes the clock advance now.
+WFSTMP=$TMP/wfs
+mkdir -p "$WFSTMP"
+if [ ! -x "$V8FSD" ]; then
+	bad "5f: $V8FSD not built"
+elif [ ! -f "$FSTMP/p9img" ]; then
+	bad "5f: no pristine image to copy"
+else
+cp "$FSTMP/p9img" "$WFSTMP/wimg"
+rm -f "$WFSTMP/wsock"
+( cd "$WFSTMP" && exec "$V8FSD" wsock wimg ) > "$TMP/p9w.out" 2>&1 &
+WPID=$!
+wready=0
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+	grep -q "^v8fsd ready" "$TMP/p9w.out" 2>/dev/null && { wready=1; break; }
+	kill -0 $WPID 2>/dev/null || break
+	sleep 0.2
+done
+check "a WRITABLE server comes up"	"1"	"$wready"
+
+if [ "$wready" = 1 ]; then
+	# THE READY LINE SAYS WHICH IT IS, which is what lets the read-only
+	# assertion below be about the server rather than about this script's
+	# memory of how it started it.
+	check "...and says so, where the -r ones do not"	"" \
+		"$(sed -n 's/^v8fsd ready wsock//p' "$TMP/p9w.out")"
+	check "and the read-only one says ro"	" ro" \
+		"$(sed -n 's/^v8fsd ready csock//p' "$TMP/p9cli.out")"
+
+	w8() { ( cd "$WFSTMP"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/mnt=wsock"
+		 export V8ROOT V8MOUNT; deadline "$@" ); }
+
+	# 1. THE HEADLINE: sh's `>' on a name that does not exist.  Three
+	# messages the server refused an hour ago -- Twalk fails, Tcreate makes
+	# the inode and the directory entry through nami.c's NI_NXCREAT arm,
+	# Twrite runs writei -- and one V8 program that knows about none of it.
+	check "sh can create a file on a mount"		"0" \
+		"$(w8 "$SH" -c 'echo brand new > /mnt/fresh' >/dev/null 2>&1; echo $?)"
+	check "and cat reads back what was written"	"brand new" \
+		"$(w8 "$CAT" /mnt/fresh 2>&1)"
+
+	# 2. TRUNCATION IS Topen's OTRUNC, WHICH IS itrunc().  A second `>' to
+	# the same name must not append: the size is the assertion, because a
+	# server that ignored OTRUNC would still produce readable output.
+	w8 "$SH" -c 'echo x > /mnt/fresh' >/dev/null 2>&1
+	check "a second > truncates rather than appending"	"2" \
+		"$(w8 "$CAT" /mnt/fresh 2>&1 | wc -c | tr -d ' ')"
+
+	# 3. `>>' IS NOT O_APPEND, and that is measured rather than assumed.
+	# sh/service.c:76 is `lseek(fd, 0L, 2)' after an ordinary open, so it
+	# rides Tseek -- which is why p9_t_open can refuse O_APPEND outright.
+	w8 "$SH" -c 'echo y >> /mnt/fresh' >/dev/null 2>&1
+	check "and >> appends, through Tseek rather than O_APPEND"	"x.y" \
+		"$(w8 "$CAT" /mnt/fresh 2>&1 | tr '\n' '.' | sed 's/\.$//')"
+
+	# 3b. A 28000-BYTE COPY WITHIN THE MOUNT, AND IT IS HERE BECAUSE A
+	# MUTATION WOULD NOT FIRE.  Deleting `if (atcur) f->f_off = off + n'
+	# from do_write -- the line that advances the server-side cursor --
+	# left the whole section green, and for none of the three usual
+	# reasons: the guard is not vacuous and the code is not dead.  Every
+	# write above is a SINGLE write through one open, because `echo' writes
+	# once, so a cursor that never advances is never asked to.
+	#
+	# `cat big > copy' is seven writes of 4096 (cat.c:8's BLOCK) through
+	# one descriptor, so the second one lands on top of the first the
+	# moment the cursor stops moving.  It also drives bmap's ALLOCATING
+	# indirect arm, since 28000 bytes is 28 blocks and only ten are direct.
+	# cmp(1) is the assertion rather than a byte count: a broken cursor
+	# produces a file of the right length made of the wrong blocks.
+	w8 "$SH" -c 'cat /mnt/sub/deep > /mnt/copy' >/dev/null 2>&1
+	check "a 28000-byte copy through one descriptor"	"   28000" \
+		"$(w8 "$CAT" /mnt/copy 2>/dev/null | wc -c)"
+	check "...and cmp says it is the same file"		"same" \
+		"$(w8 "$ROOT/rootfs/bin/cmp" /mnt/copy /mnt/sub/deep >/dev/null 2>&1 &&
+		   echo same)"
+	w8 "$RM" /mnt/copy >/dev/null 2>&1
+
+	# 4. mkdir(1) IS mknod PLUS TWO link()s, WHICH IS V7's WAY.  The links
+	# are of `d/.' and `d/..', both of which kmkdir has already written --
+	# so they must succeed and do nothing, exactly as they do on macOS.
+	# Before the dot-link arm moved above MOUNTED(), this created the
+	# directory correctly and THEN printed `cannot link /mnt/d/.'.
+	check "mkdir works on a mount"			"0" \
+		"$(w8 "$ROOT/rootfs/bin/mkdir" /mnt/d 2>&1 >/dev/null; echo $?)"
+	check "and it is a directory"			"d" \
+		"$(w8 "$LS" -l /mnt 2>/dev/null | sed -n 's/^\(d\)rwx.*  *d$/\1/p')"
+	check "and a file can be made inside it"	"inner" \
+		"$(w8 "$SH" -c 'echo inner > /mnt/d/f' >/dev/null 2>&1
+		   w8 "$CAT" /mnt/d/f 2>&1)"
+
+	# 5. THE REMOVE PATH, AND THE PARENT IS THE WHOLE OF IT.  A Tremove
+	# carries a fid and nothing else, while V7's unlink names a DIRECTORY
+	# and an ENTRY -- so the server records the directory each walk stepped
+	# through.  The first version used the root for a plain file: this case
+	# is the one that failed, silently, and it needs the file to be one
+	# level DOWN or it passes against the bug.
+	check "rm removes a file one level down"	"0" \
+		"$(w8 "$RM" /mnt/d/f 2>&1 >/dev/null; echo $?)"
+	check "...and it is really gone"		"" \
+		"$(w8 "$LS" /mnt/d 2>/dev/null)"
+	check "rmdir then works"			"0" \
+		"$(w8 "$ROOT/rootfs/bin/rmdir" /mnt/d 2>&1 >/dev/null; echo $?)"
+
+	# 6. AND rmdir REFUSES A NON-EMPTY ONE, which is rmdir(1)'s own read of
+	# the directory rather than the server's -- nami.c's NI_RMDIR arm says
+	# "can rmdir non-empty directory" in as many words.  The pair matters:
+	# without it, a t_remove that always succeeded would pass case 5.
+	w8 "$ROOT/rootfs/bin/mkdir" /mnt/d2 >/dev/null 2>&1
+	w8 "$SH" -c 'echo z > /mnt/d2/keep' >/dev/null 2>&1
+	check "rmdir refuses a directory with something in it"	"1" \
+		"$(w8 "$ROOT/rootfs/bin/rmdir" /mnt/d2 2>/dev/null >/dev/null; echo $?)"
+
+	# 7. access() IS ASKED NOW, NOT COMPUTED -- Taccess, p9.h's second
+	# extension.  On a WRITABLE mount `test -w' must say yes, which is the
+	# answer the old fixed EROFS could never give; the -r server twenty
+	# lines up still says no, and having both is what makes either mean
+	# anything.
+	check "test -r on a writable mount"	"readable" \
+		"$(w8 "$ROOT/rootfs/bin/test" -r /mnt/hello && echo readable)"
+	check "test -w on a writable mount"	"writable" \
+		"$(w8 "$ROOT/rootfs/bin/test" -w /mnt/hello && echo writable)"
+	# AND test -x SAYS YES ON A 0644 FILE, WHICH IS V7's ANSWER AND NOT A
+	# BUG.  fio.c:193 is `if(u.u_uid == 0) return(0)' with no 0111 special
+	# case -- that refinement is BSD's -- and the server runs as root
+	# because main.c:370-379 argues at length that it must (folding the
+	# HOST's uid in would make every permission answer a property of who
+	# ran the test).  So this asserts the authentic answer.
+	#
+	# THE OLD CODE RETURNED EACCES HERE and it was a guess that happened to
+	# match a system nobody was porting.  What it was reaching for is real
+	# but belongs elsewhere: nothing can be EXECUTED off a mount, because
+	# v8s_execve is passthrough.  That is a fact about execve and not about
+	# the file, and no live caller asks -- V8's sh searches PATH by calling
+	# execve on each directory rather than by asking access().
+	check "and test -x says YES, because V7 grants root everything"	"exec" \
+		"$(w8 "$ROOT/rootfs/bin/test" -x /mnt/hello && echo exec)"
+
+	# 8. THE CLOCK ADVANCED, WHICH IS THE HALF OF 5f THAT IS NOT ABOUT
+	# WRITING AT ALL.  `time' is set once, by iinit from the superblock's
+	# s_time, and upstream's clock interrupt (sys/clock.c, a VAX interval
+	# timer) is not imported -- so before v8fs_clock() every stamp a write
+	# laid down was the moment mkfs made the image, which is a plausible
+	# wrong answer rather than a visibly wrong one.
+	#
+	# ASSERTED ON THE SUPERBLOCK, NOT ON `ls -l', and the first draft used
+	# `ls -l' and could not fail: its output is minute-granular and this
+	# section runs seconds after mkfs, so the new file and the image were
+	# stamped `Aug 10 18:13' either way.  A test whose resolution is coarser
+	# than the effect it measures is not a test.
+	#
+	# update() writes `fp->s_time = time' whenever s_fmod is set (alloc.c),
+	# and a create sets it -- so the served image's superblock timestamp is
+	# the kernel's clock, in seconds, and the pristine copy's is mkfs's.
+	# The offset is tests/mkfs's SB+216 and the relation is the one that
+	# suite already argues for: no calendar, just before < after.
+	d4() { od -An -tu4 -j "$2" -N4 "$1" | tr -d ' \n'; }
+	check "the kernel's clock is not frozen at the image's own s_time"	"1" \
+		"$( t0=$(d4 "$FSTMP/p9img" $((1024+216)))
+		    t1=$(d4 "$WFSTMP/wimg" $((1024+216)))
+		    [ -n "$t0" ] && [ -n "$t1" ] && [ "$t1" -gt "$t0" ] && echo 1 ||
+			echo "mkfs=$t0 afterwrite=$t1" )"
+
+	# 9. AND THE READ-ONLY MOUNT REFUSES ALL OF IT, on the same binaries,
+	# the same paths and A COPY OF THE SAME IMAGE, seconds apart.  This is
+	# the pair -r exists for: the two servers differ by one argument.
+	#
+	# A SECOND SERVER RATHER THAN THE ONE UPSTAIRS, and the first draft used
+	# that one and was VACUOUS.  csock is killed a hundred lines above this
+	# point, so every "refused" here was really a dial that could not
+	# connect -- `rm' exited 0 and `cat' said No such file, both of which
+	# read like the assertions passing and neither of which was about
+	# read-only anything.  The tell was `rm' exiting 0 where a refusal must
+	# exit 1: a dead server and a strict one do not fail the same way.
+	cp "$FSTMP/p9img" "$WFSTMP/roimg"
+	rm -f "$WFSTMP/rosock"
+	( cd "$WFSTMP" && exec "$V8FSD" -r rosock roimg ) > "$TMP/p9ro.out" 2>&1 &
+	RPID=$!
+	roready=0
+	for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+		grep -q "^v8fsd ready" "$TMP/p9ro.out" 2>/dev/null && { roready=1; break; }
+		kill -0 $RPID 2>/dev/null || break
+		sleep 0.2
+	done
+	check "a read-only server comes up beside it"	"1"	"$roready"
+	r8() { ( cd "$WFSTMP"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/ro=rosock"
+		 export V8ROOT V8MOUNT; deadline "$@" ); }
+
+	check "the read-only mount refuses a create"	"1" \
+		"$(r8 "$SH" -c 'echo no > /ro/nope' >/dev/null 2>&1; echo $?)"
+	check "...and a mkdir"				"1" \
+		"$(r8 "$ROOT/rootfs/bin/mkdir" /ro/nodir >/dev/null 2>&1; echo $?)"
+	# rm's EXIT STATUS IS NOT THE INSTRUMENT HERE, and reading it was wrong
+	# in the way CLAUDE.md already records for `cat' and read errors.  V7's
+	# rm is `if(!fflg) if(access(arg,02)<0) { print the mode; if(!yes())
+	# return; }' -- so on a file it may not write it ASKS, gets no answer
+	# from a non-tty, and returns having done nothing and having set no
+	# error.  Exit 0.  With -f it skips the question, the unlink fails with
+	# EROFS, and `fflg' suppresses the message and the error count.  Exit 0
+	# again.  Both are correct rm and neither says anything about the mount.
+	# So the assertion is the file.
+	check "...and an rm removes nothing"		"still here" \
+		"$(r8 "$RM" -f /ro/hello >/dev/null 2>&1
+		   r8 "$CAT" /ro/hello >/dev/null 2>&1 && echo "still here")"
+	check "...and test -w says no where the writable one said yes"	"notwritable" \
+		"$(r8 "$ROOT/rootfs/bin/test" -w /ro/hello || echo notwritable)"
+	check "...and the file is still readable"	"hello from a V8 filesystem" \
+		"$(r8 "$CAT" /ro/hello 2>&1)"
+
+	sleep 0.3
+	kill $RPID 2>/dev/null; wait $RPID 2>/dev/null
+	# NOT ONE BYTE, and this is the guarantee the EROFS arm never gave: a
+	# read through a read-only mount cannot move an atime either, because
+	# s_ronly makes iupdat return before it breads the inode.
+	check "and the read-only image is byte-identical to what it was given"	"same" \
+		"$(cmp -s "$FSTMP/p9img" "$WFSTMP/roimg" && echo same || echo differs)"
+
+	# THE ROUND TRIP CLOSES: everything this section made is removed again,
+	# so the writable image must come back to the block count it started
+	# with.  A leaked block passes fsck -- icheck calls it `missing' and
+	# says 0 either way once it is off the free list -- so the exact
+	# equality is the only thing that can see one.
+	w8 "$RM" /mnt/fresh >/dev/null 2>&1
+	w8 "$RM" /mnt/d2/keep >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/rmdir" /mnt/d2 >/dev/null 2>&1
+	check "and the mount is empty again"	"hello sub" \
+		"$(w8 "$LS" /mnt 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+
+	sleep 0.3
+	kill $WPID 2>/dev/null; wait $WPID 2>/dev/null
+
+	# 10. THE INDEPENDENT CHECKERS, WHICH ARE THE ONLY THING THAT CAN SEE A
+	# WHOLE CLASS.  §8a step 5d's lesson: a probe's writer and reader share
+	# one program's beliefs, so a duplicate-block bug is invisible from
+	# inside by construction -- when alloc() was mutated to hand out a block
+	# twice, every case stayed green and only icheck, fsck and cmp went red.
+	# These three know nothing about 9P.
+	#
+	# BOUNDED CAPTURES, because a corrupted free list once made `fsck -y'
+	# print for its whole deadline and bash died on the substitution.
+	check "icheck finds nothing missing after all that"	"missing    0" \
+		"$( cd "$WFSTMP" && fsdeadline "$ROOT/rootfs/etc/icheck" wimg 2>&1 |
+		    head -200 | grep '^missing' )"
+	check "dcheck says nothing at all"			"wimg:" \
+		"$( cd "$WFSTMP" && fsdeadline "$ROOT/rootfs/etc/dcheck" wimg 2>&1 |
+		    head -200 )"
+	check "and fsck reports nothing modified"		"" \
+		"$( cd "$WFSTMP" && fsdeadline "$ROOT/rootfs/etc/fsck" -y wimg </dev/null 2>&1 |
+		    head -200 | grep -i 'MODIFIED' )"
+
+	# 11. AND THE ACCOUNTING CLOSES EXACTLY.  Create, write, truncate,
+	# append, mkdir, a file one level down, three removes and an rmdir --
+	# and then the same number of blocks in use as the image started with.
+	#
+	# A FIRST DRAFT ASSERTED `u0 + 4' AND WAS A GUESS DRESSED AS A
+	# MEASUREMENT: it happened to be off by one (35 against 36) and had no
+	# way to say which of the two numbers was wrong.  Removing everything
+	# first turns it into an identity, which is the shape fsprobe's own
+	# round-trip case already uses.
+	check "and the block count is exactly what it was"	"1" \
+		"$( u0=$( cd "$FSTMP" && fsdeadline "$ROOT/rootfs/etc/icheck" p9img 2>&1 |
+			  head -200 | awk '/^used/{print $2}')
+		    u1=$( cd "$WFSTMP" && fsdeadline "$ROOT/rootfs/etc/icheck" wimg 2>&1 |
+			  head -200 | awk '/^used/{print $2}')
+		    [ -n "$u0" ] && [ "$u0" = "$u1" ] && echo 1 ||
+			echo "before=$u0 after=$u1" )"
+fi
+fi	# the writable server section
 
 fi	# mkfs succeeded
 fi	# mkfs exists

@@ -145,10 +145,39 @@ int	mem_no = -1;
  * off libv8stubs' time(2) -- the variable-against-function collision that
  * header describes at length.
  *
- * Nothing advances it yet.  A filesystem that stamps every inode with 0 is
- * visibly wrong rather than subtly wrong, which is the right failure while the
- * mount path is unwritten; v8fs_settime() is here so that the day something
- * mounts, there is one place that decides.
+ * THIS PARAGRAPH USED TO SAY `nothing advances it yet ... a filesystem that
+ * stamps every inode with 0 is visibly wrong rather than subtly wrong', and
+ * both halves were false by the time §8a step 5c landed.  iinit() calls
+ * v8fs_settime(fp->s_time), so the clock is not 0 -- it is the moment mkfs
+ * wrote the image, frozen.  That is the WORST of the three possibilities and
+ * the sentence had described the best: a stamp of 0 is visibly wrong, a stamp
+ * of the real time is right, and a stamp of s_time is a plausible wrong answer
+ * that no comparison of the image against itself can see.
+ *
+ * MEASURED, and it is why §8a step 5f begins here rather than at Twrite.
+ * readi sets IACC (rdwri.c:50), so iput at i_count == 1 runs IUPDAT and
+ * iupdat writes `dp->di_atime = *ta' -- with *ta == time == s_time, and mkfs
+ * having written di_atime == di_mtime == di_ctime == s_time on every inode.
+ * So the read path's write to the disk inode stores the bytes that are
+ * already there.  An instrumented driver prints the pwrite; cmp on the image
+ * prints nothing.  Perturb one di_atime first and exactly four bytes move.
+ * Same class as ttldioc's ten-byte over-write: the write is real, the memory
+ * ends up correct, and only an instrument between the two can see it.
+ *
+ * THE CLOCK TICK IS MACHINE-DEPENDENT, WHICH IS WHY IT IS HERE.  Upstream
+ * advances `time' from the clock interrupt in sys/clock.c, about a VAX
+ * interval timer; main.c's iinit already replaces that file's clkinit() with
+ * the settime call below.  v8fs_clock() is the other half of the same
+ * substitution and belongs in the same file for the same reason -- one place
+ * decides what the kernel thinks the time is.
+ *
+ * A RAW SYSCALL, NOT time(3), and rawsys.h at the top of this file was already
+ * included for it -- it had no consumer until now.  libv8kern must not name a
+ * libc function: tests/kmemu asserts the archive's imports are exactly
+ * _memcpy, _setjmp and _longjmp, so a `time()' here would be a new import and
+ * a new failure.  gettimeofday's struct is two longs and is spelled out rather
+ * than including <sys/time.h>, which would drag in the host's timeval
+ * alongside a kernel that has its own opinions about widths.
  */
 time_t	time;
 time_t	bootime;
@@ -159,6 +188,23 @@ v8fs_settime(time_t now)
 	if (bootime == 0)
 		bootime = now;
 	time = now;
+}
+
+void
+v8fs_clock(void)
+{
+	struct { long sec, usec; } tv;
+
+	/*
+	 * A FAILED gettimeofday LEAVES THE CLOCK ALONE rather than zeroing it,
+	 * because the two answers are not equally wrong.  Freezing keeps the
+	 * last good value and every stamp stays monotone; zeroing would write
+	 * 1970 into an inode and iupdat would make it permanent.  This cannot
+	 * fail on Darwin, which is exactly why the arm has to be written by
+	 * argument rather than by observation.
+	 */
+	if (rawsys2(SYS_gettimeofday, (long)&tv, 0) == 0)
+		v8fs_settime((time_t)tv.sec);
 }
 
 /*

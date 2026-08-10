@@ -546,6 +546,22 @@ dep 'vfs.c -> shim'        shim/v8sys/vfs.c      $B/v8sys/libv8sys.a
 dep 'vfs.h -> syscall.o'   shim/v8sys/vfs.h      $B/v8sys/syscall.o
 dep 'vfs.h -> vfs.o'       shim/v8sys/vfs.h      $B/v8sys/vfs.o
 
+# ...AND THE FOURTH TYPE, WHICH WAS THE ONE EDGE MISSING WHEN §8a step 5f ADDED
+# THREE SLOTS TO THAT STRUCT.  The other three implementations had a case each
+# and p9cl.c did not, purely because it was written after the block above.
+#
+# What a stale p9cl.o against a new vfs.h produces is not a link error: it is a
+# TABLE WITH THE WRONG NUMBER OF ENTRIES, so v8fs_p9.t_access is whatever field
+# happened to sit at that offset in the older layout.  Measured, by accident, on
+# exactly this shape -- a `git stash' baseline measurement left syscall.o and
+# syscall.c with the same mtime to the second, make declared the object current,
+# and the shipped binaries dispatched access() into t_stat.  Every source file
+# read correctly; the only place the truth showed was the wire.
+dep 'vfs.h -> p9cl.o'      shim/v8sys/vfs.h      $B/v8sys/p9cl.o
+dep 'p9cl.c -> p9cl.o'     shim/v8sys/p9cl.c     $B/v8sys/p9cl.o
+dep 'vfs.h -> client probe' shim/v8sys/vfs.h     $B/v8sys/p9clprobe
+dep 'vfs.h -> v8sys test'  shim/v8sys/vfs.h     $B/v8sys/test
+
 # --- section 8a step 3: /proc, the second filesystem type -------------------
 dep 'procfs.c -> kmemu archive' shim/libkmemu/procfs.c  $B/kmemu/libkmemu.a
 dep 'vfs.h -> procfs.o'         shim/v8sys/vfs.h        $B/kmemu/procfs.o

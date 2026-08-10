@@ -556,9 +556,27 @@ int v8s_link(char *a, char *b)
 	 */
 	if (a == 0 || b == 0)
 		RET(rawsys2(SYS_link, (long)a, (long)b));
-	/* BOTH names, because a link crosses two and either may be a mount. */
-	MOUNTED(a); MOUNTED(b);
 
+	/*
+	 * THE DOT-LINK ARM MOVED ABOVE THE GUARD IN §8a step 5f, and the
+	 * reasoning it already had is what carried it there unchanged.
+	 *
+	 * V7 has no mkdir(2): mkdir(1) is `mknod(d, IFDIR|mode, 0)' and then
+	 * two link()s, one for `.' and one for `..', which is why it was setuid
+	 * root.  Neither macOS nor a v8fs mount works that way -- the host's
+	 * mkdir(2) writes both entries, and so does Bell Labs' own NI_MKDIR
+	 * arm through the eleven lines of sys2.c:246-256 that v8fsd's kmkdir
+	 * transcribes.  So on BOTH the entries already exist by the time the
+	 * links arrive, and succeeding-and-doing-nothing is the truth rather
+	 * than a fiction.
+	 *
+	 * It has to be before MOUNTED() because it is the same statement about
+	 * a different filesystem, and v8s_stat below already dispatches.  With
+	 * it after the guard, `mkdir /mnt/d' created the directory correctly
+	 * and then reported `cannot link /mnt/d/.' and exited 1 -- a failure
+	 * message about a completed operation, which is the worst of the three
+	 * possible answers.  Measured, not predicted.
+	 */
 	if (dotlink(b)) {
 		struct v8_stat st;
 
@@ -567,6 +585,9 @@ int v8s_link(char *a, char *b)
 		    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
 			return (0);
 	}
+
+	/* BOTH names, because a link crosses two and either may be a mount. */
+	MOUNTED(a); MOUNTED(b);
 	/*
 	 * BOTH names were unresolved until now, so `ln /bin/cat x' linked the
 	 * MAC's /bin/cat -- read the same name with open(2) and you got the
@@ -609,9 +630,21 @@ int v8s_link(char *a, char *b)
  */
 int v8s_mknod(char *p, int mode, int dev)
 {
+	/*
+	 * AND ON A MOUNT IT IS t_mkdir, §8a step 5f -- so mkdir(1) works
+	 * inside an image without knowing there is one.  The DEVICE arm is
+	 * still EPERM and that is not a gap being deferred: a V7 image is
+	 * bytes on a disk that no kernel will mount, so a device node in it
+	 * would name a driver on a machine that does not exist.  9P2000 has no
+	 * message for one either -- the .u extension added it, and PLAN.md §8a
+	 * rules .u out.  The refusal is the same one the host arm gives.
+	 */
+	if ((mode & 0170000) == 0040000) {
+		struct v8fstyp *t = FSFOR(p);
+
+		return (t->t_mkdir(t->t_path(p, V8P_MAKE), mode & 07777));
+	}
 	MOUNTED(p);
-	if ((mode & 0170000) == 0040000)
-		RET(rawsys2(SYS_mkdir, (long)mkpath(p), mode & 07777));
 	v8_errno = v8sys_errno(EPERM);
 	return (-1);
 }
@@ -634,25 +667,58 @@ int v8s_unlink(char *p)
 {
 	struct v8_stat st;
 
-	MOUNTED(p);
-	p = vpath(p);
+	/*
+	 * THE DOT ENTRIES FIRST, FOR BOTH FILESYSTEMS -- §8a step 5f, and it is
+	 * v8s_link's move made in the mirror direction.  rmdir(1) is
+	 * `unlink("d/.."); unlink("d/."); unlink("d")', and on a v8fs mount the
+	 * first two would reach the server, which refuses them: a fid whose
+	 * last component is `.' or `..' has no recorded parent, on purpose,
+	 * because its NAME is not an entry anybody may unlink.  rmdir(1)
+	 * ignores those two return values (rmdir.c:105,108 check nothing) so
+	 * the refusal costs nothing today -- which is exactly why it should be
+	 * settled here rather than left to be discovered by the one caller that
+	 * does look.
+	 *
+	 * `d' RESOLVED BELOW USES vpath, AND THE MOUNT MUST NOT, so the parent
+	 * test is done against the ORIGINAL path and the mount dispatch happens
+	 * between the two halves.
+	 */
 	if (dotlink(p)) {
-		/*
-		 * "d/." or "d/.." -- succeed only if the directory is really
-		 * there, so a genuine mistake still reports ENOENT.
-		 */
-		char parent[1024];
-		int i, base = 0;
+		char par[1024];
+		int i, b = 0;
 
-		for (i = 0; p[i] && i < (int)sizeof parent - 1; i++)
-			if (p[i] == '/') base = i;
-		for (i = 0; i < base; i++) parent[i] = p[i];
-		parent[base] = '\0';
-		if (base == 0) return (0);		/* bare "." or ".." */
-		if (v8s_stat(parent, &st) == 0 &&
+		for (i = 0; p[i] && i < (int)sizeof par - 1; i++)
+			if (p[i] == '/') b = i;
+		for (i = 0; i < b; i++) par[i] = p[i];
+		par[b] = '\0';
+		if (b == 0) return (0);			/* bare "." or ".." */
+		if (v8s_stat(par, &st) == 0 &&
 		    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
 			return (0);
 	}
+
+	/*
+	 * A MOUNT ANSWERS FOR ITSELF, and none of the macOS reasoning below
+	 * applies to it: an image is a V7 filesystem, so unlink(2) on a
+	 * directory is what the SERVER's suser() decides and Bell Labs' nami.c
+	 * NI_DEL arm is what performs it.  isdir is -1 -- "no opinion" --
+	 * because that is exactly what unlink(2) has: V7's unlink removes an
+	 * entry of any kind if the caller is privileged enough, and turning it
+	 * into a stat-then-choose here would invent a rule the far end does not
+	 * have.
+	 */
+	if (v8fs_mounted(p)) return (v8fs_p9.t_remove(p, -1));
+
+	/*
+	 * THE DOT-ENTRY BLOCK USED TO BE REPEATED HERE, against the resolved
+	 * path, and the copy is gone rather than kept.  It tested the same
+	 * thing twice: v8s_stat above already dispatches and resolves, so the
+	 * second copy could only ever be reached when the first had decided the
+	 * parent was not a directory -- in which case falling through to the
+	 * unlink below is the answer either way.  Two copies of a rule is how
+	 * one of them goes stale.
+	 */
+	p = vpath(p);
 	if (v8s_lstat(p, &st) == 0 && (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
 		RET(rawsys1(SYS_rmdir, (long)p));
 	RET(rawsys1(SYS_unlink, (long)p));
@@ -685,54 +751,54 @@ int v8s_chown(char *p, int u, int g)     { MOUNTED(p); RET(rawsys3(SYS_chown, (l
 int v8s_fchmod(int f, int m)             { RET(rawsys2(SYS_fchmod, f, m)); }
 int v8s_fchown(int f, int u, int g)      { RET(rawsys3(SYS_fchown, f, u, g)); }
 /*
- * access() ANSWERS OUT OF THE MOUNT, because it has an answer.  It is also the
- * one of the eleven that programs actually reach on a path they are about to
- * open -- sh's PATH search and test(1) are both access() -- so refusing it
- * would make a mounted file look absent rather than unwritable.
+ * access() IS A SLOT NOW, §8a step 5f, AND IT TOOK THREE ANSWERS TO GET HERE.
+ * Both earlier ones were left standing above this function, one contradicting
+ * the other, which is the stale-comment class arriving as a PAIR -- the
+ * rewrite added its reasoning and did not remove the reasoning it replaced.
  *
- * The permission bits are the SERVER'S, from the image's own inode, and the
- * comparison is against the mode a V7 stat reports.  Mode 0 (F_OK) is answered
- * by the stat succeeding, which is what it means.
- */
-/*
- * access() ON A MOUNT ANSWERS WHAT WILL ACTUALLY HAPPEN, and the first version
- * answered a different question from open(2) on every file of every image.
+ *   1. RECOMPUTED LOCALLY, from the image's mode bits against THE HOST'S uid.
+ *      Wrong on every file of every image: v8fsd runs Bell Labs' access() with
+ *      u.u_uid, which nothing sets and which is therefore 0, so fio.c's root
+ *      bypass applies and the open succeeds whatever the mode says.  Measured
+ *      on a 0600 root-owned file -- `test -r' said no and `cat' printed it.
+ *      The bits were the server's and the IDENTITY was the host's, and
+ *      identity is the half that decides.
  *
- * It recomputed permission from the image's mode bits against THE HOST'S uid.
- * The server does not do that: v8fsd calls Bell Labs' access() with u.u_uid,
- * which nothing sets and which is therefore 0, so fio.c's root bypass applies
- * and the open succeeds whatever the mode says.  Measured on a mkfs image
- * holding a 0600 root-owned file: `test -r' said NOT readable and `cat'
- * printed it.  That is not an edge case -- mkfs protos make everything
- * root-owned and no V8 program here runs as uid 0 -- so the disagreement was
- * total, and it is the shape access(2) exists to prevent.
+ *   2. REPORTED WHAT WOULD HAPPEN: R_OK from a stat, W_OK always EROFS, X_OK
+ *      always EACCES.  Right while the server refused every write, and its own
+ *      comment said so -- "when §8a step 5f gives the server a writable image
+ *      this becomes a question worth asking over the wire".  That day is this
+ *      one, and a fixed EROFS is now a wrong answer rather than a blunt one.
  *
- * The bits were the server's; the IDENTITY was the host's, and identity is the
- * half that decides.  So this stops modelling a permission system that neither
- * end runs and reports what the operations will do:
+ *   3. ASKED.  Taccess carries a fid and V7's three mode bits, and Bell Labs'
+ *      access() answers with the server's identity on both sides.  p9.h has
+ *      the argument for the extension; the short form is that 9P has no
+ *      access(2) for the same reason it has no seek, and this port has to
+ *      supply what Plan 9 put in its kernel.
  *
- *	F_OK, R_OK   the stat succeeded, and so will the open
- *	W_OK	     EROFS -- every write path answers that today
- *	X_OK	     EACCES -- v8s_execve is passthrough, so nothing can be
- *		     executed off a mount whatever the mode bits say
- *
- * When §8a step 5f gives the server a real uid and a writable image, this
- * becomes a question worth asking over the wire, and it should be asked
- * rather than recomputed here.  PLAN.md §8a step 5f carries it.
+ * DISPATCHED RATHER THAN BRANCHED, which is what makes the other two types
+ * answer too: passthrough is the host syscall it always was, /proc gets a real
+ * answer instead of a stat this function used to do on its behalf, and /dev/fd
+ * inherits passthrough because a dup'd descriptor IS a host descriptor.
  */
 int v8s_access(char *p, int m)
 {
-	struct v8_stat st;
+	struct v8fstyp *t = FSFOR(p);
 
-	if (!v8fs_mounted(p)) RET(rawsys2(SYS_access, (long)vpath(p), m));
-	if (v8fs_p9.t_stat(p, &st, 1) < 0) return (-1);
-	/* V8's access(2) mode bits: 4 read, 2 write, 1 execute, exactly V7's. */
-	if (m & 02) { v8_errno = V8_EROFS; return (-1); }
-	if (m & 01) { v8_errno = V8_EACCES; return (-1); }
-	return (0);
+	return (t->t_access(t->t_path(p, V8P_LOOK), m));
 }
-int v8s_mkdir(char *p, int m)            { MOUNTED(p); RET(rawsys2(SYS_mkdir, (long)mkpath(p), m)); }
-int v8s_rmdir(char *p)                   { MOUNTED(p); RET(rawsys1(SYS_rmdir, (long)vpath(p))); }
+int v8s_mkdir(char *p, int m)
+{
+	struct v8fstyp *t = FSFOR(p);
+
+	return (t->t_mkdir(t->t_path(p, V8P_MAKE), m));
+}
+int v8s_rmdir(char *p)
+{
+	struct v8fstyp *t = FSFOR(p);
+
+	return (t->t_remove(t->t_path(p, V8P_LOOK), 1));
+}
 /* a is the link TEXT and is stored verbatim -- resolving it would bake this
  * machine's rootfs path into a symlink the jail is supposed to interpret for
  * itself.  Only the new name is resolved. */
