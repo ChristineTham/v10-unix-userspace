@@ -71,6 +71,37 @@ needs_remake() {
 # dep DESCRIPTION INPUT TARGET
 #   asserts TARGET is up to date, that touching INPUT makes it stale, and
 #   restores INPUT's original mtime.
+#
+# SEEN ONCE AND NOT EXPLAINED, 2026-08-11.  `make -j8' followed immediately by
+# `make test' reported BOTH spell cases -- hash.h and huff.h against
+# hashlook.o -- as "touching X did not make Y stale".  Running this suite alone
+# seconds later: 357 passed, 0 failed.  The change under test was in
+# shim/v8sys/syscall.c, which hashlook.o does not depend on.
+#
+# THE OBVIOUS EXPLANATION IS WRITTEN DOWN HERE BECAUSE IT IS WRONG, and it was
+# asserted as fact in commit b73fa43's message before anyone tried to reproduce
+# it.  The story was the whole-second mtime trap: `touch' below sets the input
+# to NOW, make treats EQUAL mtimes as up to date, so an object compiled in that
+# same second is legitimately not stale.  Plausible, and CLAUDE.md documents the
+# granularity.  It does not survive measurement --
+#
+#   three deliberate attempts to force the collision (touch both headers, `make
+#   -j8' to rebuild hashlook.o, then run this suite) came back 357/0 each time,
+#   because ~186 cases run before the spell pair and seconds elapse; and
+#
+#   in the failing run the object should not have been rebuilt at all, so its
+#   mtime was already old when the touch happened.
+#
+# What IS established: both failures share one TARGET, so the fault points at
+# hashlook.o rather than at either header; there is no hashlook.d, so these
+# edges are explicit in the Makefile and a stale auto-dependency file is not it;
+# and dep()'s control half passed, so the target really was up to date first.
+#
+# If it recurs, capture `stat -f '%Sm %N' -t '%H:%M:%S'` on the object and both
+# headers AT THAT MOMENT, plus `make -q -d` for the target.  Without those it is
+# not decidable after the fact.  Do NOT "fix" the touch on the strength of the
+# story above: that would be a change to a guard justified by a mechanism that
+# failed to reproduce.
 dep() {
 	desc=$1 input=$2 target=$3
 
