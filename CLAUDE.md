@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2108 cases, 2107 on a host whose $TMPDIR
+make test             # all 17 suites (2133 cases, 2132 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -887,6 +887,118 @@ the bytes. Three things:
   never write to a fid it opened for reading — so no shipped binary can ask the
   question. Same as the owner-name guard one commit earlier. When a defect
   lives in what a *foreign* client could send, the probe is the only instrument.
+
+**AND §8a step 5g GAVE link A SLOT, WHICH LEAVES ONLY symlink REFUSING — AND
+THE REASON IT HAD BEEN REFUSED WAS THE PORT'S OWN ARGUMENT FOR THE OPPOSITE.**
+`syscall.c` and `vfs.h` both said of link and symlink *"Neither is deferred
+work: 9P2000 has no message for either."* Every clause of that was doing
+damage:
+
+- **A MISSING MESSAGE IS WHAT PRODUCED THE LAST TWO EXTENSIONS.** `Tseek`/
+  `Rseek` (128/129) and `Taccess`/`Raccess` (130/131) both exist because 9P had
+  no message for something V7 has. Twice the answer was to add one and write
+  down why; the third time the identical fact was recorded as grounds for
+  refusing. **A reason already overruled twice in the same file is not a
+  reason.** `Tlink` is 132/133, and `Tunlink` 134/135.
+- **AND THE PAIR WAS NOT A PAIR.** A V7 filesystem cannot *represent* a
+  symlink — no `i_mode` for it, which is the same fact `readlink` answers
+  EINVAL on — so that refusal is permanent. A V7 filesystem **is built on**
+  hard links: `i_nlink` is a field in the inode, `sys2.c:458`'s `link()` is
+  `ip->i_nlink++` plus a `namei` with `NI_LINK`, and **`nami.c:484`'s NI_LINK
+  arm was already in the imported tree**, unreachable only because nothing
+  sent it a request. link was chdir's shape filed under symlink's.
+- **IT READ AS COSMETIC BECAUSE THE LOUDEST CONSUMER DEGRADES QUIETLY.** `mv`
+  of a FILE falls back to fork-and-`cp` and exits 0. `mv` of a DIRECTORY does
+  not — `mv.c`'s `mvdir()` at `:204` has **no fallback** — so it printed
+  `mv: cannot link` and left the directory where it was. Measured against a
+  server that had accepted `echo > /mnt/f` and `mkdir /mnt/d` seconds earlier:
+  `ln` said **"Read-only file system"**. EROFS is a claim about the medium and
+  the medium had taken two writes.
+- **symlink KEEPS ITS REFUSAL AND LOSES ITS WORD**, which is `v8s_mknod`'s
+  device-arm distinction applied to the line beside it, one step late as
+  always: EPERM, because the operation is meaningless, is true and permanent
+  where EROFS is measurably false. `symlink(2)` documents exactly that errno
+  for a filesystem that cannot hold one. And cross-type `link` is **EXDEV** —
+  an *answer* rather than a refusal, and the one `nami.c:487` and the host's
+  own `link(2)` both already give.
+
+**AND ADDING link IMMEDIATELY EXPOSED THAT `unlink(2)` OF A DIRECTORY HAD BEEN
+THE WRONG SYSCALL ALL ALONG.** 9P has one remove and V7 has two calls: Plan 9
+has no `rmdir(2)` at all, so `Tremove` carries no flag and v8fsd decided from
+the inode — right for a foreign client, wrong for V7's `unlink(2)`, which is
+`NI_DEL` whatever it names. **Invisible until link existed**, because with no
+way to give a directory a second name every removable directory had
+`i_nlink == 2`, and `NI_DEL` and `NI_RMDIR` differ only above that. Three
+disagreements arrived at once:
+
+- **the errno** — `nami.c:363` answers EBUSY where V7 succeeds;
+- **the on-disk result** — `NI_RMDIR` sets `i_nlink = 0` and frees the inode
+  where `NI_DEL` decrements, so even the "working" case destroyed a directory
+  V7 would have left for `fsck` as unattached;
+- **and the failure path corrupts the parent** — `nami.c:361` decrements
+  `dp->i_nlink` *before* the EBUSY test two lines later and the error arm does
+  not put it back. Measured with `dcheck` after one failed `mv`: root had 3
+  entries and a link count of 2. **Upstream's own bug, deliberately not fixed**
+  — `src/sys` is imported.
+
+**THE RECONCILIATION IS ONE LINE AND IT IS FORCED BY A FICTION THE PORT ALREADY
+TOLD.** `rmdir(1)` is three unlinks (`rmdir.c:105,108,110`) and `dotlink()`
+**absorbs the first two**, so the third arrives with the two decrements that
+should have preceded it unperformed — a plain `NI_DEL` then leaves an
+unattached directory. `pt_remove` made the same call explicitly for passthrough
+on host grounds. So `Tunlink` on a directory asks the only question the two
+cases differ on: **does another name reach it?** At `i_nlink <= 2` the entry is
+its last and removing it destroys the directory; above 2 another name survives
+and `NI_DEL` is the only answer that is not data loss.
+
+**AND NOTHING BUT `fsck` COULD SEE THE REGRESSION.** The listing was right,
+`icheck` was silent, `dcheck` was silent, and `fsck` said
+`***** FILE SYSTEM WAS MODIFIED *****`. Third instance of the independent-reader
+rule, and the sharpest: the three checkers do not agree with each other about
+what they can see.
+
+**TWO OF THE NINE MUTATIONS WOULD NOT FIRE, AND BOTH SAID THE SAME THING — THE
+GUARD WAS UPSTREAM'S ALREADY.** `do_link`'s draft checked four things and two
+were duplicates of a refusal Bell Labs already make, so deleting them changed
+nothing:
+
+- **ENOTDIR on the directory fid.** `klink` hands the inode to `namei` as
+  `u_cdir` and `nami.c`'s own loop refuses a non-directory with that errno.
+  The comment three lines below had already argued for letting upstream's line
+  fire — about EXDEV — and **the line beside it kept the assumption**, written
+  by the same hand in the same hour.
+- **EINVAL for `.`/`..` as the new name, and its stated reason was FALSE.** It
+  claimed `nami.c` "would happily write the entry" and replace a live
+  directory's parent pointer. It would not: `nami.c:88-95` returns **EEXIST**
+  for NI_LINK the moment the name is found, and `..` always is. The guard was
+  *less* faithful than no guard, and the case that "covered" it was really
+  testing `p9parent` on the client.
+
+**AND THE ERRNO TABLES WERE MISSING SEVEN NAMES, WHICH THE GUARD ON THEM
+STRUCTURALLY COULD NOT SEE.** `tests/streams` compares v8fsd's `errnames[]`
+with p9cl's `enames[]` and they agreed perfectly — about a set that was too
+small. `EBUSY EFAULT EINTR ELOOP ENODEV ENOTTY EXDEV` were in **neither**, so
+each reached the client as EIO through a fallback documented for a *foreign*
+server's prose. **Two copies of one wrong list agree.** The fix is a third
+source that is neither table — the kernel itself:
+
+```bash
+grep -rhoE 'u\.u_error = E[A-Z]+' v8/src/sys/ v8/shim/kern/ | grep -oE 'E[A-Z]+$' | sort -u
+```
+
+Twenty-two names; both tables had fifteen. `tests/streams` derives that set
+every run now, so importing another `sys/*.c` extends the check with nobody
+editing the suite. Note the shape: the earlier ENOMEM fix **added one name
+instead of auditing the set**, which is exactly how the other seven survived
+it.
+
+**AND 9P's STAT CARRIES NO LINK COUNT, so the obvious case would have asserted
+a constant.** `p9cl.c:1115` sets `st_nlink = 1` for every file on every mount —
+9P2000 has no such field, `.u` and `.L` added one — so `ls -l` can never show
+a hard link. The observable is `ls -i`: a qid path **is** `i_number` off the
+disk, so two names printing one number is the disk saying they are one file.
+The 1 is asserted deliberately, so the limitation is a case rather than a
+sentence.
 
 **AND THE MUTATION RULES GAINED TWO, BOTH FROM THE HARNESS RATHER THAN THE
 CODE.** The existing entries cover the restore side; these are new:

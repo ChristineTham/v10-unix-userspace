@@ -193,7 +193,7 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
  * three mode bits; Raccess carries nothing, because 9P already has Rerror and
  * "may I" is a question whose negative answer IS an errno.  Numbered beside
  * Tseek and outside 100..127 for the same reason.
- */
+ *
  * ------------------------------------------------- AND THE THIRD, WHICH THE
  * ABSENCE OF THE FIRST TWO WAS BEING USED AS A REASON NOT TO ADD.  9P HAS NO
  * LINK, and syscall.c and vfs.h both recorded that as a reason link(2) was
@@ -234,6 +234,49 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
 #define P9_Raccess	131
 #define P9_Tlink	132
 #define P9_Rlink	133
+
+/*
+ * ------------------------------------------------- AND A FOURTH, WHICH TLINK
+ * FLUSHED OUT WITHIN THE HOUR.  9P HAS ONE REMOVE AND V7 HAS TWO SYSCALLS.
+ *
+ * Plan 9 has no rmdir(2) at all -- remove(2) takes anything -- so Tremove
+ * carries no flag and a server must decide from the inode.  v8fsd did:
+ * `isdir = (f->f_ip->i_mode & IFMT) == IFDIR', then NI_RMDIR or NI_DEL.  That
+ * is the right reading of Tremove for a foreign client and the WRONG answer
+ * for V7's unlink(2), which is `nmarg.flag = NI_DEL' unconditionally
+ * (sys4.c:160-169) -- V7 unlinks a directory ENTRY without touching the
+ * directory, and mv(1) is built on exactly that.
+ *
+ * IT WAS INVISIBLE UNTIL LINK EXISTED, which is this port's most repeated
+ * shape.  With no way to give a directory a second name, every directory a
+ * client could remove had i_nlink == 2, and NI_RMDIR and NI_DEL differ only
+ * above that.  Tlink made mvdir's sequence reachable and all three
+ * disagreements arrived at once, measured:
+ *
+ *   THE ERRNO.  nami.c:363's `if(dip->i_nlink <= 2) ... else EBUSY' refuses,
+ *   where V7's unlink succeeds.  mv printed "?? cannot unlink".
+ *
+ *   THE ON-DISK RESULT.  NI_RMDIR sets `dip->i_nlink = 0' -- it DESTROYS the
+ *   directory -- where NI_DEL decrements.  So even in the case that
+ *   "worked", unlink of a directory freed an inode that V7 would have left
+ *   with nlink 1 as an unattached directory for fsck to find.  Ours was
+ *   tidier and was not V7.
+ *
+ *   AND THE FAILURE PATH CORRUPTS THE PARENT.  nami.c:361 does
+ *   `if(dp->i_nlink > 0) dp->i_nlink--' BEFORE the EBUSY test two lines
+ *   later, and the error arm does not put it back.  Measured with dcheck
+ *   after one failed mv: root had 3 entries and a link count of 2.  That is
+ *   upstream's own bug on upstream's own hardware and it is NOT fixed here
+ *   -- src/sys is imported and a change there must be forced by the target.
+ *   What is fixed is this port sending a message the caller never asked for.
+ *
+ * So: two syscalls, two messages.  Tunlink is unlink(2) -- always NI_DEL --
+ * and Tremove keeps its conforming Plan 9 meaning for anyone else.  It
+ * carries a fid and nothing else, exactly as Tremove does, and clunks it the
+ * same way whatever the outcome.
+ */
+#define P9_Tunlink	134
+#define P9_Runlink	135
 
 /*
  * Taccess mode, which is V7's access(2) numbering exactly.  sys/sys2.c:541-546

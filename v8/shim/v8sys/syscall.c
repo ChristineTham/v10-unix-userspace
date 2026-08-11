@@ -459,20 +459,49 @@ mkpath(char *p)
  * is luck and not a design -- and a case that leaned on it passed for the
  * wrong reason until it was rewritten over a directory the host really has.
  *
- * TWO STILL REFUSE with the macro below -- link and symlink -- and that is
- * THREE MOUNTED() calls, because link guards both of its names.  (Counting
- * names while describing calls is a shape this repo has recorded more than
- * once, including in this very paragraph, so both numbers are here.)  Neither
- * is deferred work: 9P2000 has no message for either, .u is what added one and
- * PLAN.md §8a rules .u out, and a V7 image holds no symlink to read back.
+ * ONE STILL REFUSES -- symlink -- AND THE MACRO BELOW HAS NO CALLERS LEFT.
  *
- * SEVEN ANSWER THROUGH A SLOT, and mknod is an eighth with one arm in each
- * camp.  §8a step 5f gave access, unlink, mkdir and rmdir one, along with
- * mknod's DIRECTORY arm; §8a step 5f-b adds chmod, chown and utime, which are
- * one Twstat between them.  The rule the sequence obeys is that a slot is a
- * CLAIM the operation is implemented -- so EROFS was the truth while the
- * server refused every write, and became a lie the day it stopped, which is
- * why these arrived in two steps rather than being stubbed early.
+ * This paragraph used to say TWO, link and symlink, "three MOUNTED() calls
+ * because link guards both of its names", and then: "Neither is deferred
+ * work: 9P2000 has no message for either."  §8a step 5g took that apart and
+ * every clause of it was doing damage:
+ *
+ *   THE REASON WAS THE PORT'S OWN ARGUMENT FOR THE OPPOSITE.  "9P2000 has no
+ *   message for it" is the exact situation that produced Tseek/Rseek and
+ *   Taccess/Raccess.  Twice the answer to a missing message was to add one and
+ *   write down why; the third time the same fact was recorded as grounds for
+ *   refusing.  A reason that has already been overruled twice in the same file
+ *   is not a reason.
+ *
+ *   AND THE PAIR WAS NOT A PAIR.  A V7 filesystem cannot REPRESENT a symlink
+ *   -- no i_mode for it, which is the same fact readlink() answers EINVAL on
+ *   -- so that refusal is permanent.  A V7 filesystem IS BUILT ON hard links:
+ *   i_nlink is a field in the inode, sys2.c:458's link() is `ip->i_nlink++'
+ *   plus a namei with NI_LINK, and nami.c:484's NI_LINK arm was ALREADY IN THE
+ *   IMPORTED TREE, unreachable only because nothing sent it a request.  link
+ *   was chdir's shape -- a real gap -- filed under symlink's.
+ *
+ *   AND IT READ AS COSMETIC BECAUSE THE LOUDEST CONSUMER DEGRADES QUIETLY.
+ *   mv of a FILE falls back to fork-and-cp and exits 0, so the gap looked like
+ *   a slow path.  mv of a DIRECTORY does not: mv.c's mvdir() at :204 has no
+ *   fallback at all, so `mv /mnt/d /mnt/d2' printed "mv: cannot link" and left
+ *   the directory where it was.  Measured, on a server that had accepted two
+ *   writes seconds earlier.
+ *
+ * symlink keeps its refusal and loses its EROFS -- see the note there for why
+ * EPERM is the true word, which is v8s_mknod's distinction applied one line
+ * further along.  MOUNTED() itself is now dead and is kept only so that the
+ * next slotless syscall has the spelling to hand; if a second thing ever wants
+ * it, that is the moment to ask whether it is EROFS or EPERM.
+ *
+ * EIGHT ANSWER THROUGH A SLOT, and mknod is a ninth with one arm in each camp.
+ * §8a step 5f gave access, unlink, mkdir and rmdir one, along with mknod's
+ * DIRECTORY arm; §8a step 5f-b adds chmod, chown and utime, which are one
+ * Twstat between them; §8a step 5g adds link.  The rule the sequence obeys is
+ * that a slot is a CLAIM the operation is implemented -- so EROFS was the
+ * truth while the server refused every write, and became a lie the day it
+ * stopped, which is why these arrived in three steps rather than being stubbed
+ * early.
  *
  * THREE ANSWER WITHOUT A SLOT, because EROFS would be a lie about a question
  * with a real answer: readlink() is EINVAL, which is what readlink(2) says
@@ -557,6 +586,7 @@ dotlink(const char *b)
 
 int v8s_link(char *a, char *b)
 {
+	struct v8fstyp *ta, *tb;
 	char old[1024];
 	char *q;
 	int i;
@@ -600,23 +630,40 @@ int v8s_link(char *a, char *b)
 			return (0);
 	}
 
-	/* BOTH names, because a link crosses two and either may be a mount. */
-	MOUNTED(a); MOUNTED(b);
 	/*
-	 * BOTH names were unresolved until now, so `ln /bin/cat x' linked the
-	 * MAC's /bin/cat -- read the same name with open(2) and you got the
-	 * jail's.  The existing name takes the reader's rule and the new name
-	 * the creator's, which is the same split rename(2) would want.
+	 * A LINK CROSSES TWO NAMES, SO IT CROSSES TWO TYPES, and a mismatched
+	 * pair is EXDEV -- which is an ANSWER rather than a refusal.  §8a step
+	 * 5g; two MOUNTED() calls stood here and gave EROFS, on a filesystem
+	 * that had taken writes since 5f.  Measured against a server that had
+	 * just accepted `echo > /mnt/f': `ln /mnt/f /mnt/g' said "Read-only
+	 * file system".
 	 *
-	 * COPIED, and that is the aliasing trap CLAUDE.md names: rootpath()
-	 * returns a pointer into its own static buffer, so holding two results
-	 * at once silently gives you the same string twice.  Here that would
-	 * have been link(new, new).
+	 * EXDEV IS WHAT THE KERNEL BELOW WOULD SAY ANYWAY.  nami.c:487's
+	 * NI_LINK arm is `if(dp->i_dev != flagp->idev) u.u_error = EXDEV', and
+	 * the host's link(2) says the same across two host filesystems.  So
+	 * this line is not inventing a rule; it is applying the one both ends
+	 * already have, at the only place that can see both types.
+	 *
+	 * BOTH names were unresolved until §8a step 5f, so `ln /bin/cat x'
+	 * linked the MAC's /bin/cat -- read the same name with open(2) and you
+	 * got the jail's.  The existing name takes the reader's rule and the
+	 * new name the creator's, which is the same split rename(2) would want.
+	 *
+	 * COPIED, and that is the aliasing trap CLAUDE.md names: t_path returns
+	 * a pointer into a static buffer, so holding two results at once
+	 * silently gives you the same string twice.  Here that would have been
+	 * link(new, new).  This is the ONLY slot in the switch that takes two
+	 * paths, so it is the only one where the trap is unavoidable rather
+	 * than merely available -- vfs.h says so beside t_link.
 	 */
-	q = vpath(a);
+	ta = FSFOR(a);
+	tb = FSFOR(b);
+	if (ta != tb) { v8_errno = V8_EXDEV; return (-1); }
+
+	q = ta->t_path(a, V8P_LOOK);
 	for (i = 0; q[i] && i < (int)sizeof old - 1; i++) old[i] = q[i];
 	old[i] = '\0';
-	RET(rawsys2(SYS_link, (long)old, (long)mkpath(b)));
+	return (ta->t_link(old, tb->t_path(b, V8P_MAKE)));
 }
 
 /*
@@ -883,7 +930,31 @@ int v8s_rmdir(char *p)
  * machine's rootfs path into a symlink the jail is supposed to interpret for
  * itself.  Only the new name is resolved. */
 /* Only b is guarded: a is the link TEXT, stored verbatim and never resolved. */
-int v8s_symlink(char *a, char *b)        { MOUNTED(b); RET(rawsys2(SYS_symlink, (long)a, (long)mkpath(b))); }
+/*
+ * symlink -- THE LAST ONE THAT REFUSES, and §8a step 5g changed its WORD
+ * without changing its verdict, which is the distinction v8s_mknod's device
+ * arm made one step earlier and this line did not inherit.
+ *
+ * EROFS is a claim about the MEDIUM and it stopped being true at 5f: the
+ * server takes writes, and `ln -s' on a mount answering "Read-only file
+ * system" is a measurably false statement about a filesystem that had just
+ * accepted a create.  EPERM is a claim about the OPERATION, and it is the one
+ * that is true here and will stay true: a V7 filesystem has no i_mode for a
+ * symbolic link, which is the same fact v8s_readlink answers EINVAL on, and
+ * no amount of protocol could change it.  symlink(2) documents exactly this
+ * -- EPERM when the filesystem does not support symbolic links.
+ *
+ * SO THIS IS NOT link's REFUSAL AND THE OLD COMMENT PAIRED THEM.  link got a
+ * slot at 5g because a V7 filesystem is BUILT on hard links; symlink cannot
+ * have one at any price.  The guard also loses its MOUNTED() for v8s_mknod's
+ * reason: the mounted arm never touches the path, so there is nothing for a
+ * containment guard to contain.
+ */
+int v8s_symlink(char *a, char *b)
+{
+	if (v8fs_mounted(b)) { v8_errno = V8_EPERM; return (-1); }
+	RET(rawsys2(SYS_symlink, (long)a, (long)mkpath(b)));
+}
 /*
  * dup and dup2 -- and BOTH DROPPED THE DESCRIPTOR'S TYPE, which was invisible
  * while the only non-passthrough type was /proc and nothing dup'd one.

@@ -68,6 +68,9 @@ extern int  v8s_stat(char *, struct v8_stat *);
 extern int  v8s_fstat(int, struct v8_stat *);
 extern int  v8s_dup(int);
 extern int  v8s_dup2(int, int);
+extern int  v8s_link(char *, char *);
+extern int  v8s_symlink(char *, char *);
+extern int  v8s_unlink(char *);
 
 /*
  * `hello' is 27 bytes -- "hello from a V8 filesystem\n" -- written by the
@@ -515,11 +518,119 @@ owners(const char *root)
 	}
 }
 
+/*
+ * 7. LINK -- §8a step 5g, AND THE PROBE IS THE ONLY INSTRUMENT FOR MOST OF IT.
+ *
+ * Three of these cases cannot be reached from any binary in the rootfs.
+ * ln(1) REFUSES to hard-link a directory before it ever calls link(2)
+ * (ln.c's linkit stats first), which is exactly the case mv(1) depends on;
+ * `.' and `..' as a new name are rejected by nothing on the way in; and an
+ * errno is what the suite has to assert, where a shell only sees exit 1.
+ *
+ * THE MOUNT IS WRITABLE, so this mode gets its own image and its own server.
+ * Every other mode here runs against the read-only one, and running these
+ * there would assert EROFS eight times.
+ */
+static void
+links(const char *m)
+{
+	char a[256], b[256], c[256];
+	struct v8_stat sa, sb;
+	int r;
+
+#define P(dst, tail) do { \
+		size_t _i = 0, _j = 0; \
+		while (m[_i]) { dst[_i] = m[_i]; _i++; } \
+		while ((tail)[_j]) dst[_i + _j] = (tail)[_j], _j++; \
+		dst[_i + _j] = '\0'; \
+	} while (0)
+
+	/* A second name for a plain file, and it is the SAME inode. */
+	P(a, "/hello"); P(b, "/hello2");
+	v8_errno = 0;
+	r = v8s_link(a, b);
+	printf("link-file %d\n", r);
+	printf("link-file-errno %d\n", v8_errno);
+	if (v8s_stat(a, &sa) == 0 && v8s_stat(b, &sb) == 0) {
+		printf("link-same-ino %d\n", sa.st_ino == sb.st_ino ? 1 : 0);
+		printf("link-nlink %d\n", (int)sb.st_nlink);
+	}
+
+	/* An existing name is EEXIST -- nami.c's NI_LINK arm never runs. */
+	v8_errno = 0;
+	printf("link-eexist %d\n", v8s_link(a, b));
+	printf("link-eexist-errno %d\n", v8_errno);
+
+	/*
+	 * A DIRECTORY, which is the case mv(1) needs and ln(1) will not make.
+	 * Upstream allows it for the superuser only (sys2.c:469) and u_uid is
+	 * 0 here, so it must SUCCEED -- a server that refused would leave
+	 * mvdir with no way to rename a directory at all.
+	 *
+	 * `lsrc' IS MADE BY THE SUITE, not reused from the image.  An earlier
+	 * draft linked and then unlinked /w/sub, which is the image's own
+	 * subdirectory -- and putting it back afterwards is impossible from a
+	 * shell, because ln(1) refuses a directory, which is the very fact
+	 * this case exists to work around.  A probe that cannot undo what it
+	 * did is the shared-artefact hazard this suite has already been bitten
+	 * by three times.
+	 */
+	P(a, "/lsrc"); P(b, "/lsrc2");
+	v8_errno = 0;
+	printf("link-dir %d\n", v8s_link(a, b));
+	printf("link-dir-errno %d\n", v8_errno);
+
+	/*
+	 * ...AND UNLINKING ONE OF THE TWO NAMES MUST NOT DESTROY IT.  This is
+	 * the whole of the Tunlink argument in one pair: at nlink 3 the server
+	 * must use NI_DEL, so `sub' goes and `sub2' still reads.  With the old
+	 * inode-sniffing Tremove this was EBUSY, and worse, nami.c:361 had
+	 * already decremented the parent's link count on the way to the error.
+	 */
+	v8_errno = 0;
+	printf("unlink-linked-dir %d\n", v8s_unlink(a));
+	printf("unlink-linked-dir-errno %d\n", v8_errno);
+	P(c, "/lsrc2/inner");
+	printf("survivor-readable %d\n", v8s_stat(c, &sa) == 0 ? 1 : 0);
+
+	/* `.' and `..' as the NEW name -- refused before the wire and on it. */
+	P(a, "/hello"); P(b, "/lsrc2/..");
+	v8_errno = 0;
+	printf("link-dotdot %d\n", v8s_link(a, b));
+	printf("link-dotdot-errno %d\n", v8_errno);
+
+	/* A new name inside a plain file is ENOTDIR, not ENOENT. */
+	P(b, "/hello/under");
+	v8_errno = 0;
+	printf("link-notdir %d\n", v8s_link(a, b));
+	printf("link-notdir-errno %d\n", v8_errno);
+
+	/*
+	 * CROSS-TYPE IS EXDEV, and it is an ANSWER rather than a refusal --
+	 * two filesystems really are two devices.  /etc is passthrough, so
+	 * this pair spans the switch.
+	 */
+	v8_errno = 0;
+	printf("link-xdev %d\n", v8s_link(a, (char *)"/etc/xlink"));
+	printf("link-xdev-errno %d\n", v8_errno);
+
+	/*
+	 * SYMLINK IS EPERM AND NOT EROFS.  The image has taken four writes by
+	 * now, so EROFS would be a measurably false statement about it;
+	 * EPERM says the operation is meaningless, which is permanent.
+	 */
+	P(b, "/slink");
+	v8_errno = 0;
+	printf("symlink-refused %d\n", v8s_symlink(a, b));
+	printf("symlink-errno %d\n", v8_errno);
+#undef P
+}
+
 int
 main(int argc, char **argv)
 {
 	if (argc != 2) {
-		fprintf(stderr, "usage: p9clprobe main|uid\n");
+		fprintf(stderr, "usage: p9clprobe main|uid|link\n");
 		return (2);
 	}
 
@@ -555,6 +666,8 @@ main(int argc, char **argv)
 		deadpeer("/mnt/hello");
 	} else if (strcmp(argv[1], "uid") == 0) {
 		owners("/m");
+	} else if (strcmp(argv[1], "link") == 0) {
+		links("/w");
 	} else {
 		fprintf(stderr, "p9clprobe: unknown mode %s\n", argv[1]);
 		return (2);

@@ -419,6 +419,19 @@ pt_chmod(char *rp, int mode)
 {
 	RET(rawsys2(SYS_chmod, (long)rp, mode));
 }
+/*
+ * BOTH NAMES ARE ALREADY RESOLVED, which is what makes this one line.  The
+ * host's own link(2) supplies every refusal that matters here -- EXDEV for two
+ * host filesystems, EPERM for a directory, EEXIST, EMLINK -- so there is
+ * nothing for this type to decide.  The interesting arm is the cross-TYPE one
+ * and it never reaches here: v8s_link answers that with EXDEV before it
+ * dispatches.
+ */
+static int
+pt_link(char *rold, char *rnew)
+{
+	RET(rawsys2(SYS_link, (long)rold, (long)rnew));
+}
 
 static int
 pt_chown(char *rp, int uid, int gid)
@@ -455,7 +468,8 @@ struct v8fstyp v8fs_pass = {
 	v8sys_pt_stat, v8sys_pt_fstat,
 	v8sys_pt_ioctl,
 	pt_access, pt_remove, pt_mkdir,
-	pt_chmod, pt_chown, pt_utime
+	pt_chmod, pt_chown, pt_utime,
+	pt_link
 };
 
 /* ---------------------------------------------------------------- /dev/fd */
@@ -654,5 +668,6 @@ struct v8fstyp v8fs_fdfs = {
 	fd_stat, v8sys_pt_fstat,
 	v8sys_pt_ioctl,
 	pt_access, pt_remove, pt_mkdir,
-	pt_chmod, pt_chown, pt_utime
+	pt_chmod, pt_chown, pt_utime,
+	pt_link
 };

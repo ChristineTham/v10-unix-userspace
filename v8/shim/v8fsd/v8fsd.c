@@ -253,6 +253,25 @@ static const struct { int e; const char *name; } errnames[] = {
 	 * case where the string is exactly reversible was not.
 	 */
 	{ ENOMEM, "ENOMEM" },
+	/*
+	 * ...AND THE SAME THING HAPPENED AGAIN, SEVEN TIMES, BECAUSE THE FIX
+	 * ABOVE ADDED A NAME INSTEAD OF AUDITING THE SET.  §8a step 5g.  EBUSY
+	 * was the one that showed: nami.c:363 refuses to rmdir a directory
+	 * with a second link, and the client reported "I/O error".
+	 *
+	 * The set is DERIVED now rather than listed -- every errno the imported
+	 * kernel can assign is what this table has to spell:
+	 *
+	 *   grep -rhoE 'u\.u_error = E[A-Z]+' src/sys/ shim/kern/ |
+	 *     grep -oE 'E[A-Z]+$' | sort -u
+	 *
+	 * and note what the existing guard could not see: tests/streams checks
+	 * that this table and p9cl.c's agree, and they did -- both were missing
+	 * exactly the same seven.  Two copies of one wrong list agree.
+	 */
+	{ EBUSY, "EBUSY" },	{ EFAULT, "EFAULT" },	{ EINTR, "EINTR" },
+	{ ELOOP, "ELOOP" },	{ ENODEV, "ENODEV" },	{ ENOTTY, "ENOTTY" },
+	{ EXDEV, "EXDEV" },
 	{ 0, 0 }
 };
 
@@ -754,6 +773,78 @@ kremove(struct inode *dir, char *name, int isdir)
 	(void)namei(schar, &arg, 0);
 	u.u_cdir = save;
 	return (u.u_error ? -1 : 0);
+}
+
+/*
+ * link -- sys/sys2.c:458-487, transcribed, §8a step 5g.  The whole of the
+ * syscall is here except its two namei calls, because a Tlink arrives with the
+ * two things those calls exist to produce: a fid for the file being linked and
+ * a fid for the directory the new name goes in.
+ *
+ * THE ORDER IS UPSTREAM'S AND IT IS NOT ARBITRARY.  i_nlink is bumped and
+ * iupdat'd BEFORE the directory entry is written, and decremented again if
+ * writing it fails.  Doing it the other way round -- entry first, count after
+ * -- leaves a window in which the disk holds two names for an inode that says
+ * it has one, which is what fsck reports as a link-count mismatch and what a
+ * subsequent unlink would turn into a freed inode with a live directory entry
+ * pointing at it.  Upstream is crash-consistent in the safe direction: an
+ * interrupted link leaves a count too HIGH, which wastes an inode and loses
+ * nothing.  Same reasoning as itrunc's, which §8a step 5f already learned not
+ * to "improve".
+ *
+ * THERE IS NO prele(ip) HERE AND UPSTREAM HAS ONE, which is a difference in
+ * this server rather than in the algorithm.  Upstream's ip has just come back
+ * from namei LOCKED, and the second namei may need to lock it again on the way
+ * through; here every inode reachable from a fid is already unlocked, because
+ * kwalk clears ILOCK for the reason its own comment gives -- a fid outlives
+ * the message that made it, and an inode left locked would deadlock the next
+ * plock.  So the release has already happened, one message earlier.
+ *
+ * A DIRECTORY IS LINKABLE, and that is the point rather than an oversight.
+ * Upstream refuses it for anyone but the superuser (`!suser()' below) and
+ * u.u_uid is 0 here, so the refusal never fires -- which is exactly what V7
+ * intended, because mv(1) MOVES A DIRECTORY BY HAND with three links and two
+ * unlinks (mv.c:204-228: link the new name, unlink the old, unlink the new
+ * `..', link the new parent as `..').  mv.c's mvdir() has no fork-and-cp
+ * fallback, so without this a directory on a mount cannot be renamed at all.
+ * It also means a client can build a cycle -- `ln /mnt/d /mnt/d/sub' -- and
+ * that hazard is V7's own, unguarded there and unguarded here for the same
+ * reason mkdir(1) was setuid root: the tool is trusted, and fsck is what says
+ * when it was wrong.
+ */
+static int
+klink(struct inode *dir, char *name, struct inode *ip)
+{
+	struct inode *save = u.u_cdir;
+	struct argnamei arg;
+	char buf[P9_NAMELEN];
+
+	u.u_error = 0;
+	if ((ip->i_mode & IFMT) == IFDIR && !suser())
+		return (-1);	/* suser() SET u_error = EPERM itself: v8fs.c:535 */
+	strncpy(buf, name, sizeof buf - 1);
+	buf[sizeof buf - 1] = '\0';
+
+	ip->i_nlink++;
+	ip->i_flag |= ICHG;
+	iupdat(ip, &v8k_time, &v8k_time, 1);	/* NOT &time -- hostok.h */
+
+	arg.flag = NI_LINK;
+	arg.ino = ip->i_number;
+	arg.idev = ip->i_dev;
+	arg.mode = 0;
+	u.u_cdir = dir;
+	u.u_dirp = buf;
+	u.u_error = 0;
+	(void)namei(schar, &arg, 0);
+	u.u_cdir = save;
+
+	if (u.u_error) {
+		ip->i_nlink--;
+		ip->i_flag |= ICHG;
+		return (-1);
+	}
+	return (0);
 }
 
 /*
@@ -1594,7 +1685,7 @@ do_create(struct conn *c, p9_u32 tag, struct p9buf *in)
  * and whose name is therefore not an entry anybody may unlink.
  */
 static void
-do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
+removeop(struct conn *c, p9_u32 tag, struct p9buf *in, int askinode, int rtype)
 {
 	struct p9buf b;
 	struct fid *f;
@@ -1622,6 +1713,45 @@ do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
 		parent->i_flag &= ~ILOCK;	/* kwalk's reason exactly */
 		isdir = (f->f_ip->i_mode & IFMT) == IFDIR;
 		/*
+		 * TUNLINK ON A DIRECTORY IS THE ONE PLACE THIS PORT HAS TO
+		 * RECONCILE TWO CONVENTIONS, and §8a step 5g is where the
+		 * conflict became visible.  Both halves are already decided
+		 * elsewhere and they disagree:
+		 *
+		 *   THE CLIENT DOES NOT MANAGE THE DOT ENTRIES.  rmdir(1) is
+		 *   `unlink("d/.."); unlink("d/."); unlink("d")' -- V7 takes a
+		 *   directory apart by hand and the third unlink is what drops
+		 *   i_nlink to 0.  syscall.c's dotlink() ABSORBS the first two,
+		 *   because macOS refuses them and this server refuses them,
+		 *   so by the time the third arrives the two decrements that
+		 *   were supposed to precede it have not happened.  A plain
+		 *   NI_DEL then leaves i_nlink at 1: an unattached directory,
+		 *   which fsck repairs and reports.  Measured -- that is the
+		 *   regression this arm exists to fix, and the only thing that
+		 *   caught it was fsck saying FILE SYSTEM WAS MODIFIED while
+		 *   icheck and dcheck were both silent.
+		 *
+		 *   AND mv(1) UNLINKS A DIRECTORY THAT IT HAS JUST GIVEN A
+		 *   SECOND NAME.  mv.c:232-236 is link-then-unlink, and there
+		 *   NI_RMDIR is simply wrong: nami.c:363 answers EBUSY above
+		 *   i_nlink 2, and nami.c:361 has already decremented the
+		 *   PARENT by then and does not put it back on the error path.
+		 *
+		 * The discriminator is not invented, it is the question the two
+		 * cases actually differ on: DOES ANOTHER NAME REACH THIS
+		 * DIRECTORY?  At i_nlink <= 2 the entry being removed is its
+		 * last, so removing it destroys the directory and NI_RMDIR --
+		 * which zeroes i_nlink and frees the inode -- is what the
+		 * caller must mean.  Above 2 another name survives, so NI_DEL
+		 * is the only answer that is not data loss.
+		 *
+		 * A PLAIN FILE NEVER REACHES THIS, and Tremove never does
+		 * either: Tremove is Plan 9's remove and keeps asking the
+		 * inode, which is the right reading for a foreign client.
+		 */
+		if (isdir && !askinode)
+			isdir = f->f_ip->i_nlink <= 2;
+		/*
 		 * THE TARGET IS RELEASED BEFORE THE REMOVE, and it has to be.
 		 * nami.c's NI_DEL arm does its own iget on the entry it found
 		 * and then iput()s it -- and it is THAT iput, at i_count 1,
@@ -1640,8 +1770,33 @@ do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
 
 	fidfree(f);
 	if (err) { rerror(c, tag, err); return; }
-	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rremove, tag);
+	p9_hdr(&b, txbuf, sizeof txbuf, rtype, tag);
 	reply(c, &b);
+}
+
+/*
+ * Tremove and Tunlink, which are one function because they differ in exactly
+ * one decision and share every hazard.  p9.h has the argument for why they are
+ * two messages at all; what matters here is that the SHARED half -- the clunk
+ * on every exit, the parent from f_pino rather than inferred, and the iput of
+ * the target BEFORE the remove so that nami.c's own iput is the one that frees
+ * the blocks -- must not exist twice.  Each of those three was a bug once, and
+ * a second copy is a second chance to fix only one of them.
+ *
+ * `askinode' IS THE WHOLE DIFFERENCE.  Tremove asks the inode whether it is a
+ * directory (Plan 9's rule, and the right reading for a foreign client);
+ * Tunlink never asks, because V7's unlink(2) is NI_DEL whatever it names.
+ */
+static void
+do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	removeop(c, tag, in, 1, P9_Rremove);
+}
+
+static void
+do_unlink(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	removeop(c, tag, in, 0, P9_Runlink);
 }
 
 /*
@@ -1949,6 +2104,83 @@ do_access(struct conn *c, p9_u32 tag, struct p9buf *in)
 }
 
 /*
+ * Tlink -- the THIRD extension, §8a step 5g, and p9.h says why it is one: the
+ * absence of a message was being used as a reason to refuse an operation this
+ * filesystem is built on, twice after the same absence had been answered by
+ * adding one.
+ *
+ * dfid IS THE DIRECTORY AND fid IS THE FILE, .L's order.  The client walks the
+ * new name's PARENT onto dfid and the existing file onto fid, so both ends of
+ * the link arrive resolved and this handler does no path work at all -- which
+ * is the same division kwalk/kcreate/kremove already draw, and the reason
+ * do_remove's f_pino bug (it took the root as the parent) cannot recur here:
+ * there is no parent to infer, the client sent it.
+ *
+ * ONLY TWO THINGS ARE CHECKED HERE, AND THE DRAFT CHECKED FOUR.  Two of them
+ * were removed because MUTATION TESTING WOULD NOT KILL THEM -- both were
+ * duplicating a refusal Bell Labs' own code already makes, and one of them had
+ * a comment giving a reason that is simply false:
+ *
+ *	ENOTDIR   dfid does not name a directory.  Deleted.  klink hands the
+ *		  inode to namei as u_cdir and nami.c's own loop refuses a
+ *		  non-directory with exactly this errno.  The comment three
+ *		  lines below already argued for letting upstream's line fire
+ *		  -- about EXDEV -- and the line beside it kept the assumption,
+ *		  which is this port's most repeated shape, committed here by
+ *		  the same hand in the same hour.
+ *
+ *	EINVAL    the new name is `.' or `..'.  Deleted, and the reason it was
+ *		  written was WRONG: it said nami.c "would happily write the
+ *		  entry" and replace a live directory's parent pointer.  It
+ *		  would not.  nami.c:88-95 returns EEXIST for NI_LINK the
+ *		  moment the name is FOUND, and `..' is always found -- so
+ *		  upstream refuses it, and refuses it with the errno a real V8
+ *		  gives.  The guard was less faithful than no guard.
+ *
+ * What is left is genuinely this layer's:
+ *
+ *	EBADF     an unknown fid.  A protocol fact, invisible to namei.
+ *	EINVAL    an empty or over-DIRSIZ name.  Also protocol: fsnami compares
+ *		  DIRSIZ bytes and would SILENTLY TRUNCATE a longer one, which
+ *		  is a wrong answer rather than a refusal.  do_create has the
+ *		  same check for the same reason.
+ *	EROFS     the mount flag, checked before anything is touched, exactly
+ *		  as do_create and removeop check it.
+ *
+ * EXDEV is upstream's too -- nami.c:487, inside the NI_LINK arm.  It cannot
+ * fire today (one image per server) and is left there anyway, because a second
+ * device is a configuration change and not a code change.
+ */
+static void
+do_link(struct conn *c, p9_u32 tag, struct p9buf *in)
+{
+	struct p9buf b;
+	struct fid *df, *f;
+	char name[P9_NAMELEN];
+	p9_u32 dfid, fid;
+
+	dfid = p9_g32(in);
+	fid = p9_g32(in);
+	if (p9_gstr(in, name, sizeof name) < 0) { rerror(c, tag, EINVAL); return; }
+	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
+	if ((df = fidof(c, dfid)) == 0) { rerror(c, tag, EBADF); return; }
+	if ((f = fidof(c, fid)) == 0) { rerror(c, tag, EBADF); return; }
+	if (mntronly) { rerror(c, tag, EROFS); return; }
+	if (name[0] == '\0' || strlen(name) > DIRSIZ) {
+		rerror(c, tag, EINVAL);
+		return;
+	}
+
+	if (klink(df->f_ip, name, f->f_ip) < 0) {
+		rerror(c, tag, u.u_error ? u.u_error : EIO);
+		return;
+	}
+
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rlink, tag);
+	reply(c, &b);
+}
+
+/*
  * Tseek -- the extension, and p9.h says at length why it exists.  In one line:
  * lseek(2) moves the OPEN FILE DESCRIPTION's offset, this connection is that
  * description, and 9P has no message for it because Plan 9's kernel held it.
@@ -2149,6 +2381,8 @@ serve1(struct conn *c)
 	case P9_Tremove:	do_remove(c, tag, &in); break;
 	case P9_Twstat:		do_wstat(c, tag, &in); break;
 	case P9_Taccess:	do_access(c, tag, &in); break;
+	case P9_Tlink:		do_link(c, tag, &in); break;
+	case P9_Tunlink:	do_unlink(c, tag, &in); break;
 	case P9_Tauth:
 		rerror(c, tag, EPERM);
 		break;

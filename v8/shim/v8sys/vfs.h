@@ -94,12 +94,20 @@ struct v8fstyp {
 	 * with no opinion has a spelling other than a wrong one.
 	 *
 	 * WHAT STILL HAS NO SLOT AFTER THIS, and why, so that the next step
-	 * inherits a list rather than a survey: link and symlink have no 9P2000
-	 * message at all and a V7 image holds no symlink either; mknod for a
-	 * device is meaningless on an image no kernel will mount; chdir needs a
-	 * working directory this shim does not track; chroot and execve are the
-	 * two the enumeration in syscall.c had missed and are their own
-	 * questions.
+	 * inherits a list rather than a survey: symlink, because a V7 image
+	 * cannot represent one; mknod for a device, meaningless on an image no
+	 * kernel will mount; chdir, which needs a working directory this shim
+	 * does not track; chroot and execve, the two the enumeration in
+	 * syscall.c had missed, which are their own questions.
+	 *
+	 * THIS LIST USED TO OPEN "link and symlink have no 9P2000 message at
+	 * all", pairing them, and §8a step 5g is the step that took the pair
+	 * apart.  The missing message was never the reason -- it is the exact
+	 * situation that produced Tseek and Taccess -- and the two halves are
+	 * not alike: a V7 filesystem cannot represent a symlink at any price,
+	 * and it is BUILT on hard links.  p9.h has the argument and the
+	 * measurement that made it matter (mv of a directory failed outright,
+	 * because mvdir has no fork-and-cp fallback).
 	 */
 	int   (*t_access)(char *rp, int mode);
 	int   (*t_remove)(char *rp, int isdir);
@@ -123,6 +131,23 @@ struct v8fstyp {
 	int   (*t_chmod)(char *rp, int mode);
 	int   (*t_chown)(char *rp, int uid, int gid);
 	int   (*t_utime)(char *rp, long *tv);
+
+	/*
+	 * THE ONE §8a step 5g ADDED, and it is the only slot here that takes
+	 * TWO resolved names.  That shape is forced by the operation rather
+	 * than chosen: a link joins two points in one filesystem, so both have
+	 * to be resolved before the type can be asked, and both by the SAME
+	 * type -- v8s_link refuses a mismatched pair with EXDEV, which is the
+	 * true answer (two filesystems) rather than a refusal.
+	 *
+	 * IT IS ALSO THE SLOT THAT MAKES THE ALIASING TRAP UNAVOIDABLE RATHER
+	 * THAN AVOIDABLE.  t_path returns a pointer into a static buffer, so a
+	 * caller holding two of its results at once has the same string twice.
+	 * Every other operation here takes one path and never notices; this one
+	 * cannot be written correctly without copying the first, which is why
+	 * v8s_link has carried that copy since before there was a switch.
+	 */
+	int   (*t_link)(char *rold, char *rnew);
 };
 
 /*

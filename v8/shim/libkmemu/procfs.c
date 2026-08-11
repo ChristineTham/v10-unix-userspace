@@ -1015,6 +1015,26 @@ pr_utime(char *rp, long *tv)
 	return (-1);
 }
 
+/*
+ * link -- EPERM, and it is the fourth member of the paragraph above rather
+ * than a new argument.  A /proc entry is not a directory entry: prstat
+ * synthesises it from a live process, so there is no inode for a second name
+ * to point at and no i_nlink to increment.  Linux answers EPERM here for the
+ * same reason.
+ *
+ * WORTH SAYING WHAT THIS IS *NOT*, because §8a step 5g exists to separate two
+ * things that looked alike: this is symlink's kind of refusal, not link's.
+ * The operation is meaningless against this filesystem at any price, which is
+ * why it gets a permanent EPERM rather than a slot that says "later".
+ */
+static int
+pr_link(char *rold, char *rnew)
+{
+	(void)rold; (void)rnew;
+	v8_errno = V8_EPERM;
+	return (-1);
+}
+
 static struct v8fstyp procfs = {
 	"proc",
 	pr_path,
@@ -1023,7 +1043,8 @@ static struct v8fstyp procfs = {
 	pr_stat, pr_fstat,
 	pr_ioctl,
 	pr_access, pr_remove, pr_mkdir,
-	pr_chmod, pr_chown, pr_utime
+	pr_chmod, pr_chown, pr_utime,
+	pr_link
 };
 
 /*

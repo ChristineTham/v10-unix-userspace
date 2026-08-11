@@ -1094,6 +1094,34 @@ if [ -f "$FSD" ] && [ -f "$CLI" ]; then
 		"$(comm -23 "$TMP/esrv" "$TMP/ecli" | tr '\n' ' ' | sed 's/ $//')"
 	check "and the client knows no name the server cannot send" "" \
 		"$(comm -13 "$TMP/esrv" "$TMP/ecli" | tr '\n' ' ' | sed 's/ $//')"
+
+	# AND A THIRD SOURCE, BECAUSE THE TWO ABOVE CANNOT SEE THE FAULT THEY
+	# MOST NEED TO -- §8a step 5g.  Comparing the tables to EACH OTHER
+	# proves they agree; it cannot prove they are big enough, and they were
+	# not: both were missing exactly the same SEVEN names, so all four
+	# cases above passed while EBUSY, EFAULT, EINTR, ELOOP, ENODEV, ENOTTY
+	# and EXDEV all reached the client as EIO through a fallback documented
+	# for a FOREIGN server's prose.  Two copies of one wrong list agree.
+	#
+	# The third source is the kernel itself: every errno the imported code
+	# can assign is one the server may have to name.  Derived here rather
+	# than transcribed, which is the whole point -- importing another
+	# sys/*.c file adds to this set without anyone editing this suite.
+	#
+	# ONE DIRECTION ONLY.  A table entry the kernel cannot produce is not a
+	# fault: ENAMETOOLONG and ENOTEMPTY come from the HOST side of the
+	# server, and the case above already covers table-versus-table.
+	grep -rhoE 'u\.u_error = E[A-Z]+' "$ROOT/src/sys/" "$ROOT/shim/kern/" 2>/dev/null |
+		grep -oE 'E[A-Z]+$' | sort -u > "$TMP/ekern"
+	nk=$(wc -l < "$TMP/ekern" | tr -d ' ')
+	# Non-vacuous, for the reason the two counts above are checked: a sweep
+	# whose pattern has drifted matches nothing and comm then reports a
+	# clean result about an empty set.
+	[ "$nk" -ge 20 ] && ok || bad "errno sweep found only $nk names in the kernel"
+	check "every errno the KERNEL can set, the server can name" "" \
+		"$(comm -23 "$TMP/ekern" "$TMP/esrv" | tr '\n' ' ' | sed 's/ $//')"
+	check "...and so can the client" "" \
+		"$(comm -23 "$TMP/ekern" "$TMP/ecli" | tr '\n' ' ' | sed 's/ $//')"
 else bad "v8fsd.c or p9cl.c missing -- cannot compare the errno tables"; fi
 
 # --- §8a step 5: the six are BUILT, and what the archive imports ------------
@@ -2962,6 +2990,160 @@ if [ "$wready" = 1 ]; then
 	# already dirtied an inode would show here and nowhere else.
 	check "and the read-only image is byte-identical to what it was given"	"same" \
 		"$(cmp -s "$FSTMP/p9img" "$WFSTMP/roimg" && echo same || echo differs)"
+
+	# 9g. link -- §8a step 5g, the LAST write operation that refused, and it
+	# refused for a reason that was the port's own argument for the
+	# opposite.  "9P2000 has no message for it" is exactly the situation
+	# that produced Tseek and Taccess; the third time it was written down
+	# as grounds for declining.  p9.h has the whole argument.
+	#
+	# WHAT MADE IT LOOK COSMETIC is that the loudest consumer degrades
+	# quietly.  mv(1) of a FILE falls back to fork-and-cp and exits 0, so a
+	# missing link(2) reads as a slow path.  mv of a DIRECTORY does not:
+	# mv.c's mvdir() has no fallback, so it printed "mv: cannot link" and
+	# left the directory where it was.  These cases are ordered to say that
+	# -- the file first, which always worked, then the directory.
+	check "ln makes a second name on a mount"		"0" \
+		"$(w8 "$ROOT/rootfs/bin/ln" /mnt/hello /mnt/hard >/dev/null 2>&1; echo $?)"
+	check "...and it reads the same bytes"			"hello from a V8 filesystem" \
+		"$(w8 "$CAT" /mnt/hard 2>/dev/null)"
+	# ONE INODE AND NOT TWO COPIES, and the observable is the INODE NUMBER
+	# rather than the link count.  A cp would also leave a readable file at
+	# that path, so "it reads the same bytes" is not the claim; `ls -i'
+	# prints the qid path, which IS i_number off the disk, so two names
+	# printing one number is the disk saying they are one file.
+	#
+	# NOT `ls -l' AND THE LINK COUNT, which is the obvious case and would
+	# have asserted a fiction: 9P2000's stat HAS NO nlink FIELD (.u and .L
+	# added one), so p9cl.c:1115 sets st_nlink = 1 unconditionally and
+	# every file on every mount reads as one link.  The probe below asserts
+	# that 1 deliberately, so the limitation is a case rather than a
+	# sentence and a future change to it has to be meant.
+	check "...and both names are one inode on the disk"	"1" \
+		"$(w8 "$LS" -i /mnt/hello /mnt/hard 2>/dev/null |
+		   awk '{print $1}' | sort -u | wc -l | tr -d ' ')"
+	check "...and removing one name leaves the other"	"hello from a V8 filesystem" \
+		"$(w8 "$RM" /mnt/hard >/dev/null 2>&1; w8 "$CAT" /mnt/hello 2>/dev/null)"
+
+	# mv OF A DIRECTORY, which is the case that did not work at all.  V7
+	# does it by hand -- link the new name, unlink the old, and (across
+	# directories) repoint `..' -- so it needs link(2) on a DIRECTORY,
+	# which upstream allows the superuser only and u_uid is 0 here.
+	w8 "$ROOT/rootfs/bin/mkdir" /mnt/mvsrc >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/sh" -c 'echo inside > /mnt/mvsrc/f' >/dev/null 2>&1
+	check "mv renames a DIRECTORY on a mount"		"0" \
+		"$(w8 "$ROOT/rootfs/bin/mv" /mnt/mvsrc /mnt/mvdst >/dev/null 2>&1; echo $?)"
+	check "...the old name is gone"				"1" \
+		"$(w8 "$CAT" /mnt/mvsrc/f >/dev/null 2>&1; echo $?)"
+	check "...and the contents came with it"		"inside" \
+		"$(w8 "$CAT" /mnt/mvdst/f 2>/dev/null)"
+	w8 "$RM" /mnt/mvdst/f >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/rmdir" /mnt/mvdst >/dev/null 2>&1
+
+	# ...AND rmdir(1) STILL WORKS, which is the control the directory-move
+	# needed and nearly cost.  rmdir(1) is three unlinks (rmdir.c:105,108,
+	# 110) and syscall.c's dotlink() absorbs the first two, so the third has
+	# to do the whole job.  A Tunlink that always sent NI_DEL left i_nlink
+	# at 1 -- an unattached directory -- and NOTHING SAW IT except fsck at
+	# the end of this section: the listing was right, icheck was silent and
+	# dcheck was silent.  v8fsd.c's removeop has the reconciliation.
+	w8 "$ROOT/rootfs/bin/mkdir" /mnt/gone >/dev/null 2>&1
+	check "rmdir still removes a directory completely"	"0" \
+		"$(w8 "$ROOT/rootfs/bin/rmdir" /mnt/gone >/dev/null 2>&1; echo $?)"
+	# ONE COMMAND FOR BOTH HALVES, because `grep -c gone' = 0 is also what
+	# a broken ls produces.  Matching either name and expecting exactly one
+	# hit says gone went AND hello stayed AND the listing was read.
+	check "...and the name is gone, with the rest still listed"	"1" \
+		"$(w8 "$LS" /mnt 2>/dev/null | grep -cE '^(gone|hello)$')"
+
+	# THE WIRE-LEVEL HALF, for the three things no shipped binary can ask.
+	# ln(1) stats first and REFUSES a directory before it reaches link(2)
+	# -- which is precisely the case mv depends on -- `.'/`..' as a new
+	# name is rejected by nothing on the way in, and a shell sees exit 1
+	# where the assertion has to be an errno.
+	if [ -x "$CLPROBE" ]; then
+		# THE PROBE'S DIRECTORY IS MADE HERE AND CLEANED UP HERE.  It
+		# links lsrc to lsrc2 and then unlinks lsrc, which is a move --
+		# and nothing in the rootfs can move it back, because ln(1)
+		# refuses a directory.  So the probe must not be pointed at an
+		# artefact a later section reads (the image's own `sub' was the
+		# first draft), and the suite has to own both ends of it.
+		w8 "$ROOT/rootfs/bin/mkdir" /mnt/lsrc >/dev/null 2>&1
+		w8 "$ROOT/rootfs/bin/sh" -c 'echo deeper > /mnt/lsrc/inner' >/dev/null 2>&1
+		( cd "$WFSTMP"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/w=wsock"
+		  export V8ROOT V8MOUNT
+		  fsdeadline "$CLPROBE" link ) > "$TMP/p9lnout" 2>"$TMP/p9lnerr"
+		lnrc=$?
+		lq() { awk -v k="$1" '$1 == k { print $2 }' "$TMP/p9lnout"; }
+		if [ $lnrc -ne 0 ]; then
+			bad "p9clprobe link exited nonzero ($lnrc)" \
+			    "$(head -3 "$TMP/p9lnerr")"
+		else
+		check "link(2) succeeds through the switch"	"0"	"$(lq link-file)"
+		check "...and both names are one inode"		"1"	"$(lq link-same-ino)"
+		# ...AND THE LINK COUNT IS 1, WHICH IS A LIMITATION ASSERTED ON
+		# PURPOSE.  9P2000's stat carries no nlink field at all -- .u
+		# and .L added one -- so p9cl.c:1115 sets it to 1 for every file
+		# on every mount and the real 2 is simply not on the wire.  The
+		# obvious case here would have been `ls -l' and the link count,
+		# and it would have been asserting a constant.
+		check "...though 9P's stat cannot carry the link count" "1" \
+			"$(lq link-nlink)"
+		# 17 = EEXIST.  nami.c never reaches its NI_LINK arm.
+		check "a second link to an existing name is EEXIST" "17" \
+			"$(lq link-eexist-errno)"
+		# THE ONE ln(1) CANNOT ASK, and mv cannot work without.
+		check "link(2) of a DIRECTORY is allowed for root"	"0" \
+			"$(lq link-dir)"
+		# ...and the pair that says NI_DEL rather than NI_RMDIR was
+		# used: at nlink 3 the directory must SURVIVE losing one name.
+		check "...unlinking one of its two names succeeds"	"0" \
+			"$(lq unlink-linked-dir)"
+		check "...and the surviving name still reaches the contents" "1" \
+			"$(lq survivor-readable)"
+		# 22 = EINVAL, AND IT COMES FROM THE CLIENT.  p9parent refuses
+		# `.'/`..' as a basename before anything goes on the wire, so
+		# this case tests p9cl.c and not the server -- which is worth
+		# saying, because the first draft asserted the same number from
+		# a server-side guard and a mutation deleting that guard
+		# changed nothing.  On the wire upstream answers EEXIST, since
+		# nami.c:88-95 refuses NI_LINK for a name that already exists
+		# and `..' always does.
+		check "dotdot as a new name is refused by the client" "22" \
+			"$(lq link-dotdot-errno)"
+		# 20 = ENOTDIR, AND IT COMES FROM BELL LABS.  nami.c's own loop
+		# refuses a non-directory u_cdir; the draft duplicated that
+		# check in do_link and the mutation that deleted it fired
+		# nothing, which is how the duplicate was found.
+		check "a new name inside a plain file is ENOTDIR" "20" \
+			"$(lq link-notdir-errno)"
+		# 18 = EXDEV.  An ANSWER, not a refusal: /etc is passthrough,
+		# so the pair spans two filesystems and two really are two
+		# devices.  This was EROFS until 5g.
+		check "link across two filesystem types is EXDEV" "18" \
+			"$(lq link-xdev-errno)"
+		# 1 = EPERM.  symlink keeps its refusal and loses its EROFS:
+		# the image has taken four writes by this line, so "read-only
+		# file system" is measurably false, where "the operation is
+		# meaningless" is permanently true.  v8s_mknod's distinction,
+		# applied to the line beside it.
+		check "symlink on a mount is refused"		"-1" \
+			"$(lq symlink-refused)"
+		check "...with EPERM rather than EROFS"		"1" \
+			"$(lq symlink-errno)"
+		fi
+	else
+		bad "v8fs link: p9clprobe was not built" "$CLPROBE"
+	fi
+	# The probe mounted the SAME image at /w, so its leftovers are named
+	# from /mnt here: hello2, and lsrc2 (which is lsrc, moved).
+	w8 "$RM" /mnt/hello2 >/dev/null 2>&1
+	w8 "$RM" /mnt/lsrc2/inner >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/rmdir" /mnt/lsrc2 >/dev/null 2>&1
+	# AND THE IMAGE'S OWN sub IS UNTOUCHED, which is the assertion that the
+	# probe stayed inside its own artefacts.  Sections 10 and 11 read it.
+	check "and the image's own subdirectory is untouched"	"0" \
+		"$(w8 "$CAT" /mnt/sub/deep >/dev/null 2>&1; echo $?)"
 
 	# THE ROUND TRIP CLOSES: everything this section made is removed again,
 	# so the writable image must come back to the block count it started

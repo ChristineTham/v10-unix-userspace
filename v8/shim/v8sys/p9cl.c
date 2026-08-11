@@ -244,6 +244,18 @@ static unsigned char msgbuf[P9_MSIZE];
 #define P9CL_FILEFID	1
 
 /*
+ * ...AND A THIRD, §8a step 5g, used by exactly one operation.  link is the
+ * only call here that needs TWO names resolved at once -- the file, and the
+ * directory the new name goes in -- so it is the only one that cannot express
+ * itself in the two fids above.  It is a constant for the same reason they
+ * are, and it is deliberately NOT clunked afterwards: the connection is closed
+ * on the next line and dropping it is what releases the server's fids, which
+ * is the sentence t_close already had to learn (a Tclunk is the LAST close,
+ * and here there is no descriptor for anyone to hold).
+ */
+#define P9CL_LINKFID	2
+
+/*
  * "ENOENT" off the wire, back to a V8 errno.  v8fsd.c's errnames[] is the
  * other half and its comment argues for the symbolic name over strerror
  * prose; this is the table that makes it "exactly reversible by the client".
@@ -263,6 +275,31 @@ static const struct { const char *n; int e; } enames[] = {
 	{ "EROFS", V8_EROFS },		{ "EMLINK", V8_EMLINK },
 	{ "ENOMEM", V8_ENOMEM },	{ "ENAMETOOLONG", V8_ENOENT },
 	{ "ENOTEMPTY", V8_EEXIST },
+	/*
+	 * THE SEVEN §8a step 5g ADDED, AND THEY WERE FOUND BY DERIVING THE SET
+	 * RATHER THAN BY MISSING ONE.  EBUSY was the symptom: `unlink' of a
+	 * directory that has a second link came back "I/O error", because
+	 * nami.c:363 sets EBUSY and neither table had the name, so ename()'s
+	 * documented fallback turned our OWN errno into EIO -- the exact trap
+	 * the ENOMEM comment on the server side already records, recurring
+	 * because that fix added one name instead of auditing the set.
+	 *
+	 * Derived, and the sweep is worth keeping because a table like this
+	 * cannot be checked by reading it:
+	 *
+	 *   grep -rhoE 'u\.u_error = E[A-Z]+' src/sys/ shim/kern/ |
+	 *     grep -oE 'E[A-Z]+$' | sort -u
+	 *
+	 * Twenty-two names come back; both tables had fifteen of them and both
+	 * were missing THE SAME SEVEN, which is what says they were written
+	 * from one list rather than from the kernel.  tests/streams asserts the
+	 * two agree with each other; it could not have caught this, because
+	 * they agreed perfectly about a set that was too small.
+	 */
+	{ "EBUSY", V8_EBUSY },		{ "EFAULT", V8_EFAULT },
+	{ "EINTR", V8_EINTR },		{ "ELOOP", V8_ELOOP },
+	{ "ENODEV", V8_ENODEV },	{ "ENOTTY", V8_ENOTTY },
+	{ "EXDEV", V8_EXDEV },
 	{ 0, 0 }
 };
 
@@ -553,8 +590,21 @@ fail:
  * fails on its FIRST name is an Rerror and already carries the server's own
  * errno through enumber().
  */
+/*
+ * THE DESTINATION FID IS A PARAMETER SINCE §8a step 5g, because link is the
+ * first operation that needs TWO resolved names on one connection.  Everything
+ * else here walks to exactly one place, so P9CL_FILEFID was written in
+ * directly; p9walk() below keeps that spelling for all of them and only
+ * p9_t_link passes anything else.
+ *
+ * The continuation walks `to' onto ITSELF rather than FILEFID onto itself,
+ * which is the whole of the change beyond the signature -- and getting that
+ * wrong would be invisible until a path of more than P9_MAXWELEM components
+ * was linked, at which point the second message would silently continue from
+ * the WRONG fid.
+ */
 static int
-p9walk(int fd, const char *rel)
+p9walkto(int fd, const char *rel, p9_u32 to)
 {
 	struct p9buf b, r;
 	const char *p = rel;
@@ -564,8 +614,8 @@ p9walk(int fd, const char *rel)
 
 	do {
 		begin(&b, P9_Twalk);
-		p9_p32(&b, first ? (p9_u32)P9CL_ROOTFID : (p9_u32)P9CL_FILEFID);
-		p9_p32(&b, P9CL_FILEFID);
+		p9_p32(&b, first ? (p9_u32)P9CL_ROOTFID : to);
+		p9_p32(&b, to);
 		/*
 		 * nwname is not known until the components have been packed,
 		 * so its two bytes are reserved and patched.  p9_len() is
@@ -656,6 +706,12 @@ p9walk(int fd, const char *rel)
 	} while (*p);
 
 	return (0);
+}
+
+static int
+p9walk(int fd, const char *rel)
+{
+	return (p9walkto(fd, rel, P9CL_FILEFID));
 }
 
 /*
@@ -1272,9 +1328,78 @@ p9_t_remove(char *p, int isdir)
 		}
 	}
 
-	begin(&b, P9_Tremove);
-	p9_p32(&b, P9CL_FILEFID);
-	rc = xact(fd, &b, P9_Rremove, &r) < 0 ? -1 : 0;
+	/*
+	 * WHICH MESSAGE IS WHICH SYSCALL, §8a step 5g -- not which target.
+	 *
+	 * isdir < 0 is v8s_unlink, i.e. unlink(2), and V7's unlink is NI_DEL
+	 * whatever the entry names; isdir >= 0 is v8s_rmdir.  Sending Tremove
+	 * for both let the SERVER decide from the inode, which is Plan 9's rule
+	 * (it has no rmdir(2)) and is a decision the caller had already made.
+	 * p9.h has the three ways that differed and the measurements.
+	 *
+	 * So `rm /mnt/f' now sends Tunlink, where it used to send Tremove.
+	 * That is the common path changing message, and deliberately: for a
+	 * plain file the two are identical at the server -- both reach NI_DEL
+	 * -- so the existing cases are the control that says the new path is
+	 * the old behaviour.  Only a DIRECTORY can tell them apart, and only
+	 * since Tlink gave one a second name.
+	 */
+	if (isdir < 0) {
+		begin(&b, P9_Tunlink);
+		p9_p32(&b, P9CL_FILEFID);
+		rc = xact(fd, &b, P9_Runlink, &r) < 0 ? -1 : 0;
+	} else {
+		begin(&b, P9_Tremove);
+		p9_p32(&b, P9CL_FILEFID);
+		rc = xact(fd, &b, P9_Rremove, &r) < 0 ? -1 : 0;
+	}
+	rawsys1(SYS_close, fd);
+	return (rc);
+}
+
+/*
+ * link -- §8a step 5g, and the only operation in this file that resolves two
+ * names.  Both are already known to be on THIS mount, because v8s_link refuses
+ * a pair of different filesystem types with EXDEV before dispatching; p9rel
+ * failing here would therefore be a bug rather than a cross-device link, and
+ * is reported EIO rather than EXDEV so the two cannot be confused.
+ *
+ * THE ORDER OF THE TWO WALKS IS FORCED.  p9parent leaves FILEFID on the new
+ * name's parent and copies the last component out; walking the existing file
+ * must come AFTER it, onto its own fid, or the second walk would overwrite the
+ * first.  That is the same static-buffer hazard v8s_link records one layer up,
+ * arriving as a fid rather than as a pointer -- two results of one resolver
+ * held at once.
+ */
+static int
+p9_t_link(char *rold, char *rnew)
+{
+	struct p9mnt *m = p9mount();
+	struct p9buf b, r;
+	const char *oldrel, *newrel;
+	char base[P9_NAMELEN];
+	int fd, rc;
+
+	if (m == 0) { v8_errno = V8_ENOENT; return (-1); }
+	if ((oldrel = p9rel(m, rold)) == 0 || (newrel = p9rel(m, rnew)) == 0) {
+		v8_errno = V8_EIO;
+		return (-1);
+	}
+	if ((fd = p9dial(m)) < 0) return (-1);
+	if (p9parent(fd, newrel, base, (long)sizeof base) < 0) {
+		rawsys1(SYS_close, fd);
+		return (-1);
+	}
+	if (p9walkto(fd, oldrel, P9CL_LINKFID) < 0) {
+		rawsys1(SYS_close, fd);
+		return (-1);
+	}
+
+	begin(&b, P9_Tlink);
+	p9_p32(&b, P9CL_FILEFID);		/* dfid -- the new name's parent */
+	p9_p32(&b, P9CL_LINKFID);		/* fid  -- the file being linked */
+	p9_pstr(&b, base);
+	rc = xact(fd, &b, P9_Rlink, &r) < 0 ? -1 : 0;
 	rawsys1(SYS_close, fd);
 	return (rc);
 }
@@ -1493,7 +1618,8 @@ struct v8fstyp v8fs_p9 = {
 	p9_t_stat, p9_t_fstat,
 	p9_t_ioctl,
 	p9_t_access, p9_t_remove, p9_t_mkdir,
-	p9_t_chmod, p9_t_chown, p9_t_utime
+	p9_t_chmod, p9_t_chown, p9_t_utime,
+	p9_t_link
 };
 
 /* ------------------------------------------------------- directory reads */

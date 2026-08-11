@@ -2464,12 +2464,127 @@ other sees. The sweep also matches its own explanation — four files now discus
 the bad cast in prose — so it excludes comments and *prints how many it
 excluded*, because a filter that silently removes things is the next bug.
 
+### A reason that had already been overruled twice
+
+Two operations were still refused on a mount, and one sentence explained both:
+*"Neither is deferred work: 9P2000 has no message for either."*
+
+That sentence is in two files, and it is wrong in a way worth dwelling on,
+because nothing about it looks wrong. It is accurate — 9P2000 really has no
+message for `link` — and it is cited, and it reaches a confident conclusion.
+What it does not notice is that the very same fact had already been ruled the
+other way, twice, in the same file. 9P has no seek, because Plan 9's kernel
+held the offset; this port added `Tseek`. 9P has no `access`, because Plan 9
+has no `access(2)`; this port added `Taccess`. Both times the reasoning was
+written out at length: V7 has the concept, the protocol does not, so number a
+message outside the range a conforming client can use and say why.
+
+The third time, the identical observation became grounds for declining. A
+reason that has already been overruled twice by the file stating it is not a
+reason; it is a habit.
+
+And the two operations were not alike. A V7 filesystem cannot *represent* a
+symbolic link — there is no mode bit for one, which is why `readlink` on a
+mount answers `EINVAL` — so that refusal is permanent and no protocol could
+change it. A V7 filesystem is *built on* hard links: `i_nlink` is a field in
+the inode, `link()` in `sys2.c` is one increment and one `namei`, and the
+kernel arm that does the work had been sitting in the imported tree since the
+import, unreachable only because nothing had ever sent it a request. One of the
+two was a permanent fact about a filesystem format. The other was a gap. The
+sentence had flattened them into a pair.
+
+What kept it flattened is that the loudest consumer fails quietly. `mv` of a
+file, when `link` is refused, forks `/bin/cp` and exits 0 — so the gap reads as
+a slow path rather than a missing feature. `mv` of a *directory* has no such
+fallback: it must relink, and it printed "cannot link" and left the directory
+where it was. The measurement that settled it took ten seconds: create a file
+on the mount, create a directory on the mount, then ask for a link — and get
+back **"Read-only file system"** from a filesystem that had just accepted two
+writes.
+
+### And then link exposed something older
+
+Adding it broke `rmdir`, which is the interesting part.
+
+9P has one `remove` and V7 has two calls. Plan 9 has no `rmdir(2)` at all — its
+`remove` takes anything — so the message carries no flag and the server had
+been deciding from the inode: if it is a directory, do the directory thing.
+That is the right reading of `Tremove` for a foreign client, and the wrong
+answer for V7's `unlink(2)`, which removes a *name* whatever the name points
+at.
+
+It had been wrong from the day the server was written and nothing could see it.
+With no way to give a directory a second name, every directory a client could
+remove had exactly two links, and the two kernel operations differ only above
+two. Adding `link` made the difference reachable, and three separate
+disagreements arrived in the same afternoon: the wrong errno, a directory
+destroyed where V7 would have decremented, and — the one that stings — a
+*failed* removal that decrements the parent's link count on its way to the
+error and never puts it back. That last is Bell Labs' own bug, sitting in
+imported source, and it stays: the rule is that changes to `src/` must be
+forced by the target, and a 1985 bug reproduced faithfully is the point of the
+exercise.
+
+The fix needed a fourth message, and it could not be a plain "remove this
+name", because of a fiction the port had already told. `rmdir(1)` in V7 takes a
+directory apart by hand — unlink `..`, unlink `.`, unlink the directory — and
+this port swallows the first two, because neither macOS nor this server will
+perform them. So by the time the third arrives, two decrements that should have
+happened have not, and a faithful unlink leaves a directory attached to
+nothing. The server therefore asks the only question the two callers actually
+differ on: *does another name reach this directory?* If not, this was its last
+name and removing it destroys it. If so, removing one name is all that was
+asked.
+
+The regression that forced all of this was visible to exactly one instrument.
+The directory listing was right. `icheck` was silent. `dcheck` was silent. Only
+`fsck` said `***** FILE SYSTEM WAS MODIFIED *****`. Three independent readers
+of the same image, and they do not agree about what they can see.
+
+### Two mutations that would not fire, and both were right not to
+
+Nine mutations, seven red. The two that stayed green were the useful ones.
+
+Both had deleted a guard I had written in the new code, and in both cases
+nothing changed because Bell Labs already refuse the same thing one layer down
+— a duplicated `ENOTDIR`, and a rejection of `.` and `..` as a new name. The
+second is the better story, because the comment justifying it was not merely
+redundant but *false*: it warned that without the guard the kernel would
+happily overwrite a live directory's parent pointer. It would not. Upstream
+returns `EEXIST` the moment the name is found, and `..` is always found. The
+guard I had written was less faithful than no guard, and the case I had written
+to cover it was really testing something else entirely.
+
+That is the same shape as the sentence this section opened with — a confident,
+cited claim that nobody had run — arriving three hundred lines and one hour
+later, in code written by someone who had just finished writing about it.
+
+### Two copies of a wrong list agree
+
+One more, because the guard that missed it is a good one. The server turns an
+errno into a name for the wire and the client turns it back, and the suite
+compares the two tables in both directions and requires them to match. They
+matched perfectly. They were both missing the same seven names, so every one of
+those errnos reached the client as a generic I/O error — including the one that
+made a failed unlink report the wrong reason.
+
+Two hand-written copies of one list will agree with each other forever. What
+they cannot do is notice that the list is short. The check is now against a
+third thing that is neither table: a sweep of every errno the imported kernel
+can actually assign. Twenty-two names; the tables had fifteen. And the
+near-miss is instructive on its own — an earlier fix to this exact code had
+found one missing name, added it, and moved on. Auditing the set instead would
+have found the other seven a year ago.
+
 ## What is left
 
 Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix
 into every binary and writes a launcher that drops you at `/` in a world whose
 `/bin`, `/etc`, `pwd` and compiler are all V8's, with the Mac still reachable
-through `PATH`. The filesystem switch, `/proc`, `/dev/fd`, `mkfs`, the raw
+through `PATH`. **Phase 5, the Blit terminal, is dropped** — `sam` and `acme`
+came to macOS natively through Plan 9 from User Space, so the software the Blit
+is remembered for is already here, and the terminal half is solved in a sibling
+project rather than this one. The filesystem switch, `/proc`, `/dev/fd`, `mkfs`, the raw
 image and its ten tools, the stream engine and the tty line discipline are all
 in.
 
