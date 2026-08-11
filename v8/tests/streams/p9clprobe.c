@@ -361,7 +361,7 @@ errnos(const char *dir, const char *file)
 	 * THE PAIR THAT V7 DISTINGUISHES AND A SHORT Rwalk DOES NOT.  namei
 	 * answers ENOENT for a name that is absent from a real directory and
 	 * ENOTDIR for one looked up in something that is not a directory --
-	 * v8fsd.c:699 is the second arm.  A short Rwalk carries no errno, so
+	 * v8fsd.c:1122 is the second arm.  A short Rwalk carries no errno, so
 	 * the client reconstructs it from the last qid; both halves are here
 	 * because a client that simply always said ENOTDIR would pass the
 	 * second case alone.
@@ -563,7 +563,7 @@ links(const char *m)
 
 	/*
 	 * A DIRECTORY, which is the case mv(1) needs and ln(1) will not make.
-	 * Upstream allows it for the superuser only (sys2.c:469) and u_uid is
+	 * Upstream allows it for the superuser only (sys2.c:471) and u_uid is
 	 * 0 here, so it must SUCCEED -- a server that refused would leave
 	 * mvdir with no way to rename a directory at all.
 	 *

@@ -576,7 +576,7 @@ fail:
  * ...BUT WHICH FAILURE IT IS HAS TO BE RECONSTRUCTED, AND THE ABOVE USED TO
  * ANSWER ENOENT FOR BOTH.  V7's namei has two answers, one line apart, and so
  * does this server -- nami.c's "not a directory" arm is do_walk's
- * `if ((ip->i_mode & IFMT) != IFDIR) u.u_error = ENOTDIR' at v8fsd.c:699.  A
+ * `if ((ip->i_mode & IFMT) != IFDIR) u.u_error = ENOTDIR' at v8fsd.c:1122.  A
  * short Rwalk CARRIES NO ERRNO, so that answer is lost on the wire, and
  * `open("/mnt/hello/beyond")' reported ENOENT where a V7 kernel reports
  * ENOTDIR.  Measured with tests/streams' client probe, which is the first thing
@@ -686,7 +686,11 @@ p9walkto(int fd, const char *rel, p9_u32 to)
 			 * across iterations is deliberately not done: it needs a
 			 * path of more than P9_MAXWELEM components AND a server
 			 * that breaks the spec, since a real one answers a
-			 * zero-length walk with an Rerror (v8fsd.c:732-735), so
+			 * walk whose FIRST name fails with an Rerror
+			 * (v8fsd.c:1168-1170) -- a zero-length walk is a
+			 * CLONE and succeeds (v8fsd.c:1172), which is what
+			 * this sentence used to say and what the citation
+			 * beside it pointed at, which was kmkdir -- so
 			 * the state would exist for a case nothing can reach.
 			 *
 			 * p9_gqid returns void and reports an underrun through

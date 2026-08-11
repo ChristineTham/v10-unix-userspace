@@ -345,9 +345,13 @@ v8sys_rootpath(char *p, int mode)
 	 * Returning the path UNCHANGED is what an unclaimed path gets, and it
 	 * is right for the same reason: this function's job is the union with
 	 * the rootfs, and a mount is not in the union.  The syscalls that then
-	 * pass the bare path to the host are guarded separately -- see
-	 * MOUNTED() below, which exists because "the host probably has no
-	 * /mnt" is not a guarantee anyone made.
+	 * pass the bare path to the host are guarded separately -- each in
+	 * its own arm now, because "the host probably has no /mnt" is not a
+	 * guarantee anyone made.  This used to say "see MOUNTED() below";
+	 * §8a step 5g deleted that macro when link took a slot and symlink
+	 * moved to EPERM, and the deletion landed on one line while the line
+	 * explaining why it mattered kept the assumption -- the exact shape
+	 * the deletion's own commit message is about.
 	 */
 	if (v8fs_mounted(p)) return (p);
 	if (v8fs_typefor(p) == 0) return (p);
@@ -490,7 +494,7 @@ mkpath(char *p)
  *
  * symlink keeps its refusal and loses its EROFS -- see the note there for why
  * EPERM is the true word, which is v8s_mknod's distinction applied one line
- * further along.
+ * further along.  It spells v8fs_mounted() directly; there is no macro.
  *
  * AND THE MOUNTED() MACRO IS GONE WITH IT, WHICH THIS COMMENT ARGUED AGAINST
  * FOR ABOUT AN HOUR.  The draft kept it, dead, "so that the next slotless

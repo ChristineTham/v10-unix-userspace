@@ -2383,7 +2383,7 @@ check "and dup2 shares the offset as well"	"from"	"$(cq dup2-shares-offset-too)"
 # --- 4. THE ERRNOS THAT CROSS THE WIRE --------------------------------------
 #
 # V7's namei has two answers one line apart and so does this server
-# (v8fsd.c:699), but a SHORT Rwalk carries no errno -- so the reason is lost
+# (v8fsd.c:1122), but a SHORT Rwalk carries no errno -- so the reason is lost
 # unless the client reconstructs it from the last qid.  It did not, and
 # `open("/mnt/hello/beyond")' reported ENOENT where a V7 kernel reports ENOTDIR.
 # Found here, fixed in p9walk.

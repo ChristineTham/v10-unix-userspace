@@ -595,7 +595,7 @@ pair satisfies that by accident. The mutation now fires on five cases.
 
 A short Rwalk carries no errno. `namei` has two answers one line apart and so
 does this server — `do_walk`'s `if ((ip->i_mode & IFMT) != IFDIR) u.u_error =
-ENOTDIR` at `v8fsd.c:699` — but the reply cannot say which, so `p9walk`
+ENOTDIR` at `v8fsd.c:1122` — but the reply cannot say which, so `p9walk`
 flattened both to `ENOENT`.
 
 The information is in the qids the reply carries, which `p9walk` was discarding:

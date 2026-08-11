@@ -207,8 +207,10 @@ extern dev_t	rootdev;
  * param.h maps `time' to v8k_time so the variable does not collide with
  * libv8stubs' time(2); hostok.h #undefs that so this file can have <unistd.h>.
  * Between them, the kernel's most-read global has no unqualified spelling in
- * this translation unit -- so it is named once, here, and kmkdir below is the
- * one place that needs its address.
+ * this translation unit -- so it is named once, here, and kmkdir and klink
+ * below are the two places that need its address.  It was ONE until §8a step
+ * 5g, and a count inside a trap warning is the worst kind to let go stale: a
+ * reader who takes "the one place" literally stops checking at the first.
  */
 extern time_t	v8k_time;
 
@@ -821,7 +823,7 @@ klink(struct inode *dir, char *name, struct inode *ip)
 
 	u.u_error = 0;
 	if ((ip->i_mode & IFMT) == IFDIR && !suser())
-		return (-1);	/* suser() SET u_error = EPERM itself: v8fs.c:535 */
+		return (-1);	/* suser() SET u_error = EPERM itself: v8fs.c:534 */
 	strncpy(buf, name, sizeof buf - 1);
 	buf[sizeof buf - 1] = '\0';
 
@@ -1732,18 +1734,30 @@ removeop(struct conn *c, p9_u32 tag, struct p9buf *in, int askinode, int rtype)
 		 *   icheck and dcheck were both silent.
 		 *
 		 *   AND mv(1) UNLINKS A DIRECTORY THAT IT HAS JUST GIVEN A
-		 *   SECOND NAME.  mv.c:232-236 is link-then-unlink, and there
+		 *   SECOND NAME.  mv.c:232-240 is link-then-unlink, and there
 		 *   NI_RMDIR is simply wrong: nami.c:363 answers EBUSY above
 		 *   i_nlink 2, and nami.c:361 has already decremented the
 		 *   PARENT by then and does not put it back on the error path.
 		 *
 		 * The discriminator is not invented, it is the question the two
-		 * cases actually differ on: DOES ANOTHER NAME REACH THIS
-		 * DIRECTORY?  At i_nlink <= 2 the entry being removed is its
-		 * last, so removing it destroys the directory and NI_RMDIR --
-		 * which zeroes i_nlink and frees the inode -- is what the
-		 * caller must mean.  Above 2 another name survives, so NI_DEL
-		 * is the only answer that is not data loss.
+		 * cases actually differ on.  At i_nlink <= 2 the entry being
+		 * removed is the directory's last NAME, so removing it destroys
+		 * the directory and NI_RMDIR -- which zeroes i_nlink and frees
+		 * the inode -- is what the caller must mean.
+		 *
+		 * AND THE DRAFT PHRASED THE TEST AS "DOES ANOTHER NAME REACH
+		 * THIS DIRECTORY?", WHICH IS NOT WHAT i_nlink COUNTS.  It is
+		 * 2 + one per SUBDIRECTORY (each subdirectory's `..' is a
+		 * reference) + one per extra name.  So a directory with one
+		 * name and one subdirectory is at 3 with no other name, and
+		 * takes the NI_DEL arm.  That answer is V7-FAITHFUL -- it is
+		 * exactly what unlink(2) does upstream to a non-empty
+		 * directory, and why rmdir(1) was setuid root -- so the
+		 * behaviour stands and only the sentence was wrong.  Nothing
+		 * shipped reaches it: rmdir(1) refuses a non-empty directory
+		 * at rmdir.c:79 and rm -r execs rmdir after emptying.  A
+		 * foreign client can, and gets V7's answer, which fsck calls
+		 * UNREF DIR and repairs.
 		 *
 		 * A PLAIN FILE NEVER REACHES THIS, and Tremove never does
 		 * either: Tremove is Plan 9's remove and keeps asking the
@@ -1783,9 +1797,19 @@ removeop(struct conn *c, p9_u32 tag, struct p9buf *in, int askinode, int rtype)
  * the blocks -- must not exist twice.  Each of those three was a bug once, and
  * a second copy is a second chance to fix only one of them.
  *
- * `askinode' IS THE WHOLE DIFFERENCE.  Tremove asks the inode whether it is a
- * directory (Plan 9's rule, and the right reading for a foreign client);
- * Tunlink never asks, because V7's unlink(2) is NI_DEL whatever it names.
+ * `askinode' IS NOT THE WHOLE DIFFERENCE, AND THE DRAFT OF THIS SENTENCE SAID
+ * IT WAS.  It claimed Tunlink "never asks, because V7's unlink(2) is NI_DEL
+ * whatever it names" -- which describes a design that did not survive its own
+ * first test run.  Tunlink asks TWICE: the mode at :1751, then i_nlink at
+ * :1752, and on the common path (an ordinary empty directory) it comes out
+ * NI_RMDIR.  The block above argues at length for exactly that, so the summary
+ * contradicted the reasoning three lines below it, and a reader trusting the
+ * summary would conclude the `<= 2' line is dead and delete it -- which is the
+ * rmdir(1) regression only fsck caught.
+ *
+ * What askinode actually selects is WHOSE RULE decides: Tremove asks the inode
+ * and stops there, which is Plan 9's rule and the right reading for a foreign
+ * client; Tunlink then asks the second question this port has to answer.
  */
 static void
 do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
@@ -2140,10 +2164,15 @@ do_access(struct conn *c, p9_u32 tag, struct p9buf *in)
  * What is left is genuinely this layer's:
  *
  *	EBADF     an unknown fid.  A protocol fact, invisible to namei.
- *	EINVAL    an empty or over-DIRSIZ name.  Also protocol: fsnami compares
- *		  DIRSIZ bytes and would SILENTLY TRUNCATE a longer one, which
- *		  is a wrong answer rather than a refusal.  do_create has the
- *		  same check for the same reason.
+ *	EINVAL    an empty or over-DIRSIZ name.  Protocol-level, and worth
+ *		  keeping -- but NOT for the reason first written here, which
+ *		  was that fsnami "would SILENTLY TRUNCATE a longer one".  It
+ *		  does not: nami.c:233-240 breaks with ENOENT the moment a
+ *		  component reaches DIRSIZ.  So upstream refuses too, and this
+ *		  guard buys only the better ERRNO -- a name too long for the
+ *		  protocol is not "no such file".  Third guard in this diff
+ *		  justified by a mechanism upstream does not have; the claim
+ *		  was copied from do_create's copy of it, not derived.
  *	EROFS     the mount flag, checked before anything is touched, exactly
  *		  as do_create and removeop check it.
  *

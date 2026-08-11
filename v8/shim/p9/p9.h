@@ -270,8 +270,15 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
  *   -- src/sys is imported and a change there must be forced by the target.
  *   What is fixed is this port sending a message the caller never asked for.
  *
- * So: two syscalls, two messages.  Tunlink is unlink(2) -- always NI_DEL --
- * and Tremove keeps its conforming Plan 9 meaning for anyone else.  It
+ * So: two syscalls, two messages.  Tunlink is unlink(2) and Tremove keeps its
+ * conforming Plan 9 meaning for anyone else.
+ *
+ * THIS SENTENCE SAID "Tunlink is unlink(2) -- ALWAYS NI_DEL --" and that is
+ * not what shipped.  v8fsd's removeop has to reconcile V7's unlink with a
+ * fiction the client already tells (dotlink() absorbs rmdir(1)'s two dot
+ * unlinks), so on a directory it asks whether this is the last name.  The
+ * argument is in removeop; what matters here is that the wire message does not
+ * carry the decision, so no reader of this header should think it does.  It
  * carries a fid and nothing else, exactly as Tremove does, and clunks it the
  * same way whatever the outcome.
  */
