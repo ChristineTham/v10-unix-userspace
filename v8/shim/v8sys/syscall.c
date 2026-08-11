@@ -490,9 +490,18 @@ mkpath(char *p)
  *
  * symlink keeps its refusal and loses its EROFS -- see the note there for why
  * EPERM is the true word, which is v8s_mknod's distinction applied one line
- * further along.  MOUNTED() itself is now dead and is kept only so that the
- * next slotless syscall has the spelling to hand; if a second thing ever wants
- * it, that is the moment to ask whether it is EROFS or EPERM.
+ * further along.
+ *
+ * AND THE MOUNTED() MACRO IS GONE WITH IT, WHICH THIS COMMENT ARGUED AGAINST
+ * FOR ABOUT AN HOUR.  The draft kept it, dead, "so that the next slotless
+ * syscall has the spelling to hand" -- which is word for word the excuse this
+ * repository rejects.  §8a step 5f-b had just deleted four declarations under
+ * a paragraph reading "a declaration with no call site is an unconsumed
+ * component", and recorded that the fix for one is not a better version of it.
+ * A macro with no expansion is the same shape, and keeping it would have left
+ * a spelling of EROFS lying about for the next author to reach for at exactly
+ * the moment they should be asking whether EROFS is true.  Measured before
+ * deleting: zero call sites, every other occurrence in prose.
  *
  * EIGHT ANSWER THROUGH A SLOT, and mknod is a ninth with one arm in each camp.
  * §8a step 5f gave access, unlink, mkdir and rmdir one, along with mknod's
@@ -519,9 +528,6 @@ mkpath(char *p)
  */
 int v8s_getuid(void);
 int v8s_getgid(void);
-
-#define MOUNTED(p)	do { if (v8fs_mounted(p)) {			\
-				v8_errno = V8_EROFS; return (-1); } } while (0)
 
 /* ------------------------------------------------------- PASSTHROUGH */
 
