@@ -2707,8 +2707,10 @@ Ordered so that value lands before risk, and so each step is testable alone.
    The probe overwrites a block, extends into a new one, extends past block 9
    so the indirect block is made too, creates a file **by name**, writes
    several hundred blocks into it, deletes it, and flushes with
-   `update()`/`bflush()`. 315 -> 372 cases; the tree is **1767 across 17
-   suites**.
+   `update()`/`bflush()`. 315 -> 372 cases; the tree stood at **1767 across 17
+   suites** on the day of that step -- past tense on purpose, because this is a
+   record of a moment and not a claim about now, and two copies of that same
+   number elsewhere had gone stale reading as current.
 
    The instrument is the superblock's own `s_tfree`/`s_tinode` rather than a
    count of device writes, and the strongest pair is the round trip: after the
@@ -3035,10 +3037,20 @@ That number said **1767** for long enough to be worth a note rather than a
 correction. It is not a count anybody maintains: it is printed by the suites on
 every run and transcribed here by hand, so it decays in one direction only —
 downwards, because work only ever adds cases — and a stale one reads as
-plausible forever. CLAUDE.md's copy was current at 2108 the whole time, which
-is the tell: **two hand-transcribed copies of one measurement will not go stale
-together**, and the disagreement is the only signal either of them can give.
-Re-derive it rather than editing it:
+plausible forever.
+
+**And the first version of this note drew the wrong lesson from it, within the
+hour.** It said CLAUDE.md's copy had stayed current at 2108, and concluded that
+*"two hand-transcribed copies of one measurement will not go stale together"*.
+Then a grep found a **third** copy — `ARTICLE.md:30`, "1767 tests across 17
+suites" — stale at exactly the same number. Two of the three had gone stale
+together, which is the thing the sentence said could not happen.
+
+The real rule is duller and more useful: **copies written at the same moment
+decay together, and only a copy that is independently maintained can disagree.**
+CLAUDE.md stayed current because it is the file loaded into every session, not
+because three copies police each other. So disagreement is a *sufficient*
+signal and never a necessary one, and the only reliable answer is to re-derive:
 
 ```bash
 make test 2>&1 | awk -F'[ ,]+' '/passed, [0-9]+ failed/{p+=$2; f+=$4; n++} END{print n" suites, "p" passed, "f" failed"}'

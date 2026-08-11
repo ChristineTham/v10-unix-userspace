@@ -1636,7 +1636,9 @@ Step 5c drove `namei -> fsnami -> dsearch -> iget -> bmap -> readi -> bread`
 and left every one of their siblings unexecuted. Step 5d runs them: `writei`,
 **`bmap`'s allocating arm**, `alloc()` and `free()`, `ialloc()` and `ifree()`,
 `itrunc`, and `nami.c`'s `NI_CREAT` and `NI_DEL`. `streams` 315 -> 372; the
-tree is 1767 cases across 17 suites.
+tree stood at 1767 cases across 17 suites on the day of that step.  Past tense
+on purpose: a number in a step's narrative is a record of a moment, and the two
+places that phrased the same figure in the present tense both went stale.
 
 **AND IT NEEDED NO CHANGE TO ONE LINE OF BELL LABS' CODE.** The whole step is
 `shim/` and `tests/`: `git diff --stat` touches five shim files, three test
