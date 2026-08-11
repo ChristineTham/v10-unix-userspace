@@ -3040,6 +3040,49 @@ if [ "$wready" = 1 ]; then
 	w8 "$RM" /mnt/mvdst/f >/dev/null 2>&1
 	w8 "$ROOT/rootfs/bin/rmdir" /mnt/mvdst >/dev/null 2>&1
 
+	# ...AND THE CROSS-DIRECTORY MOVE MUST FAIL, WHICH THE CASE ABOVE
+	# CANNOT SEE.  mv.c:192 branches on whether the two parents are the
+	# same inode: with both names in the root it takes the short path
+	# (link, unlink) and `..' legitimately does not move.  Only a move
+	# BETWEEN directories reaches mvdir's four-call sequence, where the
+	# third and fourth calls repoint `..'.
+	#
+	# Those two are absorbed by syscall.c's dotlink(), which was written
+	# for mkdir(1) and rmdir(1) -- where succeeding-and-doing-nothing is
+	# the truth -- and is a LIE for mv, whose whole purpose in them is to
+	# CHANGE what `..' means.  Before link had a slot the sequence died at
+	# its first call; §8a step 5g made it run to completion and it
+	# returned 0 with `..' still pointing at the OLD parent.  Found by the
+	# lp64-auditor on the diff, measured, and NOT VISIBLE TO ANY CHECKER --
+	# icheck and dcheck stay silent because the link counts remain
+	# perfectly consistent with the wrong `..'.
+	#
+	# So the assertion is a REFUSAL plus a ROLLBACK, not just a nonzero
+	# exit: mv.c:218-219 relinks the old name and unlinks the new when the
+	# `..' unlink fails, so the tree must come back exactly as it was.
+	w8 "$ROOT/rootfs/bin/mkdir" /mnt/xa >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/mkdir" /mnt/xb >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/mkdir" /mnt/xa/d >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/sh" -c 'echo deep > /mnt/xa/d/f' >/dev/null 2>&1
+	check "mv of a directory ACROSS directories is refused"	"1" \
+		"$(w8 "$ROOT/rootfs/bin/mv" /mnt/xa/d /mnt/xb/d >/dev/null 2>&1; echo $?)"
+	check "...and mv rolled the move back"			"deep" \
+		"$(w8 "$CAT" /mnt/xa/d/f 2>/dev/null)"
+	check "...leaving nothing at the destination"		"1" \
+		"$(w8 "$CAT" /mnt/xb/d/f >/dev/null 2>&1; echo $?)"
+	# THE POINT OF THE WHOLE GUARD: `..' still names the real parent.  This
+	# is the assertion that would have gone red on the silent version, and
+	# `ls -id' is the only instrument that can make it -- the checkers
+	# cannot, and a directory listing cannot either.
+	check "...and .. still names the directory it is in"	"same" \
+		"$(a=$(w8 "$LS" -id /mnt/xa 2>/dev/null | awk '{print $1}')
+		   p=$(w8 "$LS" -id /mnt/xa/d/.. 2>/dev/null | awk '{print $1}')
+		   [ -n "$a" ] && [ "$a" = "$p" ] && echo same || echo "a=$a dotdot=$p")"
+	w8 "$RM" /mnt/xa/d/f >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/rmdir" /mnt/xa/d >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/rmdir" /mnt/xa >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/rmdir" /mnt/xb >/dev/null 2>&1
+
 	# ...AND rmdir(1) STILL WORKS, which is the control the directory-move
 	# needed and nearly cost.  rmdir(1) is three unlinks (rmdir.c:105,108,
 	# 110) and syscall.c's dotlink() absorbs the first two, so the third has

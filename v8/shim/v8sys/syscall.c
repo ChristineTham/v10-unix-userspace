@@ -769,6 +769,50 @@ int v8s_unlink(char *p)
 		for (i = 0; i < b; i++) par[i] = p[i];
 		par[b] = '\0';
 		if (b == 0) return (0);			/* bare "." or ".." */
+		/*
+		 * ...BUT NOT ON A MOUNT, AND §8a step 5g's OWN AUDIT IS WHY.
+		 *
+		 * Succeeding-and-doing-nothing is the truth for the caller this
+		 * arm was written for -- mkdir(1) and rmdir(1), where `.' and
+		 * `..' are made and destroyed with the directory and the entry
+		 * really does already exist with the meaning the caller wanted.
+		 * It is a LIE for mv(1), whose entire purpose in these two
+		 * calls is to CHANGE what `..' means, and the predicate looks
+		 * only at the basename so it cannot tell them apart.
+		 *
+		 * Before link had a slot this never fired: mvdir's first step
+		 * was refused, loudly, and mv stopped.  5g made the whole
+		 * sequence reachable and it then ran to completion returning 0
+		 * with `..' still pointing at the OLD parent.  Measured --
+		 * a=102, b=101, `mv /mnt/a/d /mnt/b/d' exits 0 and `b/d/..'
+		 * reads 102, so `ls /mnt/b/d/..' lists an empty `a'.  And
+		 * NOTHING SEES IT: icheck and dcheck are silent, because the
+		 * link counts stay perfectly consistent with the wrong `..'.
+		 * A silently wrong filesystem, where a refusal stood before.
+		 *
+		 * REFUSING THE UNLINK IS WHAT MAKES mv ROLL BACK, and that is
+		 * the whole reason the guard goes here rather than on the link
+		 * beside it.  mv.c:216 is the FIRST of the two `..' calls, and
+		 * its failure arm at :218-219 relinks the old name and unlinks
+		 * the new -- so the directory goes back exactly where it was
+		 * and `..' is never touched.  Failing the link at :222 instead
+		 * would leave the move half done.
+		 *
+		 * AND IT COSTS THE OTHER TWO CALLERS NOTHING, which is measured
+		 * rather than hoped: rmdir(1) IGNORES both dot unlinks
+		 * (rmdir.c:105 and :108 are bare `unlink(name);', only the
+		 * third is checked), and mkdir(1) uses link(2) for both of its
+		 * and never comes here at all.
+		 *
+		 * EINVAL rather than EPERM or EROFS: the filesystem takes
+		 * writes and the caller has the right to ask, but "remove the
+		 * `..' of a live directory" is not a request this server can
+		 * be given -- there is no Tunlink that names it.
+		 */
+		if (v8fs_mounted(p)) {
+			v8_errno = V8_EINVAL;
+			return (-1);
+		}
 		if (v8s_stat(par, &st) == 0 &&
 		    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
 			return (0);
