@@ -86,9 +86,13 @@ v10-unix-userspace/
 │   └── …                       setjmp.s (front/mid-end stays under src/cmd/ccom)
 ├── tools/                      import script, build glue, test harness
 ├── tests/                      golden-output fixtures; compiler bootstrap checks
-├── rootfs/                     BUILD OUTPUT: v8-style tree (bin, usr/bin, lib, usr/man…)
-└── blitterm/                   Phase 5 Swift app (Xcode project)
+└── rootfs/                     BUILD OUTPUT: v8-style tree (bin, usr/bin, lib, usr/man…)
 ```
+
+(`blitterm/` was here until Phase 5 was dropped. It never existed on disk —
+this listing described the *intended* tree and nothing checked it against the
+real one, which is why a directory that was never created sat in the layout
+diagram for the whole life of the project.)
 
 **Rules:**
 - `third_party/` is read-only reference. Every ported file is *copied* into `src/` by
@@ -1228,9 +1232,30 @@ unanswerable either way, and the sentinel rule still covers it.
 | Games | Source exists only for `bcd`/`morse` (port). The 35 binaries: **unportable** (no source). Note for V10: check its tree. |
 | `compat` (PDP-11 v6/v7 binary emulator!) | Optional curio — would let V6 binaries run on the Mac. Not scheduled. |
 
-## 8. Phase 4 — Blit terminal (`blitterm`, Swift)
+## 8. Phase 5 — Blit terminal (`blitterm`, Swift) — **DROPPED 2026-08-11**
 
-Native macOS app playing the 5620/jerq role. Tiers:
+**Not being built, and the two tiers are dropped for two different reasons.**
+
+Tier 1 is redundant: `sam` and `acme` are in Plan 9 from User Space, so the
+software the Blit is remembered for runs natively on this Mac already, and
+rebuilding a terminal to reach it is effort spent on the frame rather than the
+picture.
+
+Tier 2 is **solved elsewhere** — in `ipad-v8`, a sibling project of this one.
+That distinction is worth keeping rather than collapsing into "dropped",
+because plan9port genuinely does *not* answer Tier 2: it substitutes the
+editors, not the terminal, and the downloaded-program-over-a-serial-line
+architecture has no counterpart in it. So the honest record is that one tier
+was made unnecessary and the other was built somewhere else, and neither is a
+gap in the port.
+
+**And this heading said "Phase 4" while every table in this file said 5.** The
+drift is left visible here because it is the same class as the case count
+above — a number in prose that no build reads, so nothing can disagree with it
+except another copy. Phase 4 is the grovelers; this was always 5.
+
+What it *would* have been, kept because §8a's `/dev/fd` work cites it and
+because Tier 3 is the only place the WE32000 is discussed:
 
 - **Tier 1 (scheduled):** Swift/AppKit app, 800×1024 1-bit portrait bitmap (CGImage-backed,
   scalable), 9×14 cell text frames, mouse+menus, implementing `muxterm` behavior natively.
@@ -1461,7 +1486,10 @@ Ordered so that value lands before risk, and so each step is testable alone.
 1. **Streams.** `streamio.c` is 1093 lines of portable multiplexing -- no MMU,
    no disk, no scheduler. Independent of everything below, highest ceiling,
    and forward-compatible (V10 renames it `io/stream.c`). Unlocks the Datakit
-   and `netfs` work PLAN S7 currently excludes, and feeds blitterm Tier 2.
+   and `netfs` work PLAN S7 currently excludes. (It used to say "and feeds
+   blitterm Tier 2" as well; Tier 2 is dropped, and the streams work stands on
+   the other two reasons — which is why the sentence is trimmed rather than
+   re-argued.)
 
    **The engine is IN -- `dev/stream.c`, byte-identical to upstream.** This is
    the first Bell Labs *kernel* source in the port; `src/sys/PORTING.md` and
@@ -2887,9 +2915,15 @@ Ordered so that value lands before risk, and so each step is testable alone.
    unchecked, and that is V7's own answer.
 
 6. **The SIMH cross-check**, as an acceptance test rather than a CI job.
-7. **FSKit host client**, with Phase 5. Public API since macOS 15.4, no kernel
-   extension; lets the host mount a V8 image in Finder and disposes of the
-   ingest-and-extract problem. Swift-side, so it belongs beside blitterm.
+7. **FSKit host client.** Public API since macOS 15.4, no kernel extension;
+   lets the host mount a V8 image in Finder and disposes of the
+   ingest-and-extract problem. This was scheduled "with Phase 5 ... beside
+   blitterm" purely because both are Swift, and with 5 dropped it loses that
+   companion and nothing else — the *reason* for it was never blitterm. It
+   also got materially cheaper in the meantime without anyone noting it here:
+   §8a step 5e built a 9P server that already answers walk/open/read/write/
+   stat/wstat/create/remove over a socket, so an FSKit extension is a second
+   *client* of `v8fsd` rather than a second implementation of the filesystem.
 8. **V9**, which needs `mk` first -- see S4a. The kernel layout is close enough
    to V8 that steps 1-6 should carry.
 
@@ -2949,12 +2983,17 @@ Rough focused-effort sizing (S≈a day, M≈days, L≈a week+, XL≈weeks):
 | 3C | Wave C doc-prep + man corpus | L | 3A |
 | 3D | Wave D dev tools + lint-the-world | M | 1c |
 | 4 | Grovelers via libkmemu (ps, w, who, df) | M | 2a |
-| 5 | blitterm Tier 1 (Swift) | L–XL | 3B |
+| ~~5~~ | ~~blitterm Tier 1 (Swift)~~ — dropped, see §8 | — | — |
 | 6 | Stretch: jim via Tier 2, upas/Mail, f77, cfront, Datakit-over-TCP | XL each | various |
 
-Critical path: **0 → 1a → 1b → 1c/2b → 3A → 3B → 5**.
+Critical path: **0 → 1a → 1b → 1c/2b → 3A → 3B**, and it ends there now that 5
+is dropped — every rung on it is done, which is what makes §8a the whole of the
+remaining work rather than a branch off it.
 First shippable milestone: *"v8 sh runs in Terminal.app, built by v8cc against v8 libc"* (end of 3B).
-Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
+Second: *"man 1 ls through real troff"* (3C). Both reached. The third used to be
+*"windows on a Blit"*; with 5 dropped it is **§8a's**, and §8a step 5 has already
+passed it — *"V8's own `namei` walks a disk image in another process, and `sh`
+redirects into it"*.
 
 ## 12. Open items (defaults chosen, veto anytime)
 
@@ -2981,8 +3020,8 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 | 3B Wave B | done | The **Bourne shell** runs (`sh` 21/21) — see `src/cmd/sh/PORTING.md`. The file and process tools run too (`waveb` 21/21): `cp`, `mv`, `mkdir`, `rmdir`, `sed`, `ed`, `dc`, `factor`, `primes`, `tsort`. **38 multi-file command directories** compile and link, including `ps`, `w`, `df`, `tbl`, `qed`, `adb`, `yacc`, `man`, `diff3`, `dump`, `su`, `cron`, `compress` |
 | 3C Wave C | **done** | **nroff, troff, tbl, eqn, pic, spell, man, grap and refer all run** (`wavec` 56/56). `tbl \| nroff` formats a table, `eqn \| nroff` sets an equation, `grap \| pic \| troff` draws a graph end to end, and `refer` resolves citations against an index its own `mkey`/`inv` built. eqn, pic and grap are built with **V8's own yacc and lex**, themselves compiled by v8cc. nroff fills and honours `.br`, `.ll`, `.ce`, `.sp`, `.na`; troff emits the device-independent stream for the 202 typesetter, with its tables compiled by `makedev` at build time. See the `PORTING.md` under `troff`, `tbl`, `pic`, `grap` and `refer` |
 | 4 grovelers | **done** | `date`, `who`, `df`, `load`, `w`/`uptime` all run. `who` and `load` needed **no source change at all**; `df` and `w` one recorded deviation each. `ps` was the exception and is now done too, under S8a step 3 rather than here — V8's `ps` is a `/proc` client, not a kmem groveler, which was a plan revision forced by reading it. Only the full form of `w` remains, and it says `No mem` on purpose. See S7 |
-| 5 blitterm | not started | |
-| 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 62/62 |
+| 5 blitterm | **dropped, 2026-08-11** | Decided by the owner rather than by measurement, and **nothing is given up**, which took two passes to establish. Tier 1's *editing* experience is native already: Plan 9 from User Space ships `sam` and `acme`, Rob Pike's own descendants of the Blit's software. That covers Tier 1 and **not** Tier 2, because plan9port is not a 5620 emulator — the Blit ran *downloaded* programs over a serial line under `mux`/`layers` (`proto.h`, `jioctl.h`) and plan9port reimplements none of it. **Tier 2 is solved in a sibling project, `ipad-v8`**, so the two-machine architecture exists as a working artefact and is simply not *this* repository's to build. The caveat is kept rather than deleted because it is still true of plan9port, and it names precisely the part that needed a second answer |
+| 6 installation | done | `make install` stamps the prefix into every binary and writes the `v8` launcher; `jail` 128/128 |
 | 8a.1 streams | **done** | Both halves of Ritchie's stream machinery run on ARM64. `src/sys/dev/stream.c` is byte-identical to upstream; `src/sys/sys/streamio.c` — the syscall side, 1093 lines — carries **two recorded LP64 deviations**, and `tests/streams` diffs it against third_party rather than hashing it, so the deviation list is itself a test. A stream opens, a write goes down the stack and comes back up through `strput` and out of `stread`; the module stack pushes, looks up and pops; FIORCVFD passes a file; a hangup poisons the file table; and `tsleep` blocks in `poll(2)` on a real host descriptor and wakes when the device speaks. `streams` 43 -> 111. Six authentic headers imported, five stand-ins written, fifteen names in four files named after V8's own. See S8a step 1 |
 | 8a.2 fs switch | done | `shim/v8sys/vfs.c`, one mount table, passthrough behind it |
 | 8a.3 `/proc` | done | `ls /proc`, `PIOCGETPR`, the u-area at `UBASE`; `ps` runs |
@@ -2990,7 +3029,20 @@ Second: *"man 1 ls through real troff"* (3C). Third: *"windows on a Blit"* (5).
 
 | 8a.5 v8fs | **the mount works, is probed, and WRITES** | V8's own filesystem code RUNS. Step 5c reads: `mkfs(8)` writes an image and Bell Labs' kernel walks `namei → fsnami → dsearch → iget → bmap → readi → bread` to a driver, with `cmp` confirming 28000 bytes two directories down and 28 blocks long — so a subdirectory and `bmap`'s **indirect** arm. Step 5d writes: `writei`, `bmap`'s **allocating** arm, `alloc()`/`free()` including the **free-list chain**, `ialloc()`/`ifree()`, `itrunc`, and `namei` with `NI_CREAT`/`NI_DEL` — a file created by name, grown past the superblock's cached free list, deleted, and the accounting exactly restored. The acceptance test is **icheck, dcheck and fsck**, three programs that know nothing about the probe. `streams` 111 → 372. Six imported files, one new stand-in (`shim/kern/sys/main.c`, for `sys/main.c` + `machdep.c` + `param.c`). **No MOUNT, and step 5e costed it and found it needs the SERVER**: a fourth type in `vfs.c` would have to link `libv8kern` into every client, and that is **56 symbol collisions over 29 programs, 25 of them silent** — `cat`'s `char buf[4096]` becomes an eight-byte pointer and the program exits 0 having overwritten the buffer cache's own pointers. Independently, `vfs.c:167` had already recorded that the descriptor table does not survive `exec`, so `> /mnt/f` could never work in the client. Both roads lead to the 9P server this section opens with. **Step 5e then BUILT it**: `shim/v8fsd/v8fsd.c` is a host binary that links `libv8kern`, holds an image open and answers 9P2000 on a Unix socket — Tversion/Tattach/Twalk/Topen/Tread/Tclunk/Tstat/Tflush, with the write half answering `EROFS` until step 5f. `tests/streams/p9probe.c` walks to a file two directories down, reads 28000 bytes over the wire and `cmp` says they are the ones that went in; `streams` 372 → 412. Three things the costing did not predict: **a driver set belongs to a CONFIGURATION rather than to the kernel library** (putting `imgdev.o` in the archive made it import `_pread`/`_pwrite` and broke the externals guard, so it goes on the link line, and the probe and the server now share one driver); **one process suffices only because nothing sleeps** (the synchronous driver means `iowait` at `bio.c:426` finds `B_DONE` set, so a request completes between two `poll()` returns); and **the connection deadline must apply only mid-message**, since a connection here IS an open file and may idle as long as the program holds it. **And step 5e then closed with the CLIENT**, `shim/v8sys/p9cl.c`, a fourth type in the switch: with `V8MOUNT=/mnt=sock`, `rootfs/bin/cat /mnt/sub/deep` returns 28000 bytes byte-identical to what `mkfs` was handed, and `ls`, `tail`, `wc`, `grep` and `sh` redirection all work unmodified. `streams` 412 → 449. The design is one sentence — **the connection IS the open file description** — and everything follows: one `connect()` per `open(2)`, so the object Unix shares across `dup` and `fork` and carries through a program replacing its image has an exact counterpart on the wire; the fid is therefore a **constant**; the offset lives **on the server**; and the client holds no per-descriptor state for a regular file at all, which is why an inherited descriptor works. That exposed **the one thing 9P has no message for**: 9P is a pread protocol because Plan 9's *kernel* held the offset, and there is no kernel here — so a fid has a cursor, `P9_OFFCUR` uses and advances it, and `Tseek`/`Rseek` (numbered outside 100..127) read and set it. `tail(1)`, a 1985 program, exercises it. Three bugs no probe could have found: **a `Tclunk` in `t_close`** destroyed the fid every `dup` shares, so `cat < /mnt/hello` printed nothing — a clunk is not `close(2)`, it is the *last* close, and the right number is zero; **a directory read carries BARE stat structures** while only `Rstat` has the outer count, which presented as `ls: /mnt unreadable`; and **a directory's `st_size` is the snapshot's length**, `dir.c:114`'s rule needing to be applied a second time in a second filesystem. Descriptor identification moved from the process table to **`getpeername(2)`**, because the table dies with the image and a raw `read` on a 9P socket *hangs* rather than answering wrong. The eleven slotless entry points now refuse a mounted path with `EROFS` rather than reaching the host — `rootpath()` no longer prepends `$V8ROOT` for a mount, so without the guard `rm /mnt/x` would ask the Mac. `access()` is implemented over `t_stat`; `readlink` is `EINVAL`; **`chdir` is the one genuine gap**, since nothing tracks a working directory. **A SECOND PASS THEN BUILT THE PROBE THOSE CASES COULD NOT BE**: the shipped binaries are the right headline claim and they reach neither `fstat` on a directory descriptor, nor `lseek` in three whences, nor `dup` sharing one offset. `tests/streams/p9clprobe.c` is the shim's own sources in a host binary (the `tests/v8sys/test.c` shape, built by the Makefile so `$(SHIM_SRC)` is not spelled twice), and it found four things beyond the three it was written for. The **vacuous** guard has an observable after all -- `stat` and `fstat` on a directory *deliberately disagree*, and nothing had asked both; the pair recorded in the comment (64/768) was arithmetically impossible and described no directory, so the case asserts a **ratio** over two directories instead. `p9walk` answered **ENOENT where V7 answers ENOTDIR**, because a short Rwalk carries no errno -- reconstructed from the qids it was discarding, and guarded by three cases, the middle one being the discriminator a one-sided fix would pass. A **transport was leaking its signal semantics into the filesystem**: a server that died raised SIGPIPE and *killed* `cat` where a V8 disk gives `EIO`, fixed with per-socket `SO_NOSIGPIPE` (never `SIG_IGN`, which would stop `yes | head` terminating) and tested with `shutdown(2)` on the client's own descriptor. And a mutation that **would not fire for a third reason** -- `do_seek`'s overflow guard is about undefined behaviour that happens to give the right answer, invisible to any behavioural test -- so the suite now runs its traffic through a **UBSan build of the server**, silent today and fatal with the guard reverted. `streams` 449 -> 535; nine mutations, nine fire. **AND STEP 5f MADE IT WRITABLE**, which began by re-measuring the claim that it was not: `readi` sets `IACC`, so `iput` ran `IUPDAT` and dirtied the disk inode on every read, and "read only" had described the protocol rather than the filesystem. The recorded finding named two accidents hiding it and an instrumented driver corrected both -- `O_RDONLY` was doing **no work at all** (O_RDWR with no flush is zero pwrites across twenty-two reads), and the third accident nobody had named is that **the clock is frozen**: `time` is set once from `s_time` and `mkfs` stamps every inode with that number, so the write stores the bytes already there and no comparison of the image can see it. Perturb one `di_atime` and exactly four bytes move. So 5f is four things: the clock advances (`v8fs_clock()`, a raw `gettimeofday` because `libv8kern` may name no libc function); read-only becomes a MOUNT FLAG with Bell Labs' own two lines from `fsmount()` (`d_open(dev, !ronly)` and `s_ronly = ronly & 1`), so `v8fsd -r` stops even an atime; `update()` runs once per poll wakeup, which is `sync(2)`'s body; and then Twrite, Tcreate with `DMDIR`, Tremove, Twstat and **`Taccess`, a second extension for the same reason as `Tseek`** -- 9P has no `access(2)` because Plan 9 has none, and the client had been wrong about permission in both directions available to it. `sh -c 'echo x > /mnt/fresh'` now creates a file on a disk image through `namei`/`ialloc`/`writei` in another process, `mkdir`/`rm`/`rmdir`/`cat a > b` work, and the three checkers say clean with the block count back to exactly where it started. Four defects were found by RUNNING it rather than reading it: `iupdat(ip, &time, &time, 1)` transcribed verbatim passes **the address of libc's `time()`** in a file that includes `hostok.h`; `itrunc` already zeroes `i_size` and clears the flags on purpose, so a draft that repeated both undid upstream's crash-consistency reasoning; `do_remove` took the ROOT as the parent, so `rm /mnt/d/f` unlinked from the wrong directory; and the target must be `iput` before the remove or every deleted file leaks its blocks. `streams` 535 -> 567; eight mutations, eight fire -- the one that would not fire needed a case that writes TWICE through one descriptor, since `echo` writes once. **AND STEP 5f-b GAVE chmod, chown AND utime THEIR SLOTS**, which are one `Twstat` between them, leaving only `link` and `symlink` refusing. Reading `sys4.c` and `fio.c` first found three deviations in the server's existing arms and one missing one, all invisible because `u_uid` is 0: `chmod` and `utime` gate on `owner(1)` -- ownership OR superuser -- where the code tested `suser()` alone **while the comment above it claimed ownership** and cited `sys3.c`, which is `fsmount`; upstream strips ISVTX for a non-root `chmod`; upstream's `utime` sets `IACC|IUPD|ICHG` and the arm set two. The missing arm is `s_atime`, declined earlier because "nothing in this world sets atime alone" -- true, and it never covered **`mv`, which sets both**: `mv.c:129` is `utime(target, &s1.st_atime)`, taking one `struct stat` field's address and relying on adjacency for a `time_t[2]`, and on a mount it is the ONLY path because `link(2)` is refused, so mv always forks `/bin/cp` and then utimes the copy. Declining an arm because nothing sets a field *alone* is a different claim from nothing setting it at all. The auditor's best find was **the two ends of one wire an hour apart**: `do_wstat` parsed the owner with `atoi`, which has no error return, so `"nobody"` and `"--"` both set the inode's uid to **0, root** -- the identity `fio.c:193` lets bypass every check -- and got an Rwstat back, while the *reading* end of the same field had had the guard since an earlier audit with the contract spelled out beside it. Range is not parseability, and only the second is guarded: `"65536"` truncates because `sys4.c:294` is `ip->i_uid = uap->uid` unchecked. Nothing could have caught it -- `do_wstat` had no client caller until this step -- so the case is a new `-w` mode in `p9probe`, since no V8 program can send a name. Also: `p9_pstatw()` and `p9_nostat()` exist because a second hand-rolled copy of 9P's double-length patch is how two ends of a protocol drift by two bytes; four dead declarations shared a line with two live ones directly under a paragraph saying "a declaration with no call site is an unconsumed component", and the one that mattered was `iinit`, which **5f itself had changed** to `void iinit(int)` while the declaration still said `int iinit()`. `streams` 567 -> 592; eight mutations, eight fire, and one case was found VACUOUS FOR TWO INDEPENDENT REASONS -- `ls` renders an unknown file type as `-`, and `p9tostat` rebuilds the type from `DMDIR` rather than passing the server's IFMT through, so the guard had to move to a directory. See S8a step 5 |
 
-`make test` runs everything — seventeen suites, **1767 cases**.
+`make test` runs everything — seventeen suites, **2108 cases**.
+
+That number said **1767** for long enough to be worth a note rather than a
+correction. It is not a count anybody maintains: it is printed by the suites on
+every run and transcribed here by hand, so it decays in one direction only —
+downwards, because work only ever adds cases — and a stale one reads as
+plausible forever. CLAUDE.md's copy was current at 2108 the whole time, which
+is the tell: **two hand-transcribed copies of one measurement will not go stale
+together**, and the disagreement is the only signal either of them can give.
+Re-derive it rather than editing it:
+
+```bash
+make test 2>&1 | awk -F'[ ,]+' '/passed, [0-9]+ failed/{p+=$2; f+=$4; n++} END{print n" suites, "p" passed, "f" failed"}'
+```
 
 ### What actually works today
 

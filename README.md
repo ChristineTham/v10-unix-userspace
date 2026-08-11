@@ -46,7 +46,12 @@ Note what is **not** per-release even though it sits inside one.
 `shim/libkmemu/` are about macOS. A V9 tree inherits their content. The split is
 by what varies, and those vary with the *host*, not with the edition.
 
-Planned, not yet present: `blitterm/` (Swift Blit/5620 terminal app, Phase 5).
+This listing used to end "planned, not yet present: `blitterm/` (Swift
+Blit/5620 terminal app, Phase 5)". **Phase 5 is dropped, and nothing is lost
+with it** — for two different reasons, which PLAN.md §8 keeps apart. The
+*editing* half is redundant: `sam` and `acme` reached macOS natively through
+Plan 9 from User Space. The *terminal* half is not answered by plan9port at all
+— it is no 5620 emulator — and is solved in a sibling project, `ipad-v8`.
 
 ## Importing upstream files
 

@@ -194,10 +194,46 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
  * "may I" is a question whose negative answer IS an errno.  Numbered beside
  * Tseek and outside 100..127 for the same reason.
  */
+ * ------------------------------------------------- AND THE THIRD, WHICH THE
+ * ABSENCE OF THE FIRST TWO WAS BEING USED AS A REASON NOT TO ADD.  9P HAS NO
+ * LINK, and syscall.c and vfs.h both recorded that as a reason link(2) was
+ * "not deferred work" -- alongside symlink, whose refusal is permanent.  But
+ * "9P2000 has no message for it" is the exact situation that produced Tseek
+ * and Taccess above.  Twice the answer to a missing message was to add one;
+ * the third time it was written down as grounds for refusing.  The two cases
+ * are not alike and the sentence had flattened them:
+ *
+ *	symlink  A V7 filesystem CANNOT REPRESENT one.  There is no i_mode
+ *		 for it, readlink(2) is EINVAL here for the same reason, and
+ *		 no message could change that.  Permanent, and correctly so.
+ *
+ *	link     A V7 filesystem IS BUILT ON hard links.  i_nlink is a field
+ *		 in the inode, sys/sys2.c:458's link() is `ip->i_nlink++'
+ *		 followed by a namei with NI_LINK, and nami.c:484's NI_LINK
+ *		 arm IS ALREADY IN THE IMPORTED TREE, unreachable only because
+ *		 nothing sent it a request.  That is chdir's shape -- a real
+ *		 gap -- not symlink's.
+ *
+ * AND THE COST OF LEAVING IT WAS NOT A SLOW PATH.  Measured against a server
+ * that had just accepted `echo > /mnt/f' and `mkdir /mnt/d': `ln /mnt/f
+ * /mnt/g' answered "Read-only file system", and `mv' of a DIRECTORY failed
+ * outright -- mv.c's mvdir() at :204 has no fork-and-cp fallback, so it
+ * printed "mv: cannot link" and left the directory where it was.  Only mv of a
+ * plain FILE degraded gracefully, and that is what made this look cosmetic.
+ *
+ * Tlink carries dfid (the new name's parent), fid (the existing file) and the
+ * name, which is 9P2000.L's field order -- borrowed because it is the closest
+ * real precedent, and numbered outside 100..127 with the other two rather than
+ * at .L's 70, so that no conforming client can collide and nothing here claims
+ * to speak .L.  Rlink carries nothing: like Raccess, the negative answer is an
+ * errno and 9P already has Rerror for those.
+ */
 #define P9_Tseek	128
 #define P9_Rseek	129
 #define P9_Taccess	130
 #define P9_Raccess	131
+#define P9_Tlink	132
+#define P9_Rlink	133
 
 /*
  * Taccess mode, which is V7's access(2) numbering exactly.  sys/sys2.c:541-546
