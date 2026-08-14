@@ -215,10 +215,22 @@ extern dev_t	rootdev;
 extern time_t	v8k_time;
 
 /*
- * P9_NAMELEN must exceed the longest name the image can hold, and p9.h says
- * the assertion belongs where DIRSIZ is in scope.  It is.
+ * P9_NAMELEN must hold the longest name the IMAGE can hold, NUL and all.
+ *
+ * THE DIRSIZ IN SCOPE HERE IS 14, NOT 254, and p9.h used to delegate this
+ * assertion on the assumption that it was 254.  :113 includes
+ * ../../src/sys/h/dir.h, which is Bell Labs' `#define DIRSIZ 14' -- correct
+ * for this file and not an oversight, because src/sys describes a DISK
+ * RECORD, the same reason mkfs is compiled -DDIRSIZ=14.  shim/kern/h/param.h
+ * defines no DIRSIZ at all, so there is nothing else it could have been.
+ *
+ * So this is a true claim about a V7 directory entry and it was never the
+ * claim p9.h thought it was: the 254 belongs to the CLIENT's namespace and is
+ * asserted in p9cl.c, where V8_DIRSIZ is visible and this DIRSIZ is not.  Two
+ * ends, two numbers, one per layer -- and only the client's has any slack
+ * worth guarding (256 against 255).
  */
-_Static_assert(P9_NAMELEN > DIRSIZ + 1, "P9_NAMELEN cannot hold a V8 name");
+_Static_assert(P9_NAMELEN >= DIRSIZ + 1, "P9_NAMELEN cannot hold an image name");
 
 /* --------------------------------------------------------------- errors */
 
@@ -1899,7 +1911,7 @@ wowner(struct inode *ip)
  * every permission check on the image.
  *
  * IT IS THE SERVER END OF A CONTRACT THE CLIENT END ALREADY KEPT.  p9uid() at
- * p9cl.c:1005-1040 was given exactly this guard by an earlier audit, and its
+ * p9cl.c:1086-1121 was given exactly this guard by an earlier audit, and its
  * comment states the rule for the whole port -- root maps to root, and
  * non-root NEVER maps to root.  The two ends of one wire, one hour apart, and
  * only the reading end had it.  Nothing could have caught it: do_wstat had no

@@ -2439,7 +2439,7 @@ check "and dup2 shares the offset as well"	"from"	"$(cq dup2-shares-offset-too)"
 # --- 4. THE ERRNOS THAT CROSS THE WIRE --------------------------------------
 #
 # V7's namei has two answers one line apart and so does this server
-# (v8fsd.c:1124), but a SHORT Rwalk carries no errno -- so the reason is lost
+# (v8fsd.c:1136), but a SHORT Rwalk carries no errno -- so the reason is lost
 # unless the client reconstructs it from the last qid.  It did not, and
 # `open("/mnt/hello/beyond")' reported ENOENT where a V7 kernel reports ENOTDIR.
 # Found here, fixed in p9walk.
@@ -3071,7 +3071,7 @@ if [ "$wready" = 1 ]; then
 	#
 	# NOT `ls -l' AND THE LINK COUNT, which is the obvious case and would
 	# have asserted a fiction: 9P2000's stat HAS NO nlink FIELD (.u and .L
-	# added one), so p9cl.c:1119 sets st_nlink = 1 unconditionally and
+	# added one), so p9cl.c:1139 sets st_nlink = 1 unconditionally and
 	# every file on every mount reads as one link.  The probe below asserts
 	# that 1 deliberately, so the limitation is a case rather than a
 	# sentence and a future change to it has to be meant.
@@ -3182,7 +3182,7 @@ if [ "$wready" = 1 ]; then
 		check "...and both names are one inode"		"1"	"$(lq link-same-ino)"
 		# ...AND THE LINK COUNT IS 1, WHICH IS A LIMITATION ASSERTED ON
 		# PURPOSE.  9P2000's stat carries no nlink field at all -- .u
-		# and .L added one -- so p9cl.c:1119 sets it to 1 for every file
+		# and .L added one -- so p9cl.c:1139 sets it to 1 for every file
 		# on every mount and the real 2 is simply not on the wire.  The
 		# obvious case here would have been `ls -l' and the link count,
 		# and it would have been asserting a constant.

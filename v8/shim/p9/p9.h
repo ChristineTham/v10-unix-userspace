@@ -338,8 +338,17 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
  * this wire can produce, and that is V8's DIRSIZ, which this port raises to
  * 254.  Deliberately a round number rather than `DIRSIZ + 2': mv(1)'s
  * MAXN - DIRSIZ - 2 is this repo's standing example of a constant that encodes
- * a RELATIONSHIP and silently rewrites itself when one side moves.  The server
- * asserts the inequality where DIRSIZ is actually in scope.
+ * a RELATIONSHIP and silently rewrites itself when one side moves.
+ *
+ * THE TWO ENDS OF THIS WIRE HAVE DIFFERENT DIRSIZes, and this comment used to
+ * say "the server asserts the inequality where DIRSIZ is actually in scope"
+ * as though there were one.  There are two, and the layer decides which:
+ * v8fsd.c sees Bell Labs' 14, because it reads DISK RECORDS through
+ * src/sys/h/dir.h, and p9cl.c sees this port's 254 through v8sys.h's
+ * V8_DIRSIZ.  The delegated assertion therefore checked 15 while the sentence
+ * doing the delegating was about 255 -- a guard that could not fail for the
+ * reason it gave.  Both are asserted now, each in the file that can see its
+ * own number, and only the client's is close: 256 against 255.
  */
 #define P9_NAMELEN	256
 

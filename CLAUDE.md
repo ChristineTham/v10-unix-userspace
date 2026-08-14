@@ -667,7 +667,7 @@ because there is nothing to inherit.
   that the probe reaches its last line.
 - **AND `p9walk` ANSWERED ENOENT WHERE V7 ANSWERS ENOTDIR, BECAUSE A SHORT
   Rwalk CARRIES NO ERRNO.** `namei` has two answers one line apart and so does
-  the server (`v8fsd.c:1124` sets `ENOTDIR`), but 9P's short reply is silent
+  the server (`v8fsd.c:1136` sets `ENOTDIR`), but 9P's short reply is silent
   about *why* it stopped — so the client flattened both to `ENOENT` and
   `open("/mnt/hello/beyond")` reported the wrong one. The information is in the
   qids the reply carries and the client was discarding them: the last one
@@ -1034,7 +1034,7 @@ instead of auditing the set**, which is exactly how the other seven survived
 it.
 
 **AND 9P's STAT CARRIES NO LINK COUNT, so the obvious case would have asserted
-a constant.** `p9cl.c:1119` sets `st_nlink = 1` for every file on every mount —
+a constant.** `p9cl.c:1139` sets `st_nlink = 1` for every file on every mount —
 9P2000 has no such field, `.u` and `.L` added one — so `ls -l` can never show
 a hard link. The observable is `ls -i`: a qid path **is** `i_number` off the
 disk, so two names printing one number is the disk saying they are one file.
@@ -2077,7 +2077,25 @@ they are **four** numbers:
 | `src/cmd/sh/expand.c:15,17` | `MAXNAMELEN` / 14 | upstream | bounded copy, `movstrn` |
 
 So the rule is not "one number" but **one number per layer**, and the layer is
-what says which. `spname.c` is the fifth member of the "1985 buffer sized
+what says which.
+
+**AND A `_Static_assert` CAN BE ON THE WRONG SIDE OF THAT LINE AND STILL PASS.**
+`p9.h` picks `P9_NAMELEN` 256 "because it must exceed the longest name any
+namespace on either side of this wire can produce, and that is V8's DIRSIZ,
+which this port raises to 254", and then delegated the inequality to the
+server, "where DIRSIZ is actually in scope". It is in scope there and it is
+**14** — `v8fsd.c` includes `src/sys/h/dir.h` because it reads DISK RECORDS,
+the same reason `mkfs` is built `-DDIRSIZ=14`, and `shim/kern/h/param.h`
+defines no DIRSIZ at all. So the assertion read 256 > 15 while the sentence
+delegating to it was about 256 > 255: **a guard that could not fail for the
+reason it gave**, and the half with any slack in it was checked nowhere. Both
+are asserted now, each in the file that can see its own number — and the
+client's is the one worth having, at one byte against the server's 241. Two
+ends of one wire is two layers, so a protocol constant justified against "the"
+DIRSIZ was always going to name only one of them. Found by the lp64-auditor on
+the 5g diff.
+
+`spname.c` is the fifth member of the "1985 buffer sized
 against DIRSIZ" table below — `static char best[DIRSIZ+1]` filled by an
 unbounded `do; while(*p++ = *q++);` from a `d_name` that is now 254 wide.
 Measured under ASan on the unmodified source; `src/cmd/sh/PORTING.md` has it.
@@ -2910,6 +2928,27 @@ not testable until it is installed.
   full suite afterwards, which is the reason to do that rather than trust the
   one suite the mutation targeted. `touch` the source after restoring, or diff
   the built binary — and never end a mutation run without a full `make test`.
+
+  **AND WHEN THE MUTATION IS IN A HEADER AND THE BUILD FAILS, THE OBJECTS THAT
+  *SUCCEEDED* ARE THE STALE ONES — which is the opposite of where anyone
+  looks.** A failing `make -j8` is not a build that did nothing: it compiles
+  every translation unit it reached before the failing one stopped it, and
+  those objects carry the mutated header. The one that FAILED produced no
+  object at all, so make is guaranteed to redo it — and redoing it is exactly
+  what makes the next build *look* like it did the work. Measured twice, the
+  second time deliberately: mutating `P9_NAMELEN` failed at `p9cl.c`, and
+  `p9.h`, `p9.o` and `p9io.o` all came out stamped the same second, so
+  `make -q` called both objects **up to date** while flagging only the one that
+  did not exist. They survived **two** further full builds.
+  - **It presents as failures in a feature the mutation never touched.** Three
+    `chown`-through-a-mount cases went red — a stale 9P *codec* on one side of
+    the wire — and nothing pointed at the header. The discriminator was
+    cheap and is the one to reach for: three identical failures, then `touch`
+    the header and rebuild, then four consecutive passes with no source change.
+  - **`cmp` against the backup is not the check.** It says the SOURCE was
+    restored, which it was; it says nothing about whether anything recompiled.
+    The one documented step skipped here was `touch` after restoring, and it is
+    the whole remedy.
 
   **AND `git stash push` / `git stash pop` IS A MUTATION HARNESS, WHICH IS NOT
   WHAT IT LOOKS LIKE.** Stashing to measure a baseline — "how many warnings did

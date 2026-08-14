@@ -361,7 +361,7 @@ errnos(const char *dir, const char *file)
 	 * THE PAIR THAT V7 DISTINGUISHES AND A SHORT Rwalk DOES NOT.  namei
 	 * answers ENOENT for a name that is absent from a real directory and
 	 * ENOTDIR for one looked up in something that is not a directory --
-	 * v8fsd.c:1124 is the second arm.  A short Rwalk carries no errno, so
+	 * v8fsd.c:1136 is the second arm.  A short Rwalk carries no errno, so
 	 * the client reconstructs it from the last qid; both halves are here
 	 * because a client that simply always said ENOTDIR would pass the
 	 * second case alone.
