@@ -595,7 +595,7 @@ pair satisfies that by accident. The mutation now fires on five cases.
 
 A short Rwalk carries no errno. `namei` has two answers one line apart and so
 does this server — `do_walk`'s `if ((ip->i_mode & IFMT) != IFDIR) u.u_error =
-ENOTDIR` at `v8fsd.c:1122` — but the reply cannot say which, so `p9walk`
+ENOTDIR` at `v8fsd.c:1124` — but the reply cannot say which, so `p9walk`
 flattened both to `ENOENT`.
 
 The information is in the qids the reply carries, which `p9walk` was discarding:
@@ -1427,7 +1427,7 @@ the other seven survived it.
 
 ### And 9P's stat carries no link count
 
-`p9cl.c:1115` sets `st_nlink = 1` for every file on every mount, because
+`p9cl.c:1119` sets `st_nlink = 1` for every file on every mount, because
 9P2000's stat has no such field (`.u` and `.L` added one). So `ls -l` can never
 show a hard link, and the obvious case for this step — link count goes to 2 —
 would have asserted a constant. The observable is `ls -i`: a qid path **is**

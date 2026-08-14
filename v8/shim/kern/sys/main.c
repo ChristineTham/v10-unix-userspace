@@ -145,7 +145,7 @@ extern void	v8fs_settime(time_t now);	/* v8fs.c */
  * many files a process holds open versus how many directories it walks through
  * to reach them, and it is as true here as on a VAX.
  *
- * shim/kern/sys/fio.c:90 has already fixed NFILE at 64 for this port, with its
+ * shim/kern/sys/fio.c:91 has already fixed NFILE at 64 for this port, with its
  * own argument.  So NINODE = 3*(64-32)/2 + 32 = 80, and the number moves if and
  * only if NFILE moves -- which is what makes it a derivation rather than a
  * guess.  Do NOT substitute this port's NPROC into the formula directly:

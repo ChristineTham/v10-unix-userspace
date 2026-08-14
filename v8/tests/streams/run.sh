@@ -1025,6 +1025,62 @@ if [ -f "$UPALLOC" ]; then
 		'BITS PER LONG'
 else bad "upstream alloc.c not found for the diff guard"; fi
 
+# --- AND THE OTHER 1127 CITATIONS, WHICH NOTHING CHECKED AT ALL ---
+# The five cases above are the sharpest thing in this file, because each one
+# knows what its line SAYS.  What they are not is a population: they cover one
+# PORT comment in one file, and the class they were written for is tree-wide.
+#
+# Measured when this was added: 1132 citations, and NINETEEN of them stale --
+# five of the nineteen being corrections made the previous day that were
+# already wrong when they were committed.  The class converges in about three
+# measurements because correcting a citation moves it, which is exactly why it
+# has to be a test and not a habit.
+#
+# tests/streams/cites.awk holds the reasoning, including why the obvious
+# generalisation (pull an identifier out of the citing sentence, require it at
+# the cited line) was measured at 26% false positives and rejected.  What is
+# asserted here is the part that needs no guess about what a citation MEANS:
+# nobody cites a blank line, a `*/', or a bare `break;'.
+#
+# THE EXCLUDED COUNT IS PRINTED rather than filtered away, which is the rule
+# tests/kmemu's fold-call-site sweep already follows -- 846 citations name a
+# basename that resolves to more than one file (`param.h' is ours AND Bell
+# Labs'), and a silent skip would let that population grow until the guard
+# covered nothing.  The floor below is what makes a resolver regression fail
+# rather than pass with an empty sweep.
+#
+# This lives in the streams suite because the five cases above do, and one
+# home for one concept beats a second mechanism beside it.  The subject is
+# wider than streams and always was.
+CITEAWK=$ROOT/tests/streams/cites.awk
+REPO=$(cd "$ROOT/.." && pwd)
+if [ -f "$CITEAWK" ]; then
+	# The universe excludes build/ and rootfs/ deliberately: they are
+	# generated copies of tracked sources, and including them made 128
+	# citations ambiguous against their own originals.
+	find "$REPO" -path "$REPO/.git" -prune -o -path "$REPO/v8/build" -prune \
+	     -o -path "$REPO/v8/rootfs" -prune -o -type f -print |
+		sed "s|^$REPO/||" > "$TMP/cite.univ"
+	{ find "$REPO/v8/src" "$REPO/v8/shim" "$REPO/v8/compiler" "$REPO/v8/tests" \
+		-type f \( -name '*.c' -o -name '*.h' -o -name '*.s' \
+		           -o -name '*.md' -o -name '*.sh' \)
+	  find "$REPO" -maxdepth 1 -name '*.md'; } |
+		sed "s|^$REPO/||" > "$TMP/cite.files"
+	awk -v ROOT="$REPO" -f "$CITEAWK" "$TMP/cite.univ" "$TMP/cite.files" \
+		> "$TMP/cite.out" 2>&1
+	ckn=$(awk '/^SUMMARY/{print $2}' "$TMP/cite.out")
+	exn=$(awk '/^SUMMARY/{print $3}' "$TMP/cite.out")
+	stn=$(awk '/^SUMMARY/{print $4}' "$TMP/cite.out")
+	check "no line citation in the tree points at a blank line" "0" "${stn:-no-summary}"
+	[ "${stn:-1}" -eq 0 ] 2>/dev/null || sed -n 's/^STALE /    /p' "$TMP/cite.out"
+	# not vacuous -- a resolver that stopped resolving would report zero
+	# stale over zero checked, which is the shape a green run hides best
+	if [ "${ckn:-0}" -ge 200 ]; then ok
+	else bad "the citation sweep is vacuous" "checked only ${ckn:-0}"; fi
+	echo "  citations: ${ckn:-?} checked, ${exn:-?} not uniquely resolvable," \
+	     "${stn:-?} stale"
+else bad "tests/streams/cites.awk is missing"; fi
+
 # --- param.h's redirects and hostok.h's undefs are DERIVED FROM EACH OTHER ---
 # shim/kern/h/hostok.h exists because the redirect list reached thirteen and a
 # thirteen-line list copied into every consumer decays independently in each
@@ -2383,7 +2439,7 @@ check "and dup2 shares the offset as well"	"from"	"$(cq dup2-shares-offset-too)"
 # --- 4. THE ERRNOS THAT CROSS THE WIRE --------------------------------------
 #
 # V7's namei has two answers one line apart and so does this server
-# (v8fsd.c:1122), but a SHORT Rwalk carries no errno -- so the reason is lost
+# (v8fsd.c:1124), but a SHORT Rwalk carries no errno -- so the reason is lost
 # unless the client reconstructs it from the last qid.  It did not, and
 # `open("/mnt/hello/beyond")' reported ENOENT where a V7 kernel reports ENOTDIR.
 # Found here, fixed in p9walk.
@@ -3015,7 +3071,7 @@ if [ "$wready" = 1 ]; then
 	#
 	# NOT `ls -l' AND THE LINK COUNT, which is the obvious case and would
 	# have asserted a fiction: 9P2000's stat HAS NO nlink FIELD (.u and .L
-	# added one), so p9cl.c:1115 sets st_nlink = 1 unconditionally and
+	# added one), so p9cl.c:1119 sets st_nlink = 1 unconditionally and
 	# every file on every mount reads as one link.  The probe below asserts
 	# that 1 deliberately, so the limitation is a case rather than a
 	# sentence and a future change to it has to be meant.
@@ -3126,7 +3182,7 @@ if [ "$wready" = 1 ]; then
 		check "...and both names are one inode"		"1"	"$(lq link-same-ino)"
 		# ...AND THE LINK COUNT IS 1, WHICH IS A LIMITATION ASSERTED ON
 		# PURPOSE.  9P2000's stat carries no nlink field at all -- .u
-		# and .L added one -- so p9cl.c:1115 sets it to 1 for every file
+		# and .L added one -- so p9cl.c:1119 sets it to 1 for every file
 		# on every mount and the real 2 is simply not on the wire.  The
 		# obvious case here would have been `ls -l' and the link count,
 		# and it would have been asserting a constant.

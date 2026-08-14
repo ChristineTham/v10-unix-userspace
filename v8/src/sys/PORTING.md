@@ -1520,7 +1520,7 @@ with `nbuf` computed from `physmem` at `:81-84`. `sys/main.c` holds the code.
 - **`NINODE` is 80, derived from Bell Labs' own two formulae.** `param.c:29-30`
   sizes the inode and file tables off one quantity, and although the quantity is
   unknown the **ratio survives**: `ninode - 32 = 3/2 * (nfile - 32)`. This port
-  fixed `NFILE` at 64 long ago (`shim/kern/sys/fio.c:90`), so the number follows
+  fixed `NFILE` at 64 long ago (`shim/kern/sys/fio.c:91`), so the number follows
   and moves only if `NFILE` moves. Do **not** substitute this port's `NPROC`
   into the formula — that 4 is because slot 0 is `pfind`'s chain terminator and
   slot 2 is the pagedaemon's address, which has nothing to do with process

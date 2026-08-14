@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2133 cases, 2132 on a host whose $TMPDIR
+make test             # all 17 suites (2139 cases, 2138 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -324,6 +324,47 @@ Four things generalise:
   So they are a **test** now (`tests/streams`, five cases, mutation-verified),
   and each is written `ours (upstream)` — the form `src/sys/PORTING.md:1186` had
   already got right for a different file.
+
+  **AND "THEY ARE A TEST NOW" WAS TRUE OF FIVE OF THEM, OUT OF ELEVEN HUNDRED.**
+  Measured: **1132** citations in the tree, and the five cases covered one PORT
+  comment in one file. Sweeping the rest found **nineteen stale**, of which
+  **five were corrections made the previous day** — the same commit that fixed
+  do_walk's ENOTDIR citation in `v8fsd.c` wrote line 1122 for an arm that had
+  already moved to 1124, so the fix shipped wrong and the entry above's "only
+  the third measurement converged" repeated itself exactly.
+  `tests/streams/cites.awk` is the sweep. Five things generalise, and the last
+  is about this paragraph:
+
+  - **THE OBVIOUS GENERALISATION IS A 26% FALSE-POSITIVE RATE, MEASURED.** Pull
+    an identifier out of the citing sentence and require it at the cited line —
+    and `icheck.PORTING.md` cites `icheck.c:278` from a table row that also says
+    "dcheck", which no window or adjacency rule separates from a claim. What is
+    checkable without guessing what a citation *means* is that **nobody cites a
+    blank line, a `*/`, or a bare `break;`**. Nineteen findings, zero false
+    positives, each hand-verified.
+  - **SAY WHAT IT CANNOT SEE.** A citation that drifts onto plausible *code* is
+    invisible to it — the pre-correction number above had become
+    `x[0].d_ino = ip->i_number;` and only reading it caught that. Measured as a
+    non-firing mutation rather than claimed, so the blind spot is a fact about
+    the guard and not a hope.
+  - **THE EXCLUDED COUNT IS PRINTED, because 846 of the 1132 are excluded.** A
+    bare `param.h` names ours *and* Bell Labs' — the `ours (upstream)` ambiguity
+    above, from the other side — and a resolver that guesses puts the instrument
+    back in the business of being wrong. The way to check those is to write the
+    directory into the citation, not to widen the sweep.
+  - **AND THE VACUITY GUARD IS THE ONE THAT MATTERS, because the stale case
+    stays GREEN when the sweep dies.** Measured: break the resolver and it
+    reports 0 stale over 0 checked, which reads as a clean tree. Same shape as
+    `tests/cpp`'s `if [ -d "$V8INC" ]` skip reporting `12 passed`.
+  - **AND WRITING THIS PARAGRAPH BROKE THE CHECK IT DESCRIBES**, which is the
+    instrument-matches-its-own-documentation shape arriving in the
+    documentation *of the instrument*. A prose example of a **stale** citation
+    is indistinguishable from a stale citation, so the sweep checks it and
+    goes red on a paragraph that is entirely correct. It survived here only by
+    two accidents — the pre-correction number happens to land on live code, and
+    the post-correction one was written bare as `` `:1122` `` rather than with
+    its filename. Neither is a property anyone should rely on: name the line in
+    words, never in the matchable form, when the point is that it is wrong.
 - **AN INCREMENTAL BUILD HIDES WARNINGS, AND THIS ONE HID 21.** The tree looked
   warning-clean; it is not. Seven objects include the authentic `systm.h` and
   each emits three — one `-Wincompatible-library-redeclaration` for
@@ -626,7 +667,7 @@ because there is nothing to inherit.
   that the probe reaches its last line.
 - **AND `p9walk` ANSWERED ENOENT WHERE V7 ANSWERS ENOTDIR, BECAUSE A SHORT
   Rwalk CARRIES NO ERRNO.** `namei` has two answers one line apart and so does
-  the server (`v8fsd.c:699` sets `ENOTDIR`), but 9P's short reply is silent
+  the server (`v8fsd.c:1124` sets `ENOTDIR`), but 9P's short reply is silent
   about *why* it stopped — so the client flattened both to `ENOENT` and
   `open("/mnt/hello/beyond")` reported the wrong one. The information is in the
   qids the reply carries and the client was discarding them: the last one
@@ -993,7 +1034,7 @@ instead of auditing the set**, which is exactly how the other seven survived
 it.
 
 **AND 9P's STAT CARRIES NO LINK COUNT, so the obvious case would have asserted
-a constant.** `p9cl.c:1115` sets `st_nlink = 1` for every file on every mount —
+a constant.** `p9cl.c:1119` sets `st_nlink = 1` for every file on every mount —
 9P2000 has no such field, `.u` and `.L` added one — so `ls -l` can never show
 a hard link. The observable is `ls -i`: a qid path **is** `i_number` off the
 disk, so two names printing one number is the disk saying they are one file.
@@ -1235,7 +1276,7 @@ function "because folded values are written into files
 (`shim/libkmemu/NOTES.md:247` — `e_tdev` in the manufactured `/etc/utmp`) that
 another process reads", and used that to rule out the one easy fix for the
 `pwd` collision. Every part of it is false: the function has **three** call
-sites (`dir.c:423`, `dir.c:425`, `syscall.c:1144`) and none is in `libkmemu` —
+sites (`dir.c:467`, `dir.c:469`, `syscall.c:1668`) and none is in `libkmemu` —
 the two `grep` hits there are comments; `NOTES.md:247` is about `u_ttyino` in
 `/proc`'s u-area, says it is left zero, and calls filling it hypothetical; and
 V8's `struct utmp` is `{ut_line[8], ut_name[8], ut_time}`, 24 bytes, with no
@@ -2135,7 +2176,7 @@ one class:
 **THE `d_ino` ROW SAID "harmless" FOR MONTHS, THEN SAID "CANNOT BE FIXED", AND
 BOTH WERE WRONG.** It is the one of the five that narrows an *identity* rather
 than a value, and identity is what three of V7's idioms are built on.
-`v8sys_fold_ino` (`shim/v8sys/dir.c:277`) feeds **both** sides of `getwd`'s
+`v8sys_fold_ino` (`shim/v8sys/dir.c:309`) feeds **both** sides of `getwd`'s
 central comparison — `d_ino` in the directory snapshot and `st_ino` in
 `stat_translate` — so while it was a plain XOR fold, `getwd.c:62`
 (`while (dir->d_ino != d.st_ino)`) stopped on whichever colliding entry
@@ -2770,7 +2811,7 @@ not testable until it is installed.
   **AND THE FLOOR IS 54, WHICH NOTHING SAID UNTIL NOW.** Re-measured on the
   installed rootfs: **4187 invocations, 54 signal deaths, all SIGSEGV — 53
   `lex` and 1 `bcd`**, and every one of them is already argued somewhere as
-  upstream's defect on upstream's hardware (`src/cmd/lex/PORTING.md:175-255`
+  upstream's defect on upstream's hardware (`src/cmd/lex/PORTING.md:175-250`
   for the 53, PLAN.md:3044 for `bcd`). `lex`'s 53 is *exactly* the number that
   file predicts, and it explains why fixing the first of its three faults moved
   the count by zero: the probe feeds every program `/dev/null`, so all 53
