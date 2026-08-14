@@ -91,7 +91,7 @@ within a device** there: 16 bits, and a V7 volume could not hold 65536 inodes.
 It is not exact here. `v8sys_fold_ino()` (`shim/v8sys/dir.c:309`) maps a
 64-bit host inode into V7's `u_short ino_t`, and the same function feeds *both*
 sides of that comparison -- `d_ino` in the directory snapshot (`dir.c:467,469`)
-and `st_ino` in `stat_translate` (`shim/v8sys/syscall.c:1668`). While that map
+and `st_ino` in `stat_translate` (`shim/v8sys/syscall.c:1676`). While that map
 was a plain XOR fold, two files in one directory could share a `d_ino` and this
 loop stopped on whichever `readdir` yielded **first**. It is a table now, and
 the rest of this entry is how that was measured and what it cost.
@@ -190,7 +190,7 @@ another process reads", and that was used to rule out any order-dependent
 scheme. Three things wrong with the sentence, measured:
 
 - **`v8sys_fold_ino` has exactly three call sites** — `dir.c`, twice, and
-  `syscall.c:1668`. Nothing in `libkmemu` calls it; `grep` found it in
+  `syscall.c:1676`. Nothing in `libkmemu` calls it; `grep` found it in
   `procfs.c:169` and `:603`, and both are **comments**.
 - **The cited note says the opposite.** `NOTES.md:247` is about `u_ttyino` in
   `/proc`'s u-area, which is "left zero"; filling it *would* be a stat folded
@@ -290,7 +290,7 @@ values out of 65535 and buy construction instead of argument.
 
 **`st_dev` is still narrowed by truncation, and the pair leans on it harder
 than it looks.** `stat_translate` does `hs->st_dev & 0xffff` one line above the
-inode (`syscall.c:1667`), a bare 16-bit cut of a 32-bit host `dev_t` with no
+inode (`syscall.c:1675`), a bare 16-bit cut of a 32-bit host `dev_t` with no
 injectivity of its own. Measured on this host: 15 mounted filesystems, whose
 truncated devs are `0003 0005 0007 0008 000e 0010 0011 0012 0017 001b 001f
 0023 0026 88d9` — all distinct, so the pair *is* injective today. It is

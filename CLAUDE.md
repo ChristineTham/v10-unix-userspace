@@ -1034,12 +1034,102 @@ instead of auditing the set**, which is exactly how the other seven survived
 it.
 
 **AND 9P's STAT CARRIES NO LINK COUNT, so the obvious case would have asserted
-a constant.** `p9cl.c:1139` sets `st_nlink = 1` for every file on every mount —
+a constant.** `p9cl.c:1158` sets `st_nlink = 1` for every file on every mount —
 9P2000 has no such field, `.u` and `.L` added one — so `ls -l` can never show
 a hard link. The observable is `ls -i`: a qid path **is** `i_number` off the
 disk, so two names printing one number is the disk saying they are one file.
 The 1 is asserted deliberately, so the limitation is a case rather than a
 sentence.
+
+**AND §8a step 5h MADE `mv` OF A DIRECTORY WORK BY RETRACTING 5g's RETRACTION,
+WHICH IS A NEW SHAPE: A COMPENSATING ERROR READS AS A DESIGN, AND EVERY CLAUSE
+OF ITS JUSTIFICATION CAN BE TRUE.** 5g shipped `isdir = i_nlink <= 2` for
+Tunlink and explained it as reconciling V7's unlink with a fiction the port
+already told — `dotlink()` absorbing `rmdir(1)`'s two dot unlinks, so the two
+decrements that should precede the third had never happened. Accurate about
+the mechanism, correctly cited, and wrong in its conclusion, because what it
+described is **one workaround split across two files** and it read that as a
+design. This is not the recorded-diagnosis rule: the diagnosis was right and
+the *inference* was wrong. **When a comment explains a guard by describing a
+lie told somewhere else, the fix is usually to stop telling the lie.**
+
+- **A PROTOCOL MESSAGE'S SHAPE IS AN ASSERTION ABOUT WHAT THE OPERATION
+  NAMES**, and `Tunlink` had copied `Tremove`'s `fid[4]` — importing Plan 9's
+  noun into a V7 verb. `remove(2)` names a FILE; `unlink(2)` names a DIRECTORY
+  and an ENTRY. `..` is where the two visibly separate: it is an entry that
+  exists only from the directory's side, so **no fid can name it**, which is
+  precisely why `v8fsd` zeroes `f_pino` for a fid walked to `sub/..`. Reshaped
+  to `dfid[4] name[s]`, matching Tlink. And the three hazards `removeop`
+  documents — clunk on every exit, the parent from `f_pino`, the iput of the
+  target before `kremove` — turned out to be properties of **carrying a fid**
+  rather than of removing a name, so `do_unlink` shares none of them.
+- **AND THE DIAGNOSIS WAS ALREADY WRITTEN, IN THE FUNCTION IT INDICTED.**
+  `do_remove`'s header said "a fid names a FILE, V7's unlink names a DIRECTORY
+  and an ENTRY, and nothing in a struct inode bridges the two" — a complete bug
+  report for a *different* message, sitting unread for a step because it was
+  phrased as an explanation of `f_pino` rather than as a complaint about
+  Tunlink. Same family as the `ttldioc` comment that got the mechanism exactly
+  right and called the consequence "politeness".
+- **THE TWO HALVES HAD TO GO TOGETHER, AND EITHER ALONE CORRUPTS.** With the
+  absorption dropped, `rmdir(1)`'s three unlinks do V7's own arithmetic
+  (`d/..` decrements the parent, `d/.` takes d 2→1, `d` takes it to 0 and
+  frees it); keep the heuristic and the third call takes NI_RMDIR and
+  `nami.c:361` decrements the parent a **second** time. Measured: the mutation
+  restoring the absorption alone turns **fsck** red while icheck, dcheck and
+  the block-count identity all stay silent — third instance of the
+  independent-reader rule, and again fsck is the only one that can see it.
+- **A PREDICATE CAN TEST THE WRONG OPERAND AND BOTH CALLERS THEN LOOK THE
+  SAME.** `v8s_link`'s dot arm could not distinguish `mkdir(1)` from `mv(1)`
+  because it stated `a`, and both pass a directory there. The discriminator is
+  `b`: mkdir's target entry already exists (mknod wrote it), mv's was unlinked
+  one line earlier at `mv.c:216` for the express purpose of making it name
+  something else. Absorption's claim is "the entry you asked for exists with
+  the meaning you wanted" and **nothing had ever checked the first half**. The
+  new arm is **monotone** — it can only absorb fewer calls — which is what
+  bounds a change to a predicate, exactly as `rootpath()`'s access-to-lstat fix
+  did.
+- **AND A SHARED HELPER CAN HAVE ONE CALLER'S POLICY BAKED INTO IT**, which is
+  the unexercised-rule shape arriving in a *helper* rather than in a rule.
+  `p9parent()` refused `.`/`..` as a basename for all four callers; right for
+  create (a file named `..` is nonsense) and a hard limit on link and unlink,
+  which is what mv rewrites. It takes the policy as a parameter now.
+- **A CASE CAN GET STRONGER BY LOSING A GUARD, AND ITS OWN COMMENT PREDICTED
+  THE BETTER ANSWER.** `dotdot as a new name` asserted 22 (EINVAL) **from our
+  client**, and the comment beside it already said what the wire would answer:
+  `nami.c:88-95` returns EEXIST for NI_LINK the moment the name is found, and
+  `..` always is. Removing the client's refusal made the case assert **17, from
+  Bell Labs**. Same shape as 5g's two deleted `do_link` checks: a refusal
+  duplicating one upstream already makes is not a second guard, it is a layer
+  that can disagree with them.
+- **A MUTATION THAT FIRES ON EXACTLY ONE CASE IS WHAT VALIDATES THE CASE**, and
+  is a different measurement from one that fires widely. Four mutations here:
+  one fired twelve cases (the code matters), one fired exactly the case written
+  for it (the case is *aimed*). A suite where every mutation fires a dozen cases
+  cannot tell you which guard is load-bearing.
+- **AND cites.awk CAUGHT ONE STALENESS EVENT OUT OF FIVE IN THIS ONE STEP,
+  WHICH IS THE BLIND SPOT MEASURED RATHER THAN ESTIMATED.** The sweep went red
+  once, on a citation that landed on a blank line. Four more were stale and it
+  passed every one of them, because each had drifted onto **plausible code** —
+  the failure mode its own header names and which had only ever been
+  illustrated by a single historical example:
+
+  | citation | landed on | truth |
+  |---|---|---|
+  | `p9cl.c` st_nlink (4 sites) | `return ((short)v);` | 19 lines further down |
+  | `p9cl.c` p9uid range | `}` … a comment | 42 lines down |
+  | `syscall.c` fold_ino (3 sites) | `static void` | 8 lines down |
+  | `syscall.c` getwd (PLAN.md) | a comment about `mkdir`'s two links | **1102 lines** away |
+
+  Three were **caused by this step's own edits to a different part of the same
+  file** — a comment grew by twenty lines and invalidated citations in four
+  other files — and the last was already stale and had never been noticed. Two
+  things follow. **After editing a file, grep for every citation INTO it and
+  re-measure each**; the sweep cannot do this for you and the citing file is
+  usually not the one you touched. And **a citation "corrected" from memory is
+  invention, not drift**: `rmdir.c`'s three unlinks were rewritten one line
+  low while the sentence around them was being edited, and the wrong line is a
+  `goto` label — live code, invisible to the sweep. Measure the line every
+  time. The sweep catches a *subset* of drift and none of invention.
 
 **AND THE MUTATION RULES GAINED TWO, BOTH FROM THE HARNESS RATHER THAN THE
 CODE.** The existing entries cover the restore side; these are new:
@@ -1276,7 +1366,7 @@ function "because folded values are written into files
 (`shim/libkmemu/NOTES.md:247` — `e_tdev` in the manufactured `/etc/utmp`) that
 another process reads", and used that to rule out the one easy fix for the
 `pwd` collision. Every part of it is false: the function has **three** call
-sites (`dir.c:467`, `dir.c:469`, `syscall.c:1668`) and none is in `libkmemu` —
+sites (`dir.c:467`, `dir.c:469`, `syscall.c:1676`) and none is in `libkmemu` —
 the two `grep` hits there are comments; `NOTES.md:247` is about `u_ttyino` in
 `/proc`'s u-area, says it is left zero, and calls filling it hypothetical; and
 V8's `struct utmp` is `{ut_line[8], ut_name[8], ut_time}`, 24 bytes, with no

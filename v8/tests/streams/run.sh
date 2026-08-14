@@ -3071,7 +3071,7 @@ if [ "$wready" = 1 ]; then
 	#
 	# NOT `ls -l' AND THE LINK COUNT, which is the obvious case and would
 	# have asserted a fiction: 9P2000's stat HAS NO nlink FIELD (.u and .L
-	# added one), so p9cl.c:1139 sets st_nlink = 1 unconditionally and
+	# added one), so p9cl.c:1158 sets st_nlink = 1 unconditionally and
 	# every file on every mount reads as one link.  The probe below asserts
 	# that 1 deliberately, so the limitation is a case rather than a
 	# sentence and a future change to it has to be meant.
@@ -3096,56 +3096,65 @@ if [ "$wready" = 1 ]; then
 	w8 "$RM" /mnt/mvdst/f >/dev/null 2>&1
 	w8 "$ROOT/rootfs/bin/rmdir" /mnt/mvdst >/dev/null 2>&1
 
-	# ...AND THE CROSS-DIRECTORY MOVE MUST FAIL, WHICH THE CASE ABOVE
-	# CANNOT SEE.  mv.c:192 branches on whether the two parents are the
-	# same inode: with both names in the root it takes the short path
-	# (link, unlink) and `..' legitimately does not move.  Only a move
-	# BETWEEN directories reaches mvdir's four-call sequence, where the
-	# third and fourth calls repoint `..'.
+	# ...AND THE CROSS-DIRECTORY MOVE, WHICH THE CASE ABOVE CANNOT SEE.
+	# mv.c:192 branches on whether the two parents are the same inode: with
+	# both names in the root it takes the short path (link, unlink) and `..'
+	# legitimately does not move.  Only a move BETWEEN directories reaches
+	# mvdir's four-call sequence, where the third and fourth calls repoint
+	# `..' -- and those two are the whole of §8a step 5h.
 	#
-	# Those two are absorbed by syscall.c's dotlink(), which was written
-	# for mkdir(1) and rmdir(1) -- where succeeding-and-doing-nothing is
-	# the truth -- and is a LIE for mv, whose whole purpose in them is to
-	# CHANGE what `..' means.  Before link had a slot the sequence died at
-	# its first call; §8a step 5g made it run to completion and it
-	# returned 0 with `..' still pointing at the OLD parent.  Found by the
-	# lp64-auditor on the diff, measured, and NOT VISIBLE TO ANY CHECKER --
-	# icheck and dcheck stay silent because the link counts remain
-	# perfectly consistent with the wrong `..'.
+	# THIS BLOCK ASSERTED THE OPPOSITE FOR A STEP, AND BOTH VERSIONS WERE
+	# RIGHT WHEN WRITTEN.  5g's cases required a REFUSAL plus a ROLLBACK,
+	# because syscall.c's dotlink() absorbed the two `..' calls -- written
+	# for mkdir(1) and rmdir(1), where succeeding-and-doing-nothing is the
+	# truth, and a LIE for mv, whose whole purpose in them is to CHANGE what
+	# `..' means.  Absorbing them let the sequence run to completion and
+	# return 0 with `..' naming the OLD parent, so 5g refused the unlink and
+	# mv.c:218-219 rolled back.  5h reshaped Tunlink to (dfid, name) so the
+	# message can name `..' at all, and the calls are now performed.
 	#
-	# So the assertion is a REFUSAL plus a ROLLBACK, not just a nonzero
-	# exit: mv.c:218-219 relinks the old name and unlinks the new when the
-	# `..' unlink fails, so the tree must come back exactly as it was.
+	# The instrument does not change, only the expected value: `ls -id' is
+	# still the only thing that can see this.  NO CHECKER CAN -- icheck and
+	# dcheck stay silent either way, because the link counts are perfectly
+	# consistent with a wrong `..'.
 	w8 "$ROOT/rootfs/bin/mkdir" /mnt/xa >/dev/null 2>&1
 	w8 "$ROOT/rootfs/bin/mkdir" /mnt/xb >/dev/null 2>&1
 	w8 "$ROOT/rootfs/bin/mkdir" /mnt/xa/d >/dev/null 2>&1
 	w8 "$ROOT/rootfs/bin/sh" -c 'echo deep > /mnt/xa/d/f' >/dev/null 2>&1
-	check "mv of a directory ACROSS directories is refused"	"1" \
+	check "mv of a directory ACROSS directories works"	"0" \
 		"$(w8 "$ROOT/rootfs/bin/mv" /mnt/xa/d /mnt/xb/d >/dev/null 2>&1; echo $?)"
-	check "...and mv rolled the move back"			"deep" \
-		"$(w8 "$CAT" /mnt/xa/d/f 2>/dev/null)"
-	check "...leaving nothing at the destination"		"1" \
-		"$(w8 "$CAT" /mnt/xb/d/f >/dev/null 2>&1; echo $?)"
-	# THE POINT OF THE WHOLE GUARD: `..' still names the real parent.  This
-	# is the assertion that would have gone red on the silent version, and
-	# `ls -id' is the only instrument that can make it -- the checkers
-	# cannot, and a directory listing cannot either.
-	check "...and .. still names the directory it is in"	"same" \
+	check "...and the contents are at the destination"	"deep" \
+		"$(w8 "$CAT" /mnt/xb/d/f 2>/dev/null)"
+	check "...with nothing left at the source"		"1" \
+		"$(w8 "$CAT" /mnt/xa/d/f >/dev/null 2>&1; echo $?)"
+	# THE POINT OF THE WHOLE STEP, and the one assertion that separates a
+	# real move from the silent 5g version: `..' names the NEW parent.  Both
+	# halves are asserted, because "not the old one" and "the new one" are
+	# different claims and a `..' left as garbage would satisfy the first.
+	check "...and .. names the NEW parent"			"moved" \
 		"$(a=$(w8 "$LS" -id /mnt/xa 2>/dev/null | awk '{print $1}')
-		   p=$(w8 "$LS" -id /mnt/xa/d/.. 2>/dev/null | awk '{print $1}')
-		   [ -n "$a" ] && [ "$a" = "$p" ] && echo same || echo "a=$a dotdot=$p")"
-	w8 "$RM" /mnt/xa/d/f >/dev/null 2>&1
-	w8 "$ROOT/rootfs/bin/rmdir" /mnt/xa/d >/dev/null 2>&1
+		   b=$(w8 "$LS" -id /mnt/xb 2>/dev/null | awk '{print $1}')
+		   p=$(w8 "$LS" -id /mnt/xb/d/.. 2>/dev/null | awk '{print $1}')
+		   [ -n "$b" ] && [ "$p" = "$b" ] && [ "$p" != "$a" ] &&
+		     echo moved || echo "a=$a b=$b dotdot=$p")"
+	w8 "$RM" /mnt/xb/d/f >/dev/null 2>&1
+	w8 "$ROOT/rootfs/bin/rmdir" /mnt/xb/d >/dev/null 2>&1
 	w8 "$ROOT/rootfs/bin/rmdir" /mnt/xa >/dev/null 2>&1
 	w8 "$ROOT/rootfs/bin/rmdir" /mnt/xb >/dev/null 2>&1
 
 	# ...AND rmdir(1) STILL WORKS, which is the control the directory-move
-	# needed and nearly cost.  rmdir(1) is three unlinks (rmdir.c:105,108,
-	# 110) and syscall.c's dotlink() absorbs the first two, so the third has
-	# to do the whole job.  A Tunlink that always sent NI_DEL left i_nlink
-	# at 1 -- an unattached directory -- and NOTHING SAW IT except fsck at
-	# the end of this section: the listing was right, icheck was silent and
-	# dcheck was silent.  v8fsd.c's removeop has the reconciliation.
+	# needed and nearly cost -- twice, in opposite directions.  rmdir(1) is
+	# three unlinks (rmdir.c:105,108,110) and on a MOUNT all three now reach
+	# namei, so V7's own arithmetic runs: `d/..' decrements the parent,
+	# `d/.' takes d from 2 to 1, `d' takes it to 0 and frees it.
+	#
+	# 5g's version absorbed the first two in the client and compensated with
+	# an `i_nlink <= 2' heuristic in v8fsd; 5h removed BOTH, and they had to
+	# go together -- keeping the heuristic once the `..' unlink lands would
+	# decrement the parent a SECOND time at nami.c:361.  Either half alone
+	# corrupts, which is why this control matters more than the move it
+	# guards.  And NOTHING SEES IT except fsck at the end of this section:
+	# the listing is right, icheck is silent and dcheck is silent.
 	w8 "$ROOT/rootfs/bin/mkdir" /mnt/gone >/dev/null 2>&1
 	check "rmdir still removes a directory completely"	"0" \
 		"$(w8 "$ROOT/rootfs/bin/rmdir" /mnt/gone >/dev/null 2>&1; echo $?)"
@@ -3182,7 +3191,7 @@ if [ "$wready" = 1 ]; then
 		check "...and both names are one inode"		"1"	"$(lq link-same-ino)"
 		# ...AND THE LINK COUNT IS 1, WHICH IS A LIMITATION ASSERTED ON
 		# PURPOSE.  9P2000's stat carries no nlink field at all -- .u
-		# and .L added one -- so p9cl.c:1139 sets it to 1 for every file
+		# and .L added one -- so p9cl.c:1158 sets it to 1 for every file
 		# on every mount and the real 2 is simply not on the wire.  The
 		# obvious case here would have been `ls -l' and the link count,
 		# and it would have been asserting a constant.
@@ -3200,15 +3209,24 @@ if [ "$wready" = 1 ]; then
 			"$(lq unlink-linked-dir)"
 		check "...and the surviving name still reaches the contents" "1" \
 			"$(lq survivor-readable)"
-		# 22 = EINVAL, AND IT COMES FROM THE CLIENT.  p9parent refuses
-		# `.'/`..' as a basename before anything goes on the wire, so
-		# this case tests p9cl.c and not the server -- which is worth
-		# saying, because the first draft asserted the same number from
-		# a server-side guard and a mutation deleting that guard
-		# changed nothing.  On the wire upstream answers EEXIST, since
-		# nami.c:88-95 refuses NI_LINK for a name that already exists
-		# and `..' always does.
-		check "dotdot as a new name is refused by the client" "22" \
+		# 17 = EEXIST, AND IT COMES FROM BELL LABS -- §8a step 5h, and
+		# the previous version of this case is why the change is worth
+		# a paragraph.  It asserted 22 (EINVAL) and said so precisely:
+		# p9parent refused `.'/`..' as a basename before anything went
+		# on the wire, so the case tested p9cl.c and not the server.
+		# The comment then noted what WOULD happen on the wire --
+		# "upstream answers EEXIST, since nami.c:88-95 refuses NI_LINK
+		# for a name that already exists and `..' always does" -- and
+		# that sentence was the finding: the client's refusal was
+		# standing in front of a better answer that upstream already
+		# gave.  5h had to let `..' through for mv's sake, and the
+		# number that came back was the one the comment predicted.
+		#
+		# So this is a case that got STRONGER by losing a guard, which
+		# is the same shape as do_link's two deleted checks: a refusal
+		# duplicating one Bell Labs already make is not a second guard,
+		# it is a layer that can disagree with them.
+		check "dotdot as a new name is EEXIST, from upstream" "17" \
 			"$(lq link-dotdot-errno)"
 		# 20 = ENOTDIR, AND IT COMES FROM BELL LABS.  nami.c's own loop
 		# refuses a non-directory u_cdir; the draft duplicated that

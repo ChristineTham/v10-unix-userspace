@@ -632,10 +632,37 @@ int v8s_link(char *a, char *b)
 	 * possible answers.  Measured, not predicted.
 	 */
 	if (dotlink(b)) {
-		struct v8_stat st;
+		struct v8_stat st, bst;
 
-		/* only if the directory really is there */
-		if (v8s_stat(a, &st) == 0 &&
+		/*
+		 * AND ONLY IF THE ENTRY IS ALREADY THERE -- §8a step 5h, and
+		 * this second test is what separates mkdir(1) from mv(1) when
+		 * the basename cannot.
+		 *
+		 * The claim absorption makes is "the entry you asked to create
+		 * exists, with the meaning you wanted", and until 5h nothing
+		 * checked the first half of it.  mkdir(1)'s `link(d, "d/.")'
+		 * arrives after mknod has already written both entries, so the
+		 * claim is true.  mv(1)'s `link(pname(target), "target/..")'
+		 * arrives one line after mv UNLINKED that entry (mv.c:216),
+		 * for the express purpose of making it name something else --
+		 * so the claim is false, and absorbing it left `..' pointing
+		 * at the OLD parent while mv exited 0.  Both callers pass a
+		 * directory as `a', which is why the original test could not
+		 * tell them apart.
+		 *
+		 * THE CHANGE IS MONOTONE, which is what bounds it: this arm
+		 * can now only absorb FEWER calls than before, never more, and
+		 * the ones it stops absorbing are exactly those naming an
+		 * entry that is not there.  Those fall through to a real link,
+		 * where the server answers EEXIST (nami.c:88-95, for an entry
+		 * that IS present) or does the work.  Same discipline as
+		 * rootpath()'s access-to-lstat fix: change the predicate to
+		 * the question actually being asked, then show the disagreement
+		 * set is the one you meant.
+		 */
+		if (v8s_stat(b, &bst) == 0 &&
+		    v8s_stat(a, &st) == 0 &&
 		    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
 			return (0);
 	}
@@ -749,22 +776,40 @@ int v8s_unlink(char *p)
 	struct v8_stat st;
 
 	/*
-	 * THE DOT ENTRIES FIRST, FOR BOTH FILESYSTEMS -- §8a step 5f, and it is
-	 * v8s_link's move made in the mirror direction.  rmdir(1) is
-	 * `unlink("d/.."); unlink("d/."); unlink("d")', and on a v8fs mount the
-	 * first two would reach the server, which refuses them: a fid whose
-	 * last component is `.' or `..' has no recorded parent, on purpose,
-	 * because its NAME is not an entry anybody may unlink.  rmdir(1)
-	 * ignores those two return values (rmdir.c:105,108 check nothing) so
-	 * the refusal costs nothing today -- which is exactly why it should be
-	 * settled here rather than left to be discovered by the one caller that
-	 * does look.
+	 * THE DOT ENTRIES ARE THE HOST'S PROBLEM ONLY -- §8a step 5h narrowed
+	 * this from "for BOTH filesystems" to one, and the narrowing is the fix
+	 * rather than a tidy-up.
+	 *
+	 * rmdir(1) is `unlink("d/.."); unlink("d/."); unlink("d")': V7 takes a
+	 * directory apart by hand, and the first two calls are where the two
+	 * decrements that the third depends on actually happen.  macOS has no
+	 * way to perform them -- its rmdir(2) does the whole job and its
+	 * unlink(2) refuses a directory -- so on the PASSTHROUGH type,
+	 * succeeding and doing nothing is the truth, and pt_remove's arm then
+	 * makes the third call do all three jobs at once.
+	 *
+	 * A v8fs MOUNT IS THE FILESYSTEM V7 WAS DESCRIBING, so it can just do
+	 * them, and 5g's refusal here was compensating for a message that could
+	 * not express `..' rather than for anything the image could not hold.
+	 * With Tunlink reshaped to (dfid, name) all three calls reach namei and
+	 * V7's own arithmetic runs -- which is also what let v8fsd's matching
+	 * `i_nlink <= 2' heuristic go, and the two had to go together: p9.h has
+	 * the trace showing that keeping either alone decrements the parent
+	 * twice.
+	 *
+	 * AND IT IS WHAT MAKES mv(1) WORK, which is the whole of 5h.  mv.c:216
+	 * unlinks `target/..' and :222 links the new parent back; absorbing the
+	 * first returned 0 having done nothing, so the move completed with `..'
+	 * still naming the OLD parent and NOTHING SAW IT -- icheck and dcheck
+	 * are both silent, because the link counts stay consistent with the
+	 * wrong `..'.  5g's answer was to refuse the unlink so that mv rolled
+	 * back (mv.c:218-219 relinks the old name); 5h's is to perform it.
 	 *
 	 * `d' RESOLVED BELOW USES vpath, AND THE MOUNT MUST NOT, so the parent
 	 * test is done against the ORIGINAL path and the mount dispatch happens
 	 * between the two halves.
 	 */
-	if (dotlink(p)) {
+	if (dotlink(p) && !v8fs_mounted(p)) {
 		char par[1024];
 		int i, b = 0;
 
@@ -774,49 +819,12 @@ int v8s_unlink(char *p)
 		par[b] = '\0';
 		if (b == 0) return (0);			/* bare "." or ".." */
 		/*
-		 * ...BUT NOT ON A MOUNT, AND §8a step 5g's OWN AUDIT IS WHY.
-		 *
-		 * Succeeding-and-doing-nothing is the truth for the caller this
-		 * arm was written for -- mkdir(1) and rmdir(1), where `.' and
-		 * `..' are made and destroyed with the directory and the entry
-		 * really does already exist with the meaning the caller wanted.
-		 * It is a LIE for mv(1), whose entire purpose in these two
-		 * calls is to CHANGE what `..' means, and the predicate looks
-		 * only at the basename so it cannot tell them apart.
-		 *
-		 * Before link had a slot this never fired: mvdir's first step
-		 * was refused, loudly, and mv stopped.  5g made the whole
-		 * sequence reachable and it then ran to completion returning 0
-		 * with `..' still pointing at the OLD parent.  Measured --
-		 * a=102, b=101, `mv /mnt/a/d /mnt/b/d' exits 0 and `b/d/..'
-		 * reads 102, so `ls /mnt/b/d/..' lists an empty `a'.  And
-		 * NOTHING SEES IT: icheck and dcheck are silent, because the
-		 * link counts stay perfectly consistent with the wrong `..'.
-		 * A silently wrong filesystem, where a refusal stood before.
-		 *
-		 * REFUSING THE UNLINK IS WHAT MAKES mv ROLL BACK, and that is
-		 * the whole reason the guard goes here rather than on the link
-		 * beside it.  mv.c:216 is the FIRST of the two `..' calls, and
-		 * its failure arm at :218-219 relinks the old name and unlinks
-		 * the new -- so the directory goes back exactly where it was
-		 * and `..' is never touched.  Failing the link at :222 instead
-		 * would leave the move half done.
-		 *
-		 * AND IT COSTS THE OTHER TWO CALLERS NOTHING, which is measured
-		 * rather than hoped: rmdir(1) IGNORES both dot unlinks
-		 * (rmdir.c:105 and :108 are bare `unlink(name);', only the
-		 * third is checked), and mkdir(1) uses link(2) for both of its
-		 * and never comes here at all.
-		 *
-		 * EINVAL rather than EPERM or EROFS: the filesystem takes
-		 * writes and the caller has the right to ask, but "remove the
-		 * `..' of a live directory" is not a request this server can
-		 * be given -- there is no Tunlink that names it.
+		 * ONLY IF THE PARENT REALLY IS A DIRECTORY.  The entry the
+		 * caller is asking to remove is one the host maintains for it,
+		 * so the claim being made is "that entry exists and will be
+		 * gone when the directory is" -- which is true of a directory
+		 * and of nothing else.  `unlink("notadir/..")' has to fail.
 		 */
-		if (v8fs_mounted(p)) {
-			v8_errno = V8_EINVAL;
-			return (-1);
-		}
 		if (v8s_stat(par, &st) == 0 &&
 		    (st.st_mode & V8_S_IFMT) == V8_S_IFDIR)
 			return (0);

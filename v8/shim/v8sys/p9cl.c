@@ -753,9 +753,28 @@ p9walk(int fd, const char *rel)
  * and then create a nameless entry.  A path with no parent component (a bare
  * name directly under the mount) walks zero components, which is a legal
  * Twalk and leaves FILEFID cloned onto the root.
+ *
+ * `dots' IS WHETHER `.' AND `..' ARE LEGAL AS THE LAST COMPONENT, and §8a step
+ * 5h is why it is a parameter rather than a blanket refusal.  Which answer is
+ * right depends entirely on what the caller is about to do with the name:
+ *
+ *	CREATE   a file called `..' is nonsense in any namespace, and Tcreate
+ *		 with that name would be a client bug rather than a request.
+ *		 t_mkdir and t_create pass 0 and keep the refusal.
+ *
+ *	LINK and UNLINK  they are ENTRIES, and mv(1) exists to rewrite one of
+ *		 them.  mv.c:216 unlinks `target/..' and :222 links the new
+ *		 parent back as `target/..'; refusing here made mvdir
+ *		 impossible on a mount no matter what the wire could express.
+ *
+ * So the old unconditional refusal was correct for the callers that existed
+ * when it was written and became a limit on the ones that arrived later --
+ * which is this port's unexercised-rule shape, arriving in a HELPER rather
+ * than in a rule: a predicate shared by four callers had one caller's policy
+ * baked into it.
  */
 static int
-p9parent(int fd, const char *rel, char *base, long bmax)
+p9parent(int fd, const char *rel, char *base, long bmax, int dots)
 {
 	const char *end, *slash, *p;
 	char dir[1024];
@@ -772,7 +791,7 @@ p9parent(int fd, const char *rel, char *base, long bmax)
 	if (n >= bmax) { v8_errno = V8_ENOENT; return (-1); }
 	for (p = slash; p < end; p++) base[p - slash] = *p;
 	base[n] = '\0';
-	if (base[0] == '.' && (base[1] == '\0' ||
+	if (!dots && base[0] == '.' && (base[1] == '\0' ||
 	    (base[1] == '.' && base[2] == '\0'))) {
 		v8_errno = V8_EINVAL;
 		return (-1);
@@ -892,7 +911,7 @@ p9_t_open(char *p, int flags, int mode)
 		char base[P9_NAMELEN];
 
 		if (p9walk(fd, rel) < 0) {
-			if (p9parent(fd, rel, base, (long)sizeof base) < 0)
+			if (p9parent(fd, rel, base, (long)sizeof base, 0) < 0)
 				goto fail;
 			/*
 			 * MODE, NOT PERM, and the difference is one bit that
@@ -1323,17 +1342,56 @@ p9_t_remove(char *p, int isdir)
 	struct p9mnt *m = p9mount();
 	struct p9buf b, r;
 	const char *rel;
+	char base[P9_NAMELEN];
 	int fd, rc;
 
 	if (m == 0 || (rel = p9rel(m, p)) == 0) { v8_errno = V8_ENOENT; return (-1); }
 	if ((fd = p9dial(m)) < 0) return (-1);
+
+	/*
+	 * WHICH MESSAGE IS WHICH SYSCALL, §8a step 5g -- not which target.
+	 *
+	 * isdir < 0 is v8s_unlink, i.e. unlink(2); isdir >= 0 is v8s_rmdir.
+	 * Sending Tremove for both let the SERVER decide from the inode, which
+	 * is Plan 9's rule (it has no rmdir(2)) and is a decision the caller had
+	 * already made.  p9.h has the three ways that differed.
+	 *
+	 * AND §8a step 5h SPLIT THE WALK AS WELL AS THE MESSAGE, because the two
+	 * messages now name different things.  Tunlink names a DIRECTORY and an
+	 * ENTRY, so the walk stops at the parent and the last component travels
+	 * as a string; Tremove names a FILE, so it walks the whole way.  That is
+	 * not a refactor -- it is the only shape in which `..' can be named at
+	 * all, and mv(1) has to name it.  A fid walked to `target/..' IS the old
+	 * parent and is called `..', which is why v8fsd zeroes f_pino for it.
+	 */
+	if (isdir < 0) {
+		if (p9parent(fd, rel, base, (long)sizeof base, 1) < 0) {
+			rawsys1(SYS_close, fd);
+			return (-1);
+		}
+		/*
+		 * NO PRE-CHECK ON THIS ARM AND THERE NEVER WAS ONE: unlink(2)
+		 * has no opinion about what it names, so there is no mismatch
+		 * to refuse.  Nothing is walked to the target either, which is
+		 * what lets a dot entry through -- a stat of `target/..' would
+		 * answer about the parent and tell us nothing about the entry.
+		 */
+		begin(&b, P9_Tunlink);
+		p9_p32(&b, P9CL_FILEFID);	/* dfid -- the entry's parent */
+		p9_pstr(&b, base);
+		rc = xact(fd, &b, P9_Runlink, &r) < 0 ? -1 : 0;
+		rawsys1(SYS_close, fd);
+		return (rc);
+	}
+
 	if (p9walk(fd, rel) < 0) { rawsys1(SYS_close, fd); return (-1); }
 
 	/*
 	 * THE FID IS GONE WHETHER OR NOT THIS SUCCEEDS -- 9P says a Tremove
 	 * clunks the fid even on Rerror -- so there is nothing to clean up and
 	 * the connection close below is only the socket.  A client that sent a
-	 * Tclunk after a failed Tremove would get EBADF.
+	 * Tclunk after a failed Tremove would get EBADF.  Tunlink above clunks
+	 * nothing, because it consumes no fid: dfid is the caller's directory.
 	 *
 	 * isdir IS SENT BY NOT BEING SENT: 9P's Tremove has no flag, so the
 	 * server decides from the inode's own mode and picks NI_DEL or
@@ -1341,7 +1399,7 @@ p9_t_remove(char *p, int isdir)
 	 * BEFORE the wire, so that `rmdir /mnt/hello' is ENOTDIR rather than an
 	 * unlink the caller did not ask for.
 	 */
-	if (isdir >= 0) {
+	{
 		struct v8_stat st;
 
 		if (p9statfid(fd, &st) < 0) { rawsys1(SYS_close, fd); return (-1); }
@@ -1352,31 +1410,9 @@ p9_t_remove(char *p, int isdir)
 		}
 	}
 
-	/*
-	 * WHICH MESSAGE IS WHICH SYSCALL, §8a step 5g -- not which target.
-	 *
-	 * isdir < 0 is v8s_unlink, i.e. unlink(2), and V7's unlink is NI_DEL
-	 * whatever the entry names; isdir >= 0 is v8s_rmdir.  Sending Tremove
-	 * for both let the SERVER decide from the inode, which is Plan 9's rule
-	 * (it has no rmdir(2)) and is a decision the caller had already made.
-	 * p9.h has the three ways that differed and the measurements.
-	 *
-	 * So `rm /mnt/f' now sends Tunlink, where it used to send Tremove.
-	 * That is the common path changing message, and deliberately: for a
-	 * plain file the two are identical at the server -- both reach NI_DEL
-	 * -- so the existing cases are the control that says the new path is
-	 * the old behaviour.  Only a DIRECTORY can tell them apart, and only
-	 * since Tlink gave one a second name.
-	 */
-	if (isdir < 0) {
-		begin(&b, P9_Tunlink);
-		p9_p32(&b, P9CL_FILEFID);
-		rc = xact(fd, &b, P9_Runlink, &r) < 0 ? -1 : 0;
-	} else {
-		begin(&b, P9_Tremove);
-		p9_p32(&b, P9CL_FILEFID);
-		rc = xact(fd, &b, P9_Rremove, &r) < 0 ? -1 : 0;
-	}
+	begin(&b, P9_Tremove);
+	p9_p32(&b, P9CL_FILEFID);
+	rc = xact(fd, &b, P9_Rremove, &r) < 0 ? -1 : 0;
 	rawsys1(SYS_close, fd);
 	return (rc);
 }
@@ -1410,7 +1446,7 @@ p9_t_link(char *rold, char *rnew)
 		return (-1);
 	}
 	if ((fd = p9dial(m)) < 0) return (-1);
-	if (p9parent(fd, newrel, base, (long)sizeof base) < 0) {
+	if (p9parent(fd, newrel, base, (long)sizeof base, 1) < 0) {
 		rawsys1(SYS_close, fd);
 		return (-1);
 	}
@@ -1444,7 +1480,7 @@ p9_t_mkdir(char *p, int mode)
 
 	if (m == 0 || (rel = p9rel(m, p)) == 0) { v8_errno = V8_ENOENT; return (-1); }
 	if ((fd = p9dial(m)) < 0) return (-1);
-	if (p9parent(fd, rel, base, (long)sizeof base) < 0) {
+	if (p9parent(fd, rel, base, (long)sizeof base, 0) < 0) {
 		rawsys1(SYS_close, fd);
 		return (-1);
 	}

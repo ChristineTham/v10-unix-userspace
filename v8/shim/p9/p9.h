@@ -273,14 +273,38 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
  * So: two syscalls, two messages.  Tunlink is unlink(2) and Tremove keeps its
  * conforming Plan 9 meaning for anyone else.
  *
- * THIS SENTENCE SAID "Tunlink is unlink(2) -- ALWAYS NI_DEL --" and that is
- * not what shipped.  v8fsd's removeop has to reconcile V7's unlink with a
- * fiction the client already tells (dotlink() absorbs rmdir(1)'s two dot
- * unlinks), so on a directory it asks whether this is the last name.  The
- * argument is in removeop; what matters here is that the wire message does not
- * carry the decision, so no reader of this header should think it does.  It
- * carries a fid and nothing else, exactly as Tremove does, and clunks it the
- * same way whatever the outcome.
+ * THIS SENTENCE SAID "Tunlink is unlink(2) -- ALWAYS NI_DEL --", THEN RETRACTED
+ * IT, AND THE RETRACTION WAS THE THING THAT WAS WRONG.  §8a step 5h.  What 5g
+ * shipped was a removeop that asked `i_nlink <= 2' on a directory, and the
+ * retraction explained that as reconciling V7's unlink with a fiction the
+ * client already tells -- dotlink() absorbing rmdir(1)'s two dot unlinks, so
+ * the two decrements that should precede the third have not happened.  Every
+ * clause of that was true.  The conclusion was not: it described a COMPENSATING
+ * ERROR, one workaround split across two files, and read it as a design.
+ *
+ * TUNLINK CARRIES dfid AND name NOW, WHICH IS WHAT unlink(2) NAMES.  The fid
+ * shape was Tremove's, copied, and it imported Plan 9's noun into a V7 verb:
+ * remove(2) names a FILE, unlink(2) names a DIRECTORY and an ENTRY.  The two
+ * are not the same question, and `..' is where they visibly separate -- it is
+ * an entry that exists only from the directory's side, so no fid can name it.
+ * v8fsd.c's f_pino was an attempt to bridge that inside the server, and it
+ * bridged it for every entry EXCEPT the dot ones, which it zeroes on purpose
+ * (a fid walked to `sub/..' points at the root and is called `..', so a remove
+ * through it would ask to unlink an entry named `..' in the root's parent).
+ * With dfid and a name there is nothing to infer and nothing to zero.
+ *
+ * AND THE HEURISTIC THEN BECOMES ACTIVE CORRUPTION RATHER THAN A WORKAROUND,
+ * which is why both halves come out in one step.  Once the dot unlinks reach
+ * the server, rmdir(1)'s three calls do V7's own arithmetic: `unlink("d/..")'
+ * decrements the parent, `unlink("d/.")' takes d from 2 to 1, `unlink("d")'
+ * takes it to 0 and frees it.  Leave the heuristic in and the third call sees
+ * i_nlink <= 2, takes NI_RMDIR, and nami.c:361 decrements the parent A SECOND
+ * TIME.  So Tunlink is ALWAYS NI_DEL -- the original sentence, restored by
+ * removing the thing that had made it false.
+ *
+ * Rlink and Runlink both carry nothing, and note what Tunlink does NOT do: it
+ * does not clunk.  Tremove's clunk is 9P's rule about the fid it consumed, and
+ * Tunlink consumes none -- dfid is the caller's directory and stays alive.
  */
 #define P9_Tunlink	134
 #define P9_Runlink	135

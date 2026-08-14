@@ -1427,7 +1427,7 @@ the other seven survived it.
 
 ### And 9P's stat carries no link count
 
-`p9cl.c:1139` sets `st_nlink = 1` for every file on every mount, because
+`p9cl.c:1158` sets `st_nlink = 1` for every file on every mount, because
 9P2000's stat has no such field (`.u` and `.L` added one). So `ls -l` can never
 show a hard link, and the obvious case for this step — link count goes to 2 —
 would have asserted a constant. The observable is `ls -i`: a qid path **is**
@@ -1437,3 +1437,117 @@ rather than a sentence.
 
 `streams` 592 → 632. Nine mutations; seven fire, and the two that do not are
 the findings above.
+
+## §8a step 5h — mv of a directory across directories, and one workaround split across two files
+
+`mv /mnt/a/d /mnt/b/d` failed at `mv.c:216` and rolled back. That refusal was
+5g's, deliberate and correct at the time; 5h performs the move instead. What
+the step is really about is not `mv` but the shape of a message.
+
+### A fid names a file; unlink names a directory and an entry
+
+`Tunlink` (134/135) was `fid[4]`, copied from `Tremove` — and that imported
+Plan 9's noun into a V7 verb. `remove(2)` names a FILE. `unlink(2)` names a
+DIRECTORY and an ENTRY, and `..` is where the two visibly separate: it is an
+entry that exists only from the directory's side, so **no fid can name it**.
+
+`v8fsd.c`'s `f_pino` was an attempt to bridge that inside the server, and it
+bridged it for every entry except the dot ones — which it zeroes on purpose,
+because a fid walked to `sub/..` *is* the old parent and is called `..`, so a
+remove through it would ask to unlink an entry named `..` in the root's parent.
+
+The diagnosis was already written, in `do_remove`'s own header comment, and had
+sat there for a step without being read as one:
+
+> a fid names a FILE, V7's unlink names a DIRECTORY and an ENTRY, and nothing
+> in a struct inode bridges the two
+
+That is not a note about `f_pino`. It is a note about the wrong message shape.
+`Tunlink` is `dfid[4] name[s]` now, matching `Tlink`, and `do_unlink` infers
+nothing. `Tremove` keeps `fid[4]`, where the fid is *correct*.
+
+### The two halves of one workaround, and either alone corrupts
+
+5g shipped `isdir = f->f_ip->i_nlink <= 2` for Tunlink on a directory, and
+explained it as reconciling V7's unlink with a fiction the client already told —
+`syscall.c`'s `dotlink()` absorbing `rmdir(1)`'s two dot unlinks, so the two
+decrements that should precede the third had never happened. **Every clause of
+that was true and the conclusion was not.** It described a COMPENSATING ERROR —
+one workaround split across two files — and read it as a design.
+
+Stop absorbing on a mount and V7's own arithmetic runs:
+
+| `rmdir(1)` call | flag | effect |
+|---|---|---|
+| `unlink("d/..")` | NI_DEL | the entry's `d_ino` is the PARENT; `nami.c:325` decrements it |
+| `unlink("d/.")`  | NI_DEL | `nami.c:302` sees `d_ino == dp->i_number`; d goes 2 → 1 |
+| `unlink("d")`    | NI_DEL | d goes 1 → 0, and `iput` at `i_count` 1 runs `itrunc`/`ifree` |
+
+Leave the heuristic in and the third call sees `i_nlink <= 2`, takes NI_RMDIR,
+and `nami.c:361` decrements the parent **a second time**. So `Tunlink` is
+ALWAYS NI_DEL — the sentence `p9.h` claimed originally and had to retract,
+restored by removing the thing that had made it false.
+
+Measured: mutation M4 restores the absorption alone and **fsck** goes red.
+icheck, dcheck and the block-count identity all stay green. Third instance of
+the independent-reader rule, and again fsck is the only one that can see it.
+
+### The absorption had to become conditional, not disappear
+
+The host still needs it. macOS cannot perform the two dot unlinks — its
+`rmdir(2)` does the whole job and its `unlink(2)` refuses a directory — so on
+the passthrough type succeeding-and-doing-nothing remains the truth. The guard
+is `dotlink(p) && !v8fs_mounted(p)`: one filesystem is the one V7 was
+describing and can just do them.
+
+### And the link side needed a different predicate, not a different guard
+
+`v8s_link`'s dot arm absorbs too, and it could not tell `mkdir(1)` from `mv(1)`
+because it tested the wrong operand. Both pass a DIRECTORY as `a`. What
+separates them is `b`:
+
+- `mkdir(1)`'s `link(d, "d/.")` arrives after `mknod` wrote both entries. The
+  entry is there; the claim absorption makes is true.
+- `mv(1)`'s `link(pname(target), "target/..")` arrives one line after mv
+  UNLINKED that entry (`mv.c:216`), for the express purpose of making it name
+  something else. The claim is false.
+
+So the arm now requires the target entry to EXIST. The change is **monotone** —
+it can only absorb fewer calls than before — which is what bounds it, the same
+discipline as `rootpath()`'s access-to-lstat fix.
+
+### A helper with one caller's policy baked into it
+
+`p9parent()` refused `.` and `..` as a basename unconditionally. Correct for
+the callers that existed when it was written (`t_create`, `t_mkdir` — a file
+called `..` is nonsense) and a hard limit on the ones that arrived later. It
+takes a `dots` parameter now; only link and unlink pass it. The
+unexercised-rule shape, arriving in a HELPER rather than in a rule.
+
+### A case got stronger by losing a guard
+
+`dotdot as a new name` asserted 22 (EINVAL) **from the client**, and the comment
+beside it already said what would happen on the wire: *"upstream answers EEXIST,
+since `nami.c:88-95` refuses NI_LINK for a name that already exists and `..`
+always does."* That sentence was the finding. Letting `..` through for mv's sake
+made the case assert **17, from Bell Labs** — the same shape as 5g's two deleted
+`do_link` checks. A refusal duplicating one upstream already makes is not a
+second guard; it is a layer that can disagree with them.
+
+### What is left, and what is deliberately not guarded
+
+Only `symlink` still refuses, permanently: a V7 filesystem cannot represent one.
+
+`unlink("/mnt/..")` reaches `namei` and V7 lets a superuser zero the image
+root's parent entry; fsck repairs it. Unguarded, for the reason `klink`'s
+comment already gives about a client building a cycle with `ln /mnt/d
+/mnt/d/sub` — V7's own hazard, and nothing shipped asks for it (`rmdir(1)`
+refuses `.`/`..` as its argument at `rmdir.c:85-88`, and `mv(1)`'s `chkdot`
+refuses any path containing one).
+
+Host `mvdir` stays broken and always was: macOS refuses to hard-link a
+directory, so call 1 fails there. That is the host's answer, not this port's.
+
+`streams` 638 → 638 — four cases inverted rather than added, plus one expected
+value corrected. Four mutations, four fire, and M2 fires on **exactly one
+case**, which is what says that case is aimed rather than merely sensitive.

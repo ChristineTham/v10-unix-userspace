@@ -1693,13 +1693,25 @@ do_create(struct conn *c, p9_u32 tag, struct p9buf *in)
  * and nothing in a struct inode bridges the two -- `..' is an entry, so it
  * exists for a directory and not for a plain file.
  *
+ * THAT PARAGRAPH IS A DIAGNOSIS OF TUNLINK AND IT SAT HERE FOR A STEP WITHOUT
+ * BEING READ AS ONE.  It is exactly right, and what it describes is a message
+ * carrying the wrong noun -- so the answer was never a better way to recover
+ * the parent, it was for unlink(2)'s message to name what unlink(2) names.
+ * §8a step 5h did that: do_unlink takes dfid and a name and infers nothing.
+ * What is left below is Tremove, where the fid is CORRECT -- Plan 9's
+ * remove(2) really does name a file -- so f_pino is answering its own
+ * question here rather than standing in for a field the message should
+ * have had.
+ *
  * A ZERO f_pino IS REFUSED RATHER THAN GUESSED, which covers three real cases
  * with one test: the root (a client that attaches and immediately removes), a
  * clone that has never walked, and a fid whose last component was `.' or `..'
- * and whose name is therefore not an entry anybody may unlink.
+ * and whose name is therefore not an entry anybody may unlink.  The third is
+ * now Tremove's alone; the client reaches a dot entry through do_unlink, which
+ * has no fid to zero.
  */
 static void
-removeop(struct conn *c, p9_u32 tag, struct p9buf *in, int askinode, int rtype)
+do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
 {
 	struct p9buf b;
 	struct fid *f;
@@ -1725,58 +1737,28 @@ removeop(struct conn *c, p9_u32 tag, struct p9buf *in, int askinode, int rtype)
 		err = u.u_error ? u.u_error : EIO;
 	} else {
 		parent->i_flag &= ~ILOCK;	/* kwalk's reason exactly */
-		isdir = (f->f_ip->i_mode & IFMT) == IFDIR;
 		/*
-		 * TUNLINK ON A DIRECTORY IS THE ONE PLACE THIS PORT HAS TO
-		 * RECONCILE TWO CONVENTIONS, and §8a step 5g is where the
-		 * conflict became visible.  Both halves are already decided
-		 * elsewhere and they disagree:
+		 * THE INODE DECIDES, AND FOR TREMOVE THAT IS THE WHOLE RULE.
+		 * Plan 9 has no rmdir(2) -- remove(2) takes anything -- so a
+		 * conforming client sends no flag and the server must look.
 		 *
-		 *   THE CLIENT DOES NOT MANAGE THE DOT ENTRIES.  rmdir(1) is
-		 *   `unlink("d/.."); unlink("d/."); unlink("d")' -- V7 takes a
-		 *   directory apart by hand and the third unlink is what drops
-		 *   i_nlink to 0.  syscall.c's dotlink() ABSORBS the first two,
-		 *   because macOS refuses them and this server refuses them,
-		 *   so by the time the third arrives the two decrements that
-		 *   were supposed to precede it have not happened.  A plain
-		 *   NI_DEL then leaves i_nlink at 1: an unattached directory,
-		 *   which fsck repairs and reports.  Measured -- that is the
-		 *   regression this arm exists to fix, and the only thing that
-		 *   caught it was fsck saying FILE SYSTEM WAS MODIFIED while
-		 *   icheck and dcheck were both silent.
+		 * §8a step 5g HAD A SECOND LINE HERE, `isdir = i_nlink <= 2'
+		 * for Tunlink, AND IT IS GONE WITH THE MESSAGE THAT NEEDED IT.
+		 * It was half of a compensating error whose other half was
+		 * dotlink() absorbing rmdir(1)'s two dot unlinks in the client:
+		 * with the decrements that should have preceded the third
+		 * unlink never performed, a plain NI_DEL left i_nlink at 1 and
+		 * fsck reported an unattached directory.  5h stopped the
+		 * absorption, so V7's own arithmetic runs, and keeping the
+		 * heuristic would then decrement the parent TWICE -- once in
+		 * the `..' unlink and again at nami.c:361.  p9.h has the trace.
 		 *
-		 *   AND mv(1) UNLINKS A DIRECTORY THAT IT HAS JUST GIVEN A
-		 *   SECOND NAME.  mv.c:232-240 is link-then-unlink, and there
-		 *   NI_RMDIR is simply wrong: nami.c:363 answers EBUSY above
-		 *   i_nlink 2, and nami.c:361 has already decremented the
-		 *   PARENT by then and does not put it back on the error path.
-		 *
-		 * The discriminator is not invented, it is the question the two
-		 * cases actually differ on.  At i_nlink <= 2 the entry being
-		 * removed is the directory's last NAME, so removing it destroys
-		 * the directory and NI_RMDIR -- which zeroes i_nlink and frees
-		 * the inode -- is what the caller must mean.
-		 *
-		 * AND THE DRAFT PHRASED THE TEST AS "DOES ANOTHER NAME REACH
-		 * THIS DIRECTORY?", WHICH IS NOT WHAT i_nlink COUNTS.  It is
-		 * 2 + one per SUBDIRECTORY (each subdirectory's `..' is a
-		 * reference) + one per extra name.  So a directory with one
-		 * name and one subdirectory is at 3 with no other name, and
-		 * takes the NI_DEL arm.  That answer is V7-FAITHFUL -- it is
-		 * exactly what unlink(2) does upstream to a non-empty
-		 * directory, and why rmdir(1) was setuid root -- so the
-		 * behaviour stands and only the sentence was wrong.  Nothing
-		 * shipped reaches it: rmdir(1) refuses a non-empty directory
-		 * at rmdir.c:79 and rm -r execs rmdir after emptying.  A
-		 * foreign client can, and gets V7's answer, which fsck calls
-		 * UNREF DIR and repairs.
-		 *
-		 * A PLAIN FILE NEVER REACHES THIS, and Tremove never does
-		 * either: Tremove is Plan 9's remove and keeps asking the
-		 * inode, which is the right reading for a foreign client.
+		 * So this asks one question again, Tunlink does not come here
+		 * at all, and the two conventions are no longer reconciled in
+		 * one function -- they are two messages, which is what p9.h
+		 * argued for in the first place.
 		 */
-		if (isdir && !askinode)
-			isdir = f->f_ip->i_nlink <= 2;
+		isdir = (f->f_ip->i_mode & IFMT) == IFDIR;
 		/*
 		 * THE TARGET IS RELEASED BEFORE THE REMOVE, and it has to be.
 		 * nami.c's NI_DEL arm does its own iget on the entry it found
@@ -1796,43 +1778,79 @@ removeop(struct conn *c, p9_u32 tag, struct p9buf *in, int askinode, int rtype)
 
 	fidfree(f);
 	if (err) { rerror(c, tag, err); return; }
-	p9_hdr(&b, txbuf, sizeof txbuf, rtype, tag);
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Rremove, tag);
 	reply(c, &b);
 }
 
 /*
- * Tremove and Tunlink, which are one function because they differ in exactly
- * one decision and share every hazard.  p9.h has the argument for why they are
- * two messages at all; what matters here is that the SHARED half -- the clunk
- * on every exit, the parent from f_pino rather than inferred, and the iput of
- * the target BEFORE the remove so that nami.c's own iput is the one that frees
- * the blocks -- must not exist twice.  Each of those three was a bug once, and
- * a second copy is a second chance to fix only one of them.
+ * Tunlink -- unlink(2), and §8a step 5h is where it stopped being a spelling of
+ * Tremove.  It is a SEPARATE FUNCTION NOW and shares nothing with the one
+ * above, which is the opposite of what 5g concluded; the sentence that stood
+ * here said the two "differ in exactly one decision and share every hazard",
+ * and both halves stopped being true when the message changed shape.
  *
- * `askinode' IS NOT THE WHOLE DIFFERENCE, AND THE DRAFT OF THIS SENTENCE SAID
- * IT WAS.  It claimed Tunlink "never asks, because V7's unlink(2) is NI_DEL
- * whatever it names" -- which describes a design that did not survive its own
- * first test run.  Tunlink asks TWICE: the mode at :1751, then i_nlink at
- * :1752, and on the common path (an ordinary empty directory) it comes out
- * NI_RMDIR.  The block above argues at length for exactly that, so the summary
- * contradicted the reasoning three lines below it, and a reader trusting the
- * summary would conclude the `<= 2' line is dead and delete it -- which is the
- * rmdir(1) regression only fsck caught.
+ * THE HAZARDS WERE PROPERTIES OF CARRYING A FID, NOT OF REMOVING A NAME.  All
+ * three that do_remove documents -- clunk on every exit, the parent from
+ * f_pino rather than inferred, and the iput of the target before kremove so
+ * that nami.c's own iput is the one that frees the blocks -- exist because a
+ * fid names the FILE and holds a reference to it.  This message names the
+ * directory and the entry, so there is no fid to clunk, no parent to infer,
+ * and no reference to drop: the only inode in scope is the caller's directory,
+ * which it keeps.  Sharing a function with do_remove would now mean sharing
+ * three guards against conditions that cannot arise here.
  *
- * What askinode actually selects is WHOSE RULE decides: Tremove asks the inode
- * and stops there, which is Plan 9's rule and the right reading for a foreign
- * client; Tunlink then asks the second question this port has to answer.
+ * ALWAYS NI_DEL, which is what sys4.c:160-169 does and what p9.h claimed
+ * before 5g had to retract it.  The retraction is itself retracted: see p9.h
+ * for why the `i_nlink <= 2' arm was a compensating error and why removing
+ * dotlink()'s absorption is what let the plain answer back.
+ *
+ * `..' IS THE ENTRY THIS EXISTS FOR and it needs no arm of its own.  namei
+ * finds it in dp like any other name, igets the inode it points at -- the OLD
+ * parent -- and decrements THAT, which is exactly what mv(1) means by
+ * `unlink(target/"..")'.  nami.c:302's `for .' arm covers the other dot entry
+ * the same way, by noticing d_ino is dp's own number.  Neither is special here
+ * because neither is special upstream.
+ *
+ * NO GUARD ON `/mnt/..', DELIBERATELY.  It reaches namei and V7 lets a
+ * superuser zero the image root's parent entry; fsck repairs it.  That is the
+ * same verdict klink's comment reaches about a client building a cycle with
+ * `ln /mnt/d /mnt/d/sub' -- V7's own hazard, unguarded there, and nothing
+ * shipped asks for it (rmdir(1) refuses `.' and `..' as its argument at
+ * rmdir.c:85-88, and mv(1)'s chkdot refuses any path containing one).
  */
-static void
-do_remove(struct conn *c, p9_u32 tag, struct p9buf *in)
-{
-	removeop(c, tag, in, 1, P9_Rremove);
-}
-
 static void
 do_unlink(struct conn *c, p9_u32 tag, struct p9buf *in)
 {
-	removeop(c, tag, in, 0, P9_Runlink);
+	struct p9buf b;
+	struct fid *df;
+	char name[P9_NAMELEN];
+	p9_u32 dfid;
+
+	dfid = p9_g32(in);
+	if (p9_gstr(in, name, sizeof name) < 0) { rerror(c, tag, EINVAL); return; }
+	if (!p9_ok(in)) { rerror(c, tag, EINVAL); return; }
+	if ((df = fidof(c, dfid)) == 0) { rerror(c, tag, EBADF); return; }
+	if (mntronly) { rerror(c, tag, EROFS); return; }
+	/*
+	 * The same two protocol-level checks do_link makes, and for do_link's
+	 * reasons: an empty name is not a request, and a name too long for the
+	 * protocol deserves a better errno than the ENOENT nami.c:233-240 would
+	 * give it.  Everything else -- ENOTDIR on a non-directory dfid, EPERM
+	 * for a non-superuser unlinking a directory -- is upstream's own line
+	 * and is left to fire.
+	 */
+	if (name[0] == '\0' || strlen(name) > DIRSIZ) {
+		rerror(c, tag, EINVAL);
+		return;
+	}
+
+	if (kremove(df->f_ip, name, 0) < 0) {
+		rerror(c, tag, u.u_error ? u.u_error : EIO);
+		return;
+	}
+
+	p9_hdr(&b, txbuf, sizeof txbuf, P9_Runlink, tag);
+	reply(c, &b);
 }
 
 /*
@@ -1911,7 +1929,7 @@ wowner(struct inode *ip)
  * every permission check on the image.
  *
  * IT IS THE SERVER END OF A CONTRACT THE CLIENT END ALREADY KEPT.  p9uid() at
- * p9cl.c:1086-1121 was given exactly this guard by an earlier audit, and its
+ * p9cl.c:1128-1140 was given exactly this guard by an earlier audit, and its
  * comment states the rule for the whole port -- root maps to root, and
  * non-root NEVER maps to root.  The two ends of one wire, one hour apart, and
  * only the reading end had it.  Nothing could have caught it: do_wstat had no
