@@ -2901,6 +2901,75 @@ guards the link instead is an inode comparison, which is also the only thing
 that would notice the failure that matters, since two identical copies would
 pass a byte comparison and would not be what V8 shipped.
 
+### The editor that was filed under the wrong name
+
+`vi` was recorded in this project's own notes as having no source at all, next
+to `more` and `pg`. `more` and `pg` really did ship as binaries with nothing
+behind them. `vi` did not: **`vi` is `ex`**, the two shipped binaries are
+byte-identical, upstream's makefile hard-links `vi`, `view`, `edit` and `e` to
+it, and there are sixty-one files of source sitting in the tree. It was filed
+with the sourceless because `usr/src/cmd` has no directory called `vi` — the
+sweep looked for the program's name, and the source is under the name of the
+program it is a link to. The most valuable interactive program in the system
+was written off by a listing that could not have found it.
+
+Importing it went better than expected and then stopped in an interesting
+place. **All twenty-eight objects compile under the 1985 compiler with no
+source change at all**, using upstream's own flags, and the program links with
+nothing imported from the host C library. What it does not yet do is work: it
+opens a file and reports it truthfully — `"f.txt" 2 lines, 12 characters` — and
+then executes no command and exits zero.
+
+Getting that far turned up three bugs, and none of them is in `ex`. All three
+had been sitting in the port waiting for a consumer.
+
+The first is the one worth the space. `ex` ships its own `printf`, written
+against `<varargs.h>`, and that header was **still 1985's** — never imported,
+never patched, byte-identical to the vendor copy. Its `va_arg` strides
+`sizeof(mode)`, four bytes for an `int`, while this port's compiler spills
+arguments into eight-byte slots. So every argument after the first is a splice
+of two halves, and the first is always right — which is exactly what the
+failure looked like: the file name printed and the line count segfaulted.
+
+What makes it a good example is that the *class* was never unknown. It is this
+port's dominant bug, and the forward spelling of the very same idiom — V8's
+`printf(fmt, args)` walking `&args` — had been fixed years earlier in seven
+separate files, every one of them taught to stride eight bytes. What nobody
+noticed is that `<varargs.h>` says the same thing a third way. Measured:
+`ex/printf.c` is the only file in the entire tree that uses `va_alist`, so the
+header had no consumer, and a header with no consumer cannot be seen to be
+wrong. The same shape as the on-disk `fblk.h` that had never been imported and
+was right only by coincidence.
+
+The second is smaller and the same shape from the other side. `ex` defines its
+own `exit()` — the ordinary 1980s way to clean up before leaving — and finishes
+it with `_exit()`. Both wrappers lived in one member of the stub archive, so
+the linker pulled that member to satisfy `_exit` and its `exit` collided with
+the program's. V8 keeps `sys/exit.s` and `sys/_exit.s` as separate files for
+precisely this reason, and the stub file's own comment said so, three lines
+above code that did the opposite. The archive's granularity rule had been
+stated, understood, applied to `signal`, and not applied here.
+
+The third was a recorded blocker that dissolved on reading. `ex` wants
+`ntty_ld`, and the notes said `tty_ld`/`ntty_ld` were "genuinely kernel state
+rather than something to emulate". They are twenty-four initialised integers in
+`libc/gen/linedis.c`, a file that had simply never been imported. Cross-checked
+against `conf/devices` — the file the kernel build actually reads — which
+agrees row for row, discipline 6 being `ntty` in both.
+
+`ex` is imported and deliberately **not installed**, which is a state this
+build had never had before, so it is named in the test that enforces
+imported-implies-installed rather than quietly waived. An editor that silently
+does nothing is worse than an absent one; `w` is installed and says `No mem`,
+and that is the distinction.
+
+The clue left for next time is the useful part. An instrumented build — the
+same sources plus three `write` calls — **does** execute commands and print the
+line. Behaviour that changes when you add debug output is not a missing
+feature; it is memory corruption or undefined behaviour moving under a changed
+layout. That is a different kind of hunt from the one that got it this far, and
+knowing which kind it is, is most of the work.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,
@@ -2922,13 +2991,10 @@ What remains is breadth, and it is now the main line rather than a coda. The
 port installs **134** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
-- **The screen editor.** `ex` — which *is* `vi`, hard-linked, along with `view`
-  and `edit` — has 61 files of source in the tree, and this document said until
-  now that it had none. That was wrong: `more` and `pg` genuinely shipped as
-  binaries with no source, `vi` did not, and it was filed with them because
-  `usr/src/cmd` has no directory called `vi`. It is the largest and most
-  valuable port left, it is why the terminal library went in first, and it is
-  the first program here that will use `tgoto` in anger.
+- **Finishing the screen editor.** `ex`/`vi` is imported, compiles under the
+  1985 compiler with no source change, links clean, and does not yet execute a
+  command. It is described above; the next step is a memory-corruption hunt
+  rather than a porting one, and the tell is already in hand.
 - **The rest of the terminal stack.** `libcurses` is 43 files and now has the
   library it sits on. The launcher still sets no `TERM`, which is a one-line
   decision that has to be made honestly rather than defaulted.

@@ -1,0 +1,66 @@
+# Provenance for v8/src/cmd/ex
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+f692ad308f879823759c7e53f6d66c247a8b6394  v8/usr/src/cmd/ex/ex_set.c
+45ccc00e142eccbe63a169f804431c1fed64b7f1  v8/usr/src/cmd/ex/printf.c
+d0f6bb1b28662b0f304f83a53922c4f7ddb3fa0d  v8/usr/src/cmd/ex/ex_get.c
+e69de29bb2d1d6434b8b29ae775ad8c2e48c5391  v8/usr/src/cmd/ex/m.2
+ad2d707eba3e06b70cc96ae7497792ba28106b89  v8/usr/src/cmd/ex/makefile.u4
+c3ad6102005ac2a8729a4845b6272c551d4b63bb  v8/usr/src/cmd/ex/makefile.u3
+c525ef66154beee9e01839b79993e99ea3d4056f  v8/usr/src/cmd/ex/exrecover.c
+2007cb1570b27683248b273ea42fd60f21563883  v8/usr/src/cmd/ex/makeoptions
+5cdfa0e5f052e8a8e8272128b1eeb133e50c6a8c  v8/usr/src/cmd/ex/ex_voper.c
+82c1ab420a7ec762e9297036dd7ea89f0a2cc781  v8/usr/src/cmd/ex/ex_vops3.c
+96588e81e75324196efe1144d678fcb848d6fac0  v8/usr/src/cmd/ex/ex_temp.h
+aaffdc6bf922c65aecbcd07936e6baadc9e7f99a  v8/usr/src/cmd/ex/ex_re.h
+9e66d7a88d8dc86ae69b25e3cc39cfd7399e6238  v8/usr/src/cmd/ex/makefile
+4f762eb9acfdbb4831bf770b27b67193fd3c6230  v8/usr/src/cmd/ex/ex_io.c
+0696cab1607e6a801f328c39287c50f529a3f099  v8/usr/src/cmd/ex/makefile.70
+e627ce386f14788ec3f928b8a1d62434589bba29  v8/usr/src/cmd/ex/ex_tty.h
+dc8ee2f1f54752305bb124003b8fe7a0e0e0dcd6  v8/usr/src/cmd/ex/ovdoprnt.s
+ad3f6d9df68d0a938b28befaada086ed24d75295  v8/usr/src/cmd/ex/ex.c
+37ebae7425a25d0b46aaf779e84257be213bddb1  v8/usr/src/cmd/ex/ex_cmds.c
+1872113a0360d867848e88b2b2c57fd18a5b2198  v8/usr/src/cmd/ex/ex_vadj.c
+5c2a55ba4f7727f679aeb408735ba26afc38d321  v8/usr/src/cmd/ex/ex_data.c
+762d3ef11059c68636d944d39c4f33ba0c6f19bb  v8/usr/src/cmd/ex/ex_vmain.c
+520286f9460ea00b329aab8f34af60930f2a19a2  v8/usr/src/cmd/ex/ex_vput.c
+d724e19a2e51a2575ae69929d5b6f07ded59ac4f  v8/usr/src/cmd/ex/rofix
+5ada71a099ef28a257d1bad5dd9a4497caaf7d8e  v8/usr/src/cmd/ex/ex_vars.h
+cf6ebecccb2835a37cab8b8c1119cd3b989d9c70  v8/usr/src/cmd/ex/ex_vis.h
+e60e314bac93a10af5add3bb5c174554afeb25a3  v8/usr/src/cmd/ex/tgoto.c
+e69de29bb2d1d6434b8b29ae775ad8c2e48c5391  v8/usr/src/cmd/ex/tags
+cae8251fe38b16d6e19828ea64bfcc3de47300c7  v8/usr/src/cmd/ex/ex_addr.c
+ff0c8f37156e3a5bbeee7069dea96be4d771aa7a  v8/usr/src/cmd/ex/ex_tune.h
+6548eb44e7a1c0f8d15f18149a652363e561040a  v8/usr/src/cmd/ex/OLDex_temp.c
+086b7b28c53dbfef1bbe9d724a0825130fdd23a2  v8/usr/src/cmd/ex/ex_put.c
+ab64ffe8a1eb2d7bd7d21da071922a3b449303c9  v8/usr/src/cmd/ex/makefile.4bsd
+6374b6f9e9a5ac3f57a9d140ab3fa07097d09759  v8/usr/src/cmd/ex/bcopy.c
+20933a56000a603c322c652d0082fb4fbd34d06b  v8/usr/src/cmd/ex/m.1
+d1dc708a50a858bd4cf6da554d06692e268548bf  v8/usr/src/cmd/ex/ex.news
+3057e6984fd9cd77dcf9e4991cd7a316df9bb60e  v8/usr/src/cmd/ex/ex_re.c
+76c10646e203421dd4a299f79542e2307e361b9e  v8/usr/src/cmd/ex/ex_temp.c
+2f30dcfd9453f7c5a2823f277f4bed2653edf308  v8/usr/src/cmd/ex/ex_extern.c
+ec39cc9a06cbd13bca462025e39dc2c3c8e42e1d  v8/usr/src/cmd/ex/ex_vwind.c
+5111e90441869bdecf2eedadd47f0fd06652e38c  v8/usr/src/cmd/ex/ex_v.c
+2a0f2990f1f5b6aa4b29c58f6fd3ea076182c007  v8/usr/src/cmd/ex/ovprintf.c
+eea1b1e0d390654d4f79df119ecfa48de11d2288  v8/usr/src/cmd/ex/makefile.370
+b602b9248477f35d2e91987ec402cd570a0078ad  v8/usr/src/cmd/ex/ex_cmdsub.c
+516a514caccb7802b6f98934d5051e631d19007f  v8/usr/src/cmd/ex/ex_cmds2.c
+b1d0b8a50fb69a346117fc79220a4e2e91387a59  v8/usr/src/cmd/ex/ex_tty.c
+af103667e022f9f5aeb7ed2c8ad105ec0002abeb  v8/usr/src/cmd/ex/ex_unix.c
+c08314d0210a7bf7c88aedb47dae2a40bbb3828f  v8/usr/src/cmd/ex/ex.h
+a9e6ac45a93c74acaa8134c5910f880bbd1aa309  v8/usr/src/cmd/ex/ex_vops.c
+6bcfbbd692b5e160adfe6febf158e1eda0f40d04  v8/usr/src/cmd/ex/asfix.c70
+6b962d45205fe51025419d0c7ac0577c1a7166fe  v8/usr/src/cmd/ex/ex.3b
+04b89a781d5f769ec014fa4f9bf35aa2bea7a461  v8/usr/src/cmd/ex/OLDex.h
+fa6be200e1f6fa78f2d140d0bbeef550686d3631  v8/usr/src/cmd/ex/ex_argv.h
+be0df48634357762d90ea1802d2837814d4596eb  v8/usr/src/cmd/ex/READ_ME
+59479fdcea8c73784c1faf6b0b2c4896d324648a  v8/usr/src/cmd/ex/makeSCCS
+191cb052331a27355d053b17022cac710155da69  v8/usr/src/cmd/ex/ex_vget.c
+da818655912090475a8dfec59e5764ce3fc412c2  v8/usr/src/cmd/ex/ex_vops2.c
+d8be7025cf66eb4c0044534c32a0b213a5a33b62  v8/usr/src/cmd/ex/expreserve.c
+a493af5134fdb4ac14878aca13749ae2cd222e00  v8/usr/src/cmd/ex/makefile.c70
+7c15a8923ea7d176a20ea7e1390535952261c9ba  v8/usr/src/cmd/ex/ex_subr.c

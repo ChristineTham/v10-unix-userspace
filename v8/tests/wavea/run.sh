@@ -576,6 +576,26 @@ for d in "$ROOT"/src/cmd/*/; do
 	case "$name" in
 	# built into the toolchain rather than installed under their own name
 	ccom|cc) continue ;;
+	# ex(1) -- IMPORTED AND DELIBERATELY NOT INSTALLED, which is a state this
+	# guard has never had before and which is named rather than waived.
+	#
+	# All 28 objects compile under v8cc with no source change and the program
+	# links with an empty `nm -u', so it is past every gate that stopped the
+	# other unported programs.  What it is not yet is CORRECT: it opens a
+	# file and reports it truthfully -- `"f.txt" 2 lines, 12 characters',
+	# which is already more than it managed before the varargs fix -- and
+	# then executes no command, returning 0.
+	#
+	# It is not installed because an editor that silently does nothing is
+	# worse than an absent one.  `w' says "No mem" and IS installed, and the
+	# distinction is exactly that: w tells you it cannot answer.
+	#
+	# The state is recorded because the next person needs the clue rather
+	# than the conclusion: an instrumented build -- the same sources plus
+	# three write(2) calls -- DOES execute `p' and print the line.  Behaviour
+	# that changes when debug output is added is memory corruption or UB
+	# moving under the layout, not a missing feature.  src/cmd/ex/PORTING.md.
+	ex) continue ;;
 	esac
 	find "$V8ROOT" -name "$name" -type f -perm -u+x 2>/dev/null | grep -q . ||
 		dmissing="$dmissing $name"

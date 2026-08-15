@@ -9,3 +9,4 @@ f714208b2054bd64848d4ab146068b9711231b43  v8/usr/include/dir.h
 bb8272d15279c364153083328ae435bba257166b  v8/usr/include/fstab.h
 ab72873f4fafe81e3a3b9d0c700cbddefd03fbb2  v8/usr/include/mtab.h
 50c313c2d3b69d88feb9f96157ae2ed95176884d  v8/usr/include/dumprestor.h
+da1d099c71de89d774ada5fe71dfc51dd7d9d782  v8/usr/include/varargs.h

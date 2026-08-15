@@ -69,3 +69,4 @@ c87e2585ce0de20513fb5334e93e376441d5b91e  v8/usr/src/libc/gen/iread.c
 17ad4361a6bfa6fa61da889e4246522277193eab  v8/usr/src/libc/gen/toupper.c
 82e8fc61b1eeeb9f406d491befea12d7a9b4cdd7  v8/usr/src/libc/gen/sleep.c
 09849d758f142e2179d02e37d9bc62a2968c96b3  v8/usr/src/libc/gen/crypt.c
+f3e008dd0c6cab0979cd72616581451d8bfc22a8  v8/usr/src/libc/gen/linedis.c

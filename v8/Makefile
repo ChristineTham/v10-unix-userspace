@@ -546,7 +546,7 @@ SYSCALLS := $(shell sed -n 's/^V8SYS(\([^,]*\),[ 	]*\([^,]*\),[ 	]*\([^,]*\),[ 	
                     $(ROOT)shim/v8sys/syscalls.def | tr -d ' \t')
 STUB_OBJ  = $(foreach s,$(SYSCALLS),$(BUILD)/v8sys/stub/$(word 1,$(subst :, ,$(s))).o) \
             $(BUILD)/v8sys/stub/errno.o $(BUILD)/v8sys/stub/exit.o \
-            $(BUILD)/v8sys/stub/signal.o
+            $(BUILD)/v8sys/stub/rawexit.o $(BUILD)/v8sys/stub/signal.o
 
 # `rm -f' before every `ar' in this file, and it is not tidiness.  `ar r'
 # REPLACES the members it is given and leaves the rest alone, so dropping a
@@ -580,6 +580,13 @@ $(BUILD)/v8sys/stub/errno.o: $(ROOT)shim/v8sys/stubs.c
 $(BUILD)/v8sys/stub/exit.o: $(ROOT)shim/v8sys/stubs.c
 	@mkdir -p $(BUILD)/v8sys/stub
 	$(HOSTCC) $(STUBFLAGS) -DV8_PART_EXIT -c $< -o $@
+# _exit is its OWN member, matching V8's sys/_exit.s beside sys/exit.s.  A
+# program defining its own exit() -- ex(1) does, to clean up before leaving --
+# finishes with _exit(); with both in one object the linker pulls the member
+# for _exit and the member's exit() then collides with the program's.
+$(BUILD)/v8sys/stub/rawexit.o: $(ROOT)shim/v8sys/stubs.c
+	@mkdir -p $(BUILD)/v8sys/stub
+	$(HOSTCC) $(STUBFLAGS) -DV8_PART_RAWEXIT -c $< -o $@
 $(BUILD)/v8sys/stub/signal.o: $(ROOT)shim/v8sys/stubs.c
 	@mkdir -p $(BUILD)/v8sys/stub
 	$(HOSTCC) $(STUBFLAGS) -DV8_PART_SIGNAL -c $< -o $@
@@ -1129,7 +1136,7 @@ LIBC_GEN = malloc ecvt ieeefp errlst perror memops \
            execvp exec getwd ftw valloc tell iread l3tol ltol3 nlist \
            opendir readdir closedir seekdir telldir \
            ctime timezone ttyname cttyname getlogin ttyslot \
-           tolower toupper atof sleep
+           tolower toupper atof sleep linedis
 LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/data.c $(LIBCSRC)/stdio/doprnt.c \
           $(LIBCSRC)/stdio/printf.c $(LIBCSRC)/stdio/fprintf.c \

@@ -1406,6 +1406,65 @@ again:
   `u_uid`) arriving in a field narrower still, on a window size a Terminal.app
   user crosses routinely.
 
+**AND ex/vi IS IMPORTED, BUILDS AND IS DELIBERATELY NOT INSTALLED -- IT FOUND
+THREE PORT BUGS AND NONE OF THEM IS IN ex.** All 28 objects compile under v8cc
+with **no source change** and upstream's own `-DCRYPT -DLISPCODE -DCHDIR
+-DUCVISUAL -DVMUNIX -DSTDIO -DTABS=8`; it links with an empty `nm -u`; it opens
+a file and reports it truthfully; and it then executes no command and exits 0.
+`src/cmd/ex/PORTING.md`. Six things generalise:
+
+- **`<varargs.h>` WAS STILL 1985's, AND THE CLASS WAS NEVER UNKNOWN.**
+  `va_arg` strode `sizeof(mode)` -- 4 for an `int` -- where v8cc spills
+  **eight-byte** argument slots. The FORWARD spelling of the identical idiom
+  (V8's `printf(fmt, args)` walking `&args`) was fixed years ago in seven
+  files, every one taught to walk an eight-byte type; nobody noticed the header
+  says the same thing a third way. It survived because **nothing had ever
+  included it**: measured, `src/cmd/ex/printf.c` is the only file in `src`,
+  `shim` or `compiler` using `va_alist`/`va_dcl`. The `sys/fblk.h` shape --
+  a header nobody imported silently stays 1985's -- with the twist that the
+  bug class was already this port's most documented one.
+  - **The symptom names the stride.** A 4-byte walk over 8-byte slots splices
+    two halves of adjacent arguments and **the first argument is always
+    right**, so ex printed `"f.txt"` and SIGSEGV'd on the line count. A crash
+    right after the first `%s` is this bug until proven otherwise.
+  - **`((mode *)(list += SLOT))[-1]` IS THE WRONG FIX** and looks like the
+    right one: it indexes back by `sizeof(mode)`, not by SLOT, so an `int`
+    lands 4 bytes PAST the slot base -- the upper half, which is 0 for small
+    positive values and therefore correct often enough to mislead. Read from
+    the base: `(list += sizeof(long), *(mode *)(list - sizeof(long)))`.
+- **`exit` AND `_exit` SHARED ONE ARCHIVE MEMBER, AND THE COMMENT BESIDE THEM
+  SAID THEY MUST NOT.** A 1980s program that cleans up before leaving defines
+  its own `exit()` and finishes with `_exit()`; the linker pulls the member to
+  satisfy `_exit` and its `exit` collides with the program's. `stubs.c` said
+  *"V8 keeps them in separate files (sys/_exit.s and sys/exit.s) for exactly
+  that reason"* three lines above the code that put both in one, and the file's
+  own header states the granularity rule and applies it to `signal`. Split now
+  (`V8_PART_RAWEXIT`). **The one-object-per-syscall rule is only as good as its
+  coarsest member.**
+- **`tty_ld`/`ntty_ld` WERE NOT "GENUINELY KERNEL STATE".** This file recorded
+  them that way, blocking `init` and `stty` as well. They are **24 initialised
+  ints** in `libc/gen/linedis.c`, never imported -- the `getpwnam`/`getgrgid`/
+  `getpass` shape again. Verified before trusting, because a table can be dead
+  (`dev/conf.c`): `conf/devices` -- the file the BUILD reads -- agrees row for
+  row, including `line-discipline 6 ntty` against `int ntty_ld = 6`.
+- **A PROGRAM CAN BE IMPORTED AND DELIBERATELY NOT INSTALLED, and that is a
+  NAMED case in `tests/wavea` rather than a waiver.** An editor that silently
+  does nothing is worse than an absent one; `w` is installed and says
+  `No mem`, and telling you it cannot answer is the whole distinction.
+- **BEHAVIOUR THAT CHANGES WHEN YOU ADD DEBUG OUTPUT IS NOT A MISSING
+  FEATURE.** The same sources plus three `write(2)` calls DO execute `p` and
+  print the line. That is memory corruption or UB moving under a changed
+  layout, and knowing which kind of hunt is left is most of the work.
+- **AND `$OPTS` UNQUOTED COST A WHOLE MEASUREMENT, WHICH THIS FILE WARNS
+  ABOUT.** zsh does not word-split, so seven `-D` flags went through as ONE
+  argv element and `VMUNIX` was never defined -- making "27 of 28 objects
+  compile" a measurement of compiling ex with no options at all, and making
+  `ex_subr.c` look like it had a real defect. The tell was a warning reported
+  at `ex_tune.h:82` in one run and `:84` in another: `NCARGS` is defined once
+  in each arm of `#ifndef VMUNIX`, so **the line number named which branch had
+  been taken**. Run loops under `sh`, and when two runs of "the same" command
+  disagree, find the byte that differs before theorising.
+
 **AND `src/v8/etc/` BECAME `src/etc/`, BECAUSE THE IMPORT TOOL AND THE TREE HAD
 DISAGREED SINCE THE RELEASE SPLIT.** `destfor()` maps `v8/etc/*` to
 `v8/src/etc/*`; the four files already there sat at `v8/src/v8/etc/`, which the
