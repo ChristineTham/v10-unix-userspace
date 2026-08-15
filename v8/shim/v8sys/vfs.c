@@ -66,6 +66,24 @@ static struct v8mount {
 	 */
 	{ "/usr/src/",	 0, &v8fs_pass },
 	/*
+	 * ...and then BARE /usr/, which subsumes every row above it and is here
+	 * because a person needs somewhere to live.  /etc/passwd gives a home of
+	 * /usr/<name> -- V8's own layout -- and without this row that path is the
+	 * MAC's /usr, so the world had no home directory at all and `cd' with no
+	 * argument left the jail.
+	 *
+	 * IT IS SAFE BECAUSE THE RULE IS A UNION, NOT A CAPTURE.  rootpath()
+	 * returns the jailed path only `if (rootfs_has(buf))', so this row
+	 * redirects exactly the names the world actually has and every other one
+	 * -- /usr/include, /usr/local, /usr/libexec -- falls through to the host
+	 * unchanged.  Adding a prefix here is otherwise the cheapest way to break
+	 * everything, which is why the eight specific rows above were written one
+	 * at a time; they are now redundant and kept, because first-match-wins
+	 * gives the same type either way and deleting them would lose the
+	 * sentences attached to /usr/src/ and /usr/lib/.
+	 */
+	{ "/usr/",	 0, &v8fs_pass },
+	/*
 	 * /dev/fd -- THE THIRD TYPE, and the five rows below it are one device.
 	 *
 	 * The DIRECTORY is an ordinary directory and stays passthrough: V8's

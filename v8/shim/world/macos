@@ -1,0 +1,25 @@
+#!/bin/sh
+# macos CMD [ARG ...] -- run a native macOS program, with the Mac's PATH.
+#
+# WHY THIS EXISTS, MEASURED: this world provides 81 commands and 62 of them
+# share a name with one the Mac also has -- make, cc, sed, sh, grep, sort, ls,
+# cp, test and so on.  The launcher puts V8 first, which is the point, so a
+# native build started from in here finds V8's make and V8's cc and fails in
+# ways that read like a broken port.
+#
+# The fix is not to stop shadowing, which would give up the premise.  It is to
+# make the escape SAYABLE: `macos make', `macos npm install'.
+#
+# IT RESTORES PATH RATHER THAN JUST FINDING A BINARY, and that distinction is
+# the whole design.  A wrapper that only located the Mac's make would still
+# hand it a PATH whose first two entries are V8's, so make's own children --
+# cc, sh, install -- would be 1985's again.  The escape has to be a WORLD
+# switch or it is not an escape.
+#
+# `v8 --pure' refuses this, and that is correct rather than an oversight: pure
+# means nothing that is not V8 runs, and a hatch that survived the mode would
+# make the mode a suggestion.
+[ $# -gt 0 ] || { echo "usage: macos command [arg ...]" >&2; exit 2; }
+PATH=${V8HOSTPATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+export PATH
+exec "$@"

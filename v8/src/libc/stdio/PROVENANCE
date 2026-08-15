@@ -44,3 +44,6 @@ bcb4379351a2583dcdedd2d40715e64ecce4d306  v8/usr/src/libc/stdio/system.c
 c9968e5543be0f61756b2fe5b052c7d196fd515d  v8/usr/src/libc/stdio/getgrent.c
 e31f1169f6a860a8e9a0ee26bca32973b3a77ead  v8/usr/src/libc/stdio/fstab.c
 ad8fab0637795d3e97273c3b2bcc5dc3c6eeb039  v8/usr/src/libc/stdio/getgrnam.c
+41c6ca02044619b5c1e4be1103576d883f71e737  v8/usr/src/libc/stdio/getpwnam.c
+65d518aa70cec1cae6764ff7d434eb5dd661605b  v8/usr/src/libc/stdio/getgrgid.c
+dcdd0dce7889f321100cebe6387be0e2c12bf48d  v8/usr/src/libc/stdio/getpass.c
