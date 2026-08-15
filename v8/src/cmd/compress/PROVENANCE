@@ -1,0 +1,8 @@
+# Provenance for v8/src/cmd/compress
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+0f43d6ec75f0ef0ce47b54565974dff98b50c388  v8/usr/src/cmd/compress/compress.c
+af45fdbfda3405222c7f99e7615d9ecca09817fd  v8/usr/src/cmd/compress/Makefile

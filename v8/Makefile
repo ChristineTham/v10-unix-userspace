@@ -1148,7 +1148,7 @@ LIBC_C  = $(patsubst %,$(LIBCSRC)/gen/%.c,$(LIBC_GEN)) \
           $(LIBCSRC)/stdio/getpwent.c $(LIBCSRC)/stdio/getpwuid.c \
           $(LIBCSRC)/stdio/getgrent.c $(LIBCSRC)/stdio/getgrnam.c \
           $(LIBCSRC)/stdio/getpwnam.c $(LIBCSRC)/stdio/getgrgid.c \
-          $(LIBCSRC)/stdio/getpass.c \
+          $(LIBCSRC)/stdio/getpass.c $(LIBCSRC)/gen/crypt.c \
           $(LIBCSRC)/stdio/fstab.c \
           $(LIBCSRC)/stdio/doscan.c $(LIBCSRC)/stdio/scanf.c \
           $(LIBCSRC)/stdio/popen.c $(LIBCSRC)/stdio/system.c \
@@ -1588,7 +1588,8 @@ $(ROOTFS)/usr/lib/eign: $(REPO)third_party/Research-Unix-v8/v8/usr/lib/eign
 # rules never needed mv because they were written to work.
 #
 # All eleven compile under v8cc with ZERO warnings and needed no source change.
-V8DIRBIN = cp dc ed factor mkdir mv primes rmdir sed fmt tsort
+V8DIRBIN = cp dc ed factor mkdir mv primes rmdir sed fmt tsort \
+           cb su compress
 
 # The objects each one is built from, spelled out for ALL of them rather than
 # defaulted for the eight whose single source is named after the program.  The
@@ -1616,6 +1617,9 @@ dirsrc_rmdir  = rmdir
 dirsrc_sed    = sed0 sed1
 dirsrc_fmt    = fmt head
 dirsrc_tsort  = refstore subs tsort
+dirsrc_cb       = cb
+dirsrc_su       = su
+dirsrc_compress = compress
 dirsrcs       = $(dirsrc_$(1))
 
 # GENERATED RULES, and the reason is a measured limit rather than a preference.
@@ -1651,8 +1655,60 @@ $(foreach p,$(V8DIRBIN),\
   $(foreach s,$(call dirsrcs,$(p)),$(eval $(call dirobj_rule,$(p),$(s))))\
   $(eval $(call dirprog_rule,$(p),$(call dirsrcs,$(p)))))
 
+# ---------------------------------------------------------------------------
+# diff -- TWO programs and THREE compiled-in paths, so it cannot use the
+# generic $(V8DIRBIN) rule above.
+#
+# Upstream's Makefile is `-DDIFF -DDIFFH -DPR', each a string naming where the
+# helper will be INSTALLED, because diff execs them at run time.  That makes
+# the flags part of the install layout rather than of the compile, and this
+# port has already been bitten by exactly that: forty-one commands moved out of
+# /bin when $(call v8dest,...) started reading Bell Labs' own tables.
+#
+# So the paths are DERIVED, not copied.  Upstream says PR=/bin/pr; Admin's
+# tables put pr in /bin here too, and $(call v8dest,pr) is what says so -- if
+# that ever disagrees, diff follows the tables rather than the comment.  diffh
+# is the exception and is NOT in any table: upstream's own makefile is the only
+# source for its location, and it says /usr/lib/diffh, which is the same
+# fall-through-versus-stated distinction the cpp and dump entries record.
+DIFFPATHS = -DDIFF='"/$(call v8dest,diff)/diff"' \
+            -DDIFFH='"/usr/lib/diffh"' \
+            -DPR='"/$(call v8dest,pr)/pr"'
+
+$(BUILD)/diff/%.o: $(SRC)/cmd/diff/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(SRC)/cmd/diff $(DIFFPATHS) -c -o $@ $<
+
+$(BINDIR)/diff: $(BUILD)/diff/diff.o $(BUILD)/diff/diffdir.o \
+                $(BUILD)/diff/diffreg.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o \
+	    $(BUILD)/diff/diff.o $(BUILD)/diff/diffdir.o \
+	    $(BUILD)/diff/diffreg.o $(V8LIBS)
+	@echo "built $@"
+
+# diffh is a SEPARATE program that diff execs for -h, and it goes to /usr/lib
+# rather than a bin directory -- upstream's makefile is the only thing that
+# says so, and it is the same kind of statement cpp's `/lib' turned out to be.
+$(BINDIR)/diffh: $(BUILD)/diff/diffh.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/diff/diffh.o $(V8LIBS)
+	@echo "built $@"
+
+$(ROOTFS)/usr/lib/diffh: $(BINDIR)/diffh
+	@mkdir -p $(@D) && cp $< $@
+
+DIFF_INSTALL = $(ROOTFS)/$(call v8dest,diff)/diff $(ROOTFS)/usr/lib/diffh
+
+# cb.o's #INCLUDED NON-HEADER, and the fourteenth member of that list.
+# Upstream's own Makefile says it outright -- `cb.o: cb.c cbtype.c cbtype.h' --
+# and building cbtype.c as a translation unit instead gives a DUPLICATE SYMBOL,
+# because it defines the _ctype_ table that cbtype.h declares extern.  The
+# linker caught it; a dependency scanner would not have.
+$(BUILD)/cb/cb.o: $(SRC)/cmd/cb/cbtype.c $(SRC)/cmd/cb/cbtype.h
+
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN))
-V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN))
+V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
@@ -2031,7 +2087,7 @@ define v8bin_etc_rule
 $(ROOTFS)/etc/$(1): $(BINDIR)/$(1)
 	@mkdir -p $$(@D) && cp $$< $$@
 endef
-$(foreach p,$(V8BIN),\
+$(foreach p,$(V8BIN) $(V8DIRBIN),\
   $(if $(filter etc,$(call v8dest,$(p))),$(eval $(call v8bin_etc_rule,$(p)))))
 
 # macos(1) -- THIS PORT'S OWN, and it lives in shim/ rather than src/ for the

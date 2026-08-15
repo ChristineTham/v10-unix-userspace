@@ -1,0 +1,10 @@
+# Provenance for v8/src/cmd/cb
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+65253c9f3cf230431db970a6aee842c11239ba60  v8/usr/src/cmd/cb/cbtype.h
+23ae8ebfd9198b18db8386c4a13e4072219aa96c  v8/usr/src/cmd/cb/cb.c
+9f9a0e37d1fcea23355ca7cdcbb35aba111fd99c  v8/usr/src/cmd/cb/Makefile
+48a538c83791f2cd4c3c271800707eb3cc97e5cd  v8/usr/src/cmd/cb/cbtype.c
