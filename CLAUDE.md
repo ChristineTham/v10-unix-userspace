@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2159 cases, 2158 on a host whose $TMPDIR
+make test             # all 17 suites (2169 cases, 2168 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -1279,8 +1279,11 @@ things generalise:
 **AND THE GOAL CHANGED, WHICH MADE A MEASUREMENT THAT WAS NEVER TAKEN THE MOST
 IMPORTANT ONE.** The owner's target is now *"install a usable V8 world"* -- a
 BREADTH requirement, where everything above is depth. Measured against it:
-**V8 shipped 306 commands** across `/bin`, `/usr/bin` and `/etc`, and this port
-installed **98**. Of the 215 missing, **43 have no source at all** (VAX
+**V8 shipped 286 EXECUTABLE commands** across `/bin`, `/usr/bin` and `/etc`, and
+this port installed **91**. (Count executables, not directory entries: a bare
+listing also counts `/etc/passwd`, `/etc/group` and `/etc/ttys`, which are data,
+and `/etc/utmp`, which libkmemu manufactures at run time so the number depends
+on whether anything has run.) Of the 215 missing, **43 have no source at all** (VAX
 firmware, data files, the BSD-licensed `vi`/`more`/`pg` that shipped as
 binaries) and 172 do. About 96 are legitimately out of scope -- the 43, eight
 PDP-11 cross-tools, eight host-toolchain exceptions, ~14 uucp, ~10 Blit
@@ -1386,6 +1389,38 @@ fails EPERM anyway. **There are three different uid-0s here and none of them is
 a login**: the host's (real, refused), `v8_foldid`'s in the streams/`/proc`
 half (root maps to root, non-root NEVER maps to root), and v8fsd's `u_uid = 0`,
 which is deliberate and argued at `shim/kern/sys/main.c:386`.
+
+**AND ARTICLE.md MUST BE UPDATED WITH EVERY CHANGE — A STANDING INSTRUCTION
+THAT WAS GIVEN ELEVEN TIMES AND IS ONLY NOW WRITTEN DOWN.** The owner asked for
+it once ("write up an ARTICLE.md describing our whole approach"), asked twice
+whether it was being kept current, and asked **eight times** "did you update
+ARTICLE.md?". It was in the conversation and in no file, so a grep of this
+document, PLAN.md and `.claude/` came back empty — and a grep was the wrong
+instrument for the question.
+
+**The failure shape is the one this repository documents about itself.**
+Measured from the log: the last four commits touching that file changed
+**nothing but a number** (`+1/-1` each), while two whole steps went unwritten.
+Each time the question was asked, the file was touched and the test count moved
+— which looks like compliance and asserts nothing. **ARTICLE.md was the only
+artefact here with no guard**, and the one thing about it that *was*
+mechanically checked, that count, is precisely the one thing that stayed
+current. An unexercised rule cannot be seen to be incomplete, arriving in the
+project's own write-up.
+
+So it has a guard now, in `tests/wavea`: the article's stated command count
+must equal one **derived from the rootfs**. Three copies of a number agreeing
+with each other is the two-copies-of-a-wrong-list trap; the tree is the third
+thing that is neither.
+
+**AND WRITING THAT GUARD CORRECTED THE COUNT ITSELF, TWICE.** A listing of
+`/bin`, `/usr/bin` and `/etc` is not a count of COMMANDS: it also counts
+`/etc/passwd`, `/etc/group`, `/etc/ttys` and `/etc/motd`, which are data. Worse,
+it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so the
+number was **139 on a tree that had never been used and 140 after anything ran
+`who`**, and the guard would have passed or failed on whether an earlier suite
+happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
+**286 shipped, 133 installed**, stable.
 
 ## Architecture: three layers, three different rules
 
@@ -3011,7 +3046,7 @@ that they can fail.
 
 ## Automation in this repo
 
-`.claude/` carries six things, all of them encoding a bug that has already
+`.claude/` carries seven things, all of them encoding a bug that has already
 happened here:
 
 - **`hooks/block-third-party.sh`** (PreToolUse) refuses any write under
@@ -3036,6 +3071,25 @@ happened here:
   `PUSH_ANYWAY=1 git push`, which is also how the fix for a red build goes out.
   The "tested" half reads `build/stage0/.tests-passed`, which `make test` writes
   as its recipe and therefore only when all seventeen suites passed.
+- **`hooks/article-fresh.sh`** (PreToolUse, Bash) refuses `git commit` when the
+  commit changes `src/`, `shim/`, `compiler/`, a Makefile or `tools/` without a
+  SUBSTANTIVE entry in ARTICLE.md. The substantive part is the whole hook:
+  "must include ARTICLE.md" would have passed all four of the commits that let
+  it go stale, because each one touched the file and moved only the test count.
+  `$ARTICLE_MINLINES` (6) is the line between them, and it is measured rather
+  than chosen -- the real entry in that history was +116, the hollow ones +1.
+  Overridable with `ARTICLE_ANYWAY=1 git commit`, which is how a genuine
+  one-line correction gets in; a commit touching only tests, docs or the
+  article itself is not gated at all, because a hook that stops the everyday
+  commit is off within the hour.
+
+  **AND ITS PRESENCE CHECK IS SUBSUMED BY ITS LENGTH CHECK**, found by
+  mutation: deleting the former changes no verdict, because an absent file has
+  a line count of zero. The two differ only in what they SAY, and that is the
+  half worth keeping -- "you did not write it up" and "you moved a number" send
+  a person to different places. So the two cases assert the MESSAGE, and the
+  mutation fires again. A block/pass case could not tell them apart and
+  reported the mutation as harmless.
 - **`hooks/check-makefile.sh`** (PostToolUse) runs
   `make -n --warn-undefined-variables` after any Makefile edit, and flags
   multi-target rules that carry a recipe. ~60ms.

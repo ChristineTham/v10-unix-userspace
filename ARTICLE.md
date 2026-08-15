@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2159 tests across 17 suites** guard it.
+assembly. **2169 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -2576,50 +2576,285 @@ near-miss is instructive on its own — an earlier fix to this exact code had
 found one missing name, added it, and moved on. Auditing the set instead would
 have found the other seven a year ago.
 
+### A compensating error reads as a design
+
+The step after that one made `mv` of a directory work across directories, and
+it did so by retracting the previous step's fix.
+
+That fix had a heuristic: when the server was asked to remove a name, it
+decided whether the name was a directory by looking at its link count. The
+comment explaining it was careful and correct about the mechanism — it
+described a fiction the client was telling somewhere else, where `rmdir(1)`'s
+three unlinks were being absorbed down to one, so the third had to do all three
+jobs. Every clause of that was true. The conclusion was wrong, because what it
+described was **one workaround split across two files**, and the comment read
+it as a design.
+
+The real defect was in the shape of the protocol message. The port had added a
+`Tunlink` and given it a file handle, copied from the existing `Tremove`. But
+those name different things: Plan 9's `remove` names a *file*, and V7's
+`unlink` names a *directory and an entry*. `..` is where the two visibly come
+apart — it is an entry that exists only from the directory's side, so no handle
+can name it, which is precisely why the server already zeroed a field when a
+handle was walked to `sub/..`.
+
+The diagnosis was sitting in the codebase, in the header comment of the
+function it indicted, phrased as an explanation rather than a complaint. It had
+been read past for a whole step.
+
+Reshaping the message to carry a directory and a name let both halves go, and
+they had to go together: keeping either alone decrements the parent's link
+count twice. And the mutation testing said something sharp about the guards.
+Restoring the client's absorption alone turns **`fsck` red while `icheck`,
+`dcheck` and the block-count identity all stay silent** — the third time in
+this project that an independent reader caught something the probe's own
+writer and reader, sharing one program's beliefs, could not.
+
+### A mount becomes somewhere you can stand
+
+Until this point a mount was a place you could *name*. `cat /mnt/sub/deep`
+worked; `cd /mnt` was refused, and the refusal was honest — nothing in the shim
+tracked a working directory, so a program that got inside would have found
+every relative name resolving against the Mac.
+
+Closing it is one function, hooked in at three places, and it is the identity
+whenever no mount is configured — which is why sixteen of the seventeen test
+suites did not move by a single case.
+
+The design problem is the one that made the first attempt get thrown away. The
+fold has to resolve `..` **lexically**, because at a mount root the server
+cannot help: a V7 filesystem's root points at itself, and on a real Unix it is
+the kernel's mount table that fixes up a walk crossing a mount upward. There
+is no kernel here. But folding the *last* component destroys the one thing the
+previous step's `Tunlink` exists to name — `..` as an entry — so
+`unlink("/mnt/d/..")` folded whole becomes `unlink("/mnt")`. Thirteen failures,
+and `fsck` reporting that it had modified the filesystem.
+
+The obvious compromise is to fold all but the last component everywhere, and it
+is also wrong. `getwd(3)` opens `..` and then chdirs to `..` **in the same
+loop** and requires the two to agree; fold all but the last and one reaches the
+image root while the other reaches the jail root, and the walk covers two
+different trees.
+
+So the mode is threaded rather than inferred, and the split turns out to be one
+the code already drew elsewhere: *reach an object* folds the path whole, *name
+an entry* folds all but the last. The dispatch needs the mode as much as the
+resolution does — a fully folded `/mnt/..` is the jail's own root and belongs
+to the host filesystem, so an unlink meaning "remove the `..` entry of a
+mounted image" would otherwise ask the Mac to remove the jail.
+
+`pwd` works inside a mount with `getwd.c` **unmodified**. It takes that
+function's own different-device fallback, because a mounted file reports device
+zero while the jail root reports the host's — so the inode comparison the
+same-device arm would use is never reached.
+
+Three things came out of it that were not about the feature.
+
+A fold introduces a **normal form**, and everything compared against a folded
+path has to be in it. The static mount table is normalised because it was
+written out by hand. The one that comes from an environment variable was not —
+and `$TMPDIR` ends in a slash on a Mac, so the test suite's own mount carried a
+double slash and stopped claiming its own files. `cat` read the host directory
+the mount was covering, in the case written to prove that it could not.
+
+**Pointer identity stopped meaning "resolved", and that one was an escape.**
+Three callers asked "did the jail claim this name?" by comparing the answer
+against the argument, which worked because a path resolver that did not
+redirect handed back the very pointer it was given. With a fold running first
+it hands back a pointer into the fold's buffer, so the test is true for every
+path — and one of those callers would then never reach the create-a-new-name
+rule, so `creat("/etc/./x")` inside the jail would write to the Mac.
+
+And moving a buffer from function scope to file scope silently changed
+`sizeof` from 1024 to 8. The jail's root path was truncated to seven characters
+and every binary lost its jail. It failed loudly, which is luck rather than
+design.
+
+## Part 11: A world you can live in
+
+Everything to this point is a **depth** claim: an authentic compiler, a
+pseudo-kernel, a real filesystem. Then the goal changed to *"install a usable
+V8 world"*, which is a **breadth** requirement, and a measurement that had
+never been taken became the important one.
+
+V8 shipped **286** executable commands across `/bin`, `/usr/bin` and `/etc`.
+This port installed **91**.
+
+Of the 215 missing, 43 have no source at all — VAX firmware, data files, and
+the handful that shipped as binaries only. About another 96 are out of scope
+for reasons already recorded: PDP-11 cross-tools, the deliberate host-toolchain
+exceptions, the `uucp` suite with no network under it, the Blit graphics
+programs, the kernel grovelers. So the honest denominator is around **210**,
+and the port was at less than half of it.
+
+**The gap was entirely at import, and nothing was stuck.** Ninety-one programs
+had been imported and ninety-eight installed; the only ones imported and not
+installed were toolchain. There was no queue of programs that had failed to
+build, or built and failed to install. The pipeline was empty because nothing
+had been put into it. Two existing measurements say it was never a difficulty
+problem: a survey had already found that **156 of 163** single-file commands
+compile under the ported compiler, and Bell Labs' own build script had already
+built, stripped and installed **fifty** of them in one invocation.
+
+So: import in bulk, and let the test suites do the triage.
+
+Thirty-seven single-file commands went in at once and **all thirty-seven
+compiled and linked with no failures at all**. Then the suites found three real
+bugs the compiler had not.
+
+The rootfs-wide sweep for truncated pointer returns caught `last` calling two
+undeclared time functions, one nested inside the other — two truncations in a
+single expression. The sweep that asserts no binary takes anything from the
+host's C library caught **five** programs quietly resolving three functions
+from it, which meant `id` was reading the **Mac's** group database from inside
+the jail. All three functions existed upstream and had simply never been
+imported. And the linker caught `cb`, whose first lines include a `.c` file as
+if it were a header — the fourteenth member of a list this project has been
+keeping, and upstream's own makefile says so outright.
+
+### One program had eleven of the same bug
+
+`find` builds an expression tree, and each predicate reads its own operands by
+casting the tree node to a small local struct of integers. On the VAX every
+member was four bytes and the cast was exact. Here the node's members are
+**pointer-sized**, so the second field lands at offset four — the upper half of
+a function pointer.
+
+Every predicate that reads its second field was **silently false**: file type,
+permissions, link count, size, owner, group, all three time tests, and both
+forms of running a command. Eleven of them.
+
+`-name` works. Its cast happens to be an integer followed by a *pointer*, and
+the pointer's own alignment pushes it to offset eight, where the real field is.
+So the one predicate anybody tries first is the one that works by accident,
+which is why this survived import, compilation, and a smoke test that printed
+file names.
+
+It had three more problems, and one is a good illustration of a rule this
+project keeps rediscovering. Raising a path buffer to hold a modern filename
+broke a *relationship*: the archive-writing code copied that buffer into a
+fixed 256-byte header field, safe by construction while the buffer was 200
+bytes and an overflow the moment it was not. The field is an archive format and
+cannot grow, so a name that will not fit is now reported and skipped rather
+than truncated — a short name in an archive names a different file.
+
+`find /usr/lib -type f` now returns 74, which is what the Mac's own `find`
+returns for the same tree.
+
+### The world is a working copy of a golden image
+
+A world you cannot write is a demo. The install now writes a **pristine** tree
+and never touches it again; the first launch copies it to the user's own home,
+synthesizes a password file for whoever is running, creates their home
+directory and logs them in there. Everything after that persists — a file, a
+program they built and installed into `/bin`, an edited `/etc` — across
+launches, across the next install, and across a `make clean` in the build tree.
+A reset exists and destroys the working copy, and it is the only thing that
+does; it requires typing the word.
+
+It cannot be the installed tree itself, and the first reason is fatal on its
+own: the default prefix is root-owned on macOS, so the world would be read-only
+to the person using it — and this project's central claim is that V8 rebuilds
+V8, which means Bell Labs' build script has to be able to copy a program into
+`/bin`.
+
+Giving the user a home directory needed one more row in the mount table, for
+`/usr` itself. That is normally the cheapest way to break everything, and it is
+safe here only because the rule is a **union rather than a capture**: a path is
+redirected into the world only if the world actually has that name, so
+`/usr/include` and `/usr/local` still fall through to the Mac.
+
+And the login needed **no change to V8's source at all**. A first draft taught
+the launcher program to read `$HOME` itself; the jail test suite caught it in
+the same run, because a bare invocation inherits the *Mac's* `HOME` and
+chdirs straight out of the world. V8's own program already takes the directory
+as its argument. The environment is the launcher's to set and the argument is
+the program's to take; crossing them turned a host variable into a jail escape.
+
+### Sixty-two names, and what that means
+
+The world provides 81 commands, and **62 of them share a name with one the Mac
+also has** — `make`, `cc`, `sed`, `sh`, `grep`, `sort`, `ls`, `cp`, `test`. The
+launcher puts V8 first, which is the entire point, so a native build started
+from inside finds a 1985 `make` and a 1985 compiler.
+
+That is not a defect to fix. It is the price of the world looking like V8, and
+lowering it means giving up the premise. What was missing was a way to *say*
+you meant the other one, so there is now a one-word prefix that switches worlds
+— and it restores the host's search path rather than merely locating a binary,
+because a wrapper that only found the Mac's `make` would still hand it a path
+whose first entries are 1985's, and `make`'s own children would be wrong again.
+
+The useful formulation is that **native apps work and native builds do not**.
+Running an app is one exec, and the tools people actually reach for — `python3`,
+`git`, `node` — collide with nothing. Building software is hundreds of path
+lookups against exactly the 62 names V8 owns. So you build on the Mac and work
+in V8.
+
+### And `su` answers a question that had two bad answers
+
+Whether privilege inside this world should be *real* root or a pretend root
+over the jail is a question with two unattractive answers. Real root is
+catastrophic: the jail is a string operation in process memory, so every
+path-resolution bug becomes an exploit, and this very session produced two such
+bugs. A faked root is a costume that the host does not honour, so it would
+split into two regimes behind one call.
+
+V8's own `su` resolves it without choosing either. It is authentic source, it
+installs where Bell Labs' tables say, and it needed nothing new — the three
+library functions it wanted arrived with the `id` fix. Ask it for root and it
+says `Password:` and then `Sorry`, because the synthesized password file
+carries `*`, which no encryption of any password can equal. That is 1985's own
+convention for an account that cannot be logged into, not a refusal this port
+invented.
+
+There are three different uid-zeros in this system and none of them is a login:
+the host's, which is real and refuses; the one folded from the host identity in
+the process-table half, which maps root to root and **never** maps a non-root
+user to root; and the filesystem server's, which is deliberately zero and
+argued for in the file that sets it.
+
 ## What is left
 
-Phases 0 through 4 are done, and so is Phase 6 — `make install` stamps a prefix
-into every binary and writes a launcher that drops you at `/` in a world whose
-`/bin`, `/etc`, `pwd` and compiler are all V8's, with the Mac still reachable
-through `PATH`. **Phase 5, the Blit terminal, is dropped** — `sam` and `acme`
-came to macOS natively through Plan 9 from User Space, so the software the Blit
-is remembered for is already here, and the terminal half is solved in a sibling
-project rather than this one. The filesystem switch, `/proc`, `/dev/fd`, `mkfs`, the raw
-image and its ten tools, the stream engine and the tty line discipline are all
-in.
+Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,
+is dropped** — `sam` and `acme` came to macOS natively through Plan 9 from User
+Space, so the software the Blit is remembered for is already here.
 
-What remains, in rough order:
+The filesystem work is finished. `mkfs(8)` writes an image; V8's own kernel
+opens a file in it by name and hands back bytes that `cmp` says are identical;
+the write half creates, grows past the superblock's cached free list, deletes
+and restores the accounting exactly, with three of Bell Labs' own checkers
+pronouncing the result a filesystem. The mount is a **server**, because putting
+the kernel in the client collides with twenty-nine programs and could not
+survive `exec` even if it did not — one connection per open file, so the socket
+itself is the descriptor and nothing has to be inherited through a table. It
+reads, it writes, `mv` of a directory works across directories, and you can
+`cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
-- **The V8 filesystem server over the raw image**, which is what turns the image
-  from something the tools inspect into something the world can mount. The
-  reading half is done and it is the part that could not be faked: `mkfs(8)`
-  writes an image, and V8's own kernel opens a file in it by name — `namei` to
-  `fsnami` to `dsearch` to `iget` to `bmap` to `readi` to `bread` to a block
-  driver — and hands back 28000 bytes that `cmp` says are identical to the file
-  mkfs was given. The file sits two directories down and spans 28 blocks, so the
-  walk crosses a subdirectory and goes through the indirect block, not just the
-  ten addresses in the inode. The writing half is done too — a file created by
-  name, grown past the superblock's cached free list so the on-disk chain has to
-  be followed, deleted, and the block and inode accounting exactly restored,
-  with `icheck`, `dcheck` and `fsck` pronouncing the result a filesystem. What
-  remains is the **mount** — and costing it is what produced the section above.
-  It cannot be a fourth type in the shim's `vfs.c`, because that puts the kernel
-  in the client and twenty-nine programs share a global name with it; and it
-  could not survive `exec` even if they did not. So the mount is a **server**,
-  one connection per open file so that the socket itself is the descriptor and
-  nothing has to be inherited through a table. **That server now exists** — it
-  reads a file out of an image over 9P and `cmp` agrees — and what is left is
-  the client half, plus the writes. **The client now exists too**: with one
-  environment variable set, `cat /mnt/sub/deep` returns those same 28000 bytes,
-  and `ls`, `tail`, `wc`, `grep` and shell redirection all work against the
-  image unmodified, and a probe compiled against the shim reaches the three
-  paths no 1985 program does — `fstat` on a directory descriptor, `lseek` in
-  all three whences, and two descriptors sharing one offset. What is genuinely
-  left is the **write half of the server** — `Twrite`, `Tcreate`, `Tremove` and
-  `Twstat` answer `EROFS` today, while the kernel code underneath them is
-  written and tested — and the one gap the client cannot close on its own,
-  which is `chdir` into a mount: nothing in the shim tracks a working
-  directory, so a relative name inside a mount would resolve against the host.
+What remains is breadth, and it is now the main line rather than a coda. The
+port installs **133** of the 286 V8 shipped, and 130 of the 161 still
+missing have source sitting in the tree.
+
+- **A terminal library.** V8's `libtermlib` is sitting unimported. Every
+  terminal-aware program in the tree wants it, the world has no `/etc/termcap`
+  at all, and the launcher sets no `TERM` — so a full-screen program has
+  nothing to ask about the terminal it is on. This is the largest single
+  unlock left.
+- **The programs with grammars** — `awk`, `expr`, `m4`, `bc` — which need the
+  build to run the ported `yacc` and `lex` per program rather than for the
+  handful that already do.
+- **The language systems**: Fortran with its two runtime libraries, both
+  present upstream and unimported, plus `efl`, `ratfor`, the C++ front end,
+  `hoc` and `lcomp`. These are the largest ports left and the most interesting,
+  because a Fortran compiler that runs on a Mac is a claim of a different
+  order from a filter that does.
+- **Two small honesty items.** The world installs Bell Labs' `/etc/ttys`
+  unchanged, and it describes a VAX's serial lines on a machine that has none —
+  the synthesized password file is the precedent and the argument is identical.
+  And a package doing `chmod 4755` currently sets a real setuid bit on a real
+  Mach-O binary: harmless while the file is user-owned, and an escalation the
+  moment anything is root-owned, and impossible to make mean "root over the
+  jail" because the host decides what a setuid exec does.
 - **The SIMH cross-check** — described below, and still the best test available.
 - **An FSKit host client**, so macOS can mount the V8 world, alongside the Blit
   terminal app.

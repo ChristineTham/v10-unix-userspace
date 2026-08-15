@@ -250,5 +250,76 @@ rm -rf "$CGR"
 grep -q '\.tests-passed' "$ROOT/Makefile" && pass=$((pass+1)) ||
 	{ fail=$((fail+1)); echo "FAIL ci-green: the Makefile writes no .tests-passed stamp"; }
 
+# --- article-fresh.sh -------------------------------------------------------
+# Refuses `git commit' that changes the port without a SUBSTANTIVE ARTICLE.md
+# entry.  The substantive part is the whole point: the instruction to keep that
+# file current was given eleven times in conversation, and the four commits
+# that let it go stale each DID touch it -- changing only the test count, +1/-1.
+# A guard that asks whether the file is in the commit would have passed all
+# four.
+AF=$REPO/.claude/hooks/article-fresh.sh
+
+afrepo() {	# scratch repo with an ARTICLE.md and a port file
+	r=$(mktemp -d)
+	( cd "$r" && git init -q -b main . &&
+	  git config user.email t@t && git config user.name t &&
+	  mkdir -p v8/shim/v8sys v8/tests &&
+	  echo "the write-up" > ARTICLE.md &&
+	  echo "int x;" > v8/shim/v8sys/a.c &&
+	  echo "case" > v8/tests/t.sh &&
+	  git add -A && git commit -qm base ) >/dev/null 2>&1
+	echo "$r"
+}
+
+# THE FIFTH ARGUMENT IS A MESSAGE PATTERN, AND IT IS NOT DECORATION.  Measured
+# by mutation: deleting the is-ARTICLE.md-present check changes NOTHING, because
+# an absent file has a line count of zero and the substantive-change check below
+# it blocks anyway.  So the two guards overlap on the verdict and differ only in
+# what they SAY -- and what they say is the useful half, since "you did not
+# write it up" and "you moved a number" send a person to different places.  A
+# case that asserts block/pass alone cannot tell them apart and reported the
+# first mutation as harmless.
+af() {	# af <label> <pass|block> <repo> <command> [message-pattern]
+	out=$(printf '{"cwd":%s,"tool_input":{"command":%s}}' \
+	      "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$3")" \
+	      "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$4")" |
+	      CLAUDE_PROJECT_DIR="$3" sh "$AF" 2>&1)
+	got=$([ $? -eq 2 ] && echo block || echo pass)
+	if [ "$got" != "$2" ]; then
+		fail=$((fail+1)); echo "FAIL article-fresh: $1 (want $2, got $got)"
+	elif [ -n "$5" ] && ! printf '%s' "$out" | grep -q "$5"; then
+		fail=$((fail+1)); echo "FAIL article-fresh: $1 (blocked, but not for the stated reason)"
+	else pass=$((pass+1)); fi
+}
+
+AFR=$(afrepo)
+
+# THE TWO IT EXISTS FOR.
+( cd "$AFR" && echo "int y;" >> v8/shim/v8sys/a.c && git add -A ) >/dev/null 2>&1
+af "port changed, no ARTICLE.md" block "$AFR" "git commit -m x" "does not update ARTICLE.md"
+
+# ...and the one a naive rule would wave through: the file is there, and it
+# says nothing.  This is the exact shape of the four commits in the history.
+( cd "$AFR" && echo "2160 tests" >> ARTICLE.md && git add -A ) >/dev/null 2>&1
+af "ARTICLE.md present but only a number moved" block "$AFR" "git commit -m x" "only 1 line"
+
+# THE NEGATIVE HALF, and it matters as much: a hook that blocks the everyday
+# commit is switched off within the hour, and then it guards nothing.
+( cd "$AFR" && for i in 1 2 3 4 5 6 7 8; do echo "a real paragraph $i" >> ARTICLE.md; done
+  git add -A ) >/dev/null 2>&1
+af "...and a real entry passes"           pass  "$AFR" "git commit -m x"
+af "the override passes"                  pass  "$AFR" "ARTICLE_ANYWAY=1 git commit -m x"
+af "a revert passes"                      pass  "$AFR" "git revert --no-edit HEAD"
+af "a non-commit command is untouched"    pass  "$AFR" "git status"
+af "...and so is a plain build"           pass  "$AFR" "make -j8"
+
+( cd "$AFR" && git reset -q --hard && echo "more" >> v8/tests/t.sh && git add -A ) >/dev/null 2>&1
+af "a tests-only commit needs nothing"    pass  "$AFR" "git commit -m x"
+
+( cd "$AFR" && git reset -q --hard && echo "prose" >> ARTICLE.md && git add -A ) >/dev/null 2>&1
+af "an ARTICLE.md-only commit passes"     pass  "$AFR" "git commit -m x"
+
+rm -rf "$AFR"
+
 echo "hooks: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

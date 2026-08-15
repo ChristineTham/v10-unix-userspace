@@ -3035,8 +3035,9 @@ redirects into it"*.
 
 The goal became *"install a usable V8 world"*, which is a BREADTH requirement
 where everything before it is depth. Baseline measured that day: V8 shipped
-**306** commands across `/bin`, `/usr/bin` and `/etc` and this port installed
-**98**; 43 of the missing have no source at all, ~96 are out of scope for
+**286** executable commands across `/bin`, `/usr/bin` and `/etc` and this port
+installed **91** (executables, not directory entries -- a bare listing counts
+`/etc/passwd` and the run-time-manufactured `/etc/utmp` as commands); 43 of the missing have no source at all, ~96 are out of scope for
 stated reasons, so the honest denominator is **~210**. The gap was entirely at
 IMPORT -- 91 imported, 98 installed, nothing stuck -- and two measurements say
 it was never difficulty: 156 of 163 single-file `cmd/*.c` compile, and
@@ -3051,7 +3052,7 @@ restores the host PATH and execs. Bare `/usr/` joined the mount table so a home
 directory exists inside the world; it is a union, so `/usr/include` still falls
 through. Exercised end to end, not asserted.
 
-**7b. Wave A2 — IN PROGRESS, 98 → 140.** Batch 1: 37 single-file commands, all
+**7b. Wave A2 — IN PROGRESS, 91 → 133.** Batch 1: 37 single-file commands, all
 compiling with zero failures. Batch 2: `diff` (two programs and three derived
 `-D` install paths), `cb`, `su`, `compress`, plus `crypt`, `getpwnam`,
 `getgrgid` and `getpass` into libc. The suites did the triage and caught three
@@ -3081,7 +3082,7 @@ puns in a single file.
     cannot be made to mean "root over the jail" — macOS decides what a setuid
     exec does.
 
-`make test` runs everything — seventeen suites, **2159 cases**.
+`make test` runs everything — seventeen suites, **2169 cases**.
 
 That number said **1767** for long enough to be worth a note rather than a
 correction. It is not a count anybody maintains: it is printed by the suites on

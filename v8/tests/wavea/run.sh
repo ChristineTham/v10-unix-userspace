@@ -916,6 +916,45 @@ check 'lex on a spec with no %% writes no output' 'none' \
     "$(rm -f lex.yy.c; "$(v8which lex)" < /dev/null >/dev/null 2>&1; \
        [ -f lex.yy.c ] && echo wrote || echo none)"
 
+# ---------------------------------------------------------------------------
+# THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.
+#
+# Citations are swept, build edges are asserted, imported == installed is
+# asserted, the libc boundary is swept -- and ARTICLE.md had exactly one thing
+# about it that was mechanically checked, its test count, which is precisely
+# the one thing that stayed current.  Measured from the log: four consecutive
+# commits touched that file and changed NOTHING BUT THAT NUMBER (+1/-1 each),
+# while two whole steps went unwritten.  An unexercised rule cannot be seen to
+# be incomplete, arriving in this project's own write-up.
+#
+# So the article now has to agree with a number DERIVED FROM THE TREE rather
+# than from other prose.  Three copies of a count agreeing with each other is
+# the two-copies-of-a-wrong-list trap; the rootfs is the third thing that is
+# neither.
+#
+# It is the COMMAND COUNT and not the test count, deliberately: the test total
+# cannot be had without running every suite, which is circular from inside one
+# of them, and the command count is what moves every time something is
+# imported -- which is exactly the drift that went unnoticed.
+artcount=$(grep -oE 'installs \*\*[0-9]+\*\* of the' "$ROOT/../ARTICLE.md" 2>/dev/null |
+           grep -oE '[0-9]+' | head -1)
+# EXECUTABLES, NOT DIRECTORY ENTRIES, and the correction is what the sentence
+# in the article actually claims -- COMMANDS.  A listing of those three
+# directories also counts /etc/passwd, /etc/group, /etc/ttys and /etc/motd,
+# which are data.
+#
+# It is also the only spelling that is STABLE.  libkmemu manufactures
+# /etc/utmp lazily when the first reader opens it, so a listing is 139 on a
+# tree that has never been used and 140 after anything runs who(1) -- measured,
+# and caught on this guard's own first run, where it would have passed or
+# failed on whether an earlier suite happened to run who.  That is the question
+# this file has now been caught by four times: would this still pass on a tree
+# that has never been used?
+realcount=$(find "$V8ROOT/bin" "$V8ROOT/usr/bin" "$V8ROOT/etc" -maxdepth 1 \
+                 -type f -perm -u+x 2>/dev/null |
+            sed 's|.*/||' | sort -u | wc -l | tr -d ' ')
+check "ARTICLE.md's command count matches the installed world" "$realcount" "$artcount"
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
