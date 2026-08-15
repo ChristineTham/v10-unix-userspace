@@ -21,6 +21,20 @@
 # than by taste: the real update in that history was +116 lines, the four
 # hollow ones were +1.  $ARTICLE_MINLINES is the line between them.
 #
+# IT READS THE INDEX AS IT IS *BEFORE* THE COMMAND RUNS, which is what a
+# PreToolUse hook can see, and that produces one false positive worth knowing
+# about: `git add -A && git commit ...' in a SINGLE invocation is inspected
+# before the `git add' has happened, so a freshly written ARTICLE.md is not in
+# the index yet and this blocks with a message saying it was not updated --
+# which is false and reads as a bug in the write-up rather than in the
+# spelling.  Stage in one command and commit in the next.
+#
+# Deliberately NOT fixed by also consulting the working tree.  That would let
+# `git add v8/src/foo.c && git commit' pass while a modified ARTICLE.md sits
+# unstaged and never enters the commit at all -- exactly the state this hook
+# exists to catch.  The `-a' case below is the one place the working tree is
+# consulted, and only because `git commit -a' really will stage it.
+#
 # WHAT IT DOES NOT BLOCK, because a hook that stops the everyday commit is off
 # within the hour:
 #   - a commit that touches no port source at all (docs, tests, tooling)
