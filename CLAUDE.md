@@ -3385,6 +3385,48 @@ not testable until it is installed.
   needs its floor written down beside it**, or every future run starts with a
   scare. If this ever reads 55, the new one is the finding.
 
+  **AND IT NOW READS 160, WHICH IS THE FLOOR ITSELF GOING STALE -- THE EXACT
+  FAILURE THIS ENTRY WAS WRITTEN TO PREVENT.** Re-measured after ex/vi landed:
+  **6360 invocations over 120 programs, 160 signal deaths, all SIGSEGV.** 106
+  of them are new and none is `ex`:
+
+  | program | count | |
+  |---|---|---|
+  | `lex` | 53 | the known floor |
+  | `diffh` | **53** | NEW |
+  | `cb` | **50** | NEW |
+  | `cpio` | **2** | NEW |
+  | `tar` | **1** | NEW |
+  | `bcd` | 1 | the known floor |
+
+  All four arrived with the Wave A2 batch, and **nothing measured them because
+  the probe is not in `make test`** -- it is a manual instrument whose expected
+  output is a number in this file, and a number only a human runs is a number
+  that rots. Same shape as ARTICLE.md, one level further out: the guard against
+  a stale count was itself a count with no guard. Task #76 carries the
+  diagnoses; three are this port's address-0 class and the fourth is not:
+
+  - **`diffh`** -- `while(*argv[1]=='-' && ...)` is the FIRST statement of
+    `main`, so a bare `diffh` dereferences the NULL terminator, and so does the
+    run after the loop eats the last option.
+  - **`cb`** -- `fprintf(..., *argv[1])` in the `default` arm, which is a
+    **precedence** bug: `*(argv[1])` is the first character of the NEXT
+    argument where `(*argv)[1]` -- what the `switch` three lines above uses --
+    was meant. Measured discriminator: `cb -a t.c` says *illegal option **t***
+    and exits 1, so the wrong message is upstream's on any machine and only the
+    crash belongs to this target.
+  - **`tar -b`** -- `atoi(*argv++)` with `-b` last, the `ncheck`/`icheck`/
+    `dcheck` shape a fourth time.
+  - **`cpio`** -- two sites and only one of them is that class. Bare `cpio` is
+    (`if(*argv[1] != '-')`). But **`cpio -i` is EOF handling, not argv**:
+    measured, it succeeds on a valid archive and faults only on empty stdin.
+
+  Two rules. **A partial probe log is not a population** -- `diffh` sorts after
+  `lex` and was invisible in every intermediate read of the running log, so the
+  finding grew from three programs to four only when it finished. And **a floor
+  belongs in a suite or in CI, not in prose**, which is the open question Task
+  #76 ends on.
+
   Validate a prober against a **known crasher and a known-clean program**
   before believing any number from it. And note what survived all four runs
   unchanged: the *set* of programs, which is what the fixes were driven from.

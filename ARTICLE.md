@@ -3011,6 +3011,45 @@ supplying the return and the editor does it itself. That is reachable from the
 user side, which is what makes it a test rather than a paragraph: `set
 nooptimize` puts it back, and both halves are asserted now.
 
+### The guard against a stale number was a number nobody guarded
+
+One more thing came out of installing the editor, and it is about the project
+rather than about `ex`.
+
+There is a crash probe here that runs every installed binary against every
+single-letter option and counts the ones that die on a signal. Its expected
+output is not zero — two programs have defects that a VAX had too, and this
+project's rule is to record those rather than patch them — so the probe has a
+*floor*, written down beside it: fifty-four, being fifty-three from `lex` and
+one from `bcd`. The note ends with a sentence I had read several times: *if this
+ever reads fifty-five, the new one is the finding.*
+
+I ran it after installing the editor, mostly as hygiene. It read **one hundred
+and sixty**, across six thousand three hundred and sixty invocations.
+
+None of the new ones is `ex`. All hundred and six arrived with an earlier batch
+of imports, and nothing had measured them, because the probe is not part of the
+test suite. It is a manual instrument whose expected output is a number in a
+prose file — and a number only a human checks is a number that rots. That is
+precisely the failure the note itself was written to prevent, one level further
+out: the guard against a stale count was a count with no guard.
+
+Three of the four new programs are this port's most familiar bug, the one where
+1985 could read address zero and this machine cannot, triggered as it always is
+by an option arriving last on the command line. The nicest of them is `cb`,
+whose complaint about an unrecognised flag reads `*argv[1]` — which parses as
+the first character of the *next* argument, where the second character of *this*
+one was meant, exactly as the switch three lines above it writes. So `cb -a
+file.c` has always reported "illegal option f"; only the crash, when there is no
+next argument to misread, belongs to this machine. The fourth turned out not to
+be that class at all: `cpio -i` reads a valid archive perfectly and faults only
+on empty input.
+
+A smaller lesson came with it. I read the probe's log three times while it ran,
+and each time it named three programs. The fourth, `diffh`, sorts after `lex`
+and simply had not been reached. A partial log is not a population, and the only
+honest moment to count is when the thing stops.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,

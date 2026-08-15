@@ -3082,6 +3082,15 @@ puns in a single file.
     record because it cost four documents and a test exclusion.
     Still open there: visual mode needs a pty; `exrecover`/`expreserve` are
     not built; `xstr` is skipped, so ex cannot claim rung 5.
+  - **The crash probe's floor is 54 in prose and 160 in fact**, measured after
+    ex landed: 6360 invocations, 160 signal deaths, of which 106 are new and
+    none is ex. `diffh` (53), `cb` (50), `cpio` (2) and `tar` (1) all arrived
+    with Wave A2 and nothing measured them, because the probe is not in
+    `make test`. Three are the address-0 class with one-line fixes to the VAX's
+    own answer; `cpio -i` is EOF handling instead. Each fix needs a paired case
+    asserting the option still WORKS. And the instrument question is the real
+    one: a floor that only a manual run checks is a number that rots, so decide
+    whether the probe belongs in CI or its floor in a suite.
   - **`libcurses`** (43 files) now that the library under it exists.
   - **`TERM` in the launcher.** The world has a termcap database and the
     launcher still exports no `TERM`, so a screen program has nothing to ask.
