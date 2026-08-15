@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2169 cases, 2168 on a host whose $TMPDIR
+make test             # all 17 suites (2188 cases, 2187 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -1284,11 +1284,26 @@ this port installed **91**. (Count executables, not directory entries: a bare
 listing also counts `/etc/passwd`, `/etc/group` and `/etc/ttys`, which are data,
 and `/etc/utmp`, which libkmemu manufactures at run time so the number depends
 on whether anything has run.) Of the 215 missing, **43 have no source at all** (VAX
-firmware, data files, the BSD-licensed `vi`/`more`/`pg` that shipped as
+firmware, data files, the BSD-licensed `more`/`pg` that shipped as
 binaries) and 172 do. About 96 are legitimately out of scope -- the 43, eight
 PDP-11 cross-tools, eight host-toolchain exceptions, ~14 uucp, ~10 Blit
 graphics, ~7 language systems, ~6 kernel grovelers -- so the honest denominator
 is **~210**.
+
+**AND THAT LIST SAID `vi` FOR MONTHS, WHICH IS THE MOST EXPENSIVE THING IT
+COULD HAVE BEEN WRONG ABOUT.** `vi` has **61 files of source** at
+`usr/src/cmd/ex`, because `vi` IS `ex`: `cmp` says the two shipped binaries are
+byte-identical, and `ex`'s own makefile is what makes them, with four `ln`
+lines producing `vi`, `view`, `edit` and `e`. `more` and `pg` are genuinely
+sourceless and the entry was right about them. What put `vi` beside them is
+that **`usr/src/cmd` has no directory of that name** -- the sweep looked for
+the program's name and the source is filed under the program it is a link to.
+So the single most valuable interactive program in the tree was recorded as
+unportable on the strength of a `ls` that could not have found it. Same shape
+as the four false blockers: *something described as missing that was sitting in
+the tree, unread.* **When a program is absent from `cmd/`, check whether it is
+a LINK before recording it as sourceless** -- `Admin/dest` and every makefile's
+install arm are where the links are declared.
 
 **THE GAP WAS ENTIRELY AT IMPORT, AND NOTHING WAS STUCK.** 91 programs were
 imported into `src/cmd` and 98 installed; the only imported-not-installed were
@@ -1330,6 +1345,76 @@ it works -- which is why this survived import, compilation and a smoke test.
 `src/cmd/find.PORTING.md` has the other three forced changes, including a
 directory loop bounded by `lstat`'s `st_size` where only **fstat** reports the
 snapshot length here.
+
+**AND libtermlib IS IN -- THE FIRST IMPORT OUT OF `usr/src/lib` -- WITH
+`/etc/termcap` BESIDE IT AS DATA.** `/usr/lib/libtermcap.a` built by v8cc,
+`/usr/lib/libtermlib.a` a hard link to it as upstream's install makes it, and
+`ul(1)` on top: `TERM=vt100 ul` emits the `us=`/`ue=` sequences the database
+declares. `src/lib/libtermlib/PORTING.md` and `src/cmd/ul/PORTING.md`. Six
+things generalise, and the first is the two-upstream-copies rule paying off
+again:
+
+- **THE FINGERPRINT SETTLED WHICH COPY THE BUILD READ, WITHOUT TRUSTING EITHER
+  MAKEFILE.** `lib/libtermlib/termcap.c` and `cmd/ex/termlib/termcap.c` differ
+  by exactly eleven lines -- a jerq window-size block -- and `ioctl` occurs in
+  the whole library ONLY inside them. So an undefined `_ioctl` is a fingerprint
+  of that source, and the shipped `usr/lib/libtermcap.a` has one. (The ex copy
+  also installs to `$(UCB)/lib` with `UCB=/lusr/ucb`, which is in no part of
+  the shipped tree.) `tests/wavea` asserts our archive carries the fingerprint
+  too, so building the wrong copy is a failure rather than a discovery.
+- **THE HEADER WAS NOT MISSING AND THE PRECEDENT WAS ALREADY IN THE TREE.**
+  `termcap.c:230` (upstream `:217`) is `#include <jioctl.h>`, and it was an
+  ABSOLUTE path -- and
+  INSIDE a function body. A first reading recorded it as a dependency the
+  distribution does not ship. Wrong: `jioctl.h` is at `jerq/include/`,
+  `tools/import.sh` has a `blit/*|jerq/*` case for it, the Makefile already
+  copies it into the rootfs, and **`src/cmd/ls.c:11` carries the identical
+  change for the identical reason**. Before recording something as absent,
+  grep the WHOLE archive rather than the release subtree -- `blit/` and
+  `jerq/` are siblings of `v8/`, not children.
+- **A `-D` THAT SELECTS A `case` FAILS SILENTLY, NOT AT COMPILE TIME.**
+  Upstream's `CFLAGS= -DCM_N -DCM_GT -DCM_B -DCM_D` each guard one arm of
+  `tgoto`'s interpreter; a missing one falls to `default: goto toohard` and
+  `tgoto` returns the STRING `"OOPS"`. So the symptom is a cursor that never
+  moves, which reads as a broken terminal. Measured: dropping all four takes
+  `tgoto.o` from 2376 to 2096 bytes.
+- **AND THAT PRODUCED A THIRD REASON FOR A MUTATION NOT FIRING: A STRONG
+  MUTATION ON LIVE CODE WITH NO CONSUMER.** Deleting the four flags failed
+  NOTHING. The two recorded causes did not apply -- the code is not dead and
+  the cases are not vacuous -- because `ul` is the library's only consumer and
+  it does no cursor addressing at all, so the largest member had nothing
+  looking at it. `tests/wavea/tgotoprobe.c` is the answer, in the shape
+  `tests/streams` already uses: when the gap is a missing CONSUMER rather than
+  a missing case, a probe is the instrument. Re-mutated, it names each missing
+  flag (`want [37] got [OOPS]`) while the unguarded arm keeps passing, which is
+  what says it discriminates.
+- **A HARD LINK CANNOT BE TESTED BY A STALENESS PROBE, and the case written for
+  it was DELETED rather than left red.** `libtermlib.a` is `ln libtermcap.a
+  libtermlib.a`, so the two names are ONE INODE -- measured: same inode number,
+  and touching either moves both mtimes. The prerequisite *is* the target and
+  can never be newer than itself, so `tests/deps`' touch-and-check is not hard
+  but impossible. What guards it is an INODE comparison in `tests/wavea`, which
+  is also the only thing that would catch the failure that matters: two
+  identical copies pass a `cmp` and are not what V8 shipped.
+- **THE JERQ BLOCK IS DEAD HERE AND STAYS DEAD, WITH THE REASON WRITTEN DOWN
+  RATHER THAN THE GAP.** The shim implements no `JWINSIZE`, so `tgetnum` falls
+  through to the database and `ls.c`'s copy of the same block never runs
+  either. Implementing it is a step of its own and not a side effect, because
+  `struct winsize` is `{ char bytesx, bytesy; ... }` -- the column count is a
+  **char**, so a terminal past 127 columns reads NEGATIVE and past 255 wraps.
+  That is the 16-bit-range table (`DIRSIZ`, `d_ino`, `p_pid`, `FSNMLG`,
+  `u_uid`) arriving in a field narrower still, on a window size a Terminal.app
+  user crosses routinely.
+
+**AND `src/v8/etc/` BECAME `src/etc/`, BECAUSE THE IMPORT TOOL AND THE TREE HAD
+DISAGREED SINCE THE RELEASE SPLIT.** `destfor()` maps `v8/etc/*` to
+`v8/src/etc/*`; the four files already there sat at `v8/src/v8/etc/`, which the
+Makefile read. Commit `53ccb4b` rewrote the mapping and did not relocate the
+files it affected, and **nothing noticed for months because no `/etc` file was
+imported in between** -- the unexercised-rule shape, inside the import tool.
+The tool was right (`v8/src/v8/` says v8 twice inside an already-v8-scoped
+tree, which is the redundancy that commit existed to remove), so the files
+moved and six references followed.
 
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
@@ -1420,7 +1505,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 133 installed**, stable.
+**286 shipped, 134 installed**, stable.
 
 ## Architecture: three layers, three different rules
 
@@ -3199,7 +3284,7 @@ not testable until it is installed.
   installed rootfs: **4187 invocations, 54 signal deaths, all SIGSEGV — 53
   `lex` and 1 `bcd`**, and every one of them is already argued somewhere as
   upstream's defect on upstream's hardware (`src/cmd/lex/PORTING.md:175-250`
-  for the 53, PLAN.md:3323 for `bcd`). `lex`'s 53 is *exactly* the number that
+  for the 53, PLAN.md:3339 for `bcd`). `lex`'s 53 is *exactly* the number that
   file predicts, and it explains why fixing the first of its three faults moved
   the count by zero: the probe feeds every program `/dev/null`, so all 53
   invocations also reach the empty-spec path and the 40 that used to die in

@@ -3063,10 +3063,25 @@ puns in a single file.
 
 **7c. What is left, in order of unlock:**
 
-  - **`libtermlib`** (`usr/src/lib/libtermlib`, unimported) plus an
-    `/etc/termcap`. `ul` is blocked on `tputs`/`tgetent` and so is every
-    terminal-aware program in the tree. The rootfs has no termcap at all and
-    the launcher sets no `TERM`.
+  - ~~**`libtermlib`** plus an `/etc/termcap`~~ — **DONE.** Built by v8cc as
+    `/usr/lib/libtermcap.a`, with `libtermlib.a` a hard link to it as upstream's
+    install makes it, and the authentic 44669-byte database installed as data.
+    `ul(1)` is in and reads it. `src/lib/libtermlib/PORTING.md`.
+  - **`ex`/`vi`** — the biggest remaining port and the reason libtermlib went
+    first. **It has 61 files of source at `usr/src/cmd/ex`**, and this plan and
+    CLAUDE.md both recorded it as sourceless: `vi` IS `ex` (the shipped
+    binaries are byte-identical and the makefile hard-links `vi`, `view`,
+    `edit` and `e` to it), and it was filed with `more` and `pg` because
+    `usr/src/cmd` has no directory of that name. Its makefile is 4.1BSD's, it
+    wants `-ltermcap` which now exists, and its options (`CRYPT LISPCODE CHDIR
+    UCVISUAL VFORK VMUNIX STDIO`) each need a decision. Expect the address-0
+    and 1985-buffer classes at scale, and `tputs`'s padding arm to come alive
+    for the first time — `ex` sets `ospeed`, which nothing here has.
+  - **`libcurses`** (43 files) now that the library under it exists.
+  - **`TERM` in the launcher.** The world has a termcap database and the
+    launcher still exports no `TERM`, so a screen program has nothing to ask.
+    It must be derived from the host's rather than invented, and refused
+    honestly when the host has none.
   - **`awk`, `expr`, `m4`, `bc`** — all need yacc/lex wiring, which the
     Makefile has per-program and not generically.
   - **The big language systems**, owner-mandated: `f77` (with `libF77` and
@@ -3082,7 +3097,7 @@ puns in a single file.
     cannot be made to mean "root over the jail" — macOS decides what a setuid
     exec does.
 
-`make test` runs everything — seventeen suites, **2169 cases**.
+`make test` runs everything — seventeen suites, **2188 cases**.
 
 That number said **1767** for long enough to be worth a note rather than a
 correction. It is not a count anybody maintains: it is printed by the suites on

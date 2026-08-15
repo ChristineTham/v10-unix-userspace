@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2169 tests across 17 suites** guard it.
+assembly. **2188 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -2814,6 +2814,93 @@ the process-table half, which maps root to root and **never** maps a non-root
 user to root; and the filesystem server's, which is deliberately zero and
 argued for in the file that sets it.
 
+### A terminal library, and two copies of one file
+
+The world could describe a filesystem in detail and could not describe a
+terminal at all. V8's `libtermlib` was sitting unimported, there was no
+`/etc/termcap`, and every screen-aware program in the tree wants both. It is
+three files and a 44-kilobyte database, and importing it turned mostly on
+questions about *which* three files.
+
+There are **two** copies of `termcap.c` upstream, differing by eleven lines,
+and this repository's rule for that is to find out which one the build reads
+rather than which one looks tidier. Two measurements settle it and they agree.
+The eleven lines are a block that asks a Blit terminal its window size, and
+`ioctl` appears nowhere else in the library — so an undefined `_ioctl` symbol is
+a *fingerprint* of that source, and the archive V8 shipped has one. The other
+copy installs to `/lusr/ucb/lib`, a directory that does not exist anywhere in
+the distribution. So the shipped library is the one with the Blit block, and the
+`ex` copy is the Berkeley staging area.
+
+That block opens with an include this port has met before:
+
+```c
+	if (strcmp(id, "co")==0 || strcmp(id, "li")==0) {
+#include "/usr/jerq/include/jioctl.h"
+		struct winsize jwin;
+```
+
+An absolute path is the one form of include no `-I` can redirect, and it is
+*inside a function body*, which is legal and startling. My first reading was
+that the header simply was not in the distribution. That was wrong in the way
+this project keeps being wrong: `jioctl.h` is in the same archive under
+`jerq/`, the import tool already had a case for it, the Makefile already copied
+it into the rootfs, and `ls.c` already carried the identical one-line change
+for the identical reason. The precedent had been in the tree for months. The
+correction cost nothing here and it is the same shape as four of the seven
+"blockers" that turned out to be false — something described as missing that
+was sitting in the tree, unread.
+
+The library's four `-D` flags looked like decoration and are not. Each guards
+one case in `tgoto`'s cursor-addressing interpreter, and a missing one is not a
+compile error: the case falls through to a default that returns the string
+`"OOPS"`, so a terminal whose cursor sequence uses that escape simply never
+moves its cursor. Dropping all four takes the object from 2376 bytes to 2096.
+
+Which is how the interesting failure arrived. Deleting those flags and running
+the suite produced **no failures at all**. The mutation was strong and the code
+was live — neither of the two reasons this project had recorded for a mutation
+not firing. The third reason turned out to be simpler than both: `ul`, the only
+program that links the library, never does cursor addressing, so the largest
+member of the library had nothing looking at it. A probe now calls `tgoto`
+directly, and with the flags removed it names each missing one — four lines
+each reading `want [37] got [OOPS]` — while the unguarded case keeps passing,
+which is what says the probe discriminates instead of merely failing.
+
+`ul` itself contributed the tenth member of the address-0 class, and the
+trigger was the same as the other nine: the option is the last thing on the
+command line. `ul -t` reads the null after the last argument and the library
+dereferences it. The fix is `""`, and `""` is not a guard but the VAX's own
+answer — measured, because this project recorded that byte wrongly for months.
+V8's binaries are ZMAGIC, so text begins 1024 bytes into the file and virtual
+address zero is the first byte of `crt0`, which is `0x00`, identical in every
+shipped binary. So a VAX read the empty string there. What the empty string
+*does* is the part worth keeping: `/etc/termcap` has exactly one blank line,
+`tgetent` reads it as an entry whose first character is a NUL, `""` matches it,
+and the library prints `Bad termcap entry` and falls back to a dumb terminal.
+All of that happened in 1985 too. The port reproduces it rather than
+short-circuiting it with a null check that would have returned earlier and
+differently.
+
+Two upstream bugs are deliberately left in place, because a VAX had them
+identically and the contract says record rather than patch. `ul -t vt100`
+leaves `vt100` as a filename, because the option loop consumes the value and
+not the option. And `ul -tvt100` — the spelling `ul`'s own usage message
+documents — **hangs**, because the loop never advances at all. Measuring that
+one needed care: a deadline wrapper written minutes earlier reported the hanging
+case as a clean exit, which is this project's own rule about instruments
+arriving on schedule.
+
+The last thing was a test that could not be written. `libtermlib.a` is a hard
+link to `libtermcap.a`, because that is what upstream's install does. The
+obvious dependency case — touch the prerequisite, require the target to go
+stale — is not difficult but *impossible*: they are one inode, so touching
+either moves both timestamps and the prerequisite can never be newer than
+itself. The case was deleted and the reasoning written where it stood. What
+guards the link instead is an inode comparison, which is also the only thing
+that would notice the failure that matters, since two identical copies would
+pass a byte comparison and would not be what V8 shipped.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,
@@ -2832,14 +2919,19 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **133** of the 286 V8 shipped, and 130 of the 161 still
-missing have source sitting in the tree.
+port installs **134** of the 286 V8 shipped, and the ones still missing mostly
+have source sitting in the tree.
 
-- **A terminal library.** V8's `libtermlib` is sitting unimported. Every
-  terminal-aware program in the tree wants it, the world has no `/etc/termcap`
-  at all, and the launcher sets no `TERM` — so a full-screen program has
-  nothing to ask about the terminal it is on. This is the largest single
-  unlock left.
+- **The screen editor.** `ex` — which *is* `vi`, hard-linked, along with `view`
+  and `edit` — has 61 files of source in the tree, and this document said until
+  now that it had none. That was wrong: `more` and `pg` genuinely shipped as
+  binaries with no source, `vi` did not, and it was filed with them because
+  `usr/src/cmd` has no directory called `vi`. It is the largest and most
+  valuable port left, it is why the terminal library went in first, and it is
+  the first program here that will use `tgoto` in anger.
+- **The rest of the terminal stack.** `libcurses` is 43 files and now has the
+  library it sits on. The launcher still sets no `TERM`, which is a one-line
+  decision that has to be made honestly rather than defaulted.
 - **The programs with grammars** — `awk`, `expr`, `m4`, `bc` — which need the
   build to run the ported `yacc` and `lex` per program rather than for the
   handful that already do.

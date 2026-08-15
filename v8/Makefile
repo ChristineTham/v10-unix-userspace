@@ -60,8 +60,8 @@ ROOTFS_NCFORM  := $(ROOTFS)/usr/lib/lex/ncform
 # `ls -l` prints bare uids without a passwd.  group, fstab, hosts and ttys are
 # genuine V8 files imported with provenance like any other source; passwd is
 # the one that cannot be, because it has to name the real user (see below).
-ROOTFS_ETC     := $(patsubst $(SRC)/v8/etc/%,$(ROOTFS)/etc/%, \
-                    $(wildcard $(SRC)/v8/etc/[a-z]*)) $(ROOTFS)/etc/passwd
+ROOTFS_ETC     := $(patsubst $(SRC)/etc/%,$(ROOTFS)/etc/%, \
+                    $(wildcard $(SRC)/etc/[a-z]*)) $(ROOTFS)/etc/passwd
 
 # /dev is not decoration either: ps(1) REFUSES TO START without it.  ps.c:21-28
 # getdirs /dev, /dev/dk and /dev/pt and opens /dev/drum, calling error() on any
@@ -138,7 +138,8 @@ LEX  := $(BUILD)/lex/lex
 A64BUILD    := $(BUILD)/ccom-arm64
 ROOTFS_LIBS := $(ROOTFS)/lib/crt0.o $(ROOTFS)/lib/libv8c.a \
                $(ROOTFS)/lib/libv8stubs.a $(ROOTFS)/lib/libv8sys.a \
-               $(ROOTFS)/usr/lib/libm.a
+               $(ROOTFS)/usr/lib/libm.a $(ROOTFS)/usr/lib/libtermcap.a \
+               $(ROOTFS)/usr/lib/libtermlib.a
 
 # The V8 link line, hoisted for the same reason and after the same bug bit a
 # THIRD time.  V8DEPS was defined beside the pic rules, and the /bin and make
@@ -1707,8 +1708,33 @@ DIFF_INSTALL = $(ROOTFS)/$(call v8dest,diff)/diff $(ROOTFS)/usr/lib/diffh
 # linker caught it; a dependency scanner would not have.
 $(BUILD)/cb/cb.o: $(SRC)/cmd/cb/cbtype.c $(SRC)/cmd/cb/cbtype.h
 
-V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN))
-V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL)
+# ul -- the first consumer of libtermcap, and the reason it cannot use the
+# generic $(V8DIRBIN) rule: that rule links $(V8LIBS) and nothing else, and ul
+# is upstream's `cc -o ul ul.o -ltermcap'.
+#
+# libtermcap goes BEFORE $(V8LIBS) on the link line, because it is a consumer
+# of libc rather than a peer -- termcap.c calls strlen, strcpy and open, and an
+# archive only satisfies references the linker has already seen.
+#
+# All three sources agree on /usr/bin for once, so there is nothing to decide:
+# ul is in neither Admin/binfiles nor Admin/etcfiles (so Admin/dest falls
+# through), its own Makefile says `cp ul /usr/bin', and the shipped tree has
+# usr/bin/ul.  Contrast cpp and dump, where the fall-through disagrees with
+# both of the other two.
+$(BUILD)/ul/%.o: $(SRC)/cmd/ul/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(SRC)/cmd/ul -c -o $@ $<
+
+$(BINDIR)/ul: $(BUILD)/ul/ul.o $(BUILD)/termlib/libtermcap.a $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/ul/ul.o \
+	    $(BUILD)/termlib/libtermcap.a $(V8LIBS)
+	@echo "built $@"
+
+UL_INSTALL = $(ROOTFS)/$(call v8dest,ul)/ul
+
+V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul
+V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
@@ -1890,7 +1916,7 @@ $(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
 # keeps section 8 there; each man page's synopsis says /etc/<name>, and
 # Admin/etcfiles lists every one.  Being explicit targets is also what keeps
 # them clear of the $(ROOTFS)/etc/% rule further down, which copies data files
-# out of src/v8/etc and has no source for a binary.
+# out of src/etc and has no source for a binary.
 # ---------------------------------------------------------------------------
 IMGDIRSIZ = 14
 IMGBIN    = mkfs icheck dcheck clri fsck ncheck quot restor dumpdir dump
@@ -2469,7 +2495,7 @@ $(ROOTFS_NCFORM): $(LEXSRC)/ncform
 	@mkdir -p $(@D) && cp $< $@
 
 # The genuine V8 /etc files, installed unchanged.
-$(ROOTFS)/etc/%: $(SRC)/v8/etc/%
+$(ROOTFS)/etc/%: $(SRC)/etc/%
 	@mkdir -p $(@D) && cp $< $@
 
 # passwd is SYNTHESIZED, and it is the one file here that has to be.
@@ -2528,6 +2554,48 @@ $(BUILD)/libm/dummy.o: shim/libm/dummy.c
 $(ROOTFS)/usr/lib/libm.a: $(BUILD)/libm/dummy.o
 	@mkdir -p $(@D)
 	@rm -f $@ && ar rc $@ $< && ranlib $@
+
+# ---------------------------------------------------------------------------
+# libtermlib -- the termcap library, and the first thing imported out of
+# usr/src/lib rather than usr/src/cmd.
+#
+# WHICH OF THE TWO UPSTREAM COPIES THIS IS, because there are two and they
+# differ.  usr/src/lib/libtermlib and usr/src/cmd/ex/termlib hold the same
+# termcap.c apart from eleven lines, and CLAUDE.md's rule is to find out which
+# one the BUILD reads.  Measured rather than guessed: `ioctl' appears in the
+# whole library only inside those eleven lines, and the shipped
+# usr/lib/libtermcap.a carries an undefined _ioctl -- so the shipped library
+# was built from lib/libtermlib, jerq block and all.  The ex copy installs to
+# $(UCB)/lib with UCB=/lusr/ucb, a directory that is not in the shipped tree
+# at all, so it is the Berkeley import staging area rather than the answer.
+#
+# THE FOUR -D FLAGS ARE UPSTREAM'S AND ARE NOT DECORATION.  Its makefile opens
+# `CFLAGS= -DCM_N -DCM_GT -DCM_B -DCM_D', and each one guards a case in
+# tgoto's cursor-addressing interpreter: %n, %>, %B (BCD) and %D (Delta Data).
+# Dropping one does not fail to build -- it makes tgoto fall into `default:'
+# and return the string "OOPS" for every terminal whose cm= uses that escape.
+# /etc/termcap has entries using all four.
+TERMLIBSRC   = $(SRC)/lib/libtermlib
+TERMLIB_CM   = -DCM_N -DCM_GT -DCM_B -DCM_D
+TERMLIB_NAME = termcap tgoto tputs
+TERMLIB_OBJ  = $(patsubst %,$(BUILD)/termlib/%.o,$(TERMLIB_NAME))
+
+$(BUILD)/termlib/%.o: $(TERMLIBSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/termlib
+	$(V8CCRUN) $(TERMLIB_CM) -c -o $@ $<
+
+$(BUILD)/termlib/libtermcap.a: $(TERMLIB_OBJ)
+	@rm -f $@ && ar rcs $@ $(TERMLIB_OBJ)
+	@echo "built $@"
+
+$(ROOTFS)/usr/lib/libtermcap.a: $(BUILD)/termlib/libtermcap.a
+	@mkdir -p $(@D) && cp $< $@
+# A HARD LINK, because that is what upstream's install does -- `ln
+# libtermcap.a libtermlib.a' -- and the shipped tree has both names at 6556
+# bytes.  Keyed on the file it links to rather than on the archive, so a
+# rebuilt libtermcap.a re-links this one instead of leaving a stale inode.
+$(ROOTFS)/usr/lib/libtermlib.a: $(ROOTFS)/usr/lib/libtermcap.a
+	@rm -f $@ && ln $< $@
 
 # troff's device tables.  makedev compiles the plain-text description in
 # dev202/ into the binary DESC.out and per-font .out files troff opens at

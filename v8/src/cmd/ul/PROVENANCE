@@ -1,0 +1,8 @@
+# Provenance for v8/src/cmd/ul
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+0eb0b38a3e0f3fd1db9afa12d9665c13f764606b  v8/usr/src/cmd/ul/Makefile
+ae6851b16893652bf9e935a8a4530e2b380efd03  v8/usr/src/cmd/ul/ul.c

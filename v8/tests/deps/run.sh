@@ -236,8 +236,8 @@ dep 'cc -> rootfs copy'        $B/cc/v8cc                      rootfs/bin/cc
 dep 'ccom -> rootfs copy'      $B/ccom-arm64/v8ccom            rootfs/lib/ccom
 dep 'yaccpar -> rootfs copy'   src/cmd/yacc/yaccpar            rootfs/usr/lib/yaccpar
 dep 'ncform -> rootfs copy'    src/cmd/lex/ncform              rootfs/usr/lib/lex/ncform
-dep '/etc/group -> rootfs'     src/v8/etc/group                rootfs/etc/group
-dep '/etc/ttys -> rootfs'      src/v8/etc/ttys                 rootfs/etc/ttys
+dep '/etc/group -> rootfs'     src/etc/group                rootfs/etc/group
+dep '/etc/ttys -> rootfs'      src/etc/ttys                 rootfs/etc/ttys
 
 # libm, which is a stub because V8's was one -- shim/libm/dummy.c has the
 # account.  It is in the graph rather than made once and forgotten because the
@@ -246,6 +246,46 @@ dep '/etc/ttys -> rootfs'      src/v8/etc/ttys                 rootfs/etc/ttys
 # that failed was a link error naming _errno and neither libm nor the jail.
 dep 'libm stub -> object'      shim/libm/dummy.c               $B/libm/dummy.o
 dep 'libm object -> archive'   $B/libm/dummy.o                 rootfs/usr/lib/libm.a
+
+# libtermcap, the same shape as libm and for a sharper reason: it is a real
+# library with three members, so a source that stops reaching the archive is a
+# missing capability rather than a missing stub.  All three are named, because
+# the archive rule lists them explicitly and a dropped name leaves a stale
+# member behind -- the `ar r' trap the libv8c rule documents at length.
+dep 'termcap.c -> object'      src/lib/libtermlib/termcap.c    $B/termlib/termcap.o
+dep 'tgoto.c -> object'        src/lib/libtermlib/tgoto.c      $B/termlib/tgoto.o
+dep 'tputs.c -> object'        src/lib/libtermlib/tputs.c      $B/termlib/tputs.o
+dep 'termcap.o -> archive'     $B/termlib/termcap.o            $B/termlib/libtermcap.a
+dep 'archive -> rootfs copy'   $B/termlib/libtermcap.a         rootfs/usr/lib/libtermcap.a
+
+# A HARD LINK CANNOT BE TESTED BY A STALENESS PROBE, and the case written for
+# it here has been deleted rather than left failing.
+#
+# libtermlib.a is `ln libtermcap.a libtermlib.a', which is upstream's own
+# install.  So the obvious edge -- touch the prerequisite, require the target
+# to go stale -- is not merely hard, it is IMPOSSIBLE: the two names are one
+# inode (measured: same inode number, and touching either moves both mtimes),
+# so the prerequisite IS the target and can never be newer than itself.
+#
+# Nor does it need the edge.  The rootfs copy is `cp', which opens the existing
+# file and truncates rather than replacing it, so the link survives a rebuild
+# and both names get the new bytes with no second action.  The only way the
+# pair can break is if that cp becomes an install or a mv -- and what catches
+# THAT is an inode comparison, not a timestamp one.  tests/wavea has it:
+# `libtermlib.a is a hard link to libtermcap.a', compared by inode precisely
+# because two identical copies would pass a cmp and would not be what V8
+# shipped.
+
+# ul is the library's only installed consumer, so it is the edge that says the
+# archive is on a link line at all rather than merely built.
+dep 'ul.c -> ul'               src/cmd/ul/ul.c                 $B/bin/ul
+dep 'libtermcap -> ul'         $B/termlib/libtermcap.a         $B/bin/ul
+dep 'ul -> rootfs copy'        $B/bin/ul                       rootfs/usr/bin/ul
+
+# The termcap DATABASE is data, and nothing compiles it -- so if this edge is
+# missing, an edited /etc/termcap simply never reaches the world and every
+# terminal keeps its old capabilities with nothing to say so.
+dep '/etc/termcap -> rootfs'   src/etc/termcap                 rootfs/etc/termcap
 
 # --- /bin: the jail's contents must track the shim --------------------------
 # These are the rules that had no library dependency at all.  Editing the shim

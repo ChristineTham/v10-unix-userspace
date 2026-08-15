@@ -1,0 +1,13 @@
+# Provenance for v8/src/lib/libtermlib
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+b239afd1e90b93a9fc94f7af3f25bc6c8912e313  v8/usr/src/lib/libtermlib/makefile
+bf0aaf29c11ebc90517577a8160b201247e98bef  v8/usr/src/lib/libtermlib/tc3.c
+cf76c37642e1d80ef3e8068513ec1d5cdc5e2b4f  v8/usr/src/lib/libtermlib/tc2.c
+f0043e8db9c37f83976d395088981d4d7da8134f  v8/usr/src/lib/libtermlib/tgoto.c
+6cace8bafc981d74a7e77c2bf26f0b9cb87817c7  v8/usr/src/lib/libtermlib/tputs.c
+1d16583cc09d14bb6123cb47e820a1bce7d9add3  v8/usr/src/lib/libtermlib/termcap.c
+62395783c012033494bf30f3d4cf4565ccbbd84b  v8/usr/src/lib/libtermlib/tc1.c

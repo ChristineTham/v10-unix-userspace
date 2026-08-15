@@ -917,6 +917,108 @@ check 'lex on a spec with no %% writes no output' 'none' \
        [ -f lex.yy.c ] && echo wrote || echo none)"
 
 # ---------------------------------------------------------------------------
+# libtermlib and ul -- the first library imported out of usr/src/lib, and the
+# first program here that reads a DATABASE rather than only its arguments.
+#
+# WHICH UPSTREAM COPY THIS IS, asserted rather than described.  There are two
+# termcap.c in the archive, differing by eleven lines, and the shipped
+# usr/lib/libtermcap.a is the one built from lib/libtermlib -- provable because
+# `ioctl' occurs in the whole library only inside those eleven lines, so an
+# undefined _ioctl in the archive is a fingerprint of that source.  Our archive
+# must carry it too, or we built the ex copy by mistake.
+check 'libtermcap carries the jerq fingerprint (_ioctl)' 'yes' \
+    "$(nm -u "$ROOT/build/stage0/termlib/libtermcap.a" 2>/dev/null |
+       grep -qx '_ioctl' && echo yes || echo no)"
+
+# The exported API, DERIVED from the archive rather than transcribed, so a
+# member that stops being compiled shows up here instead of at the first
+# program that wants it.
+check 'libtermcap exports the termcap API' \
+    '_tgetent _tgetflag _tgetnum _tgetstr _tgoto _tputs' \
+    "$(nm -g "$ROOT/build/stage0/termlib/libtermcap.a" 2>/dev/null |
+       awk '$2=="T"{print $3}' | grep -E '^_(tget|tgoto|tputs)' |
+       sort -u | tr '\n' ' ' | sed 's/ $//')"
+
+# A HARD LINK, because upstream's install is `ln libtermcap.a libtermlib.a'
+# and the shipped tree has both names.  Compared by INODE: two copies of the
+# same bytes would pass a cmp and would not be what V8 shipped.
+check 'libtermlib.a is a hard link to libtermcap.a' 'same' \
+    "$(a=$(ls -i "$V8ROOT/usr/lib/libtermcap.a" 2>/dev/null | awk '{print $1}'); \
+       b=$(ls -i "$V8ROOT/usr/lib/libtermlib.a" 2>/dev/null | awk '{print $1}'); \
+       [ -n "$a" ] && [ "$a" = "$b" ] && echo same || echo differs)"
+
+# The database is DATA and must arrive unaltered -- it is the one file here
+# that no compiler touches, so nothing else would notice if it did not.
+check '/etc/termcap is installed byte-identical to the import' 'same' \
+    "$(cmp -s "$ROOT/src/etc/termcap" "$V8ROOT/etc/termcap" && echo same || echo differs)"
+
+# THE END-TO-END CASE, and its expected value is DERIVED FROM THE DATABASE.
+# Transcribing \E[4m would make this a test of my typing; reading us= and ue=
+# out of /etc/termcap makes it a test that ul found the vt100 entry, decoded
+# the escapes, and handed them to tputs.
+#
+# The leading digits are a PADDING DELAY (`us=2\E[4m' is 2ms), which tputs
+# strips and converts to pad characters -- and emits none here, because ul
+# never sets ospeed and tputs returns early when it is 0.  So the expected
+# output is the escape alone, which is also what makes the strip observable.
+vt=$(awk '/^d1\|vt100\|/{p=1} p{print; if(!/\\$/) exit}' "$V8ROOT/etc/termcap")
+tcap() { printf '%s' "$vt" | grep -oE ":$1=[^:]*" | head -1 |
+         sed "s/^:$1=//; s/^[0-9]*//; s/\\\\E/$(printf '\033')/g"; }
+printf 'a\b_b\b_ c\n' > ul.in
+check 'ul emits the vt100 underline sequences /etc/termcap declares' \
+    "$(printf '%sab%s c' "$(tcap us)" "$(tcap ue)")" \
+    "$(TERM=vt100 "$(v8which ul)" ul.in)"
+
+# The negative control, and it is what says the sequences came from the entry
+# rather than from ul: `dumb' has no us/ue at all, so the same input must come
+# out plain.  Without this, a ul that always emitted \E[4m would pass above.
+check 'ul on a dumb terminal emits no escape' 'ab c' \
+    "$(TERM=dumb "$(v8which ul)" ul.in)"
+
+# ul -t WITH THE OPTION LAST -- the tenth member of this port's address-0
+# class, and the same trigger as the other nine.  argv[1] is null, and
+# tnamatch() dereferences it.
+#
+# ASSERTED ON THE OUTPUT AS WELL AS ON SURVIVAL, because a fix must not merely
+# stop the crash: "" is the VAX's own answer (virtual 0 is crt0's first byte
+# and it is 0x00, measured on the shipped binaries), so tgetent finds no
+# terminal and ul takes its own `case 0' -- underlining stripped, text intact.
+check 'ul -t with no argument does not die on a signal' 'lived' \
+    "$(TERM=vt100 "$(v8which ul)" -t < ul.in >ul.o1 2>/dev/null; \
+       s=$?; [ "$s" -lt 128 ] && echo lived || echo "signal $((s-128))")"
+check 'and still passes the text through, unadorned' 'ab c' "$(cat ul.o1)"
+
+# tgoto(3) -- REACHED BY NOTHING INSTALLED, so a probe is the only instrument.
+#
+# ul is libtermcap's only consumer and it never does cursor addressing, so the
+# largest member of the library had no case looking at it.  Measured rather
+# than suspected: dropping upstream's four -DCM_ flags took tgoto.o from 2376
+# to 2096 bytes and every case above stayed green.  That is a STRONG mutation
+# with no test aimed at it -- neither dead code nor a vacuous case, just no
+# consumer -- which is the third reason this file records for a mutation not
+# firing, and the one a probe fixes.
+#
+# It matters now rather than later because ex/vi is the next consumer and
+# cursor addressing is the whole of a screen editor.
+if "$CC" -c -o tgotoprobe.o "$ROOT/tests/wavea/tgotoprobe.c" >tgp.log 2>&1 &&
+   clang -nostdlib -e _v8start -o tgotoprobe "$CRT" tgotoprobe.o \
+       "$ROOT/build/stage0/termlib/libtermcap.a" \
+       "$LIBC" "$STUBS" "$SHIM" -lSystem >>tgp.log 2>&1; then
+	tgout=$(./tgotoprobe 2>&1)
+	check 'tgoto interprets the unguarded %i%d;%d' 'ok' \
+	    "$(printf '%s\n' "$tgout" | grep -c 'ok plain' | sed 's/^1$/ok/')"
+	check 'tgoto: all five cursor-addressing forms' '0' \
+	    "$(printf '%s\n' "$tgout" | sed -n 's/^tgotoprobe: \([0-9]*\) failed$/\1/p')"
+	# Name the failures rather than only counting them: a bare count says
+	# which flag is missing only by arithmetic.
+	if printf '%s\n' "$tgout" | grep -q '^FAIL'; then
+		printf '%s\n' "$tgout" | grep '^FAIL' | sed 's/^/  tgoto /'
+	fi
+else
+	fail=$((fail+2)); echo "FAIL tgotoprobe (build)"; head -3 tgp.log
+fi
+
+# ---------------------------------------------------------------------------
 # THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.
 #
 # Citations are swept, build edges are asserted, imported == installed is
