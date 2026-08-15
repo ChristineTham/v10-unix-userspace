@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2139 cases, 2138 on a host whose $TMPDIR
+make test             # all 17 suites (2140 cases, 2139 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -356,6 +356,36 @@ Four things generalise:
     stays GREEN when the sweep dies.** Measured: break the resolver and it
     reports 0 stale over 0 checked, which reads as a clean tree. Same shape as
     `tests/cpp`'s `if [ -d "$V8INC" ]` skip reporting `12 passed`.
+  - **AND THE INPUT IT COULD NOT SURVIVE IS THE ONE IT EXISTS FOR: A FILE THAT
+    CITES ITSELF.** The heading this whole entry sits under is *"A LINE
+    CITATION INSIDE THE FILE IT CITES IS SELF-INVALIDATING"* — the motivating
+    case — and the sweep **spun forever** on it. awk keys `getline < file` on
+    the FILENAME, so `cite()` opening the file `scanfile` was mid-read shared
+    its stream, and `close()` rewound the outer loop to line 1, which re-found
+    the citation, forever. It went a whole step without meeting one only
+    because no file in the tree happened to have one; the first that did
+    wedged `make test` at 100% CPU with no output. Reproduced in three lines —
+    one file, one self-citation. Fixed by loading each file once into a cache
+    so nothing is opened twice, which also took the sweep from minutes to
+    **0.45s**: it had been re-reading each target file once *per citation*.
+  - **THE HANG WAS A PROPERTY OF THE PAIR OF READS, WHICH IS WHY THE FIRST
+    MUTATION DID NOT FIRE.** Reverting `cite()`'s reopen alone changed nothing
+    — with `scanfile` reading the cache there is no stream left to share — so
+    the guard looked vacuous and was not. Reverting the WHOLE fix fires, and
+    the observable is worse than a hang: **16MB of spurious STALE lines in
+    five seconds**, each claiming "the file has 0 lines", because `cite()`
+    drained the shared stream and left `scanfile` at EOF. Two rules. When a
+    defect needs two cooperating pieces, a mutation to either one alone is a
+    *weaker mutation* and says nothing about the guard — the non-firing rule
+    above has a third cause. And **a broken sweep is not one that reports
+    something wrong, it is one that reports without stopping**, so the STALE
+    capture is `head`-bounded now, for the reason the three checker captures
+    already were.
+  - **AND A HANG IS THE FAILURE MODE THAT REPORTS NOTHING**, so its guard
+    needs a deadline of its own — a hanging case takes the suite down instead
+    of failing it. It must also assert the VERDICT rather than termination: a
+    sweep that terminated by refusing to resolve self-citations would pass a
+    liveness-only case while quietly checking nothing.
   - **AND WRITING THIS PARAGRAPH BROKE THE CHECK IT DESCRIBES**, which is the
     instrument-matches-its-own-documentation shape arriving in the
     documentation *of the instrument*. A prose example of a **stale** citation

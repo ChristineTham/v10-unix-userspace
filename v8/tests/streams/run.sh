@@ -1072,13 +1072,54 @@ if [ -f "$CITEAWK" ]; then
 	exn=$(awk '/^SUMMARY/{print $3}' "$TMP/cite.out")
 	stn=$(awk '/^SUMMARY/{print $4}' "$TMP/cite.out")
 	check "no line citation in the tree points at a blank line" "0" "${stn:-no-summary}"
-	[ "${stn:-1}" -eq 0 ] 2>/dev/null || sed -n 's/^STALE /    /p' "$TMP/cite.out"
+	# BOUNDED, for the reason the three checker captures are bounded: a
+	# broken sweep is not a sweep that reports one thing wrong, it is one
+	# that reports without stopping.  Measured -- reverting the self-citation
+	# fix produced 16MB of STALE lines in five seconds, all of them spurious,
+	# and printing them is how a diagnosis becomes a scroll.
+	[ "${stn:-1}" -eq 0 ] 2>/dev/null ||
+		sed -n 's/^STALE /    /p' "$TMP/cite.out" | head -40
 	# not vacuous -- a resolver that stopped resolving would report zero
 	# stale over zero checked, which is the shape a green run hides best
 	if [ "${ckn:-0}" -ge 200 ]; then ok
 	else bad "the citation sweep is vacuous" "checked only ${ckn:-0}"; fi
 	echo "  citations: ${ckn:-?} checked, ${exn:-?} not uniquely resolvable," \
 	     "${stn:-?} stale"
+
+	# A FILE THAT CITES ITSELF SPUN THE SWEEP FOREVER, and the case it could
+	# not survive is the one it exists for.  CLAUDE.md's headline entry on
+	# this whole class is "A LINE CITATION INSIDE THE FILE IT CITES IS
+	# SELF-INVALIDATING" -- a citation moved by the comment doing the citing
+	# -- so a self-citation is not an exotic input, it is the motivating one.
+	# No file in the tree happened to have one, and the first that did wedged
+	# `make test' at 100% CPU with no output for an hour.  cites.awk's own
+	# header has the mechanism: awk keys getline on the FILENAME, so cite()
+	# opening the file scanfile is mid-read shares its stream, and close()
+	# rewinds the outer loop to line 1, which re-finds the citation forever.
+	#
+	# THE GUARD NEEDS ITS OWN DEADLINE, because the failure is a HANG and a
+	# hanging case takes the suite down instead of failing it -- which is
+	# strictly worse and is exactly what happened.  Three lines of fixture,
+	# one self-citation, killed after five seconds.
+	#
+	# AND IT ASSERTS THE VERDICT RATHER THAN MERE TERMINATION: a sweep that
+	# terminated by refusing to resolve self-citations would pass a
+	# liveness-only case while quietly checking nothing.  Line 1 exists and
+	# carries text, so the right answer is one checked, none excluded, none
+	# stale.
+	selfd=$TMP/selfcite
+	mkdir -p "$selfd/sub"
+	printf 'first line, with text\ncites sub/s.c:1, which is this very file\n' \
+		> "$selfd/sub/s.c"
+	printf 'sub/s.c\n' > "$selfd/univ"
+	cp "$selfd/univ" "$selfd/files"
+	check "a file citing ITSELF does not wedge the sweep" "SUMMARY 1 0 0" \
+		"$(perl -e '
+			my $p = fork();
+			if ($p == 0) { exec @ARGV or exit 127 }
+			$SIG{ALRM} = sub { kill 9, $p; waitpid($p,0); print "HUNG\n"; exit 9 };
+			alarm 5; waitpid($p, 0); alarm 0;
+		 ' awk -v ROOT="$selfd" -f "$CITEAWK" "$selfd/univ" "$selfd/files" 2>&1)"
 else bad "tests/streams/cites.awk is missing"; fi
 
 # --- param.h's redirects and hostok.h's undefs are DERIVED FROM EACH OTHER ---

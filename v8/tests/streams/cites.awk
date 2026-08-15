@@ -63,12 +63,42 @@ NR == FNR {
 # --- phase 2: every remaining record names a file to scan ---
 { scanfile($0) }
 
-function scanfile(f,   ln, no, rest, tok, full) {
-	full = ROOT "/" f
-	no = 0
-	while ((getline ln < full) > 0) {
-		no++
-		rest = ln
+#	A FILE THAT CITES ITSELF SPUN THIS SCRIPT FOREVER, AND THE HANG IS THE
+#	WORST PART.
+#
+# The first version read the citing file with `getline ln < full' and, for each
+# citation, read the TARGET with `getline tl < tgt'.  awk keys an input stream
+# on the FILENAME STRING, so when the target IS the citing file those two are
+# one stream: cite() read it to EOF and close()d it, which rewound the outer
+# loop to line 1, which re-found the same citation, which called cite() again.
+# Reproduced in three lines -- one file, one self-citation -- and it does not
+# fail, it SPINS at 100% with no output, which `make test' reports as nothing
+# at all.
+#
+# THE CASE IT COULD NOT SURVIVE IS THE ONE IT WAS BUILT FOR.  CLAUDE.md's
+# headline entry on this whole class is "A LINE CITATION INSIDE THE FILE IT
+# CITES IS SELF-INVALIDATING" -- a citation moved by the comment doing the
+# citing.  The sweep went a step without meeting one only because no file in
+# the tree happened to cite itself; the first one that did wedged the suite.
+#
+# So nothing is read twice: every file is loaded ONCE into a cache and both
+# phases read the cache.  That removes the shared-stream hazard by removing
+# the second open, and it is also why the sweep is now fast -- the old one
+# re-read each target file once per citation, so a citation into CLAUDE.md
+# read all of CLAUDE.md again.
+function loadfile(path,   full, ln, n) {
+	if (path in NL) return
+	full = ROOT "/" path
+	n = 0
+	while ((getline ln < full) > 0) L[path, ++n] = ln
+	close(full)
+	NL[path] = n
+}
+
+function scanfile(f,   no, rest, tok) {
+	loadfile(f)
+	for (no = 1; no <= NL[f]; no++) {
+		rest = L[f, no]
 		# the char class excludes ':' so a token holds exactly one, and
 		# excludes whitespace so two citations on a line stay apart
 		while (match(rest, /[A-Za-z0-9_.\/+-]+\.(c|h|s|y|l|md|sh):[0-9]+(-[0-9]+)?/)) {
@@ -77,7 +107,6 @@ function scanfile(f,   ln, no, rest, tok, full) {
 			cite(f, no, tok)
 		}
 	}
-	close(full)
 }
 
 function cite(src, lno, tok,   q, r, path, a, b, nb, comp, base, nc, list, i, p, keep, hits, tl, nl, seen, allempty, tgt) {
@@ -101,16 +130,12 @@ function cite(src, lno, tok,   q, r, path, a, b, nb, comp, base, nc, list, i, p,
 	}
 	if (hits != 1) { excluded++; return }
 
-	tgt = ROOT "/" keep
-	nl = 0; seen = 0; allempty = 1
-	while ((getline tl < tgt) > 0) {
-		nl++
-		if (nl >= a && nl <= b) {
-			seen++
-			if (!structempty(tl)) allempty = 0
-		}
+	loadfile(keep)			# cached; see the note above scanfile
+	nl = NL[keep]; seen = 0; allempty = 1
+	for (tl = a; tl <= b && tl <= nl; tl++) {
+		seen++
+		if (!structempty(L[keep, tl])) allempty = 0
 	}
-	close(tgt)
 
 	if (a < 1 || b > nl) {
 		stale++
