@@ -17,7 +17,7 @@
  *   exits 0 with byte-identical output, having written 4088 bytes over the
  *   buffer cache's own pointers.
  *
- *   EXEC.  vfs.c:167 had already recorded it: a v8fs descriptor would be an
+ *   EXEC.  vfs.c:401 had already recorded it: a v8fs descriptor would be an
  *   inode pointer and an offset in process memory, and process memory does not
  *   survive a program replacing itself.  `cat /mnt/a > /mnt/b' could never
  *   work, because the shell opens the file and then execs cat.
@@ -1929,7 +1929,7 @@ wowner(struct inode *ip)
  * every permission check on the image.
  *
  * IT IS THE SERVER END OF A CONTRACT THE CLIENT END ALREADY KEPT.  p9uid() at
- * p9cl.c:1128-1140 was given exactly this guard by an earlier audit, and its
+ * p9cl.c:1291-1304 was given exactly this guard by an earlier audit, and its
  * comment states the rule for the whole port -- root maps to root, and
  * non-root NEVER maps to root.  The two ends of one wire, one hour apart, and
  * only the reading end had it.  Nothing could have caught it: do_wstat had no

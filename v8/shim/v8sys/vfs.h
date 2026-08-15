@@ -36,13 +36,36 @@
 struct v8_stat;
 
 /*
- * Path resolution has two modes, and the distinction is load-bearing -- see
- * shim/NOTES.md.  V8P_LOOK asks whether the rootfs has the path, which is right
- * for a reader and unanswerable for a name being created; V8P_MAKE asks about
- * the parent instead.
+ * Path resolution has THREE modes, and the distinctions are load-bearing --
+ * see shim/NOTES.md.  V8P_LOOK asks whether the rootfs has the path, which is
+ * right for a reader and unanswerable for a name being created; V8P_MAKE asks
+ * about the parent instead.
+ *
+ * V8P_ENTRY IS §8a step 5i's, AND IT SAYS THE SAME THING ABOUT A DIFFERENT
+ * QUESTION.  Once the shim tracks a working directory it must fold `..'
+ * lexically -- there is no kernel here to fix up a walk that crosses a mount
+ * upward, so `cd /mnt; cd ..' would otherwise leave a program inside the image
+ * (p9.h and syscall.c's v8s_chdir both record the measurement).  But folding
+ * the LAST component destroys the one thing 5h's Tunlink exists to name: `..'
+ * as an ENTRY, which is what rmdir(1)'s three unlinks and mv(1)'s reparenting
+ * are made of.  unlink("/mnt/d/..") folded whole is unlink("/mnt").
+ *
+ * So the mode is threaded rather than inferred, and the split is exactly the
+ * one dotlink()'s two callers already draw:
+ *
+ *	V8P_LOOK	reach an object.  Fold the path whole.
+ *	V8P_ENTRY	name an entry in a directory.  Fold all but the last.
+ *	V8P_MAKE	name an entry that does not exist yet -- ENTRY's fold,
+ *			plus the parent rule for the rootfs union.
+ *
+ * "Fold all but the last EVERYWHERE" was considered and is wrong: it makes
+ * opendir("..") at a mount root reach the image root while chdir("..") reaches
+ * the jail root, and getwd(3) does both in one loop (getwd.c:41-45) and
+ * requires them to agree.
  */
 #define V8P_LOOK	0
 #define V8P_MAKE	1
+#define V8P_ENTRY	2
 
 struct v8fstyp {
 	const char *t_name;
@@ -96,9 +119,16 @@ struct v8fstyp {
 	 * WHAT STILL HAS NO SLOT AFTER THIS, and why, so that the next step
 	 * inherits a list rather than a survey: symlink, because a V7 image
 	 * cannot represent one; mknod for a device, meaningless on an image no
-	 * kernel will mount; chdir, which needs a working directory this shim
-	 * does not track; chroot and execve, the two the enumeration in
+	 * kernel will mount; chroot and execve, the two the enumeration in
 	 * syscall.c had missed, which are their own questions.
+	 *
+	 * chdir WAS ON THAT LIST AND CAME OFF IT IN §8a step 5i -- and it never
+	 * took a slot, which is the point.  It needed a working directory this
+	 * shim did not track; with one, `cd' into a mount is answered by
+	 * v8fs_logical and v8s_chdir rather than by a per-type operation,
+	 * because where a process is standing is a fact about the NAMESPACE and
+	 * not about any one filesystem in it.  A slot would have made each type
+	 * answer separately and then have to agree.
 	 *
 	 * THIS LIST USED TO OPEN "link and symlink have no 9P2000 message at
 	 * all", pairing them, and §8a step 5g is the step that took the pair
@@ -156,10 +186,43 @@ struct v8fstyp {
  * tables that have to agree are the standing invitation kmem.c's one-table rule
  * exists to refuse.  A /proc entry is one more row here.
  */
-struct v8fstyp *v8fs_typefor(const char *path);
+struct v8fstyp *v8fs_typefor(const char *path, int mode);
 struct v8fstyp *v8fs_fdtype(int fd);
 void            v8fs_bind(int fd, struct v8fstyp *t);
 void            v8fs_unbind(int fd);
+
+/*
+ * THE LOGICAL WORKING DIRECTORY -- §8a step 5i, and the reason it is here
+ * rather than in syscall.c is that it has to run BEFORE dispatch as well as
+ * before resolution.  A relative name under a mount belongs to the server, and
+ * v8fs_typefor cannot see that in the name itself.
+ *
+ * v8fs_logical() is the whole of it: it makes a path absolute against the cwd
+ * and folds it to the mode's rule.  It is the IDENTITY whenever no v8fs mount
+ * is configured, which is every run of every other suite -- so the lexical
+ * reading of `..' is confined to processes that have asked for a mount.
+ *
+ * THE cwd LIVES IN THE ENVIRONMENT, as V8CWD, for vfs.c's own recorded reason:
+ * a table in process memory dies when a program replaces its image, and sh(1)
+ * runs every command by fork and exec.  v8s_execve splices it in; nothing
+ * writes it with putenv, because this shim has no libc.
+ */
+char           *v8fs_logical(char *path, int mode);
+const char     *v8fs_cwd(void);
+int             v8fs_setcwd(const char *path);
+/*
+ * The fold with no scope test, in place, on a path that is already absolute.
+ * p9cl.c normalises V8MOUNT's prefix with it, which v8fs_logical cannot do:
+ * asking whether a mount exists is what p9cl is in the middle of answering.
+ */
+void            v8fs_foldabs(char *path, int mode);
+
+/*
+ * The longest path the fold can hold.  1024 is past what getwd(3) could report
+ * anyway -- getwd.c:14 sizes its own buffer at 512 -- so a path this shim
+ * cannot hold is one no V8 program could print.
+ */
+#define V8_CWDMAX	1024
 
 extern struct v8fstyp v8fs_pass;
 
@@ -188,6 +251,13 @@ extern struct v8fstyp v8fs_fdfs;
 extern struct v8fstyp v8fs_p9;
 struct v8fstyp *v8fs_p9for(const char *path);
 struct v8fstyp *v8fs_p9adopt(int fd);
-int             v8fs_mounted(const char *path);
+int             v8fs_mounted(const char *path, int mode);
+/*
+ * "Is any mount configured at all" -- the scope of the fold, and deliberately
+ * a different question from v8fs_p9for's "does the mount claim THIS path".
+ * v8fs_logical needs the first, because a relative name cannot be tested
+ * against a prefix until it has been made absolute.
+ */
+int             v8fs_p9any(void);
 
 #endif /* V8SYS_VFS_H */

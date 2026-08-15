@@ -1093,20 +1093,20 @@ main(void)
 	 * beside it is what these cases pin -- two prefix tables that must agree
 	 * by hand is the standing invitation kmem.c's one-table rule refuses.
 	 */
-	ok(v8fs_typefor("/bin/cat")   == &v8fs_pass, "a V8 directory is claimed by a mount");
-	ok(v8fs_typefor("/etc/group") == &v8fs_pass, "...and so is /etc");
-	ok(v8fs_typefor("/etc")       == &v8fs_pass, "...and the directory itself, with no slash");
-	ok(v8fs_typefor("/usr/lib/tmac/x") == &v8fs_pass, "...and anything beneath one");
+	ok(v8fs_typefor("/bin/cat", V8P_LOOK)   == &v8fs_pass, "a V8 directory is claimed by a mount");
+	ok(v8fs_typefor("/etc/group", V8P_LOOK) == &v8fs_pass, "...and so is /etc");
+	ok(v8fs_typefor("/etc", V8P_LOOK)       == &v8fs_pass, "...and the directory itself, with no slash");
+	ok(v8fs_typefor("/usr/lib/tmac/x", V8P_LOOK) == &v8fs_pass, "...and anything beneath one");
 
 	/*
 	 * The negative half, which is the half that matters.  A prefix table
 	 * that claimed everything would pass every case above.
 	 */
-	ok(v8fs_typefor("/tmp/x")   == 0, "an unclaimed path has no mount");
-	ok(v8fs_typefor("relative") == 0, "nor does a relative one");
-	ok(v8fs_typefor("/binary")  == 0, "/binary is not /bin/, despite the prefix");
-	ok(v8fs_typefor("/unix")    == &v8fs_pass, "/unix is claimed exactly");
-	ok(v8fs_typefor("/unixfoo") == 0, "...and /unixfoo is not, which is why m_exact exists");
+	ok(v8fs_typefor("/tmp/x", V8P_LOOK)   == 0, "an unclaimed path has no mount");
+	ok(v8fs_typefor("relative", V8P_LOOK) == 0, "nor does a relative one");
+	ok(v8fs_typefor("/binary", V8P_LOOK)  == 0, "/binary is not /bin/, despite the prefix");
+	ok(v8fs_typefor("/unix", V8P_LOOK)    == &v8fs_pass, "/unix is claimed exactly");
+	ok(v8fs_typefor("/unixfoo", V8P_LOOK) == 0, "...and /unixfoo is not, which is why m_exact exists");
 
 	/*
 	 * Descriptor ownership defaults to passthrough for every descriptor,
@@ -1276,12 +1276,12 @@ main(void)
 		 * The exact row before the prefix row is what arranges that, and
 		 * nothing else in the suite would notice it being dropped.
 		 */
-		ok(v8fs_typefor("/dev/fd") == &v8fs_pass,
+		ok(v8fs_typefor("/dev/fd", V8P_LOOK) == &v8fs_pass,
 		    "the /dev/fd DIRECTORY is passthrough");
-		ok(v8fs_typefor("/dev/fd/3") == &v8fs_fdfs,
+		ok(v8fs_typefor("/dev/fd/3", V8P_LOOK) == &v8fs_fdfs,
 		    "...and its entries are not");
-		ok(v8fs_typefor("/dev/tty") == &v8fs_fdfs, "/dev/tty is claimed");
-		ok(v8fs_typefor("/dev/kmem") == &v8fs_pass,
+		ok(v8fs_typefor("/dev/tty", V8P_LOOK) == &v8fs_fdfs, "/dev/tty is claimed");
+		ok(v8fs_typefor("/dev/kmem", V8P_LOOK) == &v8fs_pass,
 		    "...and /dev/kmem is still the groveler's");
 
 		/*

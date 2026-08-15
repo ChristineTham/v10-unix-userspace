@@ -31,6 +31,7 @@ extern v8_ino_t v8sys_fold_ino(unsigned long long);
 int v8s_fstat();
 int v8s_stat();
 int v8s_lstat();
+int v8s_access(char *p, int m);		/* v8s_chdir checks searchability */
 
 /*
  * getenv, without libc.  crt0.s publishes environ; the shim may not call the
@@ -284,12 +285,53 @@ rootfs_has(const char *path)
 	return (rawsys2(SYS_lstat64, (long)path, (long)st) == 0);
 }
 
+/*
+ * "DID THE ROOTFS CLAIM THIS NAME" USED TO BE `q != p', AND §8a step 5i TOOK
+ * THAT AWAY.
+ *
+ * Three callers ask it -- pt_path and mkpath, to decide whether to fall
+ * through to the parent rule, and v8s_execve, to decide whether a path left
+ * the jail -- and all three said it by comparing the answer against the
+ * argument.  That worked because a rootpath() that did not redirect handed
+ * back the very pointer it was given.  It no longer does: the logical cwd
+ * folds first, so the fall-through returns a pointer into the fold buffer and
+ * `q != p' is TRUE for every path in a mounted process.  The failure is
+ * silent and it is an escape -- pt_path would stop reaching V8P_MAKE, so
+ * creat("/etc/./x") inside the jail would write to the Mac.
+ *
+ * So the buffer is named and the question is asked directly.  This is exact
+ * rather than a flag: rootpath returns THIS object when and only when it
+ * redirected, so there is no state to go stale between the call and the test.
+ */
+static char rootbuf[1024];
+
+int
+v8sys_rootjailed(const char *q)
+{
+	return (q == rootbuf);
+}
+
 char *
 v8sys_rootpath(char *p, int mode)
 {
-	static char buf[1024];
 	char *root;
 	int i, n, m;
+
+	/*
+	 * THE LOGICAL cwd IS APPLIED FIRST, AND THIS IS ONE OF THE TWO PLACES
+	 * IT HOOKS IN -- §8a step 5i.  Every path-taking syscall in this shim
+	 * reaches here, so the fold is inherited rather than repeated 39 times;
+	 * the other hook is v8fs_typefor, because dispatch has to know the same
+	 * thing and cannot wait for resolution.  vfs.h has the mode's argument
+	 * and vfs.c the fold; it is the IDENTITY with no v8fs mount configured,
+	 * which is what makes this line inert for every other suite.
+	 *
+	 * BEFORE the empty-path rule below, not after, because "" is a relative
+	 * path and therefore has an answer the logical cwd knows better: with
+	 * the cwd inside a mount, rmdir(1)'s stat("", &cst) means the mounted
+	 * directory and "." would mean the host one.
+	 */
+	p = v8fs_logical(p, mode);
 
 	/*
 	 * THE EMPTY PATH IS THE CURRENT DIRECTORY -- V7 namei()'s rule, and the
@@ -325,9 +367,9 @@ v8sys_rootpath(char *p, int mode)
 	 */
 	if (p[1] == '\0') {
 		if ((root = v8root()) == 0) return (p);
-		for (n = 0; root[n] && n < (int)sizeof buf - 1; n++) buf[n] = root[n];
-		buf[n] = '\0';
-		return (buf);
+		for (n = 0; root[n] && n < (int)sizeof rootbuf - 1; n++) rootbuf[n] = root[n];
+		rootbuf[n] = '\0';
+		return (rootbuf);
 	}
 
 	/*
@@ -353,13 +395,13 @@ v8sys_rootpath(char *p, int mode)
 	 * explaining why it mattered kept the assumption -- the exact shape
 	 * the deletion's own commit message is about.
 	 */
-	if (v8fs_mounted(p)) return (p);
-	if (v8fs_typefor(p) == 0) return (p);
+	if (v8fs_mounted(p, mode)) return (p);
+	if (v8fs_typefor(p, mode) == 0) return (p);
 	if ((root = v8root()) == 0) return (p);
 
-	for (n = 0; root[n] && n < (int)sizeof buf - 2; n++) buf[n] = root[n];
-	for (m = 0; p[m] && n < (int)sizeof buf - 1; m++) buf[n++] = p[m];
-	buf[n] = '\0';
+	for (n = 0; root[n] && n < (int)sizeof rootbuf - 2; n++) rootbuf[n] = root[n];
+	for (m = 0; p[m] && n < (int)sizeof rootbuf - 1; m++) rootbuf[n++] = p[m];
+	rootbuf[n] = '\0';
 	/*
 	 * rootfs_has() is raw, NOT v8s_lstat: v8s_lstat runs its argument back
 	 * through vpath(), which re-enters this function and would overwrite the
@@ -372,14 +414,14 @@ v8sys_rootpath(char *p, int mode)
 		/*
 		 * Ask about the parent, by cutting the buffer at the last slash
 		 * and putting it back.  n is the length built above, and the
-		 * root's own slash is always at or before buf[strlen(root)], so
+		 * root's own slash is always at or before rootbuf[strlen(root)], so
 		 * there is one to find.
 		 */
 		int cut = -1, ok;
 		for (i = 0; i < n; i++)
-			if (buf[i] == '/') cut = i;
+			if (rootbuf[i] == '/') cut = i;
 		if (cut <= 0) return (p);
-		buf[cut] = '\0';
+		rootbuf[cut] = '\0';
 		/*
 		 * BOTH MODES CHANGE, AND THE NOTE THAT SAID OTHERWISE WAS A
 		 * GUESS.  The reasoning recorded for this fix was that only
@@ -393,11 +435,11 @@ v8sys_rootpath(char *p, int mode)
 		 * Neither answer creates the file; only one of them stays
 		 * inside.
 		 */
-		ok = rootfs_has(buf);
-		buf[cut] = '/';
-		return (ok ? buf : p);
+		ok = rootfs_has(rootbuf);
+		rootbuf[cut] = '/';
+		return (ok ? rootbuf : p);
 	}
-	if (rootfs_has(buf)) return (buf);
+	if (rootfs_has(rootbuf)) return (rootbuf);
 	return (p);
 }
 
@@ -408,7 +450,16 @@ v8sys_rootpath(char *p, int mode)
  * is what PLAN.md section 8a step 2 asks for: replace the floor, change
  * nothing, and let the suites say so.
  */
-#define FSFOR(p)	fs_or_pass(v8fs_typefor(p))
+/*
+ * FSFOR TAKES THE MODE FROM §8a step 5i, AND IT IS THE SAME MODE t_path GETS.
+ * Dispatch and resolution have to agree about how much of the path may be
+ * folded away, because a fully folded /mnt/.. is the JAIL ROOT and dispatches
+ * to passthrough -- so an unlink asking the server to remove the `..' entry of
+ * a mounted image would instead ask the host to remove the jail's own root.
+ * Passing one mode to FSFOR and another to t_path is the way to get that, so
+ * every call site below spells the two the same.
+ */
+#define FSFOR(p, mode)	fs_or_pass(v8fs_typefor(p, mode))
 #define FDFS(fd)	v8fs_fdtype(fd)
 
 static struct v8fstyp *
@@ -443,8 +494,15 @@ mkpath(char *p)
 {
 	char *q;
 
-	q = v8sys_rootpath(p, V8P_LOOK);
-	if (q != p) return (q);
+	/*
+	 * V8P_ENTRY AND NOT V8P_LOOK FOR THE FIRST CALL, §8a step 5i: it wants
+	 * LOOK's union rule with MAKE's FOLD, which is what that mode is.  With
+	 * LOOK here the two calls would fold the same path two different ways
+	 * and the "does it already exist" question would be asked about a
+	 * different name from the one about to be created.
+	 */
+	q = v8sys_rootpath(p, V8P_ENTRY);
+	if (v8sys_rootjailed(q)) return (q);
 	return v8sys_rootpath(p, V8P_MAKE);
 }
 
@@ -693,8 +751,8 @@ int v8s_link(char *a, char *b)
 	 * paths, so it is the only one where the trap is unavoidable rather
 	 * than merely available -- vfs.h says so beside t_link.
 	 */
-	ta = FSFOR(a);
-	tb = FSFOR(b);
+	ta = FSFOR(a, V8P_LOOK);
+	tb = FSFOR(b, V8P_MAKE);
 	if (ta != tb) { v8_errno = V8_EXDEV; return (-1); }
 
 	q = ta->t_path(a, V8P_LOOK);
@@ -749,7 +807,7 @@ int v8s_mknod(char *p, int mode, int dev)
 	 * the same distinction from the other side.
 	 */
 	if ((mode & 0170000) == 0040000) {
-		struct v8fstyp *t = FSFOR(p);
+		struct v8fstyp *t = FSFOR(p, V8P_MAKE);
 
 		return (t->t_mkdir(t->t_path(p, V8P_MAKE), mode & 07777));
 	}
@@ -809,7 +867,7 @@ int v8s_unlink(char *p)
 	 * test is done against the ORIGINAL path and the mount dispatch happens
 	 * between the two halves.
 	 */
-	if (dotlink(p) && !v8fs_mounted(p)) {
+	if (dotlink(p) && !v8fs_mounted(p, V8P_ENTRY)) {
 		char par[1024];
 		int i, b = 0;
 
@@ -853,63 +911,118 @@ int v8s_unlink(char *p)
 	 * Labs' nami.c NI_DEL arm performs it.
 	 */
 	{
-		struct v8fstyp *t = FSFOR(p);
+		struct v8fstyp *t = FSFOR(p, V8P_ENTRY);
 
-		return (t->t_remove(t->t_path(p, V8P_LOOK), -1));
+		return (t->t_remove(t->t_path(p, V8P_ENTRY), -1));
 	}
 }
 /*
- * chdir INTO A MOUNT IS REFUSED, and until it was, it was a JAIL ESCAPE.
+ * chdir INTO A MOUNT WORKS -- §8a step 5i -- AND UNTIL 5f IT WAS A JAIL ESCAPE.
  *
- * rootpath() now returns a mounted path unchanged -- it must, because the file
- * is on an image in another process -- so an unguarded chdir hands the bare
- * name to the host.  With a mount whose prefix the Mac also has, that is not a
- * failure but a success into the wrong world: measured with V8MOUNT=/etc=sock,
- * `cd /etc' returned 0, pwd said /private/etc, and `cat passwd' read the Mac's
- * password database.  Before the rootpath line, /etc resolved into $V8ROOT.
- * /mnt is safe only because this machine has no /mnt.
+ * The escape came first and is why the refusal existed.  rootpath() returns a
+ * mounted path unchanged -- it must, because the file is on an image in another
+ * process -- so an unguarded chdir hands the bare name to the host.  With a
+ * mount whose prefix the Mac also has, that is not a failure but a success into
+ * the WRONG WORLD: measured with V8MOUNT=/etc=sock, `cd /etc' returned 0, pwd
+ * said /private/etc, and `cat passwd' read the Mac's password database.  /mnt
+ * was safe only because this machine has no /mnt.
  *
- * EACCES rather than EROFS, because chdir is not a write and the refusal is
- * not about the medium: nothing in this shim tracks a working directory, so
- * v8fs_typefor refuses a relative path and a program that got inside a mount
- * would find every relative name resolving against the host.  That is the one
- * gap the client cannot close on its own -- PLAN.md §8a step 5f -- and until
- * it is closed the honest answer is no.
+ * THE REFUSAL WAS HONEST AND ITS REASON WAS THE WHOLE COSTING: nothing in this
+ * shim tracked a working directory, so v8fs_typefor could not answer for a
+ * relative name and a program that got inside a mount would find every relative
+ * name resolving against the host.  vfs.c now tracks one and this function is
+ * what fills it in.  Three things the costing named, and each is answered
+ * somewhere else rather than here, which is why this function is short:
  *
- * AND THE COSTING FOR CLOSING IT WAS TOO SMALL, RE-MEASURED.  The first
- * estimate was "one function plus chdir": a v8fs_cwd[] that is empty whenever
- * the process sits in a real host directory, consulted by v8fs_typefor for a
- * relative path only.  Three things say it is bigger, and the first two were
- * measured rather than reasoned:
- *
- *   `..' AT A MOUNT POINT DOES NOT ESCAPE, AND THE SERVER CANNOT MAKE IT.
+ *   `..' AT A MOUNT POINT DOES NOT ESCAPE AND THE SERVER CANNOT MAKE IT.
  *   Measured against a real v8fsd: `ls /mnt/sub/..' correctly lists the mount
- *   root, and `ls /mnt/..' lists THE IMAGE ROOT AGAIN rather than the jail's /
- *   (bin dev etc lib unix usr).  That is V7 being right -- a filesystem root's
- *   `..' points at itself -- and on a real Unix it is namei's mount table that
- *   fixes it up when a walk crosses a mount upward.  There is no kernel here to
- *   do that, and the image does not know it is mounted anywhere, so `cd /mnt &&
- *   cd ..' would leave a program stuck inside the image.  The client has to
- *   resolve `..' at the mount point LEXICALLY, before the walk.
+ *   root, and `ls /mnt/..' listed THE IMAGE ROOT AGAIN rather than the jail's /
+ *   -- V7 being right, since a filesystem root's `..' points at itself, and on
+ *   a real Unix it is namei's mount table that fixes the walk up.  There is no
+ *   kernel here, so the client folds `..' lexically before the walk.  vfs.c's
+ *   v8fs_logical, and vfs.h says why the fold has to take a MODE.
  *
- *   getwd(3) IS THE HARD CONSUMER AND IT WRITES.  src/libc/gen/getwd.c does not
- *   merely read its way up: it opens `..', reads it, `chdir("..")'s, repeats,
- *   and chdirs back at the end -- so every level of a pwd(1) inside a mount is
- *   another chdir to intercept, and its central loop matches a directory
- *   entry's d_ino against stat(".")  , which puts the folded-inode machinery
- *   and the mount's qid paths on the same comparison.
+ *   getwd(3) IS THE HARD CONSUMER AND IT WRITES.  getwd.c:41-45 opens `..',
+ *   reads it, chdir("..")s and repeats -- so every level of a pwd(1) inside a
+ *   mount comes back through this function, and opendir and chdir must give
+ *   the SAME answer at the mount root or the walk covers two trees.  They do,
+ *   because both take V8P_LOOK.  getwd.c is UNMODIFIED: at the mount root its
+ *   own different-device fallback (getwd.c:63-71) fires, because p9cl reports
+ *   st_dev 0 for a mounted file and the jail root has the host's.
  *
- *   AND THE cwd MUST SURVIVE exec, which is vfs.c:167's recorded lesson about
- *   the descriptor table: a table in process memory dies when a program
- *   replaces its image.  V8MOUNT survives because it is in the ENVIRONMENT; a
- *   tracked cwd would have to be too, written on every chdir and carried by
- *   v8s_execve -- which is a second thing in the environment that has to agree
- *   with the first.
+ *   AND THE cwd MUST SURVIVE exec, which is vfs.c's recorded lesson about the
+ *   descriptor table: a table in process memory dies when a program replaces
+ *   its image, and sh(1) runs every command that way.  So it goes in the
+ *   ENVIRONMENT beside V8MOUNT, and v8s_execve splices it in.
+ *
+ * WHAT THIS FUNCTION ITSELF DECIDES is only whether the host cwd moves.  For a
+ * mounted target it must not: there is no host directory to move to, and a
+ * chdir to the bare name is the escape above.  For a host target it must, so
+ * that anything this shim does not mediate -- a sanctioned host tool, an
+ * unfolded relative name -- still agrees with the logical cwd.  The two are
+ * then the same directory by construction whenever the logical cwd is a host
+ * path, which is what makes the fold safe to skip for a relative name that
+ * arrives before any chdir has happened.
  */
 int v8s_chdir(char *p)
 {
-	if (v8fs_mounted(p)) { v8_errno = V8_EACCES; return (-1); }
-	RET(rawsys1(SYS_chdir, (long)vpath(p)));
+	struct v8_stat st;
+	char want[V8_CWDMAX];
+	char *lp;
+	int i;
+
+	lp = v8fs_logical(p, V8P_LOOK);
+	/*
+	 * NOT ABSOLUTE MEANS THERE IS NO LOGICAL cwd YET (v8fs_logical hands a
+	 * relative name straight back in that state, and in the no-mount state
+	 * that is every name).  The kernel's own cwd is then the authority and
+	 * it is the right one, so move it and record nothing.
+	 */
+	if (lp == 0 || *lp != '/')
+		RET(rawsys1(SYS_chdir, (long)vpath(p)));
+
+	/*
+	 * COPIED BEFORE ANYTHING ELSE FOLDS.  v8fs_logical returns a pointer
+	 * into its own static buffer and every call below goes through it
+	 * again; the copy is the same discipline v8s_link records for t_path.
+	 *
+	 * A PATH THIS SHIM CANNOT HOLD IS ENOENT, because V8 has no
+	 * ENAMETOOLONG -- its errno.h stops at ELOOP.  ENOENT is the answer a
+	 * V7 program can act on, and 1024 is past what getwd(3) could report
+	 * anyway: getwd.c:14 sizes its own buffer at 512.
+	 */
+	for (i = 0; ; i++) {
+		if (i >= V8_CWDMAX) { v8_errno = V8_ENOENT; return (-1); }
+		if ((want[i] = lp[i]) == '\0') break;
+	}
+
+	if (v8fs_mounted(want, V8P_LOOK)) {
+		/*
+		 * THE CHECKS ARE HERE BECAUSE NO SYSCALL WILL MAKE THEM.  With
+		 * no host chdir there is nothing to fail, so `cd /mnt/nosuch'
+		 * would silently succeed and every relative name after it would
+		 * be ENOENT from somewhere else.  V7's chdir1 (sys4.c) is
+		 * exactly these two: it is a directory, and it is searchable.
+		 */
+		if (v8s_stat(want, &st) < 0) return (-1);
+		if ((st.st_mode & V8_S_IFMT) != V8_S_IFDIR) {
+			v8_errno = V8_ENOTDIR;
+			return (-1);
+		}
+		if (v8s_access(want, 01) < 0) return (-1);	/* X_OK */
+	} else {
+		long r = rawsys1(SYS_chdir, (long)vpath(want));
+
+		if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
+	}
+	/*
+	 * Cannot fail: `want' is absolute and was length-checked above.  Tested
+	 * anyway, because the alternative is a host cwd that has moved and a
+	 * logical one that has not, which is the state every bug in this
+	 * function would look like.
+	 */
+	if (v8fs_setcwd(want) < 0) { v8_errno = V8_ENOENT; return (-1); }
+	return (0);
 }
 /*
  * chmod AND chown ARE SLOTS NOW, §8a step 5f-b, and so is utime a thousand
@@ -927,13 +1040,13 @@ int v8s_chdir(char *p)
  */
 int v8s_chmod(char *p, int m)
 {
-	struct v8fstyp *t = FSFOR(p);
+	struct v8fstyp *t = FSFOR(p, V8P_LOOK);
 
 	return (t->t_chmod(t->t_path(p, V8P_LOOK), m));
 }
 int v8s_chown(char *p, int u, int g)
 {
-	struct v8fstyp *t = FSFOR(p);
+	struct v8fstyp *t = FSFOR(p, V8P_LOOK);
 
 	return (t->t_chown(t->t_path(p, V8P_LOOK), u, g));
 }
@@ -972,21 +1085,21 @@ int v8s_fchown(int f, int u, int g)      { RET(rawsys3(SYS_fchown, f, u, g)); }
  */
 int v8s_access(char *p, int m)
 {
-	struct v8fstyp *t = FSFOR(p);
+	struct v8fstyp *t = FSFOR(p, V8P_LOOK);
 
 	return (t->t_access(t->t_path(p, V8P_LOOK), m));
 }
 int v8s_mkdir(char *p, int m)
 {
-	struct v8fstyp *t = FSFOR(p);
+	struct v8fstyp *t = FSFOR(p, V8P_MAKE);
 
 	return (t->t_mkdir(t->t_path(p, V8P_MAKE), m));
 }
 int v8s_rmdir(char *p)
 {
-	struct v8fstyp *t = FSFOR(p);
+	struct v8fstyp *t = FSFOR(p, V8P_ENTRY);
 
-	return (t->t_remove(t->t_path(p, V8P_LOOK), 1));
+	return (t->t_remove(t->t_path(p, V8P_ENTRY), 1));
 }
 /* a is the link TEXT and is stored verbatim -- resolving it would bake this
  * machine's rootfs path into a symlink the jail is supposed to interpret for
@@ -1014,7 +1127,7 @@ int v8s_rmdir(char *p)
  */
 int v8s_symlink(char *a, char *b)
 {
-	if (v8fs_mounted(b)) { v8_errno = V8_EPERM; return (-1); }
+	if (v8fs_mounted(b, V8P_MAKE)) { v8_errno = V8_EPERM; return (-1); }
 	RET(rawsys2(SYS_symlink, (long)a, (long)mkpath(b)));
 }
 /*
@@ -1267,6 +1380,58 @@ shebang(char *p, char *buf, int n, char **interp, char **arg)
 	return (1);
 }
 
+/*
+ * THE LOGICAL cwd CROSSES exec IN THE ENVIRONMENT, and this is where it is put
+ * there -- §8a step 5i.
+ *
+ * IT CANNOT BE DONE BY WRITING TO `environ'.  v8sys_getenv reads environ, but
+ * execve carries the CALLER's envp, and sh(1) builds its own from scratch
+ * (sh/msg.c's exported list) -- so a process started by the shell would never
+ * see a variable this shim had only added to its own copy.  Measured: without
+ * this, `cd /mnt; ls' works and `cd /mnt; sh -c ls' does not.
+ *
+ * A COPY OF THE ARRAY, NOT AN EDIT OF IT.  The caller's envp may be a string
+ * literal table in read-only memory, and it belongs to the caller in any case.
+ * The copy is static because it must outlive this function -- execve reads it
+ * after we return only in the sense that the kernel reads it during the call,
+ * but the shebang path below re-enters with the same pointer.
+ *
+ * IF IT DOES NOT FIT, THE EXEC STILL HAPPENS with the environment unchanged.
+ * A child that inherits no V8CWD resolves relative names against the host cwd,
+ * which is where v8s_chdir left it -- wrong only for a cwd inside a mount, and
+ * a refusal here would be wrong for everything.
+ */
+#define V8ENV_MAX	512
+static char cwdvar[V8_CWDMAX + 8];
+static char *envbuf[V8ENV_MAX];
+
+static char **
+cwdenv(char **e)
+{
+	const char *cwd = v8fs_cwd();
+	int n = 0, i, j;
+
+	if (cwd == 0) return (e);
+	for (i = 0; "V8CWD="[i]; i++) cwdvar[i] = "V8CWD="[i];
+	for (j = 0; cwd[j]; j++) {
+		if (i + j >= (int)sizeof cwdvar - 1) return (e);
+		cwdvar[i + j] = cwd[j];
+	}
+	cwdvar[i + j] = '\0';
+
+	for (i = 0; e != 0 && e[i] != 0; i++) {
+		/* drop any V8CWD the caller carried; ours is the current one */
+		for (j = 0; "V8CWD="[j] && e[i][j] == "V8CWD="[j]; j++)
+			;
+		if ("V8CWD="[j] == '\0') continue;
+		if (n >= V8ENV_MAX - 2) return (e);
+		envbuf[n++] = e[i];
+	}
+	envbuf[n++] = cwdvar;
+	envbuf[n] = 0;
+	return (envbuf);
+}
+
 int v8s_execve(char *p, char **a, char **e)
 {
 	char *q = vpath(p);
@@ -1294,7 +1459,7 @@ int v8s_execve(char *p, char **a, char **e)
 		q = vpath(interp);		/* #!/bin/sh must mean V8's sh */
 	}
 
-	if (q == p && p != 0 && *p == '/' && !injail(p)) {
+	if (!v8sys_rootjailed(q) && p != 0 && *p == '/' && !injail(p)) {
 		char *j = v8sys_getenv("V8JAIL");
 		if (j != 0 && *j != '\0') {
 			if (sanctioned(p)) {
@@ -1343,7 +1508,7 @@ int v8s_execve(char *p, char **a, char **e)
 			}
 		}
 	}
-	RET(rawsys3(SYS_execve, (long)q, (long)a, (long)e));
+	RET(rawsys3(SYS_execve, (long)q, (long)a, (long)cwdenv(e)));
 }
 
 /*
@@ -1378,7 +1543,7 @@ long v8s_readlink(char *p, char *b, long n)
 	 * reports as EINVAL.  Refusing with EROFS would make ls -l print a
 	 * different wrong thing.
 	 */
-	if (v8fs_mounted(p)) { v8_errno = V8_EINVAL; return (-1); }
+	if (v8fs_mounted(p, V8P_LOOK)) { v8_errno = V8_EINVAL; return (-1); }
 	RET(rawsys3(SYS_readlink, (long)vpath(p), (long)b, n));
 }
 
@@ -1575,7 +1740,7 @@ v8s_open(char *path, int flags, int mode)
 	struct v8fstyp *t;
 
 	kmemu_synth(path, v8root());
-	t = FSFOR(path);
+	t = FSFOR(path, (flags & 0x0200) ? V8P_MAKE : V8P_LOOK);
 	/*
 	 * O_CREAT (0x0200) takes the creator's path, for the reason creat(2)
 	 * does -- rootpath cannot resolve a name that does not exist yet, so
@@ -1609,7 +1774,7 @@ v8s_creat(char *path, int mode)
 	 * truncate the node.  The same shape as v8s_mknod passing its path
 	 * unresolved -- an unexercised rule cannot be seen to be incomplete.
 	 */
-	struct v8fstyp *t = FSFOR(path);
+	struct v8fstyp *t = FSFOR(path, V8P_MAKE);
 
 	return t->t_open(t->t_path(path, V8P_MAKE),
 	    0x0001 /*O_WRONLY*/ | 0x0200 /*O_CREAT*/ | 0x0400 /*O_TRUNC*/, mode);
@@ -1747,13 +1912,13 @@ int v8sys_pt_stat(char *rp, struct v8_stat *vs, int follow)
 
 int v8s_stat(char *p, struct v8_stat *vs)
 {
-	struct v8fstyp *t = FSFOR(p);
+	struct v8fstyp *t = FSFOR(p, V8P_LOOK);
 	return t->t_stat(t->t_path(p, V8P_LOOK), vs, 1);
 }
 
 int v8s_lstat(char *p, struct v8_stat *vs)
 {
-	struct v8fstyp *t = FSFOR(p);
+	struct v8fstyp *t = FSFOR(p, V8P_LOOK);
 	return t->t_stat(t->t_path(p, V8P_LOOK), vs, 0);
 }
 
@@ -1880,7 +2045,7 @@ int v8s_wait3(int *status, int options, void *rusage)
 int
 v8s_utime(char *p, long *tv)
 {
-	struct v8fstyp *t = FSFOR(p);
+	struct v8fstyp *t = FSFOR(p, V8P_LOOK);
 
 	/*
 	 * A SLOT SINCE §8a step 5f-b -- see v8s_chmod for why the MOUNTED()

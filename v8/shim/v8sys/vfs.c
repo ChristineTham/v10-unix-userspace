@@ -13,7 +13,9 @@
 #include "rawsys.h"
 
 extern int v8_errno;
+extern char *v8sys_getenv(const char *name);
 extern char *v8sys_rootpath(char *p, int mode);
+extern int v8sys_rootjailed(const char *q);
 extern void v8sys_dirinit(void);
 extern int v8sys_diropen(const char *path, int fd);
 extern int v8sys_pt_fstat(int fd, struct v8_stat *st);
@@ -129,12 +131,228 @@ typ(int i)
 	return (mounts[i].m_typ ? mounts[i].m_typ : kmemu_procfs());
 }
 
+/* ------------------------------------------------ the logical working directory */
+
+/*
+ * §8a step 5i.  A path is folded before anyone asks who owns it, because a
+ * relative name under a mount is not distinguishable from any other relative
+ * name -- and until this existed, v8s_chdir had to REFUSE a mounted directory,
+ * since a program that got inside one would find every relative name resolving
+ * against the host.
+ *
+ * WHY LEXICALLY, WHICH IS THE PART THAT LOOKS LIKE A SHORTCUT AND IS NOT.
+ * `..' at a mount root does not escape and the server cannot make it: measured
+ * against a real v8fsd, `ls /mnt/..' lists THE IMAGE ROOT AGAIN, which is V7
+ * being right -- a filesystem root's `..' points at itself, and on a real Unix
+ * it is namei's mount table that fixes the walk up when it crosses a mount.
+ * There is no kernel here and the image does not know it is mounted, so the
+ * client is the only thing that can do it.  Plan 9 -- whose protocol this is --
+ * folds `..' textually for the same reason, because a bind makes the kernel's
+ * answer meaningless too.
+ *
+ * WHAT IT COSTS, SAID OUT LOUD.  A lexical `..' disagrees with the kernel's
+ * when a component is a symlink to a directory somewhere else: A/B/.. is A
+ * here and B's target's parent there.  Two things bound it.  It applies only
+ * in a process with V8MOUNT set -- v8fs_logical is the identity otherwise, so
+ * every other suite in this tree runs on exactly the code it ran on before.
+ * And inside the jail there is nothing to disagree about: measured with
+ * `find rootfs -type l', the rootfs contains ZERO symlinks.
+ *
+ * THE cwd IS A STRING IN THE ENVIRONMENT, not a descriptor.  A descriptor
+ * would take a number sh(1) redirects onto and that /dev/fd/3 means the
+ * terminal by, and it could not name a directory on the image at all -- there
+ * is no host object to hold open.
+ */
+static char cwdbuf[V8_CWDMAX];
+static int  cwdstate;			/* 0 unread, 1 have one, -1 none */
+
+const char *
+v8fs_cwd(void)
+{
+	char *e;
+	int i;
+
+	if (cwdstate == 0) {
+		cwdstate = -1;
+		if ((e = v8sys_getenv("V8CWD")) != 0 && *e == '/') {
+			for (i = 0; e[i] && i < V8_CWDMAX - 1; i++)
+				cwdbuf[i] = e[i];
+			if (e[i] == '\0') { cwdbuf[i] = '\0'; cwdstate = 1; }
+		}
+	}
+	return (cwdstate > 0 ? cwdbuf : 0);
+}
+
+int
+v8fs_setcwd(const char *p)
+{
+	int i;
+
+	/*
+	 * NO MOUNT, NO LOGICAL cwd, and this line is what keeps §8a step 5i out
+	 * of every run that did not ask for it.  Without it v8s_chdir would
+	 * record one for any absolute path, v8s_execve would splice V8CWD into
+	 * the environment of EVERY V8 program in the world, and a mechanism that
+	 * changes no behaviour would still be visible in `env'.  The kernel's
+	 * own cwd is the whole answer in that world and it already moved.
+	 */
+	if (!v8fs_p9any()) return (0);
+	if (p == 0 || *p != '/') return (-1);
+	for (i = 0; p[i]; i++)
+		if (i >= V8_CWDMAX - 1) return (-1);
+	for (i = 0; (cwdbuf[i] = p[i]) != '\0'; i++)
+		;
+	cwdstate = 1;
+	return (0);
+}
+
+/*
+ * Where the basename starts, or -1 for "there is no component to keep" -- the
+ * root, and any path made only of slashes.  Trailing slashes are ignored when
+ * LOOKING for it and kept when COPYING it, so "/mnt/d/" folds to "/mnt/d/" and
+ * not to "/mnt/d": a trailing slash is the caller's assertion that the name is
+ * a directory, and dropping it would answer a question nobody asked.
+ */
+static int
+basestart(const char *s)
+{
+	int i, n, last = -1;
+
+	for (n = 0; s[n]; n++)
+		;
+	while (n > 1 && s[n - 1] == '/') n--;
+	for (i = 0; i < n; i++)
+		if (s[i] == '/') last = i;
+	if (last < 0 || last + 1 >= n) return (-1);
+	return (last + 1);
+}
+
+/*
+ * Fold in place, up to `lim'; anything from `keep' on is copied verbatim.
+ *
+ * IN PLACE IS SAFE AND IT IS WORTH SAYING WHY, because the loop looks like it
+ * could outrun itself.  Every component is written as "/" plus its own bytes,
+ * which is exactly what was read to reach it (a separator was consumed first),
+ * and `..' writes nothing at all -- so the write index never passes the read
+ * index.  The tail is the same argument one step on: folding "/a/b/" leaves
+ * r = 4 against keep = 5, and r can never REACH keep because the separator at
+ * keep-1 is consumed and not written.
+ */
+static void
+foldpath(char *s, int lim, int keep)
+{
+	int r = 0, i = 0, j;
+
+	while (i < lim) {
+		while (i < lim && s[i] == '/') i++;
+		if (i >= lim) break;
+		for (j = i; j < lim && s[j] != '/'; j++)
+			;
+		if (j - i == 1 && s[i] == '.') {
+			;				/* "." names where we are */
+		} else if (j - i == 2 && s[i] == '.' && s[i + 1] == '.') {
+			while (r > 0 && s[r - 1] != '/') r--;
+			if (r > 0) r--;			/* and the slash itself */
+		} else {
+			s[r++] = '/';
+			while (i < j) s[r++] = s[i++];
+		}
+		i = j;
+	}
+	if (keep >= 0) {
+		s[r++] = '/';
+		for (i = keep; s[i]; i++) s[r++] = s[i];
+	}
+	s[r] = '\0';
+	if (r == 0) { s[0] = '/'; s[1] = '\0'; }	/* "/.." is "/" */
+}
+
+/*
+ * FOLD AN ABSOLUTE PATH IN PLACE, unconditionally -- the half of v8fs_logical
+ * that has no scope test, exported because p9cl.c needs it before there is a
+ * mount to be in scope of.
+ *
+ * A FOLD INTRODUCES A NORMAL FORM, AND EVERYTHING COMPARED AGAINST A FOLDED
+ * PATH HAS TO BE IN IT.  vfs.c's static table is normalised by construction --
+ * it is written out by hand -- but V8MOUNT's prefix is user input, and this is
+ * how it joins.  Measured the hard way: $TMPDIR ends in a slash on a Mac, so
+ * tests/streams builds `$TMPDIR/streams.N/...' with a DOUBLE slash in it, and
+ * the first version of the fold normalised the path while leaving the prefix
+ * alone.  p9rel compares byte for byte, so the mount stopped claiming its own
+ * files and `cat' read the host directory the mount was covering -- silently,
+ * and in the one case written to prove containment.
+ */
+void
+v8fs_foldabs(char *s, int mode)
+{
+	int n, keep;
+
+	if (s == 0 || *s != '/') return;
+	for (n = 0; s[n]; n++)
+		;
+	keep = (mode == V8P_LOOK) ? -1 : basestart(s);
+	foldpath(s, keep < 0 ? n : keep, keep);
+}
+
+/*
+ * CALLING THIS ON ITS OWN ANSWER IS SAFE, AND IT HAPPENS: v8sys_rootpath folds
+ * once and then hands the result to v8fs_mounted and v8fs_typefor, which fold
+ * again.  Two properties make that an identity rather than a hazard.  The copy
+ * loop with p == buf is buf[i] = buf[i], because a folded path is absolute and
+ * the cwd branch is not taken; and folding an already-folded path removes
+ * nothing, since there is no `.', no `..' outside the kept tail and no
+ * duplicate slash left to remove.  Said out loud because this file's own
+ * lessons are about things that are safe by accident.
+ */
+char *
+v8fs_logical(char *p, int mode)
+{
+	static char buf[V8_CWDMAX];
+	const char *cwd;
+	int n = 0, i, keep;
+
+	if (p == 0) return (p);
+	/*
+	 * NO MOUNT, NO FOLD.  This is the scope of the whole mechanism and it
+	 * is one branch: with V8MOUNT unset there is nothing a lexical reading
+	 * of `..' could be more correct about, and every path-taking syscall in
+	 * this shim goes through here.
+	 */
+	if (!v8fs_p9any()) return (p);
+
+	if (*p != '/') {
+		/*
+		 * A RELATIVE NAME WITH NO LOGICAL cwd IS THE HOST'S BUSINESS,
+		 * and handing it back unchanged is what keeps the two agreeing:
+		 * v8s_chdir really chdirs whenever the target is a host path,
+		 * so until something enters a mount the kernel's own cwd is the
+		 * only answer and it is the right one.
+		 */
+		if ((cwd = v8fs_cwd()) == 0) return (p);
+		for (i = 0; cwd[i]; i++) {
+			if (n >= V8_CWDMAX - 2) return (p);
+			buf[n++] = cwd[i];
+		}
+		if (n == 0 || buf[n - 1] != '/') buf[n++] = '/';
+	}
+	for (i = 0; p[i]; i++) {
+		if (n >= V8_CWDMAX - 1) return (p);
+		buf[n++] = p[i];
+	}
+	buf[n] = '\0';
+
+	keep = (mode == V8P_LOOK) ? -1 : basestart(buf);
+	foldpath(buf, keep < 0 ? n : keep, keep);
+	return (buf);
+}
+
 struct v8fstyp *
-v8fs_typefor(const char *p)
+v8fs_typefor(const char *p, int mode)
 {
 	struct v8fstyp *t;
 	int i, k;
 
+	p = v8fs_logical((char *)p, mode);
 	if (p == 0 || *p != '/') return (0);
 	/*
 	 * A v8fs MOUNT IS ASKED FIRST, and the order is mount semantics rather
@@ -264,9 +482,17 @@ pt_path(char *p, int mode)
 {
 	char *q;
 
-	if (mode != V8P_MAKE) return v8sys_rootpath(p, V8P_LOOK);
-	q = v8sys_rootpath(p, V8P_LOOK);
-	if (q != p) return (q);
+	/*
+	 * V8P_ENTRY for the first call and not V8P_LOOK -- §8a step 5i, and
+	 * mkpath() in syscall.c makes the same correction for the same reason:
+	 * what is wanted here is LOOK's UNION rule with MAKE's FOLD, and that
+	 * is exactly what V8P_ENTRY is.  Folding one call's path whole and the
+	 * other's all-but-the-last would ask "does it exist" about a different
+	 * name from the one being created.
+	 */
+	if (mode != V8P_MAKE) return v8sys_rootpath(p, mode);
+	q = v8sys_rootpath(p, V8P_ENTRY);
+	if (v8sys_rootjailed(q)) return (q);
 	return v8sys_rootpath(p, V8P_MAKE);
 }
 

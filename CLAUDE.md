@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2140 cases, 2139 on a host whose $TMPDIR
+make test             # all 17 suites (2159 cases, 2158 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -613,7 +613,7 @@ because there is nothing to inherit.
   the clunk "politeness". The bug was inside the sentence explaining why it was
   unnecessary.
 - **A DESCRIPTOR TABLE IN PROCESS MEMORY BECAME A CACHE, AND NULL NOW MEANS
-  *UNEXAMINED*.** `vfs.c:167` had recorded for a year that the table dies when
+  *UNEXAMINED*.** `vfs.c:401` had recorded for a year that the table dies when
   a program replaces itself and that this "is fine today and will not be
   later"; later arrived. A server-backed descriptor reading as passthrough gets
   a raw `read(2)` on a 9P socket, which **hangs** — the server sends nothing
@@ -659,7 +659,7 @@ because there is nothing to inherit.
   reads it, **`chdir("..")`s**, repeats, and chdirs back — every level is
   another chdir to intercept, and its loop matches `d_ino` against `stat(".")`,
   which puts the folded-inode machinery on the same comparison. Plus the cwd
-  must survive `exec`, which is `vfs.c:167`'s lesson: it has to live in the
+  must survive `exec`, which is `vfs.c:401`'s lesson: it has to live in the
   ENVIRONMENT like `V8MOUNT`, and then two things there have to agree.
 
   **§8a step 5f TURNED FOUR OF THEM INTO SLOTS AND THE COUNT WAS NEVER ELEVEN.**
@@ -672,6 +672,14 @@ because there is nothing to inherit.
   `utime` are one `Twstat` away and deferred to keep the step reviewable;
   `link` and `symlink` have no 9P2000 message and a V7 image holds no symlink
   anyway; `mknod` for a *device* is meaningless on an image no kernel mounts.
+
+  **AND `chdir` IS NOT A GAP EITHER SINCE §8a step 5i** — the paragraph above
+  is left standing because its *costing* is what the step turned out to owe,
+  every clause of it, and it is the rare estimate this file records that was
+  too small rather than too large. Read it as a bill that was paid: the fold is
+  lexical, `getwd` was the hard consumer, and the cwd does live in the
+  environment. What it did not foresee is that the fold needs a MODE, which is
+  the entry at the end of the mutation-rules section.
 - **AND THE CASE FOR THAT GUARD PASSED FOR THE WRONG REASON.** `chmod 777
   /mnt/hello` exits 1 whether or not the guard exists, because this machine has
   no `/mnt` and the host's `chmod` fails too — the guard and the absence of the
@@ -1064,7 +1072,7 @@ instead of auditing the set**, which is exactly how the other seven survived
 it.
 
 **AND 9P's STAT CARRIES NO LINK COUNT, so the obvious case would have asserted
-a constant.** `p9cl.c:1158` sets `st_nlink = 1` for every file on every mount —
+a constant.** `p9cl.c:1322` sets `st_nlink = 1` for every file on every mount —
 9P2000 has no such field, `.u` and `.L` added one — so `ls -l` can never show
 a hard link. The observable is `ls -i`: a qid path **is** `i_number` off the
 disk, so two names printing one number is the disk saying they are one file.
@@ -1191,6 +1199,82 @@ CODE.** The existing entries cover the restore side; these are new:
   stale; re-derive what it discriminates and **measure that** (revert the
   dispatch to `rawsys2(SYS_chmod, vpath(p), m)` and it fires). Only the comment
   was wrong.
+
+**AND §8a step 5i MADE A MOUNT A PLACE A PROGRAM CAN *BE*, WHICH IS ONE
+FUNCTION AND FOUR FINDINGS THAT ARE NOT ABOUT IT.** `cd /lib` and then
+`cat g`, with `pwd` working inside a mount and `src/libc/gen/getwd.c`
+**unmodified**. `v8fs_logical()` folds a path against a tracked working
+directory and is hooked in at three places — `v8fs_typefor` for dispatch,
+`v8sys_rootpath` for the passthrough type, `p9_t_path` for the server-backed
+one — so all 39 path-taking syscalls inherit it unedited, and it is the
+IDENTITY with no V8MOUNT set, which is what kept the other sixteen suites at
+exactly their old numbers. `shim/kern/NOTES.md` has the whole account. Six
+things generalise:
+
+- **THE MODE HAD TO BE THREADED, AND "FOLD ALL BUT THE LAST EVERYWHERE" IS THE
+  COMPROMISE THAT LOOKS RIGHT AND IS NOT.** A first attempt folded every path
+  whole, which destroys the one thing 5h's `Tunlink` exists to name — `..` as
+  an ENTRY, which `rmdir(1)`'s three unlinks and `mv(1)`'s reparenting are made
+  of. `unlink("/mnt/d/..")` folded whole is `unlink("/mnt")`: 13 failures and
+  `fsck` reporting FILE SYSTEM WAS MODIFIED, so it was backed out rather than
+  shipped. But the obvious fix is wrong too, because `getwd.c:41-45` does
+  `opendir("..")` and `chdir("..")` **in one loop and requires them to agree** —
+  fold all but the last and one reaches the image root while the other reaches
+  the jail root. `V8P_ENTRY` is the third value, and `V8P_MAKE` gets its fold
+  for free: "key on the parent" and "the last component is a name rather than
+  an object" are the same statement. **The DISPATCH needs the mode as much as
+  the resolution** — a fully folded `/mnt/..` is the jail root and dispatches
+  to passthrough, so the unlink would ask the host to remove the jail's own
+  root.
+- **A FOLD INTRODUCES A NORMAL FORM, AND EVERYTHING COMPARED AGAINST A FOLDED
+  PATH HAS TO BE IN IT.** `vfs.c`'s static table is normalised because it is
+  written out by hand; V8MOUNT's prefix is user input and was not. `$TMPDIR`
+  ends in a slash on a Mac, so `tests/streams`' own V8MOUNT carries a **double
+  slash** — and normalising one side alone made the mount stop claiming its own
+  files, so `cat` read the host directory the mount was covering, in the case
+  written to prove it could not. The bare-`/` refusal also had to move *after*
+  the fold, because the fold is what can produce one: `V8MOUNT=/mnt/..=sock`
+  reads as a directory name and normalises to the root.
+- **POINTER IDENTITY STOPPED MEANING "RESOLVED", AND THAT WAS AN ESCAPE.**
+  Three callers asked "did the rootfs claim this name" with `q != p`, which
+  worked only because a `rootpath()` that did not redirect handed back the very
+  pointer it was given. With a fold running first it hands back the fold
+  buffer, so the test is **true for every path in a mounted process** —
+  `pt_path` stops reaching `V8P_MAKE` and `creat("/etc/./x")` inside the jail
+  writes to the Mac. `v8sys_rootjailed(q)` asks it against the named buffer,
+  which is exact rather than a flag: the function returns that object when and
+  only when it redirected, so nothing can go stale between the call and the
+  test.
+- **MOVING A BUFFER TO FILE SCOPE SILENTLY CHANGES `sizeof`.** `static char
+  buf[1024]` inside `v8sys_rootpath` became `char *buf = rootbuf`, and
+  `sizeof buf` went 1024 → **8**: the jail root was truncated to seven
+  characters and every V8 binary lost its jail. It failed loudly — `cc` could
+  not find `/usr/bin/clang` — and that is luck, not design.
+- **getpeername(2) REPORTS THE SERVER'S BOUND NAME, NOT THE CLIENT'S, AND THE
+  FAILURE IS SILENT DATA LOSS.** Measured both ways round: a client connecting
+  to `/private/.../psock` and one connecting to `psock` **both** get `psock`
+  back, because a Unix socket's peer address is whatever the listener passed to
+  `bind(2)`. So absolutising the client's socket path — which step 5i must do,
+  since `getwd` chdirs and a relative name stops resolving mid-walk — cannot
+  also change what `ispeer()` compares. The mount keeps two spellings. Get it
+  wrong and a 9P socket reads as passthrough, so `echo x > /lib/f` creates the
+  file, writes the bytes **into the socket**, and exits 0 leaving it empty.
+  There is no identity to fall back on: measured, `fstat` on a connected Unix
+  socket reports the socket object (dev −1), not the filesystem node, so **the
+  two ends must spell the socket the same way**.
+- **AND THE MUTATION THAT DID NOT FIRE FOUND A THIRD KIND OF VACUOUS CASE: THE
+  INSTRUMENT WAS POINTED AT THE WRONG PROCESS.** "No V8CWD in a process with no
+  mount" survived removing the guard it was written for, and neither recorded
+  cause applied — the mutation was strong and the code was live. A shell
+  expands `$V8CWD` out of the table it built from its OWN environment at
+  startup, *before* the cd, so `sh -c 'cd /etc; echo $V8CWD'` prints nothing
+  whatever the shim does. The splice happens in the child of an **exec**, so an
+  exec is what has to be observed; the case nests a second shell and the
+  mutation then fires on exactly it.
+
+  **One mutation artefact worth knowing before the next run**: a mutation that
+  *inserts* a line rather than replacing one shifts every citation below it, so
+  `cites.awk` goes red. That is the sweep working, not a finding.
 
 ## Architecture: three layers, three different rules
 
@@ -1396,7 +1480,7 @@ function "because folded values are written into files
 (`shim/libkmemu/NOTES.md:247` — `e_tdev` in the manufactured `/etc/utmp`) that
 another process reads", and used that to rule out the one easy fix for the
 `pwd` collision. Every part of it is false: the function has **three** call
-sites (`dir.c:467`, `dir.c:469`, `syscall.c:1676`) and none is in `libkmemu` —
+sites (`dir.c:467`, `dir.c:469`, `syscall.c:1841`) and none is in `libkmemu` —
 the two `grep` hits there are comments; `NOTES.md:247` is about `u_ttyino` in
 `/proc`'s u-area, says it is left zero, and calls filling it hypothetical; and
 V8's `struct utmp` is `{ut_line[8], ut_name[8], ut_time}`, 24 bytes, with no

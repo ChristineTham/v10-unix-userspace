@@ -47,6 +47,7 @@
 
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <fcntl.h>
 #include <errno.h>
 
 #include "v8sys.h"
@@ -121,12 +122,111 @@ extern int   v8sys_diradopt(int fd, char *recs, long nbytes);
  */
 #define P9MNT_PFX	256
 
+/*
+ * TWO SPELLINGS OF ONE SOCKET, AND THEY ARE TWO BECAUSE THEY ANSWER TO
+ * DIFFERENT ENDS OF THE WIRE.  m_dial is what connect(2) is handed; m_sock is
+ * what V8MOUNT literally said, which is the only form a PEER can report -- see
+ * p9abs and ispeer.  They are the same string unless absolutising helped.
+ */
 static struct p9mnt {
 	int	m_state;		/* 0 unread, 1 valid, -1 none */
 	char	m_pfx[P9MNT_PFX];	/* "/mnt", never with a trailing slash */
 	int	m_pfxlen;
 	char	m_sock[sizeof(((struct sockaddr_un *)0)->sun_path)];
+	char	m_dial[sizeof(((struct sockaddr_un *)0)->sun_path)];
 } mnt;
+
+/*
+ * A RELATIVE SOCKET PATH IS A NAME IN THE DIRECTORY THE PROCESS HAPPENS TO BE
+ * STANDING IN, AND §8a step 5i MAKES THE PROCESS MOVE.
+ *
+ * connect(2) reads sun_path exactly the way open(2) reads a filename, so
+ * `V8MOUNT=/mnt=csock' resolves against the cwd AT CONNECT TIME -- and every
+ * open(2) on the mount dials again.  That was stable for as long as nothing
+ * could chdir into a mount; from step 5i, getwd(3)'s walk chdirs at every
+ * level (getwd.c:45) and the socket vanishes mid-pwd.  It cost two false
+ * diagnoses of a test harness before it was understood, both of which read as
+ * the mount silently not existing, which is what a mount whose socket cannot
+ * be reached looks like.
+ *
+ * SO THE PATH IS ABSOLUTISED ONCE, HERE, at the first read of V8MOUNT --
+ * before anything in the process has had a chance to chdir.
+ *
+ * AND OPPORTUNISTICALLY, WHICH IS THE HALF THAT NEEDED MEASURING.  sun_path is
+ * 104 bytes and the absolute form of a path is never shorter than the relative
+ * one, so absolutising can push a socket that fits out of the field -- which
+ * is why tests/streams binds its servers relative in the first place.  Whether
+ * that bites is a property of the HOST: $TMPDIR is 49 characters on this Mac
+ * and the suite's own socket comes to 74, so it fits here and every 9P section
+ * runs absolutised; a longer $TMPDIR would not.  Refusing the mount in that
+ * case would turn a working configuration into a missing one, so a path that
+ * will not fit KEEPS ITS RELATIVE FORM: the change is monotone, it can only
+ * make more mounts survive a chdir and never fewer.  What such a mount does
+ * not get is step 5i, and the deal is stated rather than hidden -- a suite
+ * that wants to chdir into a mount has to put its socket somewhere short.
+ *
+ * F_GETPATH RATHER THAN getcwd(2).  There is no getcwd syscall to call: Darwin
+ * retired number 326 and the SDK's <sys/syscall.h> now carries a bare comment
+ * where __getcwd used to be, so the documented route is a descriptor's own
+ * path.  fcntl(2) specifies the buffer as MAXPATHLEN, which is why this one is
+ * 1024 and not sun_path-sized -- the answer has to be measured before it can
+ * be judged too long.  The descriptor is opened and closed inside this
+ * function, so it never becomes part of the program's namespace; a dirfd kept
+ * for the life of the process would take a number that sh(1) redirects onto
+ * and that /dev/fd/3 means the terminal by.
+ *
+ * AND IT WRITES A SECOND FIELD RATHER THAN THE ONE, BECAUSE getpeername(2)
+ * REPORTS THE SERVER'S BOUND NAME AND NOT THE CLIENT'S.  Measured, both ways
+ * round: a client that connects to `/private/.../psock' and a client that
+ * connects to `psock' BOTH get `psock' back from getpeername, because a Unix
+ * socket's peer address is whatever the listener passed to bind(2).  So
+ * ispeer() cannot be compared against an absolutised string, and the first
+ * draft of this change would have broken descriptor adoption -- whose failure
+ * mode is a raw read(2) on a 9P socket, i.e. a HANG.
+ *
+ * The pair was always coupled by accident: the client's V8MOUNT spelling and
+ * the server's bind() spelling are two independent choices that tests/streams
+ * happens to make identically.  Keeping both forms says so, and makes the
+ * cross-spelled cases work rather than merely not-break -- a server bound
+ * absolute is now reachable from a relative V8MOUNT, which it was not.
+ */
+#define P9MNT_HOSTPATH	1024		/* fcntl(2): F_GETPATH needs MAXPATHLEN */
+
+/*
+ * There is no failure here, only "could not improve it": every early return
+ * leaves `dial' holding the copy of `sock' made on entry, which is the
+ * configuration that worked before this function existed.
+ */
+static void
+p9abs(const char *sock, char *dial, int cap)
+{
+	char cwd[P9MNT_HOSTPATH];
+	char out[P9MNT_HOSTPATH];
+	long fd;
+	int i, n, got;
+
+	for (i = 0; i < cap && (dial[i] = sock[i]) != '\0'; i++)
+		;
+	if (sock[0] == '/') return;			/* already absolute */
+
+	if ((fd = rawsys3(SYS_open, (long)".", O_RDONLY, 0)) < 0) return;
+	got = rawsys3(SYS_fcntl, fd, F_GETPATH, (long)cwd) == 0;
+	rawsys1(SYS_close, fd);
+	if (!got || cwd[0] != '/') return;
+
+	for (n = 0; cwd[n]; n++) {
+		if (n >= P9MNT_HOSTPATH - 2) return;
+		out[n] = cwd[n];
+	}
+	if (n > 1) out[n++] = '/';			/* "/" already ends in one */
+	for (i = 0; sock[i]; i++) {
+		if (n >= P9MNT_HOSTPATH - 1) return;
+		out[n++] = sock[i];
+	}
+	out[n] = '\0';
+	if (n >= cap) return;				/* keeps the relative form */
+	for (i = 0; i <= n; i++) dial[i] = out[i];
+}
 
 static struct p9mnt *
 p9mount(void)
@@ -145,6 +245,32 @@ p9mount(void)
 		mnt.m_pfx[i] = e[i];
 	}
 	if (e[i] != '=' || i == 0 || mnt.m_pfx[0] != '/') return (0);
+	eq = i;					/* where the '=' actually is */
+	mnt.m_pfx[i] = '\0';
+	/*
+	 * THE PREFIX IS NORMALISED, NOT MERELY TRIMMED -- §8a step 5i, and it
+	 * replaces a loop that stripped trailing slashes only.
+	 *
+	 * A fold introduces a normal form and both sides of a comparison have to
+	 * be in it.  Every path p9rel is asked about has been through
+	 * v8fs_logical by then, so `//', `.' and `..' are already gone from it;
+	 * a prefix that still carries them can never match.  Measured, and it
+	 * was not a hypothetical: $TMPDIR ends in a slash on a Mac, so
+	 * tests/streams' own V8MOUNT contains a DOUBLE SLASH, and normalising
+	 * one side alone made the mount stop claiming its own files -- `cat'
+	 * read the host directory the mount was covering, in the case written to
+	 * prove that it could not.
+	 *
+	 * It subsumes the trailing-slash strip, which was here for the reason
+	 * the fold exists: vfs.c's static table carries a trailing slash and
+	 * pays for it in a special case at the bottom of its match loop, because
+	 * "/etc" and "/etc/" naming two different worlds is a bug that file
+	 * records having had.  One spelling, arrived at by one rule.
+	 */
+	v8fs_foldabs(mnt.m_pfx, V8P_LOOK);
+	for (i = 0; mnt.m_pfx[i]; i++)
+		;
+	mnt.m_pfxlen = i;
 	/*
 	 * A BARE "/" IS REFUSED, and vfs.c used to carry a comment saying it
 	 * would "shadow /bin and the whole world with it".  Measured: it does
@@ -155,19 +281,13 @@ p9mount(void)
 	 * half-mount, "/" from the server and "/bin" from the jail, which is
 	 * worse than the foot-gun the comment warned about and was described
 	 * nowhere.  Refusing it is one line; making it work is a namespace.
+	 *
+	 * AFTER THE FOLD RATHER THAN BEFORE IT, because the fold is what can
+	 * PRODUCE a bare "/" from something that did not look like one:
+	 * V8MOUNT=/mnt/..=sock reads as a directory name and normalises to the
+	 * root.  Testing the written form would have let that through.
 	 */
-	if (i == 1) return (0);
-	/*
-	 * A TRAILING SLASH IS STRIPPED so that the prefix is one spelling.
-	 * vfs.c's static table carries the slash and pays for it in a special
-	 * case at the bottom of its match loop -- "/etc" and "/etc/" naming two
-	 * different worlds is a bug that file records having had.  Storing the
-	 * bare name and testing the boundary explicitly below says it once.
-	 */
-	eq = i;					/* where the '=' actually is */
-	while (i > 1 && mnt.m_pfx[i - 1] == '/') i--;
-	mnt.m_pfx[i] = '\0';
-	mnt.m_pfxlen = i;
+	if (mnt.m_pfxlen <= 1) return (0);
 	/*
 	 * `eq' AND NOT `i', BECAUSE THE STRIP LOOP MOVED i.  The scan below
 	 * used to resume at i+1, which is the '=' only when nothing was
@@ -186,6 +306,7 @@ p9mount(void)
 	}
 	mnt.m_sock[j] = '\0';
 	if (j == 0) return (0);
+	p9abs(mnt.m_sock, mnt.m_dial, (int)sizeof mnt.m_dial);
 
 	mnt.m_state = 1;
 	return (&mnt);
@@ -225,15 +346,33 @@ v8fs_p9for(const char *p)
 }
 
 /*
+ * IS THERE A MOUNT AT ALL -- §8a step 5i, and it is a THIRD question rather
+ * than a weaker form of the two above.  v8fs_logical needs it before it has an
+ * absolute path to test any prefix against, which is exactly the state a
+ * relative name arrives in.  Answering it with v8fs_p9for(p) would make the
+ * fold depend on the name being folded.
+ */
+int
+v8fs_p9any(void)
+{
+	return (p9mount() != 0);
+}
+
+/*
  * The same question, for the syscalls that have no slot in struct v8fstyp.
  * A separate name rather than a null test on the one above, because the two
  * callers want different things and conflating them is how a guard ends up
  * being read as a dispatch.
+ *
+ * IT TAKES A MODE FROM §8a step 5i, for the reason vfs.h gives: with a logical
+ * cwd, `unlink("d/..")' is a mounted path and the raw string cannot say so,
+ * and folding it the READER's way would make the guard answer about the parent
+ * instead of about the entry.
  */
 int
-v8fs_mounted(const char *p)
+v8fs_mounted(const char *p, int mode)
 {
-	return (v8fs_p9for(p) != 0);
+	return (v8fs_p9for(v8fs_logical((char *)p, mode)) != 0);
 }
 
 /* -------------------------------------------------------- the transaction */
@@ -415,6 +554,19 @@ begin(struct p9buf *b, int type)
  * other Unix socket -- there are none today, and that is exactly the kind of
  * thing that stops being true quietly -- is not mistaken for a mount.
  */
+/* Bounded string compare; no libc here, and sun_path need not be terminated. */
+static int
+samepath(const char *a, const char *b, int cap)
+{
+	int i;
+
+	for (i = 0; i < cap; i++) {
+		if (a[i] != b[i]) return (0);
+		if (a[i] == '\0') return (1);
+	}
+	return (0);
+}
+
 static int
 ispeer(int fd, struct p9mnt *m)
 {
@@ -435,11 +587,17 @@ ispeer(int fd, struct p9mnt *m)
 		return (0);
 	if (len <= (int)(sizeof sa - sizeof sa.sun_path)) return (0);
 	if (sa.sun_family != AF_UNIX) return (0);
-	for (i = 0; i < (int)sizeof sa.sun_path; i++) {
-		if (m->m_sock[i] != sa.sun_path[i]) return (0);
-		if (m->m_sock[i] == '\0') return (1);
-	}
-	return (0);
+	/*
+	 * EITHER SPELLING, and the two are not interchangeable -- see p9abs.
+	 * The peer reports the name the SERVER bound, so m_sock (V8MOUNT's own
+	 * words) is the one that matches when both ends spell it relative, and
+	 * m_dial (absolutised) is the one that matches a server bound absolute.
+	 * They are the same string whenever absolutising did not apply, so this
+	 * is one comparison in the ordinary case and never a looser test: both
+	 * forms name the same socket by construction.
+	 */
+	if (samepath(m->m_sock, sa.sun_path, (int)sizeof sa.sun_path)) return (1);
+	return (samepath(m->m_dial, sa.sun_path, (int)sizeof sa.sun_path));
 }
 
 /*
@@ -470,7 +628,8 @@ p9dial(struct p9mnt *m)
 
 	for (i = 0; i < (int)sizeof sa; i++) ((char *)&sa)[i] = 0;
 	sa.sun_family = AF_UNIX;
-	for (i = 0; m->m_sock[i]; i++) sa.sun_path[i] = m->m_sock[i];
+	/* m_dial, not m_sock: this is the end that talks to the kernel. */
+	for (i = 0; m->m_dial[i]; i++) sa.sun_path[i] = m->m_dial[i];
 	if (rawsys3(SYS_connect, fd, (long)&sa, (long)sizeof sa) < 0) {
 		/*
 		 * A SERVER THAT IS NOT RUNNING IS ENOENT ON THE FILE, not
@@ -829,21 +988,26 @@ p9create(int fd, const char *name, p9_u32 perm, int om)
 /* --------------------------------------------------------------- the type */
 
 /*
- * t_path: identity.  There is no host path to resolve -- running the name
- * through rootpath() would ask whether the JAIL has a file of that name, which
- * is a different question with a different answer, and for a name under a
- * mount the honest answer is that only the server knows.
+ * t_path: the fold, and NOTHING ELSE.  There is no host path to resolve --
+ * running the name through rootpath() would ask whether the JAIL has a file of
+ * that name, which is a different question with a different answer, and for a
+ * name under a mount the honest answer is that only the server knows.
  *
- * V8P_MAKE is accepted and ignored for the same reason the /dev/fd type
- * ignores it: the parent-exists rule it expresses is the host filesystem's
- * way of answering a question about a name that does not exist yet, and here
- * that question is Twalk's to answer.
+ * The parent-exists half of V8P_MAKE is still ignored, for the same reason the
+ * /dev/fd type ignores it: that rule is the host filesystem's way of answering
+ * about a name which does not exist yet, and here the question is Twalk's.
+ * What the mode DOES carry now is which components may be folded away, which
+ * is a namespace fact and belongs to every type.
+ *
+ * IT WAS THE IDENTITY UNTIL §8a step 5i, and it had to stop being one the
+ * moment a program could stand inside a mount: `cat hello' with the cwd at
+ * /mnt arrives here as "hello", and p9rel would fail to match the prefix and
+ * report ENOENT about a file that is there.
  */
 static char *
 p9_t_path(char *p, int mode)
 {
-	(void)mode;
-	return (p);
+	return (v8fs_logical(p, mode));
 }
 
 static int

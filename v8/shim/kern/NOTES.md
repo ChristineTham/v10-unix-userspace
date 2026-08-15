@@ -155,7 +155,7 @@ the loudest half of the problem into the quietest half of the problem.
 
 ### And the second reason is independent of all of it
 
-`shim/v8sys/vfs.c:167` already said it, before any of this was measured: the
+`shim/v8sys/vfs.c:401` already said it, before any of this was measured: the
 descriptor-type table "does not survive a program replacing itself". A v8fs
 descriptor is an inode pointer and an offset in process memory, so after `exec`
 the integer means nothing — and `cat /mnt/a > /mnt/b` needs `sh` to open the
@@ -1427,7 +1427,7 @@ the other seven survived it.
 
 ### And 9P's stat carries no link count
 
-`p9cl.c:1158` sets `st_nlink = 1` for every file on every mount, because
+`p9cl.c:1322` sets `st_nlink = 1` for every file on every mount, because
 9P2000's stat has no such field (`.u` and `.L` added one). So `ls -l` can never
 show a hard link, and the obvious case for this step — link count goes to 2 —
 would have asserted a constant. The observable is `ls -i`: a qid path **is**
@@ -1551,3 +1551,235 @@ directory, so call 1 fails there. That is the host's answer, not this port's.
 `streams` 638 → 638 — four cases inverted rather than added, plus one expected
 value corrected. Four mutations, four fire, and M2 fires on **exactly one
 case**, which is what says that case is aimed rather than merely sensitive.
+
+## §8a step 5i — chdir into a mount, and the fold that makes it possible
+
+A mount was a place a program could NAME. This is the step that makes it a
+place a program can BE: `cd /lib`, then `cat g`, with the shim resolving the
+relative name against a working directory it tracks itself. `pwd` works inside
+a mount with `src/libc/gen/getwd.c` **unmodified**.
+
+The mechanism is one function, `v8fs_logical()`, hooked in at three places —
+`v8fs_typefor` for dispatch, `v8sys_rootpath` for the passthrough type's
+resolution, and `p9_t_path` for the server-backed type's. All 39 path-taking
+syscalls inherit it without being edited.
+
+### The fold is lexical, and that is forced rather than convenient
+
+`..` at a mount root does not escape and the server cannot make it. Measured
+against a real v8fsd before any of this: `ls /mnt/sub/..` correctly lists the
+mount root and `ls /mnt/..` lists **the image root again**. That is V7 being
+right — a filesystem root's `..` points at itself — and on a real Unix it is
+`namei`'s mount table that fixes a walk crossing a mount upward. There is no
+kernel here and the image does not know it is mounted, so the client is the
+only thing that can do it. Plan 9, whose protocol this is, folds `..`
+textually for the same reason: a bind makes the kernel's answer meaningless
+too.
+
+What it costs is said out loud rather than hoped away. A lexical `..`
+disagrees with the kernel's when a component is a symlink to a directory
+elsewhere. Two things bound it: `v8fs_logical` is the **identity** whenever no
+V8MOUNT is configured, so the sixteen other suites run on exactly the code they
+ran on before; and the rootfs contains **zero symlinks**, measured with `find
+rootfs -type l`.
+
+### V8P_ENTRY — this is the step's real design problem
+
+The first attempt at 5i folded every path whole and was backed out. Folding
+the LAST component destroys the one thing 5h's `Tunlink` exists to name: `..`
+as an ENTRY, which is what `rmdir(1)`'s three unlinks and `mv(1)`'s
+reparenting are made of. `unlink("/mnt/d/..")` folded whole is
+`unlink("/mnt")`. Measured: 13 streams failures, and fsck reporting
+`FILE SYSTEM WAS MODIFIED`.
+
+**"Fold all but the last everywhere" is the obvious compromise and it is
+wrong.** It makes `opendir("..")` at a mount root reach the image root while
+`chdir("..")` reaches the jail root — and `getwd.c:41-45` does both in one
+loop and requires them to agree.
+
+So the mode is threaded rather than inferred, and the split is exactly the one
+`dotlink()`'s two callers already draw:
+
+| mode | question | fold |
+|---|---|---|
+| `V8P_LOOK` | reach an object | whole |
+| `V8P_ENTRY` | name an entry that exists | all but the last |
+| `V8P_MAKE` | name an entry that does not | all but the last, plus the parent rule |
+
+`V8P_MAKE` gets `V8P_ENTRY`'s fold for free, because "key on the parent" and
+"the last component is a name rather than an object" are the same statement.
+
+**And the dispatch needs the mode as much as the resolution does.** A fully
+folded `/mnt/..` is the jail root and dispatches to *passthrough* — so an
+unlink meaning "remove the `..` entry of a mounted image" would instead ask the
+host to remove the jail's own root. `FSFOR` takes a mode now, and every call
+site spells it the same as the `t_path` beside it.
+
+### Pointer identity stopped meaning "resolved", and that was an escape
+
+Three callers asked "did the rootfs claim this name" by comparing
+`rootpath()`'s answer against its argument — `pt_path` and `mkpath`, to decide
+whether to fall through to the parent rule, and `v8s_execve`, to decide whether
+a path left the jail. That worked because a `rootpath()` that did not redirect
+handed back the very pointer it was given. With the fold running first it hands
+back a pointer into the fold buffer, so `q != p` is **true for every path in a
+mounted process** — `pt_path` would stop reaching `V8P_MAKE` and
+`creat("/etc/./x")` inside the jail would write to the Mac.
+
+`v8sys_rootjailed(q)` asks the question directly, against the named buffer.
+Exact rather than a flag: `rootpath` returns that object when and only when it
+redirected, so there is no state to go stale between the call and the test.
+
+### A fold introduces a NORMAL FORM, and everything compared against a folded path has to be in it
+
+`vfs.c`'s static mount table is normalised by construction — it is written out
+by hand. `V8MOUNT`'s prefix is user input and was not. `$TMPDIR` ends in a
+slash on a Mac, so tests/streams' own `V8MOUNT` carries a **double slash**, and
+normalising one side alone made the mount stop claiming its own files: `cat`
+read the host directory the mount was covering, in the case written to prove
+that it could not. `p9mount()` runs the prefix through `v8fs_foldabs` now, which
+also subsumes the trailing-slash strip that was there for the same reason.
+
+The bare-`/` refusal moved **after** the fold, because the fold is what can
+produce a bare `/` from something that did not look like one:
+`V8MOUNT=/mnt/..=sock` reads as a directory name and normalises to the root.
+
+### The socket path stops resolving the moment chdir does
+
+`connect(2)` reads `sun_path` the way `open(2)` reads a filename, and every
+`open(2)` on the mount dials again. A relative `V8MOUNT` socket was stable for
+exactly as long as nothing could chdir into a mount; from this step `getwd`
+chdirs at every level and the socket vanishes mid-`pwd`. It cost two false
+diagnoses of a test harness before it was understood, both of which read as the
+mount silently not existing.
+
+`p9abs()` absolutises at the first read of `V8MOUNT`, before anything can
+chdir, using `fcntl(F_GETPATH)` on a descriptor for `.` — there is no getcwd
+syscall to call, Darwin retired number 326 and the SDK header now carries a
+bare comment where `__getcwd` used to be. The descriptor is opened and closed
+inside the function, so it never becomes part of the program's namespace; a
+dirfd kept for the life of the process would take a number `sh(1)` redirects
+onto and that `/dev/fd/3` means the terminal by.
+
+**Opportunistically**, which is the half that needed measuring. `sun_path` is
+104 bytes and an absolute path is never shorter, so absolutising can push a
+socket that fits out of the field. A path that will not fit KEEPS ITS RELATIVE
+FORM: the change is monotone. Whether it bites is a property of the host —
+`$TMPDIR` is 49 characters on this Mac and the suite's socket comes to 74, so it
+fits here and every 9P section runs absolutised.
+
+### getpeername reports the SERVER's bound name, not the client's
+
+Measured, both ways round: a client connecting to `/private/.../psock` and a
+client connecting to `psock` **both** get `psock` back, because a Unix socket's
+peer address is whatever the listener passed to `bind(2)`. So `ispeer()` cannot
+be compared against an absolutised string, and the first draft of `p9abs` would
+have broken descriptor adoption for the whole suite.
+
+The mount keeps **two spellings**: `m_dial`, what `connect` is handed, and
+`m_sock`, what V8MOUNT literally said — the only form a peer can report. They
+were always two independent choices that tests/streams happens to make
+identically.
+
+**The failure mode is silent data loss, not a hang.** A 9P socket that reads as
+passthrough gets a raw `write(2)`, so `echo x > /lib/f` creates the file, writes
+the bytes INTO THE SOCKET, and exits 0 leaving it empty. Found the hard way,
+with the first draft of the 5i test section configured absolute against a
+relative bind. There is no spelling-independent identity to fall back on:
+measured, `fstat` on a connected Unix socket reports the socket object (dev −1),
+not the filesystem node, so the name is all there is. **The two ends must spell
+the socket the same way.**
+
+### The cwd crosses exec in the environment, and `environ` is not enough
+
+A table in process memory dies when a program replaces its image, and `sh(1)`
+runs every command by fork and exec. So the cwd goes in the environment beside
+`V8MOUNT` — but writing to `environ` does not do it, because `execve` carries
+the CALLER's envp and sh builds its own from scratch. `cwdenv()` splices
+`V8CWD` into the array `v8s_execve` passes. Measured: without it, `cd /lib; ls`
+works and `cd /lib; sh -c ls` does not.
+
+If it does not fit, the exec still happens with the environment unchanged. A
+refusal would be wrong for everything to protect one case.
+
+### What v8s_chdir itself decides
+
+Only whether the host cwd moves. For a mounted target it must not: there is no
+host directory to move to, and a chdir to the bare name is the jail escape this
+function's refusal existed to prevent (measured with `V8MOUNT=/etc=sock`: `cd
+/etc` returned 0, pwd said `/private/etc`, and `cat passwd` read the Mac's).
+For a host target it must, so that anything the shim does not mediate still
+agrees.
+
+**The checks are in this function because no syscall will make them.** With no
+host chdir there is nothing to fail, so `cd /lib/nosuch` would return 0 and
+every relative name after it would be ENOENT from somewhere else. V7's `chdir1`
+(`sys4.c`) is exactly these two: it is a directory, and it is searchable.
+
+And `v8fs_setcwd` refuses when no mount is configured. Without that line a cd
+in an ordinary V8 program would record one, and `v8s_execve` would splice
+`V8CWD` into the environment of **every V8 binary in the world** — a mechanism
+visible where it was argued to be invisible.
+
+### pwd needs the mount point to exist in the jail
+
+mount(8)'s own rule, and `getwd` is why: the walk finds each level by stat-ing
+the entries of the parent until one matches, so there has to be an entry. It
+takes getwd's **different-device** arm (`getwd.c:63-71`), because p9cl reports
+`st_dev` 0 for a mounted file while the jail root has the host's — so the
+`d_ino` comparison the same-device arm would use is never reached and the
+folded-inode machinery is not on this path.
+
+This port will not invent a `/mnt`: V8 shipped `bin boot etc lib proto-dev usr`,
+so a `/mnt` in `ls /` would be a machine that never existed. The 5i section
+mounts over `/lib`, and asserts the limitation rather than describing it —
+`pwd` under a mount point the jail does not have fails rather than lying.
+
+### A buffer moved to file scope silently changes `sizeof`
+
+`static char buf[1024]` inside `v8sys_rootpath` became `char *buf = rootbuf`,
+and `sizeof buf` went from 1024 to **8**. The root path was truncated to seven
+characters and every V8 binary lost its jail. It failed loudly — `cc` could not
+find `/usr/bin/clang` — which is luck rather than design; the same edit in a
+place with a smaller bound would have produced a subtly short string.
+
+### What this step does not fix
+
+**Exec from a mount.** The host kernel has to read the image to run a binary
+and it cannot, so `exec` of a mounted path is ENOENT. That is honest and there
+is nothing to do about it short of copying the file out.
+
+**The spelling requirement above.** Both ends must name the socket the same
+way. There is no identity available that does not go through the name.
+
+`streams` 639 → 658. Nine mutations, and the informative one is the one that
+did NOT fire:
+
+| mutation | fires |
+|---|---|
+| chdir goes back to refusing | 12 |
+| `V8P_ENTRY` folds whole | 9, including **fsck twice** |
+| the socket is not absolutised | **2 — exactly the `pwd` cases** |
+| no `cwdenv` | 9 |
+| the prefix is trimmed rather than normalised | 3 — the containment cases |
+| `p9_t_path` is the identity again | 11 |
+| the mounted chdir stops checking its target | **2 — exactly the two refusals** |
+| a cwd is recorded with no mount | **0**, then **1** |
+| `ispeer` drops V8MOUNT's own spelling | 15 |
+
+The last row is worth reading twice: keeping BOTH spellings is load-bearing for
+the whole suite and not just for this step, which is what says the first draft
+of `p9abs` would have broken every 9P section rather than only the new ones.
+
+**And the no-mount guard's case was VACUOUS on its first draft.** A shell
+expands `$V8CWD` out of the variable table it built from its own environment at
+startup — before the cd — so `sh -c 'cd /etc; echo $V8CWD'` prints nothing
+whatever the shim does. The splice happens in the child of an *exec*, so an
+exec is what has to be observed, and the case nests a second shell. That is the
+third cause in CLAUDE.md's list arriving as the first: the mutation was strong,
+the code was live, and the instrument was pointed at the wrong process.
+
+**One mutation artifact, recorded so a future run is not misled**: inserting a
+line into `syscall.c` shifts every citation below it, so `cites.awk` goes red
+on any mutation that adds rather than replaces. That is the sweep working, not
+a finding.

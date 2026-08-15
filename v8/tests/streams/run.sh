@@ -2303,10 +2303,22 @@ check "V8MOUNT=/ is refused, and / is the jail's" "1" \
 # visible: with the prefix set to a name the HOST also has, `cd' returned 0 and
 # put the program in the Mac's directory.  Measured before the fix with
 # V8MOUNT=/etc=sock -- pwd said /private/etc and cat read the Mac's passwd.
-check "cd into a mount is refused"		"1" \
+#
+# §8a step 5i RE-AIMED THIS CASE RATHER THAN DELETING IT, and the distinction
+# is the one the chmod case two sections down already records.  What stood here
+# asserted the REFUSAL -- `cd' into a mount exits 1 -- which was the fix at the
+# time and is now false: the shim tracks a working directory and the chdir
+# succeeds.  The property that always mattered is underneath it and is
+# unchanged: A cd INTO A MOUNT DOES NOT PUT THE PROGRAM IN THE HOST'S DIRECTORY
+# OF THAT NAME.  So the case asserts that, over the same host directory holding
+# a different file, which is what makes the answer name which world it came
+# from.  Revert v8s_chdir to a bare chdir(vpath(p)) and it fires.
+check "cd into a mount succeeds"		"0" \
 	"$(v8host "$SH" -c "cd $P9DIR/hostdir" >/dev/null 2>&1; echo $?)"
-# ...and the same shell can still cd anywhere else, so the refusal is about the
-# mount and not about cd.
+check "and a relative read after it is the IMAGE's" "hello from a V8 filesystem" \
+	"$(v8host "$SH" -c "cd $P9DIR/hostdir; $CAT hello" 2>&1)"
+# ...and the same shell can still cd anywhere else, so the mount is not the
+# only thing cd can reach.
 check "and cd elsewhere still works"		"0" \
 	"$(v8host "$SH" -c 'cd /bin' >/dev/null 2>&1; echo $?)"
 
@@ -3112,7 +3124,7 @@ if [ "$wready" = 1 ]; then
 	#
 	# NOT `ls -l' AND THE LINK COUNT, which is the obvious case and would
 	# have asserted a fiction: 9P2000's stat HAS NO nlink FIELD (.u and .L
-	# added one), so p9cl.c:1158 sets st_nlink = 1 unconditionally and
+	# added one), so p9cl.c:1322 sets st_nlink = 1 unconditionally and
 	# every file on every mount reads as one link.  The probe below asserts
 	# that 1 deliberately, so the limitation is a case rather than a
 	# sentence and a future change to it has to be meant.
@@ -3232,7 +3244,7 @@ if [ "$wready" = 1 ]; then
 		check "...and both names are one inode"		"1"	"$(lq link-same-ino)"
 		# ...AND THE LINK COUNT IS 1, WHICH IS A LIMITATION ASSERTED ON
 		# PURPOSE.  9P2000's stat carries no nlink field at all -- .u
-		# and .L added one -- so p9cl.c:1158 sets it to 1 for every file
+		# and .L added one -- so p9cl.c:1322 sets it to 1 for every file
 		# on every mount and the real 2 is simply not on the wire.  The
 		# obvious case here would have been `ls -l' and the link count,
 		# and it would have been asserting a constant.
@@ -3437,6 +3449,210 @@ check "and the image is still readable by icheck"	"1" \
 	    head -200 | grep -c '^img' )"
 fi
 fi	# the fill section
+
+# ===========================================================================
+# 12. §8a step 5i -- chdir INTO A MOUNT, which is what makes a mount a place
+#     a program can BE rather than only a place it can name.
+#
+# Every case above reaches the image by absolute path.  This section is about
+# the other half: `cd /lib' and then `cat hello', with the shim resolving the
+# relative name against a working directory it tracks itself.  vfs.h has the
+# argument for why the fold needs a MODE, and syscall.c's v8s_chdir for why the
+# host cwd must not move for a mounted target.
+#
+# THE MOUNT POINT IS /lib AND THAT IS FORCED, NOT TIDY.  getwd(3) finds each
+# level by stat-ing the entries of the parent until one matches, so the mount
+# point has to EXIST in the directory above it -- mount(8)'s own rule, and case
+# `pwd needs a mount point' below asserts what happens without it.  This port
+# will not invent a /mnt: V8 shipped bin, boot, etc, lib, proto-dev and usr, so
+# a /mnt in `ls /' would be a machine that never existed.  /lib is a real jail
+# directory, it is a direct child of the root, and nothing this section runs
+# needs what is in it (cpp and ccom, which only cc reaches).
+#
+# AND THE SOCKET GOES UNDER /tmp RATHER THAN $TMPDIR, WHICH IS THE OPPOSITE OF
+# THIS FILE'S USUAL RULE AND IS FORCED BY THE SAME struct FIELD.  getwd chdirs
+# at every level, so a relative socket path stops resolving mid-pwd; p9cl.c
+# absolutises it at the first read of V8MOUNT, and only if the result fits in
+# sun_path's 104 bytes.  $TMPDIR is around 50 characters on a Mac before
+# anything is appended, so placing this section's socket there would make the
+# whole section a property of the host's temp directory length.  The precondition
+# is MEASURED below rather than assumed, and reported when it does not hold.
+CDTMP=$(mktemp -d /tmp/v8cd.XXXXXX 2>/dev/null)
+if [ -z "$CDTMP" ] || [ ! -d "$CDTMP" ]; then
+	bad "5i: no /tmp directory for a short socket path"
+elif [ ${#CDTMP} -ge 90 ]; then
+	echo "  (5i not exercised: /tmp path $CDTMP is too long for sun_path)"
+	rm -rf "$CDTMP"
+elif ! "$MKFS" "$CDTMP/img" 2000 >/dev/null 2>&1; then
+	bad "5i: mkfs could not make an image"
+	rm -rf "$CDTMP"
+else
+
+( cd "$CDTMP" && exec "$V8FSD" sock img ) > "$CDTMP/srv.out" 2>&1 &
+CDPID=$!
+cdready=0
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+	grep -q "^v8fsd ready" "$CDTMP/srv.out" 2>/dev/null && { cdready=1; break; }
+	kill -0 $CDPID 2>/dev/null || break
+	sleep 0.2
+done
+
+if [ "$cdready" != 1 ]; then
+	bad "5i: server did not start" "$(head -3 "$CDTMP/srv.out" 2>/dev/null)"
+	kill $CDPID 2>/dev/null
+	rm -rf "$CDTMP"
+else
+
+# THE SOCKET IS NAMED RELATIVELY ON BOTH ENDS, AND THAT IS THE CONFIGURATION
+# THIS STEP EXISTS FOR RATHER THAN A CONVENIENCE.
+#
+# getpeername(2) reports the name the SERVER bound, never the one the client
+# connected with -- measured both ways round -- so the two ends have to spell
+# the socket the same way or v8fs_p9adopt cannot recognise an inherited
+# descriptor.  What that costs is not an error: a 9P socket read as passthrough
+# gets a raw write(2), so `echo x > /lib/f' creates the file, writes the bytes
+# INTO THE SOCKET, and exits 0 leaving it empty.  Found the hard way, with the
+# first draft of this section configured absolute against a relative bind.
+#
+# And relative is what p9cl.c's p9abs is FOR: it absolutises at the first read
+# of V8MOUNT, before anything can chdir, and keeps V8MOUNT's own spelling for
+# the peer comparison.  Both fields are exercised here -- without the
+# absolutised one the `pwd' cases below cannot work at all, because getwd
+# chdirs at every level and the relative name stops resolving mid-walk.
+c8() { ( cd "$CDTMP"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/lib=sock"
+	 export V8ROOT V8MOUNT; deadline "$@" ); }
+
+c8 "$SH" -c 'mkdir /lib/sub; echo hello > /lib/sub/f; echo top > /lib/g' >/dev/null 2>&1
+
+# --- the mechanism -------------------------------------------------------
+check "5i: a relative read after cd into a mount"	"top" \
+	"$(c8 "$SH" -c "cd /lib; $CAT g" 2>&1)"
+# ...one level down, and this one crosses fork AND exec: sh forks for cat, so
+# the cwd has to have survived the environment splice in v8s_execve.  Without
+# cwdenv() this reads as `cannot open' while the case above still passes.
+check "5i: ...and one level down, across fork and exec"	"hello" \
+	"$(c8 "$SH" -c "cd /lib/sub; $CAT f" 2>&1)"
+# `..' INSIDE the image, which is the server's own walk rather than the fold's.
+check "5i: ...and a relative .. inside the image"	"top" \
+	"$(c8 "$SH" -c "cd /lib/sub; $CAT ../g" 2>&1)"
+# AN INHERITED DESCRIPTOR, which is the path v8fs_p9adopt answers for and the
+# only one that goes through ispeer: sh opens the file, dup2s it onto 0 and
+# execs cat, so the type table that knew what the descriptor was died with the
+# image.  A mount whose two ends spell the socket differently fails HERE and
+# nowhere else, silently -- see the note above c8.
+check "5i: ...and a redirect from a relative name"	"top" \
+	"$(c8 "$SH" -c "cd /lib; $CAT < g" 2>&1)"
+# THE MECHANISM ITSELF, observed rather than inferred: the cwd crosses exec in
+# the ENVIRONMENT, because a table in process memory dies when a program
+# replaces its image.  A nested shell reads its own environment at startup, so
+# it can say what was spliced; the outer one cannot, because its table was
+# built before the cd.
+check "5i: ...and the cwd crosses exec as V8CWD"	"[/lib]" \
+	"$(c8 "$SH" -c "cd /lib; $SH -c 'echo [\$V8CWD]'" 2>&1)"
+
+# --- the fold at the mount root, which is the whole reason it is lexical ---
+#
+# THE IMAGE CANNOT ANSWER THIS AND NEITHER CAN THE SERVER.  A V7 filesystem
+# root's `..' points at itself, so the server correctly reports the image root
+# again; on a real Unix it is namei's mount table that fixes a walk crossing a
+# mount upward, and there is no kernel here.  Measured before the fold: `ls
+# /mnt/..' listed the image root and a program that cd'd in could not get out.
+check "5i: cd .. at the mount root reaches the JAIL root"	"1" \
+	"$(c8 "$SH" -c "cd /lib; cd ..; $LS" 2>/dev/null | grep -c '^unix$')"
+# ...and the absolute spelling of the same question, which needs no cwd at all
+# and was wrong for the whole of steps 5e-5h.
+check "5i: ...and so does ls /lib/.."			"1" \
+	"$(c8 "$LS" /lib/.. 2>/dev/null | grep -c '^unix$')"
+# THE NEGATIVE CONTROL FOR BOTH: the image root is NOT the jail root, so a
+# fold that did nothing would list `g' and `sub' here instead.
+check "5i: ...and the image root is a different listing"	"0" \
+	"$(c8 "$LS" /lib/.. 2>/dev/null | grep -c '^sub$')"
+
+# --- what chdir must still REFUSE ---------------------------------------
+#
+# NO SYSCALL MAKES THESE CHECKS, which is why they are cases.  A mounted chdir
+# does no host chdir at all, so without the stat and access in v8s_chdir a
+# `cd /lib/nosuch' would return 0 and every relative name after it would fail
+# somewhere else entirely.  V7's chdir1 (sys4.c) is exactly these two.
+check "5i: cd to a name that is not there fails"	"1" \
+	"$(c8 "$SH" -c 'cd /lib/nosuch' >/dev/null 2>&1; echo $?)"
+check "5i: ...and cd to a plain file fails"		"1" \
+	"$(c8 "$SH" -c 'cd /lib/g' >/dev/null 2>&1; echo $?)"
+
+# --- pwd, the hard consumer, with getwd.c UNMODIFIED --------------------
+#
+# getwd.c:41-45 opens `..', reads it, chdir("..")s and repeats, matching each
+# entry against stat(".").  Two things have to hold for that to terminate here
+# and both are properties of this step: opendir("..") and chdir("..") must give
+# the SAME answer at the mount root, and the walk must be able to find the
+# mount point by name in the parent.  It takes getwd.c's DIFFERENT-DEVICE arm
+# (getwd.c:63-71), because p9cl reports st_dev 0 for a mounted file while the
+# jail root has the host's -- so the d_ino comparison the same-device arm would
+# use is never reached, and the folded-inode machinery is not on this path.
+check "5i: pwd inside a mount"				"/lib" \
+	"$(c8 "$SH" -c 'cd /lib; pwd' 2>&1)"
+check "5i: ...and one level down"			"/lib/sub" \
+	"$(c8 "$SH" -c 'cd /lib/sub; pwd' 2>&1)"
+
+# AND THE LIMITATION IS A CASE RATHER THAN A SENTENCE.  mount(8) needs a
+# directory to mount ON, and getwd is why: with nothing named `nomp' in the
+# jail root there is no entry for the walk to match, so pwd fails rather than
+# lying.  Asserted so that a future /mnt in the rootfs is a decision.
+check "5i: pwd needs the mount point to exist in the jail" "1" \
+	"$( cd "$TMP"; V8ROOT="$ROOT/rootfs"; V8MOUNT="/nomp=$CDTMP/sock"
+	    export V8ROOT V8MOUNT
+	    deadline "$SH" -c 'cd /nomp; pwd' >/dev/null 2>&1; echo $? )"
+
+# --- 5h must still work with a working directory ------------------------
+#
+# The fold's first draft broke exactly this, which is why the mode exists: it
+# folded the LAST component too, so unlink("/lib/d/..") -- rmdir(1)'s first
+# call -- arrived at the server as unlink("/lib").  13 cases went red and fsck
+# reported FILE SYSTEM WAS MODIFIED.  Spelled RELATIVELY here, because the
+# absolute forms are already covered above and the cwd is what is new.
+check "5i: relative mkdir and rmdir from inside a mount"	"" \
+	"$(c8 "$SH" -c 'cd /lib; mkdir d; rmdir d; ls d' 2>/dev/null)"
+# ...and mv of a DIRECTORY, which is 5h's headline and the one with no
+# fork-and-cp fallback (mv.c:204's mvdir).  It rewrites `d/..', so it is the
+# sharpest thing this section can ask of the mode.
+check "5i: ...and mv of a directory across directories"	"d" \
+	"$(c8 "$SH" -c 'cd /lib; mkdir a b; mkdir a/d; mv a/d b/d; ls b' 2>&1)"
+# AND THE SOURCE HAS TO BE EMPTY, which is the half that says the move
+# happened rather than a copy.  Without it the case above passes against a
+# host directory too -- both `mkdir a b' and `ls b' would have been the Mac's,
+# which is exactly how the first draft of this section passed while the mount
+# was doing nothing.
+check "5i: ...and nothing is left at the source"	"" \
+	"$(c8 "$SH" -c 'cd /lib; ls a' 2>&1)"
+
+# THE INDEPENDENT READER, because a probe's writer and its reader share the
+# probe's beliefs and a damaged directory is invisible from inside.  fsck is
+# the only one of the three checkers that has ever caught this class.
+kill $CDPID 2>/dev/null; wait $CDPID 2>/dev/null
+check "5i: and fsck says the image is clean"		"0" \
+	"$(fsdeadline "$ROOT/rootfs/etc/fsck" -y "$CDTMP/img" </dev/null 2>&1 |
+	   head -200 | grep -c 'MODIFIED')"
+
+rm -rf "$CDTMP"
+fi
+fi	# the 5i section
+
+# NOTHING LEAKS INTO A WORLD WITH NO MOUNT, which is the scope of the whole
+# step and the reason 16 of the 17 suites did not move.  v8fs_setcwd refuses
+# when no mount is configured, so a cd in an ordinary V8 program records
+# nothing and v8s_execve splices nothing -- an `env' that grew a V8CWD would be
+# a mechanism visible where it was argued to be invisible.
+#
+# THE sh MUST BE NESTED, AND THE FIRST DRAFT WAS VACUOUS FOR WANT OF THAT.  A
+# shell expands $V8CWD out of the variable table it built from its OWN
+# environment at startup -- before the cd -- so a single `sh -c "cd /etc; echo
+# $V8CWD"' prints nothing whatever the shim does.  The splice happens in the
+# child of an exec, so an exec is what has to be observed.  Measured: the
+# mutation that drops v8fs_setcwd's no-mount guard did not fire on the first
+# draft and does on this one.
+check "5i: no V8CWD in a process with no mount"		"[]" \
+	"$( V8ROOT="$ROOT/rootfs"; export V8ROOT
+	    "$SH" -c "cd /etc; $SH -c 'echo [\$V8CWD]'" 2>&1 )"
 
 fi	# mkfs succeeded
 fi	# mkfs exists
