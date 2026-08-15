@@ -139,7 +139,20 @@ char **argv;
 	int ans;
 
 	signal(SIGSYS, 1);
-	if(*argv[1] != '-')
+	/* PORT: a bare `cpio' has no argv[1], so this dereferences the
+	 * vector's NULL terminator before anything else happens.  On the VAX
+	 * address 0 held 0x00 (crt0's first byte -- V8's binaries are ZMAGIC,
+	 * so N_TXTOFF is 1024 and the a.out header is never mapped), which is
+	 * not '-', so cpio printed its usage and exited 2.  That is the answer
+	 * restored here; macOS leaves page 0 unmapped and SIGSEGVs instead.
+	 * Same shape as diffh.c's option loop and ncheck.c's -i loop.
+	 *
+	 * This is one of cpio's two probe crashes.  The OTHER, `cpio -i' on
+	 * an unreadable input, is chgreel()'s unchecked fopen("/dev/tty") and
+	 * is deliberately NOT fixed: a VAX faulted there too, because the
+	 * getc() that follows WRITES to virtual 0 and ZMAGIC text is
+	 * read-only.  src/cmd/cpio.PORTING.md has the measurement. */
+	if(argv[1] == 0 || *argv[1] != '-')
 		usage();
 	Uid = getuid();
 	umask(0);

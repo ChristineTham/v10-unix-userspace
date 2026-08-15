@@ -3082,15 +3082,44 @@ puns in a single file.
     record because it cost four documents and a test exclusion.
     Still open there: visual mode needs a pty; `exrecover`/`expreserve` are
     not built; `xstr` is skipped, so ex cannot claim rung 5.
-  - **The crash probe's floor is 54 in prose and 160 in fact**, measured after
-    ex landed: 6360 invocations, 160 signal deaths, of which 106 are new and
-    none is ex. `diffh` (53), `cb` (50), `cpio` (2) and `tar` (1) all arrived
-    with Wave A2 and nothing measured them, because the probe is not in
-    `make test`. Three are the address-0 class with one-line fixes to the VAX's
-    own answer; `cpio -i` is EOF handling instead. Each fix needs a paired case
-    asserting the option still WORKS. And the instrument question is the real
-    one: a floor that only a manual run checks is a number that rots, so decide
-    whether the probe belongs in CI or its floor in a suite.
+  - ~~**The crash probe's floor is 54 in prose and 160 in fact**~~ — **DONE.**
+    Measured after ex landed: 6360 invocations, 160 signal deaths, of which 106
+    were new and none was ex. `diffh` (53), `cb` (50), `cpio` (2) and `tar` (1)
+    all arrived with Wave A2 and nothing measured them, because the probe is not
+    in `make test`. Re-measured on the same population — 6360 invocations, 120
+    programs — **160 → 55, exactly 105 removed**. The floor is **not back to
+    54**: it is `lex` 53 + `bcd` 1 + **`cpio -i` 1**, which is deliberately kept
+    and is a permanent member rather than an unfixed regression.
+
+    Five one-line fixes over four programs, each restoring **the VAX's answer**
+    rather than merely dodging the fault — `diffh` → `must have 2 file
+    arguments`, `tar` → `Invalid blocksize`, `cpio` → usage and exit 2, and
+    `cb` → a **NUL in the middle of its message**, because `%c` of address 0 is
+    what a VAX printed. `cb` had **two** sites, not one: the count 50 rather
+    than 53 was the tell, and `-l`'s `atoi(*++argv)` is the second.
+
+    Two of the diagnoses written that day were wrong and are corrected in
+    CLAUDE.md rather than deleted. `cpio -i` is **not** EOF handling: it is
+    `chgreel()`'s unchecked `fopen("/dev/tty")`, hence the `/dev/fd` class, and
+    the `fgets` after it is a `getc` — `--(p)->_cnt`, a **WRITE** to virtual 0,
+    which a read-only ZMAGIC text segment faulted on too. So it is left alone,
+    the third member of the family after `pr.c`'s `Ttyin` and `troff/hc.c`'s
+    `rcf`. **The whole class splits on read-versus-write and no symptom shows
+    you which.**
+
+    `cb`'s fix had to **preserve** a bug: `*argv[1]` names the wrong argument, a
+    precedence error visible on a VAX (`cb -a x.c` says `illegal option x`), so
+    §1 forbids correcting it while requiring the crash be fixed — both on one
+    line. `tests/wavea` carries a case asserting that bug is still present.
+
+    And the instrument question is answered: `tests/wavea` runs the four
+    programs' 4 × 53 invocations with **fd 3 explicitly closed** and asserts the
+    surviving crash list is exactly `cpio -i` — a list rather than a count, so
+    two changes cannot cancel out. Six mutations, six fire; the sixth *repairs*
+    `cpio -i` and the floor case notices, which is what says it guards the
+    decision. `wavea` 145 → 165. The full probe remains manual (minutes), so
+    whether it belongs in CI is still open — but its floor no longer lives only
+    in prose.
   - **`libcurses`** (43 files) now that the library under it exists.
   - **`TERM` in the launcher.** The world has a termcap database and the
     launcher still exports no `TERM`, so a screen program has nothing to ask.

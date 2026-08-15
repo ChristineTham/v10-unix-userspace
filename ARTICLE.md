@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2188 tests across 17 suites** guard it.
+assembly. **2218 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -3049,6 +3049,72 @@ A smaller lesson came with it. I read the probe's log three times while it ran,
 and each time it named three programs. The fourth, `diffh`, sorts after `lex`
 and simply had not been reached. A partial log is not a population, and the only
 honest moment to count is when the thing stops.
+
+### Fixing them, and the one I decided to leave broken
+
+Going back to fix the four produced one genuinely interesting decision, and it
+turned on a detail I would not have predicted mattered.
+
+Three of them were the familiar shape and the fixes are one line each. What
+makes them more than typo repair is the rule this project applies to them: the
+fix has to reproduce **what the VAX did**, not merely stop the crash. Address
+zero on a VAX was not a void — V8's binaries put the text segment there, so
+reading it returned the first byte of the C runtime startup code, which is
+`0x00`. That byte is not a hyphen and not a digit, so each program had a defined
+behaviour, and the job is to restore *that*. `diffh` printed "must have 2 file
+arguments". `tar` read the empty string as a block size of zero and rejected it
+on the very next line, with "Invalid blocksize". `cpio` printed its usage and
+exited 2. Each fix is paired with a test that the option still *works*, because
+an early `return` bolted in front of the fault would satisfy every other case
+while quietly breaking the flag.
+
+`cb` is the one worth dwelling on, because the fix had to *preserve* a bug. Its
+complaint about an unknown flag reads the wrong argument, as described above —
+and that misreading is upstream's, visible on upstream's hardware, so the
+contract forbids correcting it. What the VAX printed, when there was no next
+argument at all, was that byte from address zero: a NUL, in the middle of the
+message. So the honest repair prints a NUL, and the test asserts the message is
+twenty-one bytes long with a zero byte in it. There is something bracing about
+writing a test whose purpose is to insist that a bug is still present, and
+another asserting an output nobody would ever want.
+
+The fourth I left alone, and my earlier account of it was wrong. I had written
+that `cpio -i` was "EOF handling"; it is not. It is an unchecked
+`fopen("/dev/tty")` in the change-the-tape prompt, and V8's `/dev/tty` is a link
+to `/dev/fd/3` — file descriptor three — so whether it succeeds depends on
+whether the program was started with a terminal on that descriptor, which the
+launcher arranges and a test harness does not. Then it calls `fgets` on the null
+result. And `fgets` is a `getc` loop, and `getc` is a macro that *decrements a
+counter inside the structure* — so it does not read address zero, it **writes**
+to it. A VAX's text segment was read-only shared. It faulted there too.
+
+That distinction — read or write — is the whole verdict, and it is invisible
+unless you go and look at the macro. A read of address zero has an answer worth
+restoring. A write to it never had one, so there is nothing to restore and the
+port should not invent something. Two other programs here were left alone years
+ago for exactly that reason, and this is the third.
+
+The measurement that settled it is my favourite kind, because it turned a
+puzzle into a confirmation. Running `cpio -i` under a debugger did not crash —
+which looked at first like the bug being unstable. It was not: the debugger
+leaves a descriptor three open. The thing that made the crash disappear is the
+same thing the diagnosis said causes it.
+
+And the floor is a test now rather than a sentence, which was the actual lesson
+of the previous section. A single loop runs those four programs against every
+option with descriptor three explicitly closed, and asserts that the surviving
+crash list is exactly one entry long and reads `cpio -i`. When I mutate the
+source to "fix" that last one, the test goes red — which is what tells me it is
+guarding the decision and not just describing it.
+
+The probe, re-run over the same six thousand three hundred and sixty
+invocations, went from a hundred and sixty to **fifty-five**. It is worth being
+precise about that number, because the obvious thing to write is that it is back
+to fifty-four and it is not. Fifty-three of them are `lex` and one is `bcd`,
+both long-standing; the fifty-fifth is `cpio -i`, which is new and permanent.
+Recording it as fifty-four would leave the next person reading the extra one as
+a regression to hunt — which is exactly how the previous number came to be
+wrong. A floor is only useful if it says what it is made of.
 
 ## What is left
 

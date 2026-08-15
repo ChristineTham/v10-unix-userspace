@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2188 cases, 2187 on a host whose $TMPDIR
+make test             # all 17 suites (2218 cases, 2217 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -3373,7 +3373,7 @@ not testable until it is installed.
   installed rootfs: **4187 invocations, 54 signal deaths, all SIGSEGV — 53
   `lex` and 1 `bcd`**, and every one of them is already argued somewhere as
   upstream's defect on upstream's hardware (`src/cmd/lex/PORTING.md:175-250`
-  for the 53, PLAN.md:3339 for `bcd`). `lex`'s 53 is *exactly* the number that
+  for the 53, PLAN.md:3382 for `bcd`). `lex`'s 53 is *exactly* the number that
   file predicts, and it explains why fixing the first of its three faults moved
   the count by zero: the probe feeds every program `/dev/null`, so all 53
   invocations also reach the empty-spec path and the 40 that used to die in
@@ -3426,6 +3426,50 @@ not testable until it is installed.
   finding grew from three programs to four only when it finished. And **a floor
   belongs in a suite or in CI, not in prose**, which is the open question Task
   #76 ends on.
+
+  **AND FIXING THEM CORRECTED TWO OF THE FOUR DIAGNOSES ABOVE, WHICH WERE
+  WRITTEN THE SAME DAY.** Both are left standing rather than deleted, because
+  the errors are the interesting part.
+
+  **Re-measured on the same population -- 6360 invocations, 120 programs --
+  160 -> 55, exactly 105 removed.** The floor is **NOT back to 54**: it is
+  `lex` 53 + `bcd` 1 + **`cpio -i` 1**, because that last one turns out to be a
+  permanent member of the upstream's-defect-on-upstream's-hardware set rather
+  than something to fix. Say 55 and say why, or the next person reads 55 as one
+  unfixed regression. `tests/wavea` guards it now, so this paragraph is no
+  longer the only thing that knows.
+
+  - **The `cb` entry named ONE site and the count said TWO.** 50 of 53 is the
+    tell: `-s` and `-j` continue and bare `cb` reads stdin, so 52 - 2 = 50, and
+    49 of those die in the `default` arm while the fiftieth dies in `-l`'s
+    `atoi(*++argv)`. The number was sitting in the table above the sentence.
+    **A count that does not match the mechanism you have described is the
+    mechanism telling you it is incomplete.**
+  - **`cpio -i` IS NOT "EOF handling", and the real answer flips the verdict.**
+    It is `chgreel()`'s unchecked `fopen("/dev/tty")` -- so it is the *`/dev/fd`
+    class*, reachable because V8's `/dev/tty` is a link to `/dev/fd/3` -- and
+    the `fgets` that follows is a `getc`, which is `--(p)->_cnt`, a **WRITE** to
+    virtual 0. ZMAGIC text is read-only, so **a VAX faulted there too**: there
+    is no answer to restore and S1 forbids the change. Third member of the
+    family after `pr.c`'s `Ttyin` and `troff/hc.c`'s `rcf`. Measured both ways
+    -- no fd 3 gives SIGSEGV, `exec 3</dev/null` gives a clean exit 2 -- which
+    also explains why it would not reproduce under **lldb**, a debugger leaving
+    an fd 3 open. *The instrument removed the condition it was pointed at.*
+
+  So the class splits on one question that no symptom shows you: **is the page-0
+  access a READ or a WRITE?** A read has a VAX answer to reproduce; a write
+  never did. Three fixes here restore an answer (`diffh` -> `must have 2 file
+  arguments`, `tar` -> `Invalid blocksize`, `cpio` -> usage and exit 2), and
+  `cb`'s restores a **NUL in the middle of its message**, because `%c` of
+  address 0 is what a VAX printed.
+
+  **AND cb's FIX HAD TO PRESERVE A BUG, which is a shape this file has not
+  recorded before.** `*argv[1]` naming the wrong argument is a *precedence*
+  error and it is upstream's on upstream's hardware -- measured, `cb -a x.c`
+  reports `illegal option x` on any machine -- so S1 forbids correcting it while
+  requiring the crash be fixed. The two live on one line. `tests/wavea` therefore
+  carries a case whose entire purpose is to assert that a bug is **still there**,
+  so that repairing it has to be a decision rather than a tidy-up.
 
   Validate a prober against a **known crasher and a known-clean program**
   before believing any number from it. And note what survived all four runs

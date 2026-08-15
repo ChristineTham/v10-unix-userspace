@@ -122,7 +122,27 @@ char	*argv[];
 			usefile = magtape;
 			break;
 		case 'b':
-			nblock = atoi(*argv++);
+			/* PORT: `tar -b' with no number leaves *argv on the
+			 * vector's NULL terminator -- main sets argv[argc]=0
+			 * itself, so it is null whatever execve did -- and
+			 * atoi() dereferences it.  On the VAX that read
+			 * address 0, which held 0x00 (crt0's first byte; V8
+			 * binaries are ZMAGIC, so the header is never mapped),
+			 * so atoi saw an empty string and returned 0 -- and
+			 * the very next line rejects 0 with `Invalid
+			 * blocksize' and exits 1.  That is the answer restored
+			 * here; macOS leaves page 0 unmapped and SIGSEGVs.
+			 *
+			 * argv[-1] rather than a plain guard so the increment
+			 * still happens on the null path, as it did on the
+			 * VAX.  It is unobservable today -- nblock is 0, so
+			 * done(1) runs two lines below and argv is never read
+			 * again -- but "unobservable today" is the kind of
+			 * qualifier this port has been bitten by, and the
+			 * exact form costs nothing.
+			 * Fourth instance of this loop shape after ncheck,
+			 * icheck and dcheck; PLAN.md S4i has the class. */
+			nblock = atoi(*argv++? argv[-1]: "");
 			if (nblock > NBLOCK || nblock <= 0) {
 				fprintf(stderr, "Invalid blocksize. (Max %d)\n", NBLOCK);
 				done(1);

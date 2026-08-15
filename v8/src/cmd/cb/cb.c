@@ -164,14 +164,44 @@ char	*argv[];
 				maxleng = atoi( &((*argv)[2]) );
 			}
 			else{
-				maxleng = atoi(*++argv);
+				/* PORT: `cb -l' with no number leaves *++argv
+				 * on the NULL terminating the vector, and
+				 * atoi() dereferences it.  On the VAX that read
+				 * address 0 -- 0x00, so an empty string -- and
+				 * atoi returned 0, giving maxleng 0 and maxtabs
+				 * -2, after which cb read stdin as usual.  That
+				 * is the answer restored here; macOS leaves
+				 * page 0 unmapped, so it SIGSEGVs instead.
+				 * The increment is kept because the VAX also
+				 * performed it.  Same shape as tar.c's -b and
+				 * ncheck/icheck/dcheck's -i number loop. */
+				maxleng = atoi(*++argv? *argv: "");
 				argc--;
 			}
 			maxtabs = maxleng/TABLENG - 2;
 			maxleng -= .1 * maxleng;
 			continue;
 		default:
-			fprintf(stderr, "cb: illegal option %c\n", *argv[1]);
+			/* PORT: *argv[1] is *(argv[1]) -- the first character
+			 * of the NEXT argument -- where (*argv)[1], which the
+			 * switch four lines above uses, was meant.  That is a
+			 * PRECEDENCE bug and it is upstream's, on upstream's
+			 * hardware: measured here, `cb -a x.c' reports
+			 * `illegal option x' and `cb -Q zzz' reports
+			 * `illegal option z', both exiting 1, which is what a
+			 * VAX printed too.  So it is deliberately NOT
+			 * corrected -- a change to src/ must be forced by the
+			 * target, and naming the wrong letter is not.
+			 *
+			 * What IS forced is the crash: with the option last,
+			 * argv[1] is the vector's NULL terminator.  The VAX
+			 * read address 0 and printed that byte, 0x00; macOS
+			 * leaves page 0 unmapped and SIGSEGVs.  Printing '\0'
+			 * reproduces the VAX's answer exactly, wrong letter
+			 * and all.  50 of cb's 53 probe invocations died here
+			 * or in the -l arm above. */
+			fprintf(stderr, "cb: illegal option %c\n",
+				argv[1]? *argv[1]: '\0');
 			exit(1);
 		}
 	}

@@ -917,6 +917,148 @@ check 'lex on a spec with no %% writes no output' 'none' \
        [ -f lex.yy.c ] && echo wrote || echo none)"
 
 # ---------------------------------------------------------------------------
+# THE SAME CLASS, FOUR MORE PROGRAMS -- and they arrived unmeasured, which is
+# the part worth remembering.  cb, diffh, tar and cpio came in with the Wave A2
+# batch and added 106 signal deaths to tests/crash-probe.sh, taking it from the
+# 54 recorded in CLAUDE.md to 160.  Nothing went red, because the probe is a
+# manual instrument whose expected output was a NUMBER IN PROSE, and a number
+# only a human runs is a number that rots.  So the floor for these four is a
+# case now; the sweep at the end of this block is the guard that the prose was.
+#
+# All four are the last-argument trigger, and all four are fixed to the VAX's
+# ANSWER rather than to the absence of the fault -- 0x00 at address 0 is not
+# '-' and not a digit, so each program had a defined behaviour to restore.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- cb, diffh, tar, cpio (the Wave A2 arrivals, 106 crashes)"
+
+DIFFH=$V8ROOT/usr/lib/diffh	# not in v8which's three directories
+
+# diffh: `while(*argv[1]=='-' ...)' is main's FIRST statement, so a bare diffh
+# faults before anything is opened, and so does the run after the loop eats the
+# last option.  The VAX read 0x00, which is not '-', so the loop did not run and
+# the argc!=3 test below it reported the usage error.
+printf 'a\nb\n' > dh1.txt; printf 'a\nc\n' > dh2.txt
+"$DIFFH" </dev/null >/dev/null 2>dh.err; dhrc=$?
+check 'diffh with no arguments does not die on a signal' 'lived' \
+    "$([ $dhrc -lt 128 ] && echo lived || echo "signal $((dhrc-128))")"
+check 'and gives the VAX diagnostic' 'diffh: must have 2 file arguments' \
+    "$(cat dh.err)"
+check 'diffh -b with the option last is the same' \
+    'diffh: must have 2 file arguments' \
+    "$("$DIFFH" -b </dev/null 2>&1 >/dev/null)"
+# The paired case: -b must still be CONSUMED, or the guard could have been a
+# `return' in front of the loop and both cases above would still pass.
+check 'diffh -b still diffs, so the option is still consumed' '2,$c2,$' \
+    "$("$DIFFH" -b dh1.txt dh2.txt </dev/null 2>/dev/null | head -1)"
+
+# cb has TWO sites, which the 50 rather than 53 is the tell for: `-s' and `-j'
+# are real options that continue, and bare cb reads stdin, so 52 - 2 = 50.
+# 49 die in the default arm and the fiftieth in `-l'.
+"$(v8which cb)" -a </dev/null >/dev/null 2>cb.err; cbrc=$?
+check 'cb -a with the option last does not die on a signal' 'lived' \
+    "$([ $cbrc -lt 128 ] && echo lived || echo "signal $((cbrc-128))")"
+check 'and exits 1 as the VAX did' '1' "$cbrc"
+# THE VAX PRINTED THE BYTE AT ADDRESS 0, so the message ends `option \0\n'.
+# Asserted on the byte count as well as the text, because tr -d would hide a
+# missing NUL and the NUL is the whole claim.
+check 'and %c of address 0 puts a NUL in the message' '21' \
+    "$(wc -c < cb.err | tr -d ' ')"
+check 'the rest of which is upstream unchanged' 'cb: illegal option' \
+    "$(tr -d '\000' < cb.err | sed 's/ *$//')"
+# A FIDELITY CASE: this asserts a bug is STILL THERE.  *argv[1] is the first
+# character of the NEXT argument where (*argv)[1] was meant -- a precedence
+# bug, and upstream's own on upstream's hardware, so S1 forbids correcting it.
+# Measured: `cb -a x.c' names x and `cb -Q zzz' names z, on any machine.
+check 'cb still names the WRONG letter, which is upstream not us' \
+    'cb: illegal option x' "$("$(v8which cb)" -a x.c </dev/null 2>&1 >/dev/null)"
+# The second site, and its paired working case.
+printf 'int main(){return 0;}\n' > cb.c
+check 'cb -l with no number does not die either' '0' \
+    "$(: | "$(v8which cb)" -l >/dev/null 2>&1; echo $?)"
+check 'cb -l 60 still sets the width and reformats' 'int main(){' \
+    "$("$(v8which cb)" -l 60 cb.c </dev/null 2>/dev/null | head -1)"
+
+# tar's options are ONE bundled argument -- `tar cbf 2 f' -- so the trigger is
+# a `b' in the last bundle with no number after it.  atoi read 0x00 as an empty
+# string and returned 0, and the very next line rejects 0.
+check 'tar with b last does not die on a signal' 'lived' \
+    "$("$(v8which tar)" b </dev/null >/dev/null 2>/dev/null; \
+       s=$?; [ "$s" -lt 128 ] && echo lived || echo "signal $((s-128))")"
+check 'and gives the VAX diagnostic' 'Invalid blocksize. (Max 40)' \
+    "$("$(v8which tar)" b </dev/null 2>&1 >/dev/null)"
+# Paired: -b must still take its number, create, list and extract.
+mkdir -p tarx && printf 'hello\n' > tf1 && printf 'world\n' > tf2
+"$(v8which tar)" cbf 2 tar.a tf1 tf2 >/dev/null 2>&1
+check 'tar cbf 2 still creates an archive with that blocksize' 'tf1 tf2' \
+    "$("$(v8which tar)" tbf 2 tar.a 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+check 'and it still extracts what went in' 'hello world' \
+    "$(cd tarx && "$(v8which tar)" xbf 2 ../tar.a >/dev/null 2>&1; \
+       cat tf1 tf2 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+
+# cpio dereferences argv[1] before anything else; the VAX got 0x00, which is
+# not '-', and printed its usage.
+"$(v8which cpio)" </dev/null >/dev/null 2>cp.err; cprc=$?
+check 'cpio with no arguments does not die on a signal' 'lived' \
+    "$([ $cprc -lt 128 ] && echo lived || echo "signal $((cprc-128))")"
+check 'and prints usage and exits 2, as the VAX did' '2' "$cprc"
+check 'the usage being upstream unchanged' \
+    'Usage: cpio -o[acvB] <name-list >collection' "$(head -1 cp.err)"
+# Paired: cpio must still round-trip, which is the half a `return' would break.
+mkdir -p cpx && printf 'contents\n' > cf1
+echo cf1 | "$(v8which cpio)" -o > cp.a 2>/dev/null
+check 'cpio still round-trips a file through an archive' 'contents' \
+    "$(cd cpx && "$(v8which cpio)" -i < ../cp.a >/dev/null 2>&1; cat cf1 2>/dev/null)"
+
+# THE FLOOR, DERIVED RATHER THAN TRANSCRIBED -- one perl over 4 x 53
+# invocations, the same shape tests/crash-probe.sh uses, and for its reasons:
+# the real wait status rather than $?, because diffh's main ends in a BARE
+# `return' and hands back whatever is in the register, which is how the crash
+# probe once reported 254.
+#
+# fd 3 is closed EXPLICITLY.  V8's /dev/tty is /dev/fd/3, so whether cpio -i
+# faults depends on whether a descriptor happened to be inherited -- a host
+# property, and this suite has been bitten by those.  Closing it makes the
+# condition ours.
+#
+# The expected value is a LIST, not a count, so a fix that broke one program
+# and repaired another cannot cancel out.  cpio -i is deliberately NOT fixed:
+# chgreel()'s fopen("/dev/tty") is unchecked and the fgets that follows is a
+# getc, which is `--(p)->_cnt' -- a WRITE to virtual 0, and V8 binaries are
+# ZMAGIC whose text is read-only shared, so a VAX faulted there too.  Third
+# member of that family after pr.c's Ttyin and troff/hc.c's rcf, both of which
+# S1 also leaves alone.  src/cmd/cpio.PORTING.md has the measurement.
+mkdir -p a0sweep
+check 'the only surviving crash in the four is the one we chose to keep' \
+    'cpio -i' \
+    "$(cd a0sweep && perl -e '
+	my @bad;
+	for my $p (@ARGV) {
+		my ($n) = $p =~ m{([^/]+)$};
+		for my $o ("", map { "-$_" } ("a".."z", "A".."Z")) {
+			my @cmd = ($p);
+			push @cmd, $o if $o ne "";
+			my $pid = fork();
+			next if !defined $pid;
+			if ($pid == 0) {
+				alarm 5;
+				open(STDIN,  "<", "/dev/null");
+				open(STDOUT, ">", "/dev/null");
+				open(STDERR, ">", "/dev/null");
+				close(3);
+				{ exec @cmd; }
+				exit(127);
+			}
+			waitpid($pid, 0);
+			my $s = $? & 127;
+			next if $s == 0 || $s == 13 || $s == 14;
+			push @bad, $n . ($o eq "" ? " (bare)" : " $o");
+		}
+	}
+	print join(", ", @bad);
+    ' "$(v8which cb)" "$DIFFH" "$(v8which tar)" "$(v8which cpio)")"
+
+# ---------------------------------------------------------------------------
 # libtermlib and ul -- the first library imported out of usr/src/lib, and the
 # first program here that reads a DATABASE rather than only its arguments.
 #

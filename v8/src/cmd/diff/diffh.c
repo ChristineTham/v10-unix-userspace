@@ -75,7 +75,22 @@ char **argv;
 {
 	char *s0,*s1;
 	FILE *dopen();
-	while(*argv[1]=='-' && argv[1][1]!=0) {
+	/* PORT: argv[1] is the NULL terminating the vector -- for a bare
+	 * `diffh' at once, since this is main's first statement, and again
+	 * once the loop has consumed the last option.  On the VAX address 0
+	 * held a byte of the text segment (0x00, crt0's first byte: V8's
+	 * binaries are ZMAGIC, so N_TXTOFF is 1024 and the header is never
+	 * mapped), which is not '-', so the loop simply did not run and the
+	 * argc!=3 test below reported `must have 2 file arguments'.  macOS
+	 * leaves page 0 unmapped, so both spellings SIGSEGV before anything
+	 * is opened.  Same assumption as ncheck.c's -i loop and cpio.c's
+	 * option guard; the whole class is PLAN.md S4i.
+	 *
+	 * The guard goes on the FIRST test only.  argv[1][1] is reached only
+	 * when *argv[1]=='-' has already passed, which a null argv[1] cannot
+	 * do on either machine -- so `-' alone still ends the loop, and this
+	 * restores the VAX's answer rather than merely removing the fault. */
+	while(argv[1]!=0 && *argv[1]=='-' && argv[1][1]!=0) {
 		argc--;
 		argv++;
 		while(*++argv[0])
