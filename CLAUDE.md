@@ -1276,6 +1276,117 @@ things generalise:
   *inserts* a line rather than replacing one shifts every citation below it, so
   `cites.awk` goes red. That is the sweep working, not a finding.
 
+**AND THE GOAL CHANGED, WHICH MADE A MEASUREMENT THAT WAS NEVER TAKEN THE MOST
+IMPORTANT ONE.** The owner's target is now *"install a usable V8 world"* -- a
+BREADTH requirement, where everything above is depth. Measured against it:
+**V8 shipped 306 commands** across `/bin`, `/usr/bin` and `/etc`, and this port
+installed **98**. Of the 215 missing, **43 have no source at all** (VAX
+firmware, data files, the BSD-licensed `vi`/`more`/`pg` that shipped as
+binaries) and 172 do. About 96 are legitimately out of scope -- the 43, eight
+PDP-11 cross-tools, eight host-toolchain exceptions, ~14 uucp, ~10 Blit
+graphics, ~7 language systems, ~6 kernel grovelers -- so the honest denominator
+is **~210**.
+
+**THE GAP WAS ENTIRELY AT IMPORT, AND NOTHING WAS STUCK.** 91 programs were
+imported into `src/cmd` and 98 installed; the only imported-not-installed were
+`Admin`, `ccom` and `cpp`, which are toolchain. There was no queue of programs
+that failed to build or failed to install -- the pipeline was empty because
+nothing had been put in it. Two measurements say it was never a difficulty
+problem: PLAN.md's Wave A survey found **156 of 163** single-file `cmd/*.c`
+programs compile under v8cc, and rung 5's `Admin/Mk` built, stripped and
+installed **fifty** in one invocation. Adding a single-file command is
+`tools/import.sh` plus one name in `$(V8BIN)`; `tests/wavea` asserts
+imported == installed, so the two cannot drift.
+
+**SO BULK-IMPORT AND LET THE SUITES TRIAGE, because they caught three real bugs
+in the first batch and the compiler caught none.** All 37 of Wave A2's
+single-file imports compiled and linked with zero failures, and then:
+
+- **`tests/v8ccom`'s rootfs-wide truncation sweep** caught `last` truncating
+  `asctime()` and `gmtime()` -- both return pointers, neither was declared, and
+  `asctime(gmtime(&delta))+11` is two truncations in one expression.
+- **`tests/kmemu`'s libc-import sweep** caught FIVE programs resolving
+  `getpwnam`, `getgrgid` and `getpass` from `-lSystem`, which means `id` was
+  reading the **Mac's** group database from inside the jail. All three existed
+  upstream and had simply never been imported.
+- **the linker** caught `cb`, whose `cb.c:3` is `#include "cbtype.c"` -- the
+  fourteenth member of the included-non-header list, and upstream's own
+  makefile says so outright (`cb.o: cb.c cbtype.c cbtype.h`). Building it as a
+  translation unit is a duplicate `_ctype_`.
+
+**AND find(1) HAD ELEVEN LP64 BUGS IN ONE FILE, WITH THE ONE PREDICATE
+EVERYBODY TRIES FIRST WORKING BY ACCIDENT.** `struct anode` is
+`{ int (*F)(); struct anode *L, *R; }` -- three POINTER-sized members -- and
+each predicate reads its operands by punning the node as `{ int f, t, s; }`, so
+the second field lands at offset 4, the upper half of the function pointer.
+Every predicate reading it was **silently false**: `-type -perm -links -size
+-user -group -atime -mtime -ctime -exec -ok`. `-name`'s pun is
+`{ int f; char *pat; }` and the pointer's own alignment pushes `pat` to 8, so
+it works -- which is why this survived import, compilation and a smoke test.
+`find /usr/lib -type f` now returns 74, the same as the Mac's own find.
+`src/cmd/find.PORTING.md` has the other three forced changes, including a
+directory loop bounded by `lstat`'s `st_size` where only **fstat** reports the
+snapshot length here.
+
+## The world is a WORKING COPY of a golden image, and that is what makes it usable
+
+`make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
+touches it again. `tools/v8launch.sh` copies it to `$HOME/.v8` on first run,
+synthesizes `/etc/passwd` for whoever is running, creates `/usr/<name>`, and
+lands them there. Everything after that persists -- a file, a program installed
+into `/bin`, an edited `/etc` -- across launches, across the next
+`make install`, and across a `make clean` in the build tree.
+
+**IT CANNOT BE THE INSTALLED TREE ITSELF, and the first reason is fatal alone.**
+`$PREFIX` defaults under `/usr/local`, which is root-owned on macOS, so the
+world would be read-only to the person using it -- and this port's central
+claim is that V8 rebuilds V8, which means `Admin/Mk` has to be able to
+`cp prog /bin`. A read-only world cannot do the one thing the port exists to
+demonstrate.
+
+- **`v8 --reset`** is the only thing that destroys a working copy and requires
+  the literal word `RESET`; `--golden` enters the pristine image read-only;
+  `--pure` is `V8JAIL=strict`.
+- **A HOME DIRECTORY NEEDED BARE `/usr/` IN THE MOUNT TABLE.** `/etc/passwd`
+  gives a home of `/usr/<name>` and that path was the **Mac's**, so the world
+  had nowhere to live. Safe because the rule is a **union, not a capture**:
+  `rootpath()` returns the jailed path only `if (rootfs_has(buf))`, so
+  `/usr/include` and `/usr/local` still fall through. The eight specific
+  `/usr/*` rows above it are now redundant and kept, because first-match-wins
+  gives the same type and deleting them would lose their recorded reasons.
+- **AND THE LOGIN NEEDED NO CHANGE TO V8's SOURCE.** A first draft taught
+  `v8.c` to read `$HOME`; `tests/jail` caught it in the same run, because a
+  bare `v8` inherits the **Mac's** `HOME` and `chdir("/Users/...")` walks out
+  of the world -- `/Users` is not a mount-table prefix. `v8(1)` already takes
+  the directory as `argv[1]`, so the launcher passes it and `src/cmd/v8.c` is
+  untouched. **The environment is the launcher's to set and the argument is the
+  program's to take; crossing them made a host variable into a jail escape.**
+
+**`macos(1)` IS THE ESCAPE AND IT SWITCHES WORLDS, NOT BINARIES.** Measured:
+this world provides 81 commands and **62 share a name with one the Mac has** --
+`make cc sed sh grep sort ls cp test` among them -- so a native build started
+from inside finds V8's make and V8's cc. That is correct and is the premise;
+the fix is to make the escape *sayable*. It restores `$V8HOSTPATH` before
+exec'ing, because a wrapper that only located the Mac's `make` would still hand
+it a PATH whose first entries are 1985's, and make's own children would be
+wrong. `--pure` refuses it, which is the mode working rather than a gap.
+
+**THE USEFUL FORMULATION: native apps work, native BUILDS do not.** Running an
+app is one exec and `python3`, `git` and `node` do not collide at all; building
+software is hundreds of PATH lookups against exactly the 62 names V8 owns. So
+build on the Mac, work in V8 -- and `macos CMD` for the rest.
+
+**su(1) IS AUTHENTIC AND IT REFUSES, which is the answer to "real root or jail
+root" that neither option gave.** It is V8's own source, installs to `/etc`
+because `Admin/etcfiles` says so, and `su root` prints `Password: Sorry` --
+because `/etc/passwd` carries `*`, which no `crypt` output can equal. That is
+upstream's own convention for an account that cannot be logged into, not a
+refusal this port invented. `setuid(0)` beneath it is a raw host syscall and
+fails EPERM anyway. **There are three different uid-0s here and none of them is
+a login**: the host's (real, refused), `v8_foldid`'s in the streams/`/proc`
+half (root maps to root, non-root NEVER maps to root), and v8fsd's `u_uid = 0`,
+which is deliberate and argued at `shim/kern/sys/main.c:386`.
+
 ## Architecture: three layers, three different rules
 
 The single most important thing to get right is **which layer you are editing**,
@@ -3034,7 +3145,7 @@ not testable until it is installed.
   installed rootfs: **4187 invocations, 54 signal deaths, all SIGSEGV — 53
   `lex` and 1 `bcd`**, and every one of them is already argued somewhere as
   upstream's defect on upstream's hardware (`src/cmd/lex/PORTING.md:175-250`
-  for the 53, PLAN.md:3044 for `bcd`). `lex`'s 53 is *exactly* the number that
+  for the 53, PLAN.md:3323 for `bcd`). `lex`'s 53 is *exactly* the number that
   file predicts, and it explains why fixing the first of its three faults moved
   the count by zero: the probe feeds every program `/dev/null`, so all 53
   invocations also reach the empty-spec path and the 40 that used to die in
