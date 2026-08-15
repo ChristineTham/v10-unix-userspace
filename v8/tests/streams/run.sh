@@ -3478,6 +3478,13 @@ fi	# the fill section
 # whole section a property of the host's temp directory length.  The precondition
 # is MEASURED below rather than assumed, and reported when it does not hold.
 CDTMP=$(mktemp -d /tmp/v8cd.XXXXXX 2>/dev/null)
+# TRAPPED, because this one is the only scratch directory in the suite that is
+# NOT under $TMP and therefore not covered by the trap at the top of the file.
+# It cannot be: the whole reason it is under /tmp is that $TMPDIR is too long
+# for sun_path.  A killed run would otherwise leave a directory and a live
+# v8fsd behind, and "would this still pass on a tree that has never been used"
+# is a question this suite has already been caught by twice.
+trap 'kill $CDPID 2>/dev/null; rm -rf "$TMP" "$CDTMP"' EXIT
 if [ -z "$CDTMP" ] || [ ! -d "$CDTMP" ]; then
 	bad "5i: no /tmp directory for a short socket path"
 elif [ ${#CDTMP} -ge 90 ]; then
