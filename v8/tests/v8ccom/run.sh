@@ -957,8 +957,16 @@ echo "  -- and no pointer-returning call is truncated anywhere in the rootfs"
 R=$ROOT/rootfs
 # Every one of these is defined with NO return type -- K&R implicit int -- so
 # truncating its result is right.  Checked below, not asserted here.
+# ex(1) contributes four, and each was read before it was listed -- which is
+# the point of this list rather than a courtesy.  column() returns qcolumn()'s
+# `register int x'; tabcol() returns an int local; lineDOT() and lineDOL()
+# return lineno(), whose body is `return (a - zero)' -- a POINTER DIFFERENCE
+# narrowed to int, which is correct here because both operands index one
+# in-core line array and ex cannot hold 2^31 lines, and which is exactly the
+# shape that would be a defect if the operands were unrelated.
 INTFNS='_strlen _dysize _slength _maplow _length _width _sgn _roman _decml
-        _atoi _abc _read _jan1 _findcol _dolncnt _apack'
+        _atoi _abc _read _jan1 _findcol _dolncnt _apack
+        _column _tabcol _lineDOT _lineDOL'
 
 find "$R/bin" "$R/usr/bin" "$R/etc" "$R/lib" "$R/usr/lib" -type f -perm -u+x 2>/dev/null |
 while read -r p; do

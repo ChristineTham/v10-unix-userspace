@@ -2913,12 +2913,16 @@ sweep looked for the program's name, and the source is under the name of the
 program it is a link to. The most valuable interactive program in the system
 was written off by a listing that could not have found it.
 
-Importing it went better than expected and then stopped in an interesting
-place. **All twenty-eight objects compile under the 1985 compiler with no
-source change at all**, using upstream's own flags, and the program links with
-nothing imported from the host C library. What it does not yet do is work: it
-opens a file and reports it truthfully — `"f.txt" 2 lines, 12 characters` — and
-then executes no command and exits zero.
+Importing it went better than anyone had a right to expect. **All twenty-eight
+objects compile under the 1985 compiler with no source change at all**, using
+upstream's own flags; the program links with nothing imported from the host C
+library; and `ex`, `vi`, `view` and `edit` are installed as one inode, the way
+V8 shipped them. It edits: print, substitute, append, delete, write, with the
+file coming out exactly right each time. A nineteen-thousand-line BSD editor
+from 1981 needed nothing.
+
+The port needed three things, and that asymmetry is the whole story of this
+section.
 
 Getting that far turned up three bugs, and none of them is in `ex`. All three
 had been sitting in the port waiting for a consumer.
@@ -2957,18 +2961,55 @@ rather than something to emulate". They are twenty-four initialised integers in
 against `conf/devices` — the file the kernel build actually reads — which
 agrees row for row, discipline 6 being `ntty` in both.
 
-`ex` is imported and deliberately **not installed**, which is a state this
-build had never had before, so it is named in the test that enforces
-imported-implies-installed rather than quietly waived. An editor that silently
-does nothing is worse than an absent one; `w` is installed and says `No mem`,
-and that is the distinction.
+### The bug that was in the ruler
 
-The clue left for next time is the useful part. An instrumented build — the
-same sources plus three `write` calls — **does** execute commands and print the
-line. Behaviour that changes when you add debug output is not a missing
-feature; it is memory corruption or undefined behaviour moving under a changed
-layout. That is a different kind of hunt from the one that got it this far, and
-knowing which kind it is, is most of the work.
+There is a fourth thing to report, and it is the most useful one, because for
+several hours this section said something else. It said `ex` was imported and
+deliberately **not installed**, because it opened a file, reported it
+truthfully, and then executed no command and exited zero. It offered a clue
+that felt like a real finding: an instrumented build — the same sources plus
+three `write` calls — *did* execute commands, and behaviour that changes when
+you add debug output is the signature of memory corruption moving under a
+changed layout. That went into four documents, a test exclusion, and a commit
+message.
+
+None of it was true. `ex` had worked the entire time.
+
+The deadline wrapper I was running it under executed its argument as `"$@" &`,
+and **a backgrounded job in a non-interactive shell gets its standard input
+from `/dev/null`**. So `ex` read end-of-file immediately, did nothing, and
+exited zero — which is indistinguishable from a broken editor. The control is
+three lines and takes a second: `printf 'X\n' | sh -c 'cat & wait'` prints
+nothing at all.
+
+The clue was worse than useless, because it was a comparison across two
+variables rather than one: the instrumented build had been run *directly* and
+the clean build *through the wrapper*. The instrumentation was never the
+difference. And the cheap check that would have killed the theory outright went
+unrun — ten invocations of the same binary produce byte-identical output, and
+memory corruption is rarely that well-behaved.
+
+This project has a rule that an instrument you wrote is a suspect, and it earned
+it three separate times in one sitting: the same wrapper had earlier reported a
+genuine infinite loop as a clean exit, and a shell variable holding seven
+compiler flags had gone through unquoted — `zsh` does not word-split — making
+"twenty-seven of twenty-eight objects compile" a measurement of compiling the
+editor with no options at all. Three instruments, three false readings, and the
+one that cost real work is the one that got written down before it was checked.
+
+The honest version of the rule is not "be careful with harnesses". It is:
+**a recorded diagnosis is a hypothesis, including the one you wrote an hour
+ago**, and the moment a finding is surprising enough to be worth documenting is
+exactly the moment to spend one more command confirming it.
+
+What survived the correction is worth noting too. The three port bugs above are
+real and were found on the way; they are fixed and tested regardless of how the
+ruler was bent. And the carriage returns `ex` emits after each printed line —
+which looked like a fourth defect — turned out to be its own `optimize` option:
+`pstart()` clears `CRMOD` on the output descriptor so the kernel stops
+supplying the return and the editor does it itself. That is reachable from the
+user side, which is what makes it a test rather than a paragraph: `set
+nooptimize` puts it back, and both halves are asserted now.
 
 ## What is left
 
@@ -2988,13 +3029,14 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **134** of the 286 V8 shipped, and the ones still missing mostly
+port installs **138** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
-- **Finishing the screen editor.** `ex`/`vi` is imported, compiles under the
-  1985 compiler with no source change, links clean, and does not yet execute a
-  command. It is described above; the next step is a memory-corruption hunt
-  rather than a porting one, and the tell is already in hand.
+- **Visual mode.** `ex` edits; invoked as `vi` it correctly answers that open
+  and visual must be used interactively, which is right and also the limit of
+  what can be tested without a pseudo-terminal. Driving the screen half — and
+  with it `tgoto`, the cursor-addressing code that has a probe but no real
+  consumer — needs a pty in the suite.
 - **The rest of the terminal stack.** `libcurses` is 43 files and now has the
   library it sits on. The launcher still sets no `TERM`, which is a one-line
   decision that has to be made honestly rather than defaulted.

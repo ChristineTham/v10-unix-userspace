@@ -1740,8 +1740,68 @@ $(BINDIR)/ul: $(BUILD)/ul/ul.o $(BUILD)/termlib/libtermcap.a $(V8DEPS)
 
 UL_INSTALL = $(ROOTFS)/$(call v8dest,ul)/ul
 
-V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul
-V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL)
+# ---------------------------------------------------------------------------
+# ex(1) -- which IS vi(1).  The largest program in this port: 28 objects,
+# 19358 lines, and the second consumer of libtermcap.
+#
+# THE OBJECT LIST IS UPSTREAM'S OBJS, SPELLED OUT, minus exactly one member.
+# `strings.o' is the xstr artefact: upstream compiles every file through
+# `cc -E | xstr -c -', which lifts string literals into a shared table, and
+# then builds strings.o by rewriting assembler with an ed script -- the same
+# read-only-shared-text optimisation that stops sh and cpp at rung 5 and that
+# arm64 Mach-O structurally cannot do.  It is a pure SIZE optimisation and
+# nothing depends on it: measured, the only references to `xstr' in the whole
+# directory are two comments and the `char xstr[1];' dummies in expreserve and
+# exrecover, which exist precisely because those two do NOT go through it.
+#
+# THE FLAGS ARE UPSTREAM'S, including -DVFORK.  Its makefile is
+# `OPTIONS= -DCRYPT -DLISPCODE -DCHDIR -DUCVISUAL -DVFORK -DVMUNIX -DSTDIO'
+# with `CFLAGS= -DTABS=8 $(OPTIONS)'.  VFORK is safe rather than tolerated:
+# ex's one vfork (ex_unix.c:149) is the ordinary fork-and-exec, and the shim
+# maps vfork to fork with the reasoning at syscall.c:1550 -- "plain fork is
+# always a correct substitute and never a dangerous one".
+#
+# Do NOT spell these as a glob.  ex*.c also matches exrecover.c and
+# expreserve.c, which are SEPARATE programs with their own main().
+EXSRC  = $(SRC)/cmd/ex
+EXOPTS = -DCRYPT -DLISPCODE -DCHDIR -DUCVISUAL -DVFORK -DVMUNIX -DSTDIO -DTABS=8
+EX_NAMES = ex ex_addr ex_cmds ex_cmds2 ex_cmdsub ex_data ex_extern ex_get \
+           ex_io ex_put ex_re ex_set ex_subr ex_temp ex_tty ex_unix \
+           ex_v ex_vadj ex_vget ex_vmain ex_voper ex_vops ex_vops2 ex_vops3 \
+           ex_vput ex_vwind printf bcopy
+EX_OBJ = $(patsubst %,$(BUILD)/ex/%.o,$(EX_NAMES))
+
+$(BUILD)/ex/%.o: $(EXSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) $(EXOPTS) -I$(EXSRC) -c -o $@ $<
+
+# Every object includes ex.h, which includes ex_tune.h and ex_vars.h; ex_tty.h
+# and the rest are named because a header is invisible to the .d files a rule
+# like this does not generate.  Upstream says `${OBJS}: ex_vars.h' and stops
+# there, which is one edge of the several that exist.
+$(EX_OBJ): $(EXSRC)/ex.h $(EXSRC)/ex_tune.h $(EXSRC)/ex_vars.h
+
+$(BINDIR)/ex: $(EX_OBJ) $(BUILD)/termlib/libtermcap.a $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(EX_OBJ) \
+	    $(BUILD)/termlib/libtermcap.a $(V8LIBS)
+	@echo "built $@"
+
+# THE THREE OTHER NAMES ARE HARD LINKS, and the set is MEASURED rather than
+# taken from the makefile.  Upstream's install arms variously mention vi, view,
+# edit and `e'; the shipped tree has usr/bin/{ex,vi,view,edit} at 116736 bytes
+# each and NO usr/bin/e.  So `e' is an arm that was never run, and four names
+# is what V8 actually had.
+EX_LINKS = vi view edit
+EX_INSTALL = $(ROOTFS)/$(call v8dest,ex)/ex \
+             $(patsubst %,$(ROOTFS)/$(call v8dest,ex)/%,$(EX_LINKS))
+
+$(patsubst %,$(ROOTFS)/$(call v8dest,ex)/%,$(EX_LINKS)): $(ROOTFS)/$(call v8dest,ex)/ex
+	@rm -f $@ && ln $< $@
+
+V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex
+V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
+                   $(EX_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

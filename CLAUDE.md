@@ -1406,12 +1406,15 @@ again:
   `u_uid`) arriving in a field narrower still, on a window size a Terminal.app
   user crosses routinely.
 
-**AND ex/vi IS IMPORTED, BUILDS AND IS DELIBERATELY NOT INSTALLED -- IT FOUND
-THREE PORT BUGS AND NONE OF THEM IS IN ex.** All 28 objects compile under v8cc
-with **no source change** and upstream's own `-DCRYPT -DLISPCODE -DCHDIR
--DUCVISUAL -DVMUNIX -DSTDIO -DTABS=8`; it links with an empty `nm -u`; it opens
-a file and reports it truthfully; and it then executes no command and exits 0.
-`src/cmd/ex/PORTING.md`. Six things generalise:
+**AND ex/vi IS IN, INSTALLED UNDER ALL FOUR NAMES, AND IT EDITS -- WITH ZERO
+SOURCE CHANGES.** All 28 objects compile under v8cc with upstream's own
+`-DCRYPT -DLISPCODE -DCHDIR -DUCVISUAL -DVFORK -DVMUNIX -DSTDIO -DTABS=8`, the
+binary links with an empty `nm -u`, and `ex`, `vi`, `view` and `edit` are one
+inode as V8 shipped them. Print, substitute, append, delete and write all
+produce exactly the right file. **Every fix it needed was OUTSIDE ex**, which
+is the headline: a 19358-line 1981 BSD program needed nothing, and the port
+needed three things. `src/cmd/ex/PORTING.md`. Seven things generalise, and the
+fourth is the most expensive lesson in this file:
 
 - **`<varargs.h>` WAS STILL 1985's, AND THE CLASS WAS NEVER UNKNOWN.**
   `va_arg` strode `sizeof(mode)` -- 4 for an `int` -- where v8cc spills
@@ -1447,14 +1450,31 @@ a file and reports it truthfully; and it then executes no command and exits 0.
   `getpass` shape again. Verified before trusting, because a table can be dead
   (`dev/conf.c`): `conf/devices` -- the file the BUILD reads -- agrees row for
   row, including `line-discipline 6 ntty` against `int ntty_ld = 6`.
-- **A PROGRAM CAN BE IMPORTED AND DELIBERATELY NOT INSTALLED, and that is a
-  NAMED case in `tests/wavea` rather than a waiver.** An editor that silently
-  does nothing is worse than an absent one; `w` is installed and says
-  `No mem`, and telling you it cannot answer is the whole distinction.
-- **BEHAVIOUR THAT CHANGES WHEN YOU ADD DEBUG OUTPUT IS NOT A MISSING
-  FEATURE.** The same sources plus three `write(2)` calls DO execute `p` and
-  print the line. That is memory corruption or UB moving under a changed
-  layout, and knowing which kind of hunt is left is most of the work.
+- **A HARNESS THAT BACKGROUNDS ITS ARGUMENT EATS STDIN, AND THE PROGRAM GETS
+  THE BLAME. THIS COST A WHOLE DIAGNOSIS, FOUR DOCUMENTS AND A TEST
+  EXCLUSION.** ex was recorded here as "executes no command and exits 0" --
+  a phantom. The deadline wrapper ran `"$@" &`, and **a backgrounded job in a
+  non-interactive shell gets its stdin from `/dev/null`**, so ex read EOF
+  immediately. Three-line control: `printf 'X\n' | sh -c 'cat & wait'` prints
+  nothing. Deadline helpers elsewhere in this tree are fine because they wrap
+  programs that take no stdin; the moment one does, the wrapper is not
+  transparent.
+  - **AND THE "PROOF" OF CORRUPTION WAS A TWO-VARIABLE COMPARISON.** The
+    recorded clue was that an instrumented build -- same sources plus three
+    `write(2)` calls -- DID execute commands, which reads as UB moving under a
+    changed layout. It changed two things: the instrumented build was run
+    **directly** and the clean one **through the wrapper**. The
+    instrumentation was never the difference.
+  - **THE CHEAP TELL WAS UNREAD: RUN IT TEN TIMES.** Ten runs of the same
+    binary gave byte-identical output. Corruption is rarely that stable, and
+    determinism costs one command to measure. Do it before writing the word
+    "corruption" down.
+  - **THIRD INSTRUMENT-AUTHORED FALSE FINDING IN ONE SESSION**, the others
+    being the same wrapper reporting a hang as a clean exit and `$OPTS`
+    unquoted under zsh. The rule that *an instrument you wrote is a suspect*
+    went three for three, and the expensive one is the one that got written
+    into four documents before anyone checked it. **Verify a recorded
+    diagnosis before building on it** -- including your own, from an hour ago.
 - **AND `$OPTS` UNQUOTED COST A WHOLE MEASUREMENT, WHICH THIS FILE WARNS
   ABOUT.** zsh does not word-split, so seven `-D` flags went through as ONE
   argv element and `VMUNIX` was never defined -- making "27 of 28 objects
@@ -1464,6 +1484,16 @@ a file and reports it truthfully; and it then executes no command and exits 0.
   in each arm of `#ifndef VMUNIX`, so **the line number named which branch had
   been taken**. Run loops under `sh`, and when two runs of "the same" command
   disagree, find the byte that differs before theorising.
+- **AND THE CARRIAGE RETURNS ARE ex's OWN, REACHABLE FROM THE USER SIDE.** `p`
+  output is `aa\n\r`, identically for five terminal types and an unset `TERM`,
+  so it is neither the shim nor termcap: `pstart()` (`ex_put.c:852`) clears
+  **CRMOD** on fd 1, the kernel stops mapping `\n` to `\r\n`, and ex supplies
+  the CR itself. That is upstream's `optimize` option and nothing about it is
+  machine-dependent. It is a TEST rather than a sentence because `set
+  nooptimize` takes the same early return `pstart()` takes when termcap says
+  `NONL`, and the CRs vanish -- both asserted in `tests/wavea`. **Before
+  calling an output convention a port defect, look for the option that turns
+  it off.**
 
 **AND `src/v8/etc/` BECAME `src/etc/`, BECAUSE THE IMPORT TOOL AND THE TREE HAD
 DISAGREED SINCE THE RELEASE SPLIT.** `destfor()` maps `v8/etc/*` to
@@ -1564,7 +1594,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 134 installed**, stable.
+**286 shipped, 138 installed**, stable.
 
 ## Architecture: three layers, three different rules
 

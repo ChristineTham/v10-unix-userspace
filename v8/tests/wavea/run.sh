@@ -576,26 +576,6 @@ for d in "$ROOT"/src/cmd/*/; do
 	case "$name" in
 	# built into the toolchain rather than installed under their own name
 	ccom|cc) continue ;;
-	# ex(1) -- IMPORTED AND DELIBERATELY NOT INSTALLED, which is a state this
-	# guard has never had before and which is named rather than waived.
-	#
-	# All 28 objects compile under v8cc with no source change and the program
-	# links with an empty `nm -u', so it is past every gate that stopped the
-	# other unported programs.  What it is not yet is CORRECT: it opens a
-	# file and reports it truthfully -- `"f.txt" 2 lines, 12 characters',
-	# which is already more than it managed before the varargs fix -- and
-	# then executes no command, returning 0.
-	#
-	# It is not installed because an editor that silently does nothing is
-	# worse than an absent one.  `w' says "No mem" and IS installed, and the
-	# distinction is exactly that: w tells you it cannot answer.
-	#
-	# The state is recorded because the next person needs the clue rather
-	# than the conclusion: an instrumented build -- the same sources plus
-	# three write(2) calls -- DOES execute `p' and print the line.  Behaviour
-	# that changes when debug output is added is memory corruption or UB
-	# moving under the layout, not a missing feature.  src/cmd/ex/PORTING.md.
-	ex) continue ;;
 	esac
 	find "$V8ROOT" -name "$name" -type f -perm -u+x 2>/dev/null | grep -q . ||
 		dmissing="$dmissing $name"
@@ -1037,6 +1017,77 @@ if "$CC" -c -o tgotoprobe.o "$ROOT/tests/wavea/tgotoprobe.c" >tgp.log 2>&1 &&
 else
 	fail=$((fail+2)); echo "FAIL tgotoprobe (build)"; head -3 tgp.log
 fi
+
+# ---------------------------------------------------------------------------
+# ex(1) -- which IS vi(1).  The largest program in this port, and the first
+# here that edits rather than filters.
+#
+# NEVER RUN THESE THROUGH A BACKGROUNDING WRAPPER.  A deadline helper that
+# does `"$@" &' gives the child /dev/null for stdin in a non-interactive
+# shell, so ex reads EOF, executes nothing and exits 0 -- which is
+# indistinguishable from a broken editor and was diagnosed as one for a whole
+# session.  ex terminates on its own here: every case ends in `q'.
+printf 'alpha\nbeta\ngamma\n' > ex.in
+exrun() { # exrun <file> <commands...>
+	f=$1; shift
+	printf '%s\n' "$@" | TERM=vt100 "$(v8which ex)" "$f" 2>&1
+}
+
+# The status line, with the counts DERIVED from the file rather than typed.
+# ex reports lines and characters, and wc knows both independently.
+check 'ex reports the file it opened' \
+    "\"ex.in\" $(wc -l < ex.in | tr -d ' ') lines, $(wc -c < ex.in | tr -d ' ') characters" \
+    "$(exrun ex.in q | head -1)"
+
+# THE BUFFER, and the carriage returns are ex's and not a defect.
+#
+# By default `p' output comes out `aa\n\r bb\n\r'.  That is ex's OPTIMIZE
+# option: pstart() clears CRMOD on fd 1 -- `tty.sg_flags = normf &
+# ~(ECHO|XTABS|CRMOD)' -- so the kernel stops mapping \n to \r\n and ex
+# supplies the CR itself.  Nothing about it is machine-dependent, and it is
+# reachable from the user side, which is what makes it testable rather than a
+# sentence: `set nooptimize' takes the same early return pstart() takes when
+# termcap says NONL, and the CRs vanish.  Both are asserted, so a change to
+# either is a failure rather than a surprise.
+check 'ex prints the buffer' 'alpha beta gamma' \
+    "$(exrun ex.in '1,$p' q | tail -n +2 | tr -d '\r' | tr '\n' ' ' | sed 's/ $//')"
+check 'and supplies its own CR, because optimize clears CRMOD' 'aa|bb|' \
+    "$(printf 'aa\nbb\n' > ex.crm; exrun ex.crm '1,$p' q | tail -n +2 |
+       tr '\n\r' '|@' | sed 's/@//g')"
+check 'set nooptimize gives it back to the kernel' 'aa|bb|' \
+    "$(exrun ex.crm 'set nooptimize' '1,$p' q | tail -n +2 | tr '\n\r' '|@')"
+
+# THE EDIT ITSELF, asserted on the FILE and not on ex's exit status -- rm(1)
+# taught this port that a 1985 tool's status is not an instrument.
+cp ex.in ex.work
+exrun ex.work '2s/beta/BETA/' w q > /dev/null
+check 'ex substitutes and writes' 'alpha BETA gamma' \
+    "$(tr '\n' ' ' < ex.work | sed 's/ $//')"
+exrun ex.work '$a' 'delta' . w q > /dev/null
+check 'ex appends' 'alpha BETA gamma delta' \
+    "$(tr '\n' ' ' < ex.work | sed 's/ $//')"
+exrun ex.work 1d w q > /dev/null
+check 'ex deletes' 'BETA gamma delta' \
+    "$(tr '\n' ' ' < ex.work | sed 's/ $//')"
+
+# THE FOUR NAMES ARE ONE BINARY, which is what V8 shipped: usr/bin/{ex,vi,
+# view,edit} are 116736 bytes each and there is NO usr/bin/e, so the makefile
+# arm that mentions `e' was never the one that ran.  Compared by INODE,
+# because four copies would pass a cmp and would not be a hard link.
+check 'ex vi view edit are one inode' '1' \
+    "$(cd "$V8ROOT/usr/bin" && ls -i ex vi view edit 2>/dev/null |
+       awk '{print $1}' | sort -u | wc -l | tr -d ' ')"
+
+# AND THE LINK IS LOAD-BEARING, not decoration: the binary reads argv[0] and
+# becomes a screen editor when called vi.  That is also why this is the case
+# to assert -- it proves the link reached the program, which an inode
+# comparison alone does not.
+check 'invoked as vi it demands a terminal' 'interactively' \
+    "$(printf 'q\n' | TERM=vt100 "$V8ROOT/usr/bin/vi" ex.in 2>&1 |
+       grep -o 'interactively' | head -1)"
+check 'invoked as ex it does not' '' \
+    "$(printf 'q\n' | TERM=vt100 "$(v8which ex)" ex.in 2>&1 |
+       grep -o 'interactively' | head -1)"
 
 # ---------------------------------------------------------------------------
 # THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.

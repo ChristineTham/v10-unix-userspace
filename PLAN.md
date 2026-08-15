@@ -3067,20 +3067,21 @@ puns in a single file.
     `/usr/lib/libtermcap.a`, with `libtermlib.a` a hard link to it as upstream's
     install makes it, and the authentic 44669-byte database installed as data.
     `ul(1)` is in and reads it. `src/lib/libtermlib/PORTING.md`.
-  - **`ex`/`vi` — IMPORTED, BUILDS, NOT YET CORRECT.** All 28 objects compile
-    under v8cc with **no source change** and upstream's own flags; it links
-    with an empty `nm -u`; it opens a file and reports it truthfully and then
-    executes no command. Deliberately **not installed** — a named case in
-    `tests/wavea`, because an editor that silently does nothing is worse than
-    an absent one. It found three port bugs, all fixed and none in ex:
-    `<varargs.h>` still striding 4 bytes over 8-byte slots (the only
-    `va_alist` consumer in the tree, so the header had never been exercised),
-    `exit`/`_exit` sharing one archive member, and `tty_ld`/`ntty_ld` recorded
-    as kernel state when they are 24 ints in an unimported `libc/gen/linedis.c`.
-    **The next step is a memory-corruption hunt, not a porting one**: an
-    instrumented build — same sources plus three `write(2)` calls — does
-    execute commands. `src/cmd/ex/PORTING.md` has the whole state, including
-    why `xstr` is skipped and what `TERM=dumb` changes.
+  - ~~**`ex`/`vi`**~~ — **DONE.** All 28 objects compile under v8cc with **no
+    source change** and upstream's own flags; empty `nm -u`; installed as
+    `ex`, `vi`, `view`, `edit`, one inode, as V8 shipped them. It edits —
+    print, substitute, append, delete, write. It found three port bugs, all
+    fixed and none in ex: `<varargs.h>` still striding 4 bytes over 8-byte
+    slots (the only `va_alist` consumer in the tree, so the header had never
+    been exercised), `exit`/`_exit` sharing one archive member, and
+    `tty_ld`/`ntty_ld` recorded as kernel state when they are 24 ints in an
+    unimported `libc/gen/linedis.c`. **A fourth "bug" was in the harness**: a
+    deadline wrapper that backgrounds its argument gives it `/dev/null` for
+    stdin, which read as an editor that executes nothing — see
+    `src/cmd/ex/PORTING.md`, which keeps the whole wrong diagnosis on the
+    record because it cost four documents and a test exclusion.
+    Still open there: visual mode needs a pty; `exrecover`/`expreserve` are
+    not built; `xstr` is skipped, so ex cannot claim rung 5.
   - **`libcurses`** (43 files) now that the library under it exists.
   - **`TERM` in the launcher.** The world has a termcap database and the
     launcher still exports no `TERM`, so a screen program has nothing to ask.
