@@ -2015,6 +2015,52 @@ check 'and libc ALONE does not, which is why the device library is needed' 'shor
     "$([ -n "$(comm -23 tekneed.txt libchave.txt | grep -v '^__')" ] && echo short || echo no)"
 
 # ---------------------------------------------------------------------------
+# qed -- Thompson's editor, ed's ancestor, and the second editor here after
+# ex/vi.  Driven by a HERE-DOC on stdin and never through a backgrounding
+# wrapper: src/cmd/ex/PORTING.md spends a page on a deadline helper that gave
+# its argument /dev/null for stdin, which read as an editor executing nothing
+# and cost four documents and a test exclusion.
+qedbin=$(v8which qed)
+mkdir -p qedt && ( cd qedt
+  printf 'alpha\nbeta\ngamma\n' > f.txt
+  printf 'e f.txt\n1,$p\n2s/beta/BETA/\n$a\ndelta\n.\nw\nq\n' |
+      "$qedbin" > out.txt 2>&1 )
+check 'qed reads a file and reports its size' '17' \
+    "$(sed -n 1p qedt/out.txt)"
+check 'qed prints, substitutes and appends' 'alpha BETA gamma delta' \
+    "$(tr '\n' ' ' < qedt/f.txt | sed 's/ $//')"
+check 'and it wrote the new byte count' '1' \
+    "$(grep -c '^23$' qedt/out.txt)"
+
+# THE CASE THAT MATTERS IS THE SHELL ESCAPE, because that is the path the LP64
+# fix is on.  main.c:243 installs the real function `interrupt' for SIGINT;
+# getfile.c:218 saves the previous handler across a `!command' and :246 puts it
+# back.  Upstream stores it in an `int', which on a VAX is exact and here keeps
+# the low 32 bits of a text address -- measured, a handler at 0x100ecc660 comes
+# back as 0xecc660.  Widened to `long'; src/cmd/qed/vars.h says why it is not a
+# function-pointer type (savint doubles as a -1 sentinel).
+( cd qedt && printf 'e f.txt\n!echo escaped\n1,$p\nq\n' | "$qedbin" > esc.txt 2>&1 )
+check 'qed runs a shell escape through V8 sh' 'escaped' \
+    "$(grep -x escaped qedt/esc.txt)"
+check 'and the buffer survives it' 'alpha' \
+    "$(grep -x alpha qedt/esc.txt | head -1)"
+# The truncation itself is not observable from qed's output -- restoring a bad
+# handler only bites on a later ^C, which a suite cannot deliver reliably -- so
+# it is asserted on the DECLARATIONS, which is where the defect lives and where
+# a regression would reappear.  All four, because misc.c re-declares savint and
+# widening the definition alone would leave that unit reading four bytes of
+# eight.
+#
+# FIVE, not four: onhup, onquit, onintr, savint, onbpipe.  The first draft of
+# this case said four and went red, which is the case correcting the sentence
+# above it rather than the code -- onbpipe is a local in Unix() and is easy to
+# miss when counting from the header alone.
+check 'the five signal-handler variables are pointer-width' '5' \
+    "$(cat $(printf '%s ' "$ROOT/src/cmd/qed/vars.h" "$ROOT/src/cmd/qed/getfile.c" \
+                          "$ROOT/src/cmd/qed/misc.c") |
+       grep -cE '^(long|	long|extern long)[[:blank:]]+(onhup|onquit|onintr|savint|onbpipe)')"
+
+# ---------------------------------------------------------------------------
 # THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.
 #
 # Citations are swept, build edges are asserted, imported == installed is

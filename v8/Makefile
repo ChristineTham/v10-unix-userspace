@@ -2267,7 +2267,30 @@ $(BINDIR)/tek: $(BUILD)/plot/driver.o $(BUILD)/lib4014/lib4014.a $(V8DEPS)
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/plot/driver.o \
 	    $(BUILD)/lib4014/lib4014.a $(V8LIBS)
 
-PLOT_NAMES   = graph prof tek
+# ---------------------------------------------------------------------------
+# qed -- Thompson's editor, ed's ancestor.  Fourteen sources and vars.h, and
+# upstream's makefile is one dependency line (`$(FILES): vars.h') plus a link.
+#
+# ITS TARGET IS `a.out', which is eqn's shape: `cc $(FILES)' with no -o, then
+# `cp a.out /usr/bin/qed' in the install arm.  PLAN.md records eqn being
+# recorded as rung-5 blocked "on a link failure" when the real cause was asking
+# make for a target its makefile never names.  Nothing here depends on that --
+# our rule names the binary directly -- but it is why the destination sweep in
+# tests/wavea sees `a.out' rather than `qed' for this directory.
+QEDSRC   = $(SRC)/cmd/qed
+QED_NAME = address blkio com getchar getfile glob main misc move pattern \
+           putchar setaddr string subs
+QED_OBJ  = $(patsubst %,$(BUILD)/qed/%.o,$(QED_NAME))
+$(BUILD)/qed/%.o: $(QEDSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(QEDSRC) -c -o $@ $<
+# Upstream's whole dependency statement, copied rather than widened.
+$(QED_OBJ): $(QEDSRC)/vars.h
+$(BINDIR)/qed: $(QED_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(QED_OBJ) $(V8LIBS)
+
+PLOT_NAMES   = graph prof tek qed
 PLOT_BUILT   = $(patsubst %,$(BINDIR)/%,$(PLOT_NAMES))
 PLOT_INSTALL = $(call v8install,$(PLOT_NAMES)) \
                $(ROOTFS)/usr/lib/libplot.a $(ROOTFS)/usr/lib/lib4014.a

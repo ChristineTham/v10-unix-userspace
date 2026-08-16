@@ -964,9 +964,20 @@ R=$ROOT/rootfs
 # narrowed to int, which is correct here because both operands index one
 # in-core line array and ex cannot hold 2^31 lines, and which is exactly the
 # shape that would be a defect if the operands were unrelated.
+# qed(1) contributes two, and both were read rather than assumed.  getnum() is
+# `register n; while((i=posn(nextchar(),digits))>=0) n = n*10+i; return(n)' --
+# a decimal parser with an int accumulator; getsigned() is `return(getnum()*sign)'.
+# Neither can return a pointer, so truncating the result is right.
+#
+# Worth noting WHY they showed up at all, because it is not a defect in qed: an
+# implicit-int function whose result is used in int arithmetic is exactly what
+# this sweep is built to see, and the list is what separates "returns an int"
+# from "returns a pointer nobody declared".  qed is the first program here to
+# add to it since ex.
 INTFNS='_strlen _dysize _slength _maplow _length _width _sgn _roman _decml
         _atoi _abc _read _jan1 _findcol _dolncnt _apack
-        _column _tabcol _lineDOT _lineDOL'
+        _column _tabcol _lineDOT _lineDOL
+        _getnum _getsigned'
 
 find "$R/bin" "$R/usr/bin" "$R/etc" "$R/lib" "$R/usr/lib" -type f -perm -u+x 2>/dev/null |
 while read -r p; do

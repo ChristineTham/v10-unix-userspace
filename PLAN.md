@@ -3052,7 +3052,7 @@ restores the host PATH and execs. Bare `/usr/` joined the mount table so a home
 directory exists inside the world; it is a union, so `/usr/include` still falls
 through. Exercised end to end, not asserted.
 
-**7b. Wave A2 — IN PROGRESS, 91 → 160.** Batch 1: 37 single-file commands, all
+**7b. Wave A2 — IN PROGRESS, 91 → 161.** Batch 1: 37 single-file commands, all
 compiling with zero failures. Batch 2: `diff` (two programs and three derived
 `-D` install paths), `cb`, `su`, `compress`, plus `crypt`, `getpwnam`,
 `getgrgid` and `getpass` into libc. The suites did the triage and caught three
@@ -3252,6 +3252,34 @@ upstream**; not one source change in any of the five components.
     devices, and `/usr/bin/plot` — a 16-line dispatcher V8 ships with **no
     source**, so installing it would make it the first program in this world
     the port did not build.
+
+**7b-qed. Batch 2e, first of four.** 160 → 161. Thompson's editor, twelve of
+fifteen files byte-identical, and one defect with five faces.
+
+  - **FIVE VARIABLES HOLD A SIGNAL HANDLER IN AN `int`.** signal(2) returns the
+    previous handler -- a function pointer -- and qed saves it across every
+    `!command', `<', `>' and `|'. LIVE rather than latent: `main.c:243'
+    installs the real function `interrupt' for SIGINT, so the value truncated
+    is a text address, and `getfile.c:246' / `misc.c:99' hand it back.
+    Measured: a handler at 0x100ecc660 returns as 0xecc660. The yylval shape in
+    a VARIABLE rather than a grammar.
+  - **`long', not a function-pointer type**, because `savint' doubles as a
+    sentinel -- `misc.c:98' is `if(savint>=0)' with -1 meaning nothing saved.
+  - **AND THE SAME VARIABLE IS DECLARED IN TWO FILES**, defined in `getfile.c'
+    and re-declared in `misc.c:52' as an implicit-int `extern' inside a
+    function, with no header between them. Widening one would have left the
+    other reading four bytes of eight -- silently, and correctly below 2^31.
+    tests/deps carries a `nodep' saying the build graph cannot couple them.
+  - **THE DIAGNOSTIC DID NOT CHANGE.** v8cc warns `illegal pointer/integer
+    combination' at all five sites before AND after, because the warning is
+    about kind and not width. A warning count would have called the fix a
+    no-op; only the measurement separates them.
+  - Clean on every other class: `sbrk' is declared (`vars.h:185'), the option
+    loop is `argc > 1' guarded, `blkio.c:88' casts its seek correctly.
+    `src/cmd/qed/PORTING.md`.
+  - Remaining in 2e: `lint' (costing first -- it consumes ccom pass-1 output),
+    `struct' (decide whether it belongs in batch 3), `csh' (decide whether the
+    world wants two shells).
 
 **7c. What is left, in order of unlock:**
 

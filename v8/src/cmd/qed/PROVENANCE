@@ -1,0 +1,22 @@
+# Provenance for v8/src/cmd/qed
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+e82ce59339790bfb03849d547af1bc2b9d865184  v8/usr/src/cmd/qed/blkio.c
+8db15a17361fa280ebf9fe87d4f1fcc570067778  v8/usr/src/cmd/qed/makefile
+bd5b7fba364ac3d003048b1594c4be7d562a90f4  v8/usr/src/cmd/qed/move.c
+0d0075eac51170e347f9f66ab8c838cf81296f3e  v8/usr/src/cmd/qed/string.c
+8e7c77531fdf87688a6bbb6b8c94d70fb873dcaa  v8/usr/src/cmd/qed/glob.c
+7a391ac21fb9874a548318a888f52a44c341aabb  v8/usr/src/cmd/qed/subs.c
+f25afc3d5ad2cad4fbe69ddd62e6065524efd7b7  v8/usr/src/cmd/qed/getfile.c
+a2cd255db3ee0811b52829f22defbc25c6990eca  v8/usr/src/cmd/qed/putchar.c
+016205c0471befefd3850baff99d1fb6506f9909  v8/usr/src/cmd/qed/getchar.c
+a1ac983e79099e5c2cf3262461190c1952611e73  v8/usr/src/cmd/qed/main.c
+3395665aaac4fccf6e7403a3e2ab1457020958d5  v8/usr/src/cmd/qed/setaddr.c
+b736ceb02ad71546175b93e7a18293de04996eca  v8/usr/src/cmd/qed/vars.h
+efd54cb32ee1d824b6293882b81138206d6628a3  v8/usr/src/cmd/qed/address.c
+8494b0596ae23343d565bdc4a09032df7bd13112  v8/usr/src/cmd/qed/misc.c
+ed91133699933c9348ffaf9eecc8441cdac9f177  v8/usr/src/cmd/qed/com.c
+2fc2cdaad514ceee72f66a5f6ab88ec9d07ea40a  v8/usr/src/cmd/qed/pattern.c

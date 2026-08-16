@@ -557,6 +557,24 @@ dep 'lib4014.a -> tek'          $B/lib4014/lib4014.a          $B/bin/tek
 dep 'driver source -> tek'      src/cmd/plot/driver.c         $B/plot/driver.o
 nodep 'lib4014 is not a graph edge' src/libplot/lib4014/tek.c.a $B/graph/graph.o
 
+# --- qed: Thompson's editor -------------------------------------------------
+# Upstream's whole dependency statement is one line -- `$(FILES): vars.h' --
+# and it is copied rather than widened, which is the same discipline m4y.o and
+# hoc's math.o get.  vars.h is where the four signal-handler variables live, so
+# the edge is load-bearing: widening them from int to long is a change every
+# object has to see.
+dep 'qed vars.h -> main.o'     src/cmd/qed/vars.h              $B/qed/main.o
+dep 'qed vars.h -> getfile.o'  src/cmd/qed/vars.h              $B/qed/getfile.o
+dep 'qed vars.h -> subs.o'     src/cmd/qed/vars.h              $B/qed/subs.o
+dep 'qed source -> object'     src/cmd/qed/blkio.c             $B/qed/blkio.o
+dep 'qed install'              $B/bin/qed                      rootfs/usr/bin/qed
+# misc.c re-declares savint, which getfile.c DEFINES.  There is no header
+# between them -- upstream's extern is inside error() -- so make cannot express
+# the coupling and neither can this file.  The nodep records that it is a real
+# relationship the build graph does not carry, which is why the PORT comment in
+# misc.c is the only thing keeping the two in step.
+nodep 'getfile.c is not a misc.o edge' src/cmd/qed/getfile.c   $B/qed/misc.o
+
 # --- Phase 4: libkmemu, and the edges that keep it out of everything else ---
 dep 'kmemu source -> archive'  shim/libkmemu/utmp.c            $B/kmemu/libkmemu.a
 dep 'kmemu header -> archive'  shim/libkmemu/kmemu.h           $B/kmemu/libkmemu.a

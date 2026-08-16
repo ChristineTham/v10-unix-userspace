@@ -3820,8 +3820,39 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **160** of the 286 V8 shipped, and the ones still missing mostly
+port installs **161** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
+
+### qed, and a signal handler that lost half its address
+
+Thompson's editor — `ed`'s ancestor, fourteen sources — went in next, and twelve
+of its fifteen files are byte-identical. The three that changed are one defect
+with five faces.
+
+`signal(2)` returns the *previous* handler, a function pointer, and `qed` saves
+it across a shell escape to put back afterwards. Upstream stores it in an `int`,
+which is exact on a VAX and keeps the low 32 bits here. It is not latent:
+`main.c` installs the real function `interrupt` for SIGINT, so by the time a
+`!command` saves the handler the value being truncated is a text address, and
+the next `^C` after that escape jumps to half a pointer. Measured with a program
+that does exactly what `qed` does — a handler at `0x100ecc660` comes back as
+`0xecc660`.
+
+Two details are worth more than the fix. The variable had to become `long`
+rather than a function-pointer type, because it doubles as a **sentinel**: the
+restore is guarded by `if(savint>=0)` with −1 meaning *nothing saved*, and a
+pointer type makes that comparison meaningless. And the same variable is
+declared in **two files** — defined in one, re-declared in another as an
+implicit-int `extern` inside a function, with no header between them. Widening
+the definition alone would have left that second unit reading four bytes of an
+eight-byte object: silently, on a little-endian machine, and correctly for every
+value below 2³¹. The sentinel test would have kept working while `signal` got
+half an address.
+
+**And the compiler's diagnostic did not change.** v8cc warns
+`illegal pointer/integer combination` at all five sites before and after,
+because the warning is about the *kind* mismatch and not the width. A build that
+counted warnings would have called the fix a no-op.
 
 ### Seven more, and the two most useful things were not in any of them
 
