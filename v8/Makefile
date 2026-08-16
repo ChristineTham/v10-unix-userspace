@@ -1898,10 +1898,95 @@ $(BUILD)/awk/%.o: $(AWKSRC)/%.c $(BUILD)/awk/y.tab.c $(V8CC_DEPS)
 # above, so this is the other half of that line.
 $(AWK_OBJ) $(BUILD)/awk/maketab.o: $(AWKSRC)/awk.h
 
+# ---------------------------------------------------------------------------
+# Wave A2 batch 2c -- four directory programs, and each is here for a DIFFERENT
+# build idiom rather than for its size.  Together they are the shapes the other
+# fifty-one will need.
+#
+# expr   a grammar and NOTHING ELSE: one .y, one object, no lexer file at all
+#        (the scanner is C in the third section).  The minimal yacc program.
+# m4     three .c and a .y, which is grap's shape without the lexer.
+# diff3  the SPELL SHAPE: the command in /usr/bin is a SHELL SCRIPT and the
+#        binary it execs lives in /usr/lib, exactly as spell/spellprog and
+#        diff/diffh already do here.
+# pack   two programs from one directory and a HARD LINK for the third name,
+#        which is ex/vi's shape at a smaller scale.
+# ---------------------------------------------------------------------------
+EXPRSRC = $(SRC)/cmd/expr
+$(BUILD)/expr/y.tab.c: $(EXPRSRC)/expr.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/expr
+	cd $(BUILD)/expr && V8ROOT=$(ROOTFS) $(YACC) $(EXPRSRC)/expr.y
+$(BUILD)/expr/expr.o: $(BUILD)/expr/y.tab.c $(EXPRSRC)/regexp.h $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/expr -I$(EXPRSRC) -c -o $@ $(BUILD)/expr/y.tab.c
+$(BINDIR)/expr: $(BUILD)/expr/expr.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/expr/expr.o $(V8LIBS)
+
+M4SRC = $(SRC)/cmd/m4
+M4_NAMES = m4 m4ext m4macs
+M4_OBJ = $(patsubst %,$(BUILD)/m4/%.o,$(M4_NAMES)) $(BUILD)/m4/m4y.o
+$(BUILD)/m4/y.tab.c: $(M4SRC)/m4y.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/m4
+	cd $(BUILD)/m4 && V8ROOT=$(ROOTFS) $(YACC) $(M4SRC)/m4y.y
+$(BUILD)/m4/m4y.o: $(BUILD)/m4/y.tab.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/m4 -I$(M4SRC) -c -o $@ $(BUILD)/m4/y.tab.c
+$(BUILD)/m4/%.o: $(M4SRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(BUILD)/m4 -I$(M4SRC) -c -o $@ $<
+# Upstream: `m4.o m4ext.o m4macs.o : m4.h'.  m4y.o is deliberately NOT in that
+# line -- upstream's own makefile leaves it out, and m4y.y does not include the
+# header.  Copied as written rather than widened, because a dependency this
+# tree ADDS is a claim about the program that upstream did not make.
+$(patsubst %,$(BUILD)/m4/%.o,$(M4_NAMES)): $(M4SRC)/m4.h
+$(BINDIR)/m4: $(M4_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(M4_OBJ) $(V8LIBS)
+
+# diff3: the BINARY is /usr/lib/diff3 and the COMMAND is a shell script, which
+# is upstream's own split -- `mv diff3 /usr/lib; cp diff3.sh /usr/bin/diff3'.
+# The script has no `#!' line, like Admin/Mk and Admin/dest, and V8's sh runs
+# it; it hardcodes /usr/lib/diff3 and calls diff, both of which resolve inside
+# the jail.  $(call v8dest,diff3) is NOT used: it would answer usr/bin by
+# fall-through for the BINARY, which is the one thing upstream is explicit
+# about.  Same treatment as spellprog.
+DIFF3SRC = $(SRC)/cmd/diff3
+$(BUILD)/diff3/diff3.o: $(DIFF3SRC)/diff3.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BINDIR)/diff3: $(BUILD)/diff3/diff3.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/diff3/diff3.o $(V8LIBS)
+$(ROOTFS)/usr/lib/diff3: $(BINDIR)/diff3
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/diff3: $(DIFF3SRC)/diff3.sh
+	@mkdir -p $(@D) && cp $< $@ && chmod +x $@
+DIFF3_INSTALL = $(ROOTFS)/usr/lib/diff3 $(ROOTFS)/usr/bin/diff3
+
+# pack/unpack, and pcat is a HARD LINK -- upstream's install is
+# `ln /usr/bin/unpack /usr/bin/pcat'.  MEASURED rather than taken from the
+# makefile, because the ex/vi step found an install arm that had never run:
+# the shipped usr/bin/pcat and usr/bin/unpack are byte-identical at 10240, and
+# the tarball simply lost the link on extraction.
+PACKSRC = $(SRC)/cmd/pack
+$(BUILD)/pack/%.o: $(PACKSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BINDIR)/pack: $(BUILD)/pack/pack.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/pack/pack.o $(V8LIBS)
+$(BINDIR)/unpack: $(BUILD)/pack/unpack.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/pack/unpack.o $(V8LIBS)
+$(ROOTFS)/$(call v8dest,pcat)/pcat: $(ROOTFS)/$(call v8dest,unpack)/unpack
+	@rm -f $@ && ln $< $@
+PACK_INSTALL = $(call v8install,pack unpack) $(ROOTFS)/$(call v8dest,pcat)/pcat
+
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
-                   $(BINDIR)/awk
+                   $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
+                   $(BINDIR)/pack $(BINDIR)/unpack
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
-                   $(EX_INSTALL) $(call v8install,awk)
+                   $(EX_INSTALL) $(call v8install,awk expr m4) \
+                   $(DIFF3_INSTALL) $(PACK_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

@@ -3699,6 +3699,73 @@ other two consumers leave it to the compile line and nothing defines it. One
 command reading the top of the file would have settled what two experiments
 could not.
 
+### Four programs chosen for four build idioms
+
+The fifty-five remaining programs live in directories rather than as a single
+`.c`, and that is the whole difficulty: each one has a shape. So the next four
+were picked for their shapes rather than their size, because those shapes are
+what the other fifty-one will need.
+
+`expr` is a grammar and nothing else — one yacc file, one object, and the
+scanner is C in the third section rather than a lex file. `m4` is three sources
+and a grammar. `pack` builds two programs from one directory and makes the third
+name, `pcat`, a hard link to `unpack` — which is `ex`/`vi` at a smaller scale,
+and measured the same way: the shipped `pcat` and `unpack` are byte-identical at
+10240 bytes with the link lost when the archive was extracted, so the inode is
+what gets asserted rather than a `cmp`.
+
+`diff3` is the interesting one. The command in `/usr/bin` is a **shell script**
+and the binary it runs lives in `/usr/lib` — upstream's install arm is
+`mv diff3 /usr/lib; cp diff3.sh /usr/bin/diff3`. The script has no `#!` line,
+V8's `sh` runs it anyway, it calls V8's `diff` twice, and it execs
+`/usr/lib/diff3` by absolute path. So a single invocation of `diff3 a b c`
+exercises the shell, the diff, the jail's `/usr/lib`, and the helper — and it
+produces a correct three-way merge:
+
+```
+====
+1:2,3c
+2:2,3c
+3:2,3c
+```
+
+#### The case that went red on the import, which is the case working
+
+Importing `diff3` turned a test red immediately, and the right one. There is a
+case here that compares three independent sources for *where a command
+installs* — Bell Labs' `Admin/dest` tables, the shipped directory tree, and each
+program's own makefile — and asserts that the makefiles and the tables disagree
+about exactly two programs. `diff3` is a third: its makefile says `/usr/lib`,
+the shipped tree has `/usr/lib/diff3`, and `Admin/dest` answers `/usr/bin` by
+fall-through because `diff3` is in none of its tables. Two sources against the
+fall-through, the same pattern `cpp` established. The case existed to notice
+exactly that, and it did.
+
+It also flushed out a latent bug in its own parser. That sweep reads each
+makefile's install arm and takes the destination from the third field —
+correct for `cp sh /bin/sh`, and wrong for `pack`'s
+`cp pack unpack /usr/bin`, where the third field is the *second program*. So
+the sweep reported pack's destination as "unpack" and called it a
+disagreement: a false positive in the one place whose entire job is finding
+real ones. The destination is the last field, and the program may be any of the
+sources.
+
+And writing that fix broke the suite in a way the file had warned about, twenty
+lines above where I was typing. The parser is an `awk` program inside a
+single-quoted shell string, and there is a note in it that reads *"No
+apostrophes in here: the whole program is inside a single-quoted shell
+string."* I wrote a comment containing `pack's`, which closed the string, and
+the shell reported a syntax error on a `for` loop that was perfectly valid awk.
+The note is now longer by a sentence saying that a comment closes it just as
+well as code does.
+
+`diff3` also carried the argv bug for the ninth time — `if(*argv[1]=='-')` as
+`main`'s very first statement, so a bare `diff3` dereferenced the null
+terminator before anything was checked. Unlike the others this one is an `if`
+rather than a loop, so only the bare invocation was affected. A VAX read `0x00`
+there, the test failed, and the argument-count check below it printed
+`diff3: arg count`. That message is the answer; the guard restores it.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,
@@ -3717,7 +3784,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **144** of the 286 V8 shipped, and the ones still missing mostly
+port installs **150** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 - **Visual mode.** `ex` edits; invoked as `vi` it correctly answers that open

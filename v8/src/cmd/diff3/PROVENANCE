@@ -1,0 +1,9 @@
+# Provenance for v8/src/cmd/diff3
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+17c992afe9e0e835635d0e1affd5f1d1f71e775b  v8/usr/src/cmd/diff3/Makefile
+d56219fdc3663b5361a21ccb932841486296d5ff  v8/usr/src/cmd/diff3/diff3.sh
+0983b6f9944ec028972eae6c6db8ff53d9d52833  v8/usr/src/cmd/diff3/diff3.c

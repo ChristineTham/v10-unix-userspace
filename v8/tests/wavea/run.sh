@@ -514,9 +514,26 @@ mkdest() {	# where a program's OWN makefile installs it, or nothing
 			nf = split(s, f, /[ \t]+/)
 			if (s ~ /^D[ \t]*=/) {
 				d = s; sub(/^D[ \t]*=[ \t]*/, "", d)
-			} else if (nf >= 3 && (f[1] == "mv" || f[1] == "cp") &&
-				   f[2] == p) {
-				d = f[3]
+			} else if (nf >= 3 && (f[1] == "mv" || f[1] == "cp")) {
+				# THE DESTINATION IS THE LAST FIELD, NOT f[3], and
+				# the program may be any of the sources.  This was
+				# f[2] == p with d = f[3], which is right for
+				# "cp sh /bin/sh" and WRONG for the pack makefile
+				# line "cp pack unpack /usr/bin" -- there f[3] is
+				# the second PROGRAM, so the sweep reported packs
+				# destination as unpack and called it a
+				# disagreement.  A false positive in the one case
+				# whose whole job is finding real ones.
+				#
+				# (Still no apostrophes in here, for the reason
+				# the note above gives: the whole program is one
+				# single-quoted shell string, and an apostrophe in
+				# a COMMENT closes it just as well as one in code.
+				# Measured -- that is how this edit first failed.)
+				found = 0
+				for (k = 2; k < nf; k++) if (f[k] == p) found = 1
+				if (!found) continue
+				d = f[nf]
 			} else continue
 			sub("/" p "$", "", d); sub(/^\//, "", d)
 			if (d != "") { print d; exit }
@@ -535,17 +552,37 @@ done
 # wrong reason -- tests/cpp's failure exactly.
 if [ "$(echo $mkseen | wc -w | tr -d ' ')" -ge 10 ]; then pass=$((pass+1))
 else fail=$((fail+1)); echo "FAIL only $(echo $mkseen | wc -w) makefiles state a destination:$mkseen"; fi
-# TWO, and BOTH are programs that appear in no table at all, so Admin/dest is
-# answering by fall-through in each -- which is what makes the third source
-# worth consulting rather than a curiosity.  `cpp' is the one that shows the
-# fall-through is simply wrong: its makefile says /lib, the SHIPPED TREE says
-# /lib, and dest says /usr/bin.  This port already puts cpp in /lib, but by
-# accident rather than by derivation -- it is a toolchain target with its own
-# rule and never goes through $(call v8dest,...).  dump had no such accident
+# THREE, and ALL THREE are programs that appear in no table at all, so
+# Admin/dest is answering by fall-through in each -- which is what makes the
+# third source worth consulting rather than a curiosity.  `cpp' is the one that
+# shows the fall-through is simply wrong: its makefile says /lib, the SHIPPED
+# TREE says /lib, and dest says /usr/bin.  This port already puts cpp in /lib,
+# but by accident rather than by derivation -- it is a toolchain target with its
+# own rule and never goes through $(call v8dest,...).  dump had no such accident
 # available, so the Makefile's $(MKFILEETC) follows the makefile deliberately.
-check 'an imported makefile and Admin/dest disagree about exactly these two' \
-   ' cpp(lib,dest=usr/bin) dump(etc,dest=usr/bin)' "$mkdiffer"
+#
+# diff3 IS THE THIRD AND IT ARRIVED WITH BATCH 2C, which is this case doing
+# exactly what it was written for -- it went red on the import rather than the
+# import going in unnoticed.  Its makefile says `mv diff3 /usr/lib' and the
+# shipped tree HAS usr/lib/diff3, so two sources again outvote the fall-through.
+# The Makefile does not route diff3 through v8dest at all: the binary is
+# /usr/lib/diff3 and the COMMAND is a shell script in /usr/bin, which is the
+# spell/spellprog split and not a destination question.
+check 'an imported makefile and Admin/dest disagree about exactly these three' \
+   ' cpp(lib,dest=usr/bin) diff3(usr/lib,dest=usr/bin) dump(etc,dest=usr/bin)' \
+   "$mkdiffer"
 check 'and for cpp the shipped tree sides with the makefile' 'lib' "$(shipfile cpp)"
+# diff3 needs a DIFFERENT assertion from cpp, and the first draft used cpp's
+# and went red: shipfile() answers with the first directory holding that NAME,
+# and the shipped tree has BOTH -- usr/bin/diff3 the script and usr/lib/diff3
+# the binary.  So `usr/bin' is a correct answer to a question diff3 does not
+# raise.  What settles the disagreement is that the makefile-named location
+# exists AT ALL, and that the /usr/bin entry is not the program.
+check 'and for diff3 the shipped tree has the binary where its makefile said' \
+   'binary-in-usr-lib script-in-usr-bin' \
+   "$([ -f "$SHIPPED/usr/lib/diff3" ] && printf 'binary-in-usr-lib '
+      head -1 "$SHIPPED/usr/bin/diff3" 2>/dev/null | grep -q '^e=' &&
+        printf 'script-in-usr-bin')"
 # ...and the Makefile followed the makefile rather than the fall-through.
 instdir() { for d in bin usr/bin lib etc; do
 		[ -x "$V8ROOT/$d/$1" ] && { echo "$d"; return 0; }; done; return 1; }
@@ -1573,6 +1610,72 @@ check 'the batch installed where V8 put it' \
            [ -x "$V8ROOT/$d/$n" ] && { printf '%s ' "$d"; break; }
          done
        done | sed 's/ $//')"
+
+# ---------------------------------------------------------------------------
+# Wave A2 batch 2c -- four DIRECTORY programs, each chosen for a build idiom
+# rather than for its size, because those idioms are what the other fifty-one
+# will need.
+
+# expr: a grammar and nothing else.  Four cases for four halves of the
+# language, because expr is really four little interpreters sharing a parser --
+# integer arithmetic, string matching, comparison, and the `:' operator's
+# return of a MATCH LENGTH rather than a boolean.
+exprbin=$(v8which expr)
+check 'expr adds'            '7'  "$("$exprbin" 3 + 4)"
+check 'expr multiplies'      '70' "$("$exprbin" 10 '*' 7)"
+check 'expr compares'        '1'  "$("$exprbin" 2 '<' 3)"
+check 'expr : yields a length' '3' "$("$exprbin" abcdef : abc)"
+
+# m4: define and expand, then a macro with an argument, which is the only case
+# that proves the argument stack rather than the symbol table.
+m4bin=$(v8which m4)
+check 'm4 expands a definition' 'Hello, world.' \
+    "$(printf 'define(NAME, world)Hello, NAME.\n' | "$m4bin")"
+check 'm4 substitutes an argument' '7 * 7' \
+    "$(printf 'define(sq,`$1 * $1'\'')sq(7)\n' | "$m4bin")"
+
+# diff3: THE WHOLE WORLD IN ONE INVOCATION, and that is why it is worth a case.
+# /usr/bin/diff3 is a shell SCRIPT with no `#!' line; V8's sh runs it, it calls
+# V8's diff twice, and it execs /usr/lib/diff3 by absolute path -- so a pass
+# here means sh, diff, the jail's /usr/lib and the helper all agree.  Upstream's
+# own install is `mv diff3 /usr/lib; cp diff3.sh /usr/bin/diff3'.
+printf 'a\nb\nc\n' > d3.1; printf 'a\nB\nc\n' > d3.2; printf 'a\nb\nC\n' > d3.3
+check 'diff3 runs script, sh, diff and the helper' '====|1:2,3c|2:2,3c|3:2,3c' \
+    "$("$V8ROOT/bin/sh" "$V8ROOT/usr/bin/diff3" d3.1 d3.2 d3.3 2>&1 |
+       grep -E '^(====|[0-9]:)' | tr '\n' '|' | sed 's/|$//')"
+check 'and the helper is in /usr/lib, not /usr/bin' 'lib script' \
+    "$([ -x "$V8ROOT/usr/lib/diff3" ] && printf 'lib '
+       head -1 "$V8ROOT/usr/bin/diff3" | grep -q '^e=' && printf 'script')"
+# A BARE diff3 was main's first statement dereferencing argv[1] -- diffh's
+# shape, ninth instance.  A VAX read 0x00 there, so the test failed and the
+# argc check below it spoke; that message is the answer, not the absence of
+# the fault.
+check 'bare diff3 reports rather than crashes' '1|diff3: arg count' \
+    "$("$V8ROOT/usr/lib/diff3" </dev/null >d3.out 2>&1; printf '%s|%s' "$?" "$(cat d3.out)")"
+
+# pack/unpack/pcat: a ROUND TRIP, for uuencode's reason -- a compressor and its
+# decompressor share a tree and can be self-consistently wrong.  The input has
+# to be genuinely redundant or pack refuses it ("not packed because of no
+# savings"), so it is generated rather than reused.
+i=0; while [ $i -lt 2000 ]; do echo "the quick brown fox jumps over the lazy dog $((i % 7))"; i=$((i+1)); done > pk.txt
+cp pk.txt pk.orig
+check 'pack compresses'   'packed' \
+    "$("$(v8which pack)" pk.txt >/dev/null 2>&1; [ -f pk.txt.z ] && echo packed || echo no)"
+check 'and it is smaller' 'smaller' \
+    "$([ "$(wc -c < pk.txt.z)" -lt "$(wc -c < pk.orig)" ] && echo smaller || echo no)"
+"$(v8which unpack)" pk.txt.z >/dev/null 2>&1
+check 'unpack round-trips exactly' 'same' \
+    "$(cmp -s pk.orig pk.txt && echo same || echo differs)"
+"$(v8which pack)" pk.txt >/dev/null 2>&1
+check 'pcat writes the original to stdout' 'same' \
+    "$("$(v8which pcat)" pk.txt.z 2>/dev/null | cmp -s - pk.orig && echo same || echo differs)"
+# pcat IS unpack -- upstream's install is `ln /usr/bin/unpack /usr/bin/pcat',
+# and the shipped tree's two copies are byte-identical at 10240 with the link
+# lost on extraction.  Compared by INODE, because two identical copies pass a
+# cmp and are not what V8 shipped.  Same treatment as ex/vi/view/edit.
+check 'pcat and unpack are one inode' '1' \
+    "$(cd "$V8ROOT/usr/bin" && ls -i pcat unpack 2>/dev/null |
+       awk '{print $1}' | sort -u | wc -l | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
 # THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.

@@ -1,0 +1,9 @@
+# Provenance for v8/src/cmd/pack
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+4dbed9ea6efc0df66fe0476a6ae64da6a9a47469  v8/usr/src/cmd/pack/Makefile
+c938fbf113ce52cfaaa8c27a5266eec4f5bfa203  v8/usr/src/cmd/pack/unpack.c
+cd22eaeecec1283536aebb52a35906a08ad01110  v8/usr/src/cmd/pack/pack.c

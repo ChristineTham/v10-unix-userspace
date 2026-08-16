@@ -1,0 +1,18 @@
+# Provenance for v8/src/cmd/m4
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+90171348e56fd6a0692e46b77781ab105a52ac94  v8/usr/src/cmd/m4/m4ext.c
+46be27e21b5594103499f491650cda5ad72946e7  v8/usr/src/cmd/m4/m4y.y
+6837398363d286c32ad05c8425677cd2de9352fd  v8/usr/src/cmd/m4/m4.test1
+fe15f13f8e5c2e4c4504a4b205a226bf7cb6ad93  v8/usr/src/cmd/m4/m4.test6
+53c1125a64d266cd834c37b9f2cf7e6adf102471  v8/usr/src/cmd/m4/makefile
+d3f9db2b699001695b6fbbe97a50666c2f5f1dea  v8/usr/src/cmd/m4/m4.h
+775fb11255784afbc6c952f671c039415cd57922  v8/usr/src/cmd/m4/m4macs.c
+cff31e402cf345ce73d00eb2558b730a372bd837  v8/usr/src/cmd/m4/m4.test3
+a194262442f64d0b30ac677f8309cb897b4ac33d  v8/usr/src/cmd/m4/m4.test4
+cd8072a1abf3e04dcfa97dba2d1613ecc55a50b1  v8/usr/src/cmd/m4/m4.test5
+86933e8ce4f84f61b631f5707404670b91bb17ae  v8/usr/src/cmd/m4/m4.test2
+963741331e6e22b950f44dfb9c4c8c782b83e38d  v8/usr/src/cmd/m4/m4.c

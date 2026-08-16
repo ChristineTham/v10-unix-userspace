@@ -1,0 +1,9 @@
+# Provenance for v8/src/cmd/expr
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+c175713be6ef5965a397698f7548ffc4a436c44d  v8/usr/src/cmd/expr/Makefile
+7bce33f9b9c240421fcacfa8805c02dbb9189c83  v8/usr/src/cmd/expr/regexp.h
+3c294fad1c0bbf61c182122dfda2eacf309adf81  v8/usr/src/cmd/expr/expr.y

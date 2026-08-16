@@ -1688,6 +1688,43 @@ byte-identical to upstream. Three things:
   already in the tree twice; the ioctl still fails, so mc keeps `WIDTH`, which
   is upstream's own fallback. `src/cmd/mc.PORTING.md`.
 
+**AND BATCH 2c TOOK FOUR DIRECTORY PROGRAMS CHOSEN FOR THEIR BUILD IDIOM RATHER
+THAN THEIR SIZE, BECAUSE THE IDIOM IS THE DIFFICULTY.** `expr` (a grammar and
+nothing else — one `.y`, one object, the scanner is C in the third section),
+`m4` (three `.c` and a `.y`), `pack` (two programs from one directory, `pcat` a
+hard link to `unpack` — ex/vi's shape, and asserted by INODE because the shipped
+`pcat` and `unpack` are byte-identical at 10240 with the link lost on
+extraction), and `diff3`. Those are the shapes the other 51 will need. Four
+things:
+
+- **`diff3` IS THE SPELL SHAPE AND IT MADE A CASE GO RED ON IMPORT, WHICH IS
+  THE CASE WORKING.** The command in `/usr/bin` is a **shell script** and the
+  binary it execs is `/usr/lib/diff3` — upstream's `mv diff3 /usr/lib; cp
+  diff3.sh /usr/bin/diff3`. So `tests/wavea`'s makefile-versus-`Admin/dest`
+  sweep found a **third** disagreement: the makefile says `/usr/lib`, the
+  shipped tree HAS `/usr/lib/diff3`, and `dest` answers `/usr/bin` by
+  fall-through. Two sources against the fall-through, exactly `cpp`'s pattern.
+  The expected set is three now.
+- **AND IT FLUSHED OUT A LATENT BUG IN THAT SWEEP'S OWN PARSER.** It took the
+  destination from `f[3]` — right for `cp sh /bin/sh`, wrong for `pack`'s
+  `cp pack unpack /usr/bin`, where `f[3]` is the SECOND PROGRAM. It reported
+  pack's destination as `unpack` and called it a disagreement: a false positive
+  in the one case whose whole job is finding real ones. **The destination is
+  the LAST field and the program may be any of the sources.** A multi-source
+  `cp` is the only input that can expose it, so nothing before batch 2c could.
+- **AND AN APOSTROPHE IN A COMMENT CLOSES A SINGLE-QUOTED SHELL STRING JUST AS
+  WELL AS ONE IN CODE.** That parser is an awk program inside `'...'`, and it
+  carries a note saying so — *"No apostrophes in here"* — twenty lines above
+  where the fix went. Writing `pack's` in the new comment closed the string and
+  the shell reported a syntax error on a `for` loop that was valid awk. The
+  note now says the comment counts too. **A warning about a hazard does not
+  cover you if you read it as being about the code.**
+- **`diff3.c:49` IS THE NINTH INSTANCE OF THE ADDRESS-0 ARGV CLASS**, and the
+  narrowest: `if(*argv[1]=='-')` is `main`'s FIRST statement, so only the bare
+  invocation is affected — it is an `if` rather than a loop, so `diff3 -x`
+  still has an argv[1] to read. A VAX read 0x00 there and fell to the argc
+  check, which printed `diff3: arg count`.
+
 **AND THE OBVIOUS `tests/deps` CASE FOR THAT INCLUDE IS FALSE, FOR A REASON
 WORTH KNOWING BEFORE WRITING THE NEXT ONE.** `dep rootfs/usr/include/jioctl.h
 -> bin/mc` fails: the rootfs copy is a **build product**, and what the rule
@@ -1796,7 +1833,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 144 installed**, stable. (It moves when something is imported,
+**286 shipped, 150 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.)
 

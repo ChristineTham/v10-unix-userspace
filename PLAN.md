@@ -3052,7 +3052,7 @@ restores the host PATH and execs. Bare `/usr/` joined the mount table so a home
 directory exists inside the world; it is a union, so `/usr/include` still falls
 through. Exercised end to end, not asserted.
 
-**7b. Wave A2 — IN PROGRESS, 91 → 144.** Batch 1: 37 single-file commands, all
+**7b. Wave A2 — IN PROGRESS, 91 → 150.** Batch 1: 37 single-file commands, all
 compiling with zero failures. Batch 2: `diff` (two programs and three derived
 `-D` install paths), `cb`, `su`, `compress`, plus `crypt`, `getpwnam`,
 `getgrgid` and `getpass` into libc. The suites did the triage and caught three
@@ -3116,6 +3116,28 @@ accounting (`ac sa`), and these five are the remainder.
     alone can be self-consistently wrong.
   - Zero signal deaths across every single-letter option for all five, measured
     before the crash-probe run, so the floor stays at 55.
+
+**Batch 2c: `expr`, `m4`, `diff3`, `pack`** — the first four of the 55
+directory programs, chosen for four different BUILD IDIOMS rather than for
+size, because the idiom is the difficulty and these are the shapes the other 51
+will need. `expr` is a grammar and nothing else; `m4` is three `.c` and a `.y`;
+`pack` makes two programs and a hard link (`pcat`); `diff3` is the spell shape —
+a shell script in `/usr/bin` and the binary in `/usr/lib`.
+
+  - **`diff3` made a test go red on import, which is that test working.**
+    `tests/wavea`'s three-source destination sweep found a THIRD makefile-versus-
+    `Admin/dest` disagreement: the makefile says `/usr/lib`, the shipped tree
+    has `usr/lib/diff3`, `dest` answers `/usr/bin` by fall-through. Exactly
+    `cpp`'s pattern, and the expected set is three now.
+  - **And it exposed a latent bug in that sweep's parser**: the destination was
+    taken from `f[3]`, right for `cp sh /bin/sh` and wrong for
+    `cp pack unpack /usr/bin`, where `f[3]` is the second PROGRAM. Only a
+    multi-source `cp` can expose it, so nothing before this batch could.
+  - `diff3.c:49` is the **ninth** instance of §4i's class and the narrowest —
+    `main`'s first statement, an `if` rather than a loop, so only the bare
+    invocation crashed.
+  - Zero signal deaths across every single-letter option for all six installed
+    names, measured before the probe ran.
 
 **7c. What is left, in order of unlock:**
 

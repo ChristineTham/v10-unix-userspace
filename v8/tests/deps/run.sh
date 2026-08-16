@@ -359,6 +359,35 @@ dep 'stty install'             $B/bin/stty                    rootfs/bin/stty
 # its input, and an interrupted run would leave a pristine third_party file
 # with a rewritten mtime that git cannot show.
 dep 'rootfs headers -> mc'     rootfs/usr/include/.stamp      $B/bin/mc
+
+# --- Wave A2 batch 2c: four directory programs, four build idioms -----------
+# expr is a grammar and nothing else -- one .y, one object, and the scanner is
+# C in the third section rather than a lex file.  regexp.h is expr's own and is
+# reached with -I, so it is a real edge and not a system header.
+dep 'expr grammar -> tables'   src/cmd/expr/expr.y            $B/expr/y.tab.c
+dep 'expr regexp.h -> object'  src/cmd/expr/regexp.h          $B/expr/expr.o
+# m4 is grap's shape without a lexer.  Upstream says `m4.o m4ext.o m4macs.o :
+# m4.h' and deliberately LEAVES m4y.o OUT; m4y.y does not include the header,
+# so the nodep is what keeps this tree from widening a claim upstream did not
+# make.  A dependency this port ADDS is a statement about the program.
+dep 'm4 grammar -> tables'     src/cmd/m4/m4y.y               $B/m4/y.tab.c
+dep 'm4.h -> m4ext.o'          src/cmd/m4/m4.h                $B/m4/m4ext.o
+nodep 'm4.h is not m4y.o edge' src/cmd/m4/m4.h                $B/m4/m4y.o
+# diff3 is the SPELL SHAPE: /usr/bin/diff3 is a shell script and the binary it
+# execs is /usr/lib/diff3.  Both halves have to install or the command is a
+# script calling something absent -- which fails at RUN time with `not found',
+# not at build time, so nothing else would say so.
+dep 'diff3 source -> binary'   src/cmd/diff3/diff3.c          $B/diff3/diff3.o
+dep 'diff3 binary -> /usr/lib' $B/bin/diff3                   rootfs/usr/lib/diff3
+dep 'diff3 script -> /usr/bin' src/cmd/diff3/diff3.sh         rootfs/usr/bin/diff3
+# pack: two programs from one directory, and pcat is a HARD LINK to unpack.
+# The link is asserted by INODE in tests/wavea, not here -- tests/deps cannot
+# do it, for ex/vi's reason: the prerequisite IS the target, so it can never be
+# newer than itself.  What is assertable is that each program tracks its own
+# source and neither tracks the other's.
+dep 'pack source -> pack'      src/cmd/pack/pack.c            $B/pack/pack.o
+dep 'unpack source -> unpack'  src/cmd/pack/unpack.c          $B/pack/unpack.o
+nodep 'pack.c is not unpack'   src/cmd/pack/pack.c            $B/pack/unpack.o
 # units and ptx open /usr/lib/units and /usr/lib/eign by absolute path at RUN
 # time, so a missing install shows up as "no table" or "Cannot open  file
 # /usr/lib/eign" rather than as a build failure.  Their rules are asserted by
