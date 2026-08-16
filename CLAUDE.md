@@ -3513,6 +3513,33 @@ not testable until it is installed.
     installed** -- a floor naming a deleted program can never be satisfied and
     would report "gone" forever.
 
+  **AND THE FIRST CI RUN FOUND A CRASH THIS MACHINE DOES NOT HAVE, WHICH IS
+  THE WHOLE ARGUMENT FOR PUTTING IT THERE — AND IT BROKE THE FLOOR'S DESIGN.**
+  `tar -u` SIGSEGVs on a GitHub macos-26 runner and exits 1 here, every time.
+  So a floor derived on one machine is **a host-property claim**, which is this
+  file's oldest testing rule arriving in the guard written to enforce the rule.
+
+  - **A BOTH-DIRECTIONS FLOOR CANNOT EXPRESS A HOST-DEPENDENT CRASH**, and that
+    is arithmetic rather than an oversight: present, the entry fails locally as
+    *gone*; absent, it fails in CI as *new*. There is no value correct on both.
+    So there is a third category — a `?` prefix, removed from **both** sides —
+    and it must stay small and loud or it becomes the allow-list that swallows
+    everything. The count is printed every run, the entries are named, and
+    `tests/wavea` asserts the tolerated set is **exactly one**, so a second
+    needs a deliberate edit in two files.
+  - **IT IS RECORDED AS AN OBSERVATION, NOT A MECHANISM.** Not reproduced in
+    ~40 local invocations under the probe's own conditions, nor by forcing
+    `mktemp` collisions — so task #77 carries what is *known* (`case '-'` is a
+    no-op so `-u` reaches the temp-file arm; the `fopen` there **is**
+    null-checked; `/tmp` is not in the mount table) and no theory. Writing a
+    mechanism down without reproducing it is how the ex phantom got into four
+    documents.
+  - **AND `tests/wavea` DERIVES ITS EXPECTATION FROM THE FLOOR FILE NOW**,
+    rather than spelling the list a second time. Two hand-written copies of one
+    list agree with each other about a set that is wrong — measured here once
+    already, when v8fsd's and p9cl's errno tables agreed perfectly about a set
+    missing seven names.
+
   **AND EDITING A RUNNING SHELL SCRIPT CORRUPTS IT, WHICH IS THE
   never-edit-while-a-suite-runs RULE WITH A MECHANISM.** `sh` reads a script
   incrementally rather than slurping it, so inserting lines *below* the

@@ -3159,6 +3159,44 @@ resumes mid-token. The run had to be thrown away. There was already a rule here
 about not editing things while tests are running — I had thought of it as being
 about build artifacts. It is also about the interpreter.
 
+### The first CI run found a crash this machine does not have
+
+Which is, of course, the entire argument for putting it there — and it promptly
+broke the design I had just finished.
+
+`tar -u` dies of a segmentation fault on the GitHub runner. On this machine it
+exits cleanly, with a sensible error, every single time. I have run it about
+forty times under exactly the conditions the probe uses, and tried to force the
+temporary-file collision that looked like the obvious candidate. It will not
+reproduce here.
+
+The consequence for the expectation file is not a nuisance, it is arithmetic. I
+had built a floor that is checked in both directions, and a crash that happens
+on one machine and not another cannot be written into such a thing at all:
+include it and it fails locally as a crash that has gone; leave it out and it
+fails in CI as a new one. There is no entry that is correct on both. A floor
+derived on a single machine turns out to be a claim about that machine — which
+is the oldest testing rule in this project, arriving inside the guard I wrote to
+enforce that rule.
+
+So there is a third category now: entries marked as tolerated, removed from both
+sides of the comparison, neither required nor forbidden. That is a hole in an
+otherwise strict check, and holes like it are how the original number rotted, so
+it is kept small and noisy on purpose — the count is printed on every run, the
+entries are listed by name, and a separate test asserts that there is exactly
+one of them. Adding a second requires editing two files deliberately. An
+exemption nobody can see is the failure mode; an exemption that announces itself
+every run is a note-to-self with teeth.
+
+What I did not do is explain it. The file records what is *known* — that the
+dash is a no-op case so the option really does reach the temporary-file arm,
+that the `fopen` there is null-checked, that no filesystem redirection is
+involved — and then stops, with a task number. This project has a scar from the
+last time I wrote a mechanism down for something I had not reproduced: it went
+into four documents and a test exclusion, and there was no bug. An honest "here
+is what happens, here is what I checked, I do not know why" is worth more than a
+plausible story, and it is much easier to correct later.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,

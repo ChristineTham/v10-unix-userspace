@@ -274,11 +274,35 @@ mutating)
 		exit 1
 	fi
 	grep -v '^[[:blank:]]*#' "$FLOOR" | grep -v '^[[:blank:]]*$' |
-		sort > "$WORK/expected";;
+		grep -v '^?' | sort > "$WORK/expected"
+	# A `?' PREFIX MEANS "TOLERATED IN EITHER STATE", and it exists because
+	# the first CI run proved a both-directions floor cannot express a
+	# HOST-DEPENDENT crash.  `tar -u' dies on a GitHub runner and not on the
+	# machine this was developed on; a plain entry would then fail locally
+	# as "gone" and its absence would fail in CI as "new", so there is no
+	# value that is correct on both.
+	#
+	# This is the escape hatch and it must stay small and loud, or it
+	# becomes the allow-list that swallows everything.  Each one carries a
+	# task number, the count is PRINTED every run, and the entries are named
+	# -- because an exemption nobody sees is how a guard rots, which is the
+	# lesson this whole file exists for.
+	grep -v '^[[:blank:]]*#' "$FLOOR" | grep -v '^[[:blank:]]*$' |
+		sed -n 's/^?[[:blank:]]*//p' | sort > "$WORK/tolerated";;
 esac
+[ -f "$WORK/tolerated" ] || : > "$WORK/tolerated"
 
-new=$(comm -13 "$WORK/expected" "$WORK/observed")
-gone=$(comm -23 "$WORK/expected" "$WORK/observed")
+# Tolerated entries are removed from BOTH sides before comparing, so they can
+# neither fail as new nor as gone.
+comm -23 "$WORK/observed" "$WORK/tolerated" > "$WORK/observed.cmp"
+new=$(comm -13 "$WORK/expected" "$WORK/observed.cmp")
+gone=$(comm -23 "$WORK/expected" "$WORK/observed.cmp")
+if [ -s "$WORK/tolerated" ]; then
+	nt=$(wc -l < "$WORK/tolerated" | tr -d ' ')
+	nseen=$(comm -12 "$WORK/tolerated" "$WORK/observed" | wc -l | tr -d ' ')
+	echo "tolerated (host-dependent, see the floor file): $nseen of $nt seen"
+	comm -12 "$WORK/tolerated" "$WORK/observed" | sed 's/^/    ? /'
+fi
 rc=0
 if [ -n "$new" ]; then
 	echo "::error::NEW signal deaths not in the floor:"

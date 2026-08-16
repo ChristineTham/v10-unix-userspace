@@ -1021,6 +1021,14 @@ check 'cpio still round-trips a file through an archive' 'contents' \
 # property, and this suite has been bitten by those.  Closing it makes the
 # condition ours.
 #
+# THE EXPECTATION IS DERIVED FROM tests/crash-probe.floor RATHER THAN SPELLED
+# HERE, which matters more than it looks: two hand-written copies of one list
+# agree with each other about a set that is wrong, and this project has been
+# bitten by exactly that (v8fsd's and p9cl's errno tables agreed perfectly
+# about a set missing seven names).  The floor file is the single source, and
+# `?'-prefixed entries -- host-dependent, tolerated either way -- are excluded
+# from both sides here for the same reason the probe excludes them.
+#
 # The expected value is a LIST, not a count, so a fix that broke one program
 # and repaired another cannot cancel out.  cpio -i is deliberately NOT fixed:
 # chgreel()'s fopen("/dev/tty") is unchecked and the fgets that follows is a
@@ -1029,9 +1037,18 @@ check 'cpio still round-trips a file through an archive' 'contents' \
 # member of that family after pr.c's Ttyin and troff/hc.c's rcf, both of which
 # S1 also leaves alone.  src/cmd/cpio.PORTING.md has the measurement.
 mkdir -p a0sweep
-check 'the only surviving crash in the four is the one we chose to keep' \
-    'cpio -i' \
-    "$(cd a0sweep && perl -e '
+FLOORF=${FLOORF:-$ROOT/tests/crash-probe.floor}
+# Strict entries for these four programs, label only, in the probe's own
+# wording -- "<prog> (no arguments)" for the bare invocation.
+a0want=$(grep -v '^[[:blank:]]*#' "$FLOORF" | grep -v '^[[:blank:]]*$' |
+         grep -v '^?' | sed 's/^[0-9][0-9]* //' |
+         grep -E '^(cb|diffh|tar|cpio) ' | LC_ALL=C sort | paste -sd, - | sed 's/,/, /g')
+# Tolerated ones are dropped from the observed side too.
+a0tol=$(grep '^?' "$FLOORF" | sed 's/^?[[:blank:]]*[0-9][0-9]* //' |
+        grep -E '^(cb|diffh|tar|cpio) ' | LC_ALL=C sort)
+check 'the only surviving crashes in the four are the ones the floor declares' \
+    "$a0want" \
+    "$(cd a0sweep && A0TOL=$a0tol perl -e '
 	my @bad;
 	for my $p (@ARGV) {
 		my ($n) = $p =~ m{([^/]+)$};
@@ -1052,10 +1069,16 @@ check 'the only surviving crash in the four is the one we chose to keep' \
 			waitpid($pid, 0);
 			my $s = $? & 127;
 			next if $s == 0 || $s == 13 || $s == 14;
-			push @bad, $n . ($o eq "" ? " (bare)" : " $o");
+			# Same wording the probe uses, so this and the floor
+			# file speak one language and the compare is literal.
+			# (No apostrophes in here: the perl body is inside a
+			# shell single-quoted string, and one apostrophe ends
+			# it -- which cost a run to find.)
+			push @bad, $n . ($o eq "" ? " (no arguments)" : " $o");
 		}
 	}
-	print join(", ", @bad);
+	my %tol = map { $_ => 1 } grep { length } split /\n/, $ENV{A0TOL} // "";
+	print join(", ", sort grep { !$tol{$_} } @bad);
     ' "$(v8which cb)" "$DIFFH" "$(v8which tar)" "$(v8which cpio)")"
 
 # AND THE WHOLE-TREE FLOOR IS IN CI NOW, which is the other half of the same
@@ -1065,18 +1088,26 @@ check 'the only surviving crash in the four is the one we chose to keep' \
 FLOORF=$ROOT/tests/crash-probe.floor
 check 'the crash-probe floor file exists' 'yes' \
     "$([ -f "$FLOORF" ] && echo yes || echo no)"
-# Every entry is "<signal> <program> ...".  A malformed line would be compared
-# literally against the probe's output and could never match, so the failure
-# would be a 13-minute CI run reporting a phantom regression.
-check 'every floor entry is <signal> <label>' '0' \
+# Every entry is "<signal> <program> ...", optionally prefixed "? " for the
+# tolerated/host-dependent kind.  A malformed line would be compared literally
+# against the probe's output and could never match, so the failure would be a
+# 13-minute CI run reporting a phantom regression.
+check 'every floor entry is [?] <signal> <label>' '0' \
     "$(grep -v '^[[:blank:]]*#' "$FLOORF" 2>/dev/null | grep -v '^[[:blank:]]*$' |
-       grep -cvE '^[0-9]+ [a-zA-Z0-9_.-]+( .*)?$')"
+       grep -cvE '^\??[[:blank:]]*[0-9]+ [a-zA-Z0-9_.-]+( .*)?$')"
+# THE TOLERATED SET MUST STAY SMALL AND VISIBLE, because it is the one arm that
+# can pass with a crash present.  Asserting the exact count -- rather than a
+# ceiling -- means adding one is a deliberate edit here as well as there, which
+# is the whole difference between an exemption and a hole.
+check 'the tolerated set is exactly the one entry we know about' '1' \
+    "$(grep -c '^?' "$FLOORF" 2>/dev/null)"
 # AND EVERY PROGRAM IT NAMES MUST STILL BE INSTALLED.  A floor naming a
 # program that has been removed can never be satisfied -- the probe would
 # report it "gone" forever -- and that is a stale-allow-list failure, the
 # shape tests/kmemu's import list is kept honest against.
 check 'every program named in the floor is installed' '' \
     "$(grep -v '^[[:blank:]]*#' "$FLOORF" 2>/dev/null | grep -v '^[[:blank:]]*$' |
+       sed 's/^?[[:blank:]]*//' |
        awk '{print $2}' | sort -u | while read -r p; do
            find "$V8ROOT/bin" "$V8ROOT/usr/bin" "$V8ROOT/etc" "$V8ROOT/lib" \
                 "$V8ROOT/usr/lib" -type f -name "$p" -perm -100 2>/dev/null |

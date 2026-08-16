@@ -3130,9 +3130,24 @@ puns in a single file.
     silent. A missing floor file is a failure, not a skip (`tests/cpp`'s
     precedent); `LC_ALL=C` keeps `comm`'s collation ours rather than the runner's;
     and a **tainted** run (SIGKILL, i.e. something rebuilt mid-run) no longer
-    reads as a pass. Three millisecond-cost cases in `tests/wavea` check the floor
-    file parses and names only installed programs, because a 13-minute job is a
-    slow way to discover a malformed expectation. `wavea` 145 → 168.
+    reads as a pass. Four millisecond-cost cases in `tests/wavea` check the floor
+    file parses, names only installed programs, and has exactly one tolerated
+    entry, because a 13-minute job is a slow way to discover a malformed
+    expectation. `wavea` 145 → 169.
+
+    **And the FIRST CI run found a crash this machine does not have**, which is
+    the argument for the whole exercise and also broke the design: `tar -u`
+    SIGSEGVs on a GitHub macos-26 runner and exits 1 here. A both-directions
+    floor **cannot** express that — present it fails locally as *gone*, absent
+    it fails in CI as *new* — so there is a third category, a `?` prefix removed
+    from both sides. It is kept small and loud (count printed, entries named,
+    `tests/wavea` asserting the set is exactly one) because that arm is the only
+    one that can pass with a crash present. Recorded as an **observation**, not
+    a mechanism: not reproduced in ~40 local invocations under the probe's own
+    conditions, so **task #77** carries what is known and no theory. And
+    `tests/wavea` now derives its expected list from the floor file rather than
+    spelling it twice — two hand-written copies of one list agree about a wrong
+    set, which this port has measured once already in the errno tables.
   - **`libcurses`** (43 files) now that the library under it exists.
   - **`TERM` in the launcher.** The world has a termcap database and the
     launcher still exports no `TERM`, so a screen program has nothing to ask.
