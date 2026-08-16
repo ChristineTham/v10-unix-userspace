@@ -240,6 +240,26 @@ freelabs()
 	}
 
 
+/*
+ * PORT: `char *stralloc()' and `char *remtilda()' below, both implicit int.
+ *
+ * THE SWEEP CANNOT SEE THIS ONE, which is worth knowing before trusting it.
+ * tests/trunc-sweep.awk reads a CALL SITE and names a result the caller
+ * truncated; here the narrowing is in the CALLEE -- `return(cp)' out of a
+ * function whose declared return type is int writes w0, and a write to w0
+ * zeroes bits 63:32 architecturally.  So the pointer is destroyed before the
+ * caller ever sees it and there is nothing at the call site to match.  The
+ * sweep reports ZERO hits over the whole linked binary, measured, and is
+ * working correctly when it does.
+ *
+ * `remtilda' escapes anyway, by the accident CLAUDE.md records: it returns
+ * its own parameter, and an int return that forwards a value emits no
+ * truncation instruction at all.  Declared for the same reason `maketab.c's
+ * malloc was NOT -- there the emitted code was measured identical, here
+ * stralloc's sibling in the same file genuinely truncates, so the pair must
+ * agree or the next reader has to re-derive which of the two was safe.
+ */
+char *
 stralloc(ad,n)			/* allocate space, copy n chars from address ad, add '0' */
 int n; char *ad;
 	{
@@ -250,6 +270,7 @@ int n; char *ad;
 	}
 
 
+char *
 remtilda(s)			/* change ~ to blank */
 char *s;
 	{

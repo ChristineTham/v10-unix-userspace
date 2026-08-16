@@ -29,6 +29,15 @@ extern long begchar, endchar, comchar;
 
 extern char *pred, *inc, *prerw, *postrw, *exp, *stcode;
 
+/*
+ * PORT: declared here because both callers (1.fort.c and 1.recog.c) include
+ * this header, and because `stcode' one line above is what they feed --
+ * a char * that 1.recog.c then stores into a GRAPH CELL (`BEGCODE(num) =
+ * stcode'), which is the second independent reason a VERT must be
+ * pointer-sized.  See def.h's VERT for the first.
+ */
+extern char *stralloc(), *remtilda();
+
 #define maxdo	20	/* max nesting of do loops */
 extern long dostack[maxdo];		/* labels of do nodes */
 extern int doloc[maxdo];		/* loc of do node */

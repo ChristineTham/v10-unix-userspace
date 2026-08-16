@@ -6,7 +6,15 @@
 extern int match[], symclass[],  action[], newstate[];
 extern char symbol[];
 long *hashtab;
-int *value, *chain;
+/*
+ * PORT: `chain' split off from `value' and given VERT cells; both were
+ * `int *'.  They are NOT the same kind of thing and only one had to move:
+ * value[] holds -1 (assigned), -2 (unused) or an INDEX back into this table
+ * (`index = value[index]' at :192), which is an int on both machines.
+ * chain[] holds the fixup chain -- a pointer, or the vertex once resolved.
+ */
+int *value;
+VERT *chain;
 
 extern FILE *infd;
 
@@ -142,7 +150,7 @@ long x;
 
 addref(x,ptr)				/* put ptr in chain for x or assign value of x to *ptr */
 long x;
-int *ptr;
+VERT *ptr;				/* PORT: was `int *' */
 	{
 	int index;
 	index = hash(x);
@@ -164,9 +172,10 @@ int *ptr;
 
 fixvalue (x,ptr)
 long x;
-int ptr;
+VERT ptr;				/* PORT: was `int' -- a cell value, so VERT */
 	{
-	int *temp1, *temp2, index, temp0;
+	VERT *temp1, *temp2;		/* PORT: were `int *' */
+	int index, temp0;
 	index = hash(x);
 
 	while (index != -2)
@@ -197,7 +206,8 @@ int ptr;
 connect(x,y)
 long x,y;
 	{
-	int *temp, index, temp2;
+	VERT *temp;			/* PORT: was `int *' */
+	int index, temp2;
 	index = hash(x);
 
 	if (value[index] == -1)

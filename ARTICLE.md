@@ -3852,6 +3852,82 @@ rather than a loop, so only the bare invocation was affected. A VAX read `0x00`
 there, the test failed, and the argument-count check below it printed
 `diff3: arg count`. That message is the answer; the guard restores it.
 
+### `struct`, where one `#define` was the whole fix — and a cost estimate that
+### was far too large
+
+Brenda Baker's `struct(1)` turns Fortran into Ratfor: 40 files, 5695 lines. It
+compiled and linked immediately and then SIGSEGV'd on the first line of real
+Fortran it was given. The first defect was the familiar one — five allocators
+returning pointers through an implicit `int` — and fixing it moved the crash
+into `fixvalue`, whose parameter for a pointer is declared `int`.
+
+I wrote that up as "not one more line but a pass over the module, and an
+unknown number of the other 39 files may do the same." That estimate was wrong,
+and wrong in the direction this project rarely errs in: **too large**. What
+`1.hash.c` is doing is not a style of writing `int` for pointer. While a
+Fortran label is still unresolved it threads a *fixup chain through the graph's
+own cells* — one function stores the address of a cell, each cell holds the
+address of the next, and a later pass walks the chain overwriting every one
+with the vertex number that finally resolved. So a cell means **a vertex number
+or a pointer**, chosen by whether the label has been seen yet, and the only
+thing that has to change is that the cell be pointer-sized. `#define VERT int`
+became `#define VERT long`, and that is the fix.
+
+Widening it broke 13 of 38 objects, and both classes turned out to be
+contradictions that were already in the source:
+
+One array was **declared at two different widths in two headers** — `VERT
+*after` in one, `int *after` in another — while being *defined* as `VERT *` in
+a third file. `#define VERT int` had made the two spellings the same type, so
+no compiler in forty years had cause to speak. Widening VERT is what made them
+disagree, and seven translation units refused at once.
+
+The other was a table that has to share a width with a graph cell, because the
+macro reading it is a ternary yielding *either* a table entry *or* a cell: a
+non-negative entry is the arc count, a negative one is the offset of the count
+inside the node. The two arms are interchangeable by construction, so the
+ternary has no type unless they agree.
+
+With those two lines, all 38 objects compiled — the same count as the
+pre-change baseline, rebuilt in a scratch tree as a control.
+
+Then the crash moved again, into `printf`, and the third defect is **the line
+beside it in the most literal form this repository has recorded**. One line of
+`def.h` declares two functions returning `VERT *`. The very next line declares
+six more as `int *`. All eight return the address of a graph cell. Upstream had
+spelled one type two ways on two adjacent lines, and a VAX could not tell them
+apart. The consequence was not a warning but silent half-width access: a macro
+that dereferences one of those six stored only the *low half* of a string
+pointer, so `%s` was handed a truncated address.
+
+What identified it was that the faulting address **changed between runs** —
+`0x4b4686c`, then `0x1de0686c`. ASLR moving it is what says the value is a real
+heap pointer with its top half gone, rather than a constant. A stable address
+would have meant something else entirely.
+
+Two instruments were silent throughout, and it is worth saying exactly why,
+because between them they cover one direction twice and the other not at all.
+The compiler warns on a pointer mismatch in an *assignment* and not in a
+`return`, so six functions returning the wrong pointer type produced no
+diagnostic — a whole-module warning diff against the baseline named exactly one
+new site, and it was a different bug. And the truncation sweep this project
+uses reads *call sites*, so a function narrowing its own result leaves nothing
+at the call to match; it reported zero hits over this binary throughout, which
+was correct. What found the bug was reading two adjacent declarations.
+
+`structure` now translates straight-line Fortran and `IF` statements into
+correct Ratfor, where before it died on every input including the trivial one.
+It still fails on a `GOTO`, and the instrumented values name the remaining
+defect precisely: one variable reads as `0xFFFFFFFF00000008` — top half all
+ones, low half 8 — which is **two adjacent four-byte `int`s being read as one
+eight-byte `long`**. Some 32-bit-element array is still being read at cell
+stride. That is the next turn of the same loop.
+
+It is deliberately still not installed. `struct` exists to turn `GOTO`s into
+loops, so a `struct` that fails on a `GOTO` fails at the one thing it is for,
+and a command in the world that dies on its own primary input is worse than a
+command that is not there.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,

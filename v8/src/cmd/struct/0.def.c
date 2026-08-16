@@ -5,7 +5,7 @@ int routnum;
 FILE *debfd;
 LOGICAL routerr;
 int nodenum, accessnum;
-int **graph;
+VERT **graph;			/* PORT: was `int **' -- see def.h's VERT */
 int progtype;
 VERT stopvert, retvert;
 VERT START;

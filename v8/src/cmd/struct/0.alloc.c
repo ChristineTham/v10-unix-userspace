@@ -85,8 +85,14 @@ talloc(n)		/* allocate from line-by-line storage area */	/* PORT: implicit int *
 int n;
 	{return(balloc(n,&tcore,tblksize)); }
 
-int *
+VERT *
 galloc(n)		/* allocate from graph storage area */	/* PORT: implicit int */
+			/* PORT: `VERT *', was `int *' when this declaration was
+			 * first added -- its principal caller is
+			 * `graph[nodenum] = galloc(...)' (0.parts.c:112) and a
+			 * graph row is VERT cells.  stralloc borrows the same
+			 * arena for bytes, which is upstream's own looseness
+			 * and unchanged in character by this. */
 int n;
 	{
 	return(balloc(n,&gcore,gblksize));

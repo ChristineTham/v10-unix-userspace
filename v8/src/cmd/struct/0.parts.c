@@ -28,7 +28,7 @@ int childper[TYPENUM]	= {0,	2,	1,	0,	0,
 			2,	1
 			};
 
-int arcsper[TYPENUM]	= {1,		2,		2,	3,	0,
+VERT arcsper[TYPENUM]	= {1,		2,		2,	3,	0,	/* PORT: was int */
 			-(FIXED+1),	1,	-(FIXED+1),	1,	1,
 			1,		1,		2,	0,	0,
 			-FIXED,		1,	1,		1,	-(FIXED+1),
@@ -52,7 +52,7 @@ VERT v; int i;
 	return(&graph[v][nonarcs[NTYPE(v)]-i-1]);
 	}
 
-int *vxpart(v,type,j)
+VERT *vxpart(v,type,j)	/* PORT: was int * */
 VERT v;
 int type,j;
 	{
@@ -60,7 +60,7 @@ int type,j;
 	return(&graph[v][FIXED+j]);
 	}
 
-int *expres(v)
+VERT *expres(v)	/* PORT: was int * */
 VERT v;
 	{
 	int ty;
@@ -69,27 +69,27 @@ VERT v;
 	return(&graph[v][FIXED]);
 	}
 
-int *negpart(v)
+VERT *negpart(v)	/* PORT: was int * */
 VERT v;
 	{
 	ASSERT(NTYPE(v) == IFVX || NTYPE(v) == ACASVX,negpart);
 	return(&graph[v][FIXED+1]);
 	}
 
-int *predic(v)
+VERT *predic(v)	/* PORT: was int * */
 VERT v;
 	{
 	ASSERT(NTYPE(v) == IFVX || NTYPE(v) == ACASVX, predic);
 	return(&graph[v][FIXED]);
 	}
 
-int *level(v)
+VERT *level(v)	/* PORT: was int * */
 VERT v;
 	{
 	ASSERT(NTYPE(v) == GOVX || NTYPE(v) == BRKVX || NTYPE(v) == NXTVX, level);
 	return(&graph[v][FIXED]);
 	}
-int *stlfmt(v,n)
+VERT *stlfmt(v,n)	/* PORT: was int * */
 VERT v;
 int n;
 	{

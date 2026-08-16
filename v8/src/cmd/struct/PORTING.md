@@ -37,7 +37,24 @@ objects wants `yywrap` and nothing else, and `libl.a` (imported in batch 2d for
 
 ## Why it is not built: it is written in `int` where it means pointer
 
-`structure` SIGSEGVs on its first line of real Fortran.
+`structure` SIGSEGVs on its first line of real Fortran.  **It no longer does.**
+Measured, on four inputs of increasing shape:
+
+| input | before | now |
+|---|---|---|
+| straight-line assignment | SIGSEGV in `fixvalue` | **correct Ratfor**, exit 0 |
+| two statements | SIGSEGV in `fixvalue` | **correct Ratfor**, exit 0 |
+| a plain `IF` | SIGSEGV in `fixvalue` | **correct Ratfor**, exit 0 |
+| `IF … GOTO` (a loop) | SIGSEGV in `fixvalue` | assertion in `mkthen` |
+
+The baseline column is a *control*, not a memory: the pre-change sources were
+rebuilt in a scratch tree and run on the same four files, and **every one of
+them died in `fixvalue`, including the trivial one**.  That is what says the
+remaining `mkthen` failure is newly *reachable* rather than a regression.
+
+It is still not in the Makefile, for the reason below that has not changed:
+`struct` exists to turn `GOTO`s into loops, so a `struct` that fails on a
+`GOTO` fails at the one thing it is for.
 
 **Defect 1, FIXED here: the five allocators in `0.alloc.c`.**  Every one returns
 a pointer through an implicit `int`, and `challoc` stacks two truncations:
@@ -63,36 +80,101 @@ which is the right header because upstream's own makefile already says
 `main.o $(0FILES.o) $(1FILES.o) …: def.h`, so one place reaches every caller.
 Not one statement changed.
 
-**Defect 2, NOT fixed: `fixvalue` and the rest of `1.hash.c`.**  Fixing the
-allocators moved the crash rather than removing it — `EXC_BAD_ACCESS at
-0x1ee06290` in `fixvalue`, whose signature is
+**Defect 2, FIXED: it was ONE `#define`, and the fix is `def.h:11`.**  The
+previous note read this as "not one more line but a pass over the module, and
+an unknown number of the other 39 files may do the same", and costed it far too
+large.  What `1.hash.c` is doing is not style: while a Fortran label is
+unresolved it threads a **fixup chain through the graph's own cells** —
+`addref` stores the address of a cell, each cell holds the address of the next,
+`fixvalue` walks the chain overwriting every one with the real vertex.  So a
+cell means *a vertex number or a pointer*, and the only thing that has to
+change is that the CELL be pointer-sized.  `#define VERT long`.
 
-```c
-fixvalue (x,ptr)
-long x;
-int ptr;			/* a POINTER parameter declared int */
+**The cascade was two declarations, measured rather than feared.**  Widening it
+broke 13 of 38 objects; both classes are one line each and both are upstream's
+own latent contradictions rather than consequences:
+
+- **`after` is declared at two widths in two headers** — `extern VERT *after`
+  (`2.def.h:2`) and `extern int *after` (`def.h`, then).  It is *defined*
+  `VERT *after` at `2.main.c:5`, so `2.def.h` was right and `def.h` was always
+  wrong.  It cost nothing for forty years because `#define VERT int` made the
+  two spellings the same type.  Seven translation units refused at once.
+- **`arcsper[]` must share a width with a graph cell**, because `ARCNUM` is a
+  ternary yielding either `&arcsper[t]` or `&graph[v][-arcsper[t]]` — a
+  non-negative entry IS the arc count, a negative one is the OFFSET of the
+  count inside the node.  The two arms are interchangeable by construction, so
+  the ternary has no type unless they agree.  Eleven sites, one macro.
+
+With those two, **all 38 objects compile, zero errors — the same count as the
+baseline.**
+
+**Defect 3, FIXED, and it is THE LINE BESIDE IT in the most literal form this
+repository has recorded.**  `def.h` declared `arc()` and `lchild()` as
+`VERT *`; **the very next line** declared `vxpart() negpart() predic()
+expres() level() stlfmt()` as `int *`.  All eight return `&graph[v][...]`.
+Upstream spelled one type two ways on two adjacent lines and a VAX could not
+tell them apart.
+
+The consequence is not a warning but silent half-width access: `BEGCODE(v)` is
+`*vxpart(v,…)`, so `BEGCODE(num) = stcode` (`1.recog.c:109`) stored only the
+**low half of a string pointer**.  Measured as SIGSEGV inside `_doprnt` on a
+`%s`, at an address that **changed between runs** — `0x4b4686c`, then
+`0x1de0686c`.  That variation is the evidence: ASLR moving it is what says it
+is a real heap pointer with its top half gone, rather than a constant.
+
+**Defect 4, FIXED: `stralloc` and `remtilda` return `char *` undeclared.**
+Real but not the cause of anything observed — `remtilda` escapes by returning
+its own parameter, which emits no truncation.  Fixed as a pair so the next
+reader need not re-derive which of the two was safe.
+
+## Two instruments are blind to the return direction, and both were silent
+
+Worth knowing before trusting either on this class:
+
+- **v8cc warns on a pointer mismatch in an assignment and NOT in a `return`.**
+  Six functions returning `VERT *` from an `int *` declaration produced no
+  diagnostic at all.  A whole-module warning diff against the baseline named
+  exactly **one** new site, and it was a different bug (`galloc`).
+- **`tests/trunc-sweep.awk` reads CALL SITES**, so a callee narrowing its own
+  result has nothing at the call to match.  It reported **zero hits** over this
+  binary throughout — correctly, and validated against `rootfs/bin/ls`, which
+  gives 4.
+
+So the warning diff and the sweep between them covered the assignment
+direction twice and the return direction not at all.  What found defect 3 was
+reading two adjacent declarations.
+
+## Where to start next: the same loop, one more turn
+
+`mkthen` asserts `!DEFINED(w) || (DEFINED(tc) && BRANCHTYPE(NTYPE(tc)))`.
+Instrumented (in a scratch copy — never in `src/`), the values are
+
+```
+MKTHEN v=3 w=4294967295 tc=-4294967288 ntc=-1
 ```
 
-and whose body declares `int *temp1, *temp2, index, temp0;`.  The file uses
-`int` for pointers as a matter of style, so this is not one more line but a
-pass over the module — and an unknown number of the other 39 files may do the
-same.
+and they name the defect precisely.  `w` is **0xFFFFFFFF** — `UNDEFINED` (−1)
+written as 32 bits and read as 64, so it reads *positive* and `DEFINED(w)` is
+true when it must be false.  `tc` is **0xFFFFFFFF00000008**: top half all-ones,
+low half 8.
 
-## Where to start next
+**That pair is two adjacent 4-byte `int`s being read as one 8-byte `long`** —
+little-endian, low element 8, high element −1.  So a 32-bit-element array is
+still being read at VERT stride somewhere between `recognize()` and the graph.
+Ruled out by measurement already: all eight graph-cell returners in
+`0.parts.c` are `VERT *`; `makenode` is self-consistent (`int arctype[]` read
+as `int`, widened on store at `ARC(num,i) = arctype[i]`); and the only `int *`
+left in any header is `ntobef`/`ntoaft`, which are node-index arrays and not
+cells.  The remaining `int *` locals are the candidate set —
+`1.recog.c:9,310` (`arctype`), `1.line.c:32`, `2.dfs.c:21,148`.
 
-**The crash moving is the useful signal**: each fix reveals the next, so the
-loop is `build → run → lldb → fix declarations → repeat`, and it terminates.
-Do not guess at the count; `structure` processes a six-line Fortran program, so
-the reproducer is instant.
+**Do not reach for lldb**: v8cc emits no unwind info, so a backtrace stops at
+frame #0 every time.  What worked was instrumenting the scratch copy and
+printing the values, which named the two-adjacent-ints pattern in one run.
 
-Two instruments are better than lldb for this once the program runs at all:
-`tests/v8ccom`'s `trunc-sweep.awk` over the linked binary names every call whose
-result is truncated, and the `INTFNS` list separates "returns int" from "returns
-a pointer nobody declared".  That sweep is what caught `last`'s `asctime` and
-`qed`'s `getnum`.
-
-**And do not add it to the Makefile until it runs.**  A program installed into
-the world that dies on its own primary input is worse than one that is not
-there: the crash probe would gain a floor entry, `tests/wavea`'s
+**And still do not add it to the Makefile.**  A program installed into the
+world that dies on its own primary input is worse than one that is not there:
+the crash probe would gain a floor entry, `tests/wavea`'s
 imported-equals-installed guard would go green on a lie, and the world would
-grow a command that cannot be used.
+grow a command that cannot be used.  `struct` restructures `GOTO`s; until the
+`GOTO` case runs, it does not do its job.
