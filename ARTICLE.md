@@ -3345,6 +3345,32 @@ path, the probe measures its size before and after the whole sweep. Six thousand
 invocations of every installed program against every option is the widest net
 in the tree for "does anything write here", and it costs one `stat`.
 
+Then, checking that nothing else was missing from `/dev`, I found the directory
+almost empty — on a tree where the tests had just passed. One of the suites
+deletes `/dev` on purpose, to prove that the load-average program manufactures
+its fake kernel on demand, and then puts back what the build owns. It put back
+three names. By now the build owns a hundred and thirty-six, so every full test
+run had been leaving the installed world without a `/dev/null`, a `/dev/tty` or
+a `/dev/fd` until the next build silently rebuilt them. Two things hid it: every
+suite that reads those runs earlier in the sequence, and running one suite on its
+own rebuilds what it needs first.
+
+Sitting immediately above that three-name restore was a loop asserting that
+`/dev/null` and `/dev/tty` *do not exist* — word for word the claim I had just
+corrected in the shim, the same sentence having gone stale independently in two
+files. It passed for the most circular reason available: the deletion four lines
+earlier had made it true. It was testing its own cleanup.
+
+The restore is a snapshot now, so the suite does not need to know what the build
+owns. And the third member of that loop, `/dev/console`, I kept for one draft,
+reworded — and left sitting after the deletion, where it could only ever be true.
+I had reproduced the defect I was in the middle of diagnosing, inside the fix for
+it, and only a mutation caught it: creating the file changed no verdict, and the
+new snapshot then dutifully restored my litter. The case is gone rather than
+moved, because before the deletion it would assert a gap nobody chose — nothing
+builds `/dev/console` by accident rather than by decision, and nothing opens it.
+The person writing a fix is the last one who can see it repeating the bug.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,

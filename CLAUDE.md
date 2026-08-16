@@ -3681,6 +3681,31 @@ not testable until it is installed.
     for the reason the path list is one: bytes already in the node are the
     checkout's history, not this run's finding. Ask of any fix to a
     containment finding whether it leaves the detector able to see a relapse.
+  - **AND THE SAME DEAD SENTENCE WAS IN A SECOND FILE, WHERE IT WAS DELETING
+    `/dev` ON EVERY `make test`.** `tests/kmemu` does `rm -rf "$V8ROOT/dev"` to
+    prove `load(1)` manufactures `/dev/kmem` on demand, then asserted that
+    `rootfs/dev/null` and `rootfs/dev/tty` **do not exist** — *"the jail lets
+    them reach the host precisely by NOT having them"*, the identical claim
+    `vfs.c` carried, false for `tty` since the `/dev/fd` type and for `null`
+    since the commit before this one. **It passed because the `rm` four lines
+    above had just made it true**: the loop asserted a post-condition of its
+    own cleanup rather than a property of the build. And the restore beneath it
+    put back a hand-written three names — `dk`, `pt`, `drum` — which by then was
+    **three of 136**, so every `make test` left the installed world with no
+    `/dev/null`, no `/dev/tty` and no `/dev/fd` until the next `make` quietly
+    rebuilt them. Invisible twice over: every suite that reads those runs
+    *before* kmemu, and running one alone rebuilds its prerequisites first.
+    Snapshot-and-restore now, so the suite need not know what the build owns.
+  - **AND WRITING THAT FIX REPRODUCED THE BUG BEING FIXED, one draft later.**
+    The `console` third of the old loop was kept and reworded — and left
+    **after the `rm`**, where it can only ever be true. Mutation caught it:
+    creating `rootfs/dev/console` changed no verdict, and the new snapshot then
+    faithfully restored the litter. It is deleted rather than moved, because
+    before the `rm` it would assert a gap nobody decided — nothing builds
+    `/dev/console` by accident rather than on purpose, and nothing opens it, so
+    the case would only freeze the accident. **The author of a fix is the person
+    least able to see the fix repeating the defect**, which is the auditor rule
+    with the auditor being a mutation.
   - **THE SHAPE TO CARRY: A CONTAINMENT CHECK IS ALSO A COMPLETENESS CHECK ON
     THE ROOTFS.** Both findings are the jail's creat fall-through, and both
     were invisible on a tree that had been used. Ask of any such guard whether

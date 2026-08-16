@@ -457,27 +457,65 @@ fi
 # manufactures a kernel, and one table in kmem.c drives both files -- get them
 # out of step and load reads the wrong bytes and prints them without complaint.
 LOAD=$V8ROOT/usr/bin/load
+# SNAPSHOT BEFORE THE rm, AND RESTORE FROM THE SNAPSHOT -- not from a list.
+# This block used to put back three names by hand (`dk', `pt', `drum'), and by
+# the time /dev/fd, the four std nodes and /dev/null had arrived that was
+# THREE OF 136.  So every `make test' left the installed world without a
+# /dev/null, a /dev/tty or a /dev/fd until the next `make' quietly rebuilt
+# them -- invisible because every suite that reads those runs BEFORE this one,
+# and running one alone rebuilds its prerequisites first.  A hand-written
+# restore list is the two-copies-of-a-list trap with the copies a year apart.
+cp -a "$V8ROOT/dev" "$TMP/devsave"
 rm -rf "$V8ROOT/unix" "$V8ROOT/dev"
 "$LOAD" > "$TMP/load.out" 2>"$TMP/load.err"
 [ -f "$V8ROOT/unix" ]     && ok || bad "load creates /unix"
 [ -f "$V8ROOT/dev/kmem" ] && ok || bad "load creates /dev/kmem"
 
-# /dev did not exist, and nothing else has a reason to create it -- the jail
-# lets /dev/null and /dev/tty reach the host precisely by NOT having them. The
-# manufacturer makes its own directory; assert that rather than a build step
-# nobody will remember.
+# The manufacturer makes its own directory; assert that rather than a build
+# step nobody will remember.
 [ -d "$V8ROOT/dev" ] && ok || bad "the /dev directory was created on demand"
-for n in null tty console; do
-	[ -e "$V8ROOT/dev/$n" ] && bad "rootfs/dev/$n exists -- /dev/$n now misses the host" || ok
-done
 
-# ...and put back the parts of /dev the BUILD owns, which that rm also took.
-# /dev/dk, /dev/pt and /dev/drum are Makefile targets rather than manufactured
-# files -- ps(1) calls error() and exits if any is missing (ps.c:21-28) -- so
-# the manufacturer will not recreate them and the ps section at the end of this
-# file would fail for the wrong reason. That the RULES exist is tests/deps's
-# question; that ps works is this file's.
-mkdir -p "$V8ROOT/dev/dk" "$V8ROOT/dev/pt" && : > "$V8ROOT/dev/drum"
+# THE LOOP HERE USED TO ASSERT THAT rootfs/dev/null AND rootfs/dev/tty DO NOT
+# EXIST, "because the jail lets /dev/null and /dev/tty reach the host precisely
+# by NOT having them".  That was true when it was written and is now false for
+# both, and it passed anyway -- because the `rm -rf' four lines up had just
+# deleted them, so the loop was asserting a post-condition of its own cleanup
+# rather than a property of the build.  The same sentence went stale in
+# shim/v8sys/vfs.c and had to be corrected there too; one claim, two copies.
+#
+# What replaced it: /dev/tty has been a build product since the /dev/fd type
+# landed (the NAME has to be real for `ls /dev'; the mount table claims the
+# path first so the node is never opened), and /dev/null since the type that
+# does the same for it.
+#
+# THE THIRD MEMBER, `console', WAS KEPT FOR ONE DRAFT AND THEN DROPPED, and
+# the reason is worth more than the case was.  Rewritten as a single
+# assertion it STILL SAT AFTER THE rm -- so it could only ever be true, which
+# is the identical defect, reproduced by the person diagnosing it, inside the
+# fix.  Mutation caught it: creating rootfs/dev/console changed nothing, and
+# the snapshot below then faithfully restored the litter.  Moving it before
+# the rm would make it checkable, but it would assert a gap nobody decided --
+# this port does not build /dev/console by accident rather than on purpose,
+# and nothing in the tree opens it.  An assertion about an absent thing with
+# no consumer is the unconsumed-component rule pointed at a test.  Task #78's
+# whole lesson is that /dev gaps get discovered when something finally needs
+# them; that is the moment to decide, and a case written now would only
+# freeze the accident.
+
+# ...and put /dev back exactly as the build left it.  ps(1) calls error() and
+# exits if /dev/dk, /dev/pt or /dev/drum is missing (ps.c:21-28), so the ps
+# section at the end of this file would otherwise fail for the wrong reason --
+# but the restore is not FOR ps, it is for the tree, and the snapshot covers
+# whatever the build owns without this file having to know what that is.
+# /dev/kmem and /unix are deliberately left as the manufacturer just made them.
+for n in $(ls "$TMP/devsave"); do
+	[ -e "$V8ROOT/dev/$n" ] || cp -a "$TMP/devsave/$n" "$V8ROOT/dev/$n"
+done
+# And say so, because a restore that silently does nothing is how this got
+# lost in the first place.
+[ -e "$V8ROOT/dev/null" ] && [ -d "$V8ROOT/dev/fd" ] && ok ||
+	bad "the build's own /dev nodes are restored after the rm" \
+	    "null=$([ -e "$V8ROOT/dev/null" ] && echo y || echo n) fd=$([ -d "$V8ROOT/dev/fd" ] && echo y || echo n)"
 
 check "load prints V8's header" "    1m    5m   15m" "$(head -1 "$TMP/load.out")"
 
