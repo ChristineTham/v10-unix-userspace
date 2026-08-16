@@ -144,3 +144,81 @@ One of the 54 still dies, and it is a **different class** — `permute()` at
 full-width rules and `linesize(24)`.  Undiagnosed; `tests/wavec` asserts that it
 *still* dies, so fixing it requires removing the name from `KNOWN_TBL_FAIL` in
 the same commit.
+
+## sample32: upstream's bug, diagnosed and deliberately not fixed
+
+The one table of the 54 still dying.  A **different class** from the two above —
+the fault address is `0x0`, a plain null, not a 32-bit value.
+
+### Reduced to 34 bytes
+
+```
+.TS
+c c
+^ _.
+A	B
+C	D
+.TE
+```
+
+Two things are both required: a **format row that `nodata()` accepts** (no
+column of type `c n r l s a` — so `^ _`, `_ _`, `= ^` all qualify) and **two or
+more data rows**.  One data row is fine; `^ c` is fine, because column 1 makes
+`nodata()` false and the whole block is skipped.
+
+### The mechanism
+
+`gettbl()` at `t5.c:36-45`:
+
+```c
+if (nodata(nlin))
+	{
+	if (ch = oneh(nlin))
+		fullbot[nlin]= ch;
+	nlin++;                 /* advance PAST this row ... */
+	...
+	}
+table[nlin] = alocv(...);       /* ... and allocate for the NEXT one */
+```
+
+The row that `nodata()` matched therefore ends with **`table[N]` never
+allocated**, and `permute()` (`t5.c:141`) later does
+`table[--irow][jcol].col = start` on it.
+
+Instrumented at the faulting statement, the state is
+
+```
+jcol=0 is=0 irow(after)=2 nlin=3 table[irow-1]=NULL fullbot[irow-1]=0 instead[irow-1]=0
+```
+
+— and the last two zeros are the point.  `prev()` and `next()` skip rows marked
+`fullbot` or `instead`, so a marked row would be safe; **this row is marked
+neither**, and nothing in `permute`'s walk avoids it.
+
+Two readings were wrong before this measurement and are recorded because the
+corrections are the content.  The first guess was that the null row was reached
+through `next()` in the `while (is<irow)` loop; a trace placed there printed
+*nothing*, because the fault happens two lines earlier at `table[--irow]`.  The
+second was that `oneh()` returning nonzero would protect the uniform case by
+setting `fullbot` — measured, `_ _` crashes as readily as `^ _`, so marking is
+not sufficient protection either.
+
+### Why it is not fixed
+
+`table` is `struct colstr *table[MAXLIN]` (`t0.c:23`) — a plain static array, so
+it is **zero-filled BSS on a VAX exactly as here**.  V8's binaries are ZMAGIC,
+whose text is read-only shared at virtual 0, so `table[N][jcol].col = start`
+through a null takes a protection fault on a PDP-11/VAX too.  There is no VAX
+answer to restore, which is the test S1 applies — the same verdict as `bcd`,
+`lex`'s 53 and `cpio -i`.
+
+`permute()` is byte-identical to upstream and so is `gettbl()`.
+
+**What is NOT established**, and would have to be before anyone reconsiders:
+whether Bell Labs ever ran `sample32` successfully.  Their own harness in
+`eqntest.a` diffs two *builds of eqn*, and there is no equivalent record for
+`tbl` — so the suite may be a collection of inputs that were never all expected
+to pass.
+
+`tests/wavec` asserts that sample32 **still** dies, so a future fix has to
+remove it from `KNOWN_TBL_FAIL` in the same commit.
