@@ -361,7 +361,12 @@ The fix restores exactly the VAX answer: stop at the terminator.
 
 **Two things make this one worth recording beyond the fix.**
 
-**The guard was eleven lines up, in the same function, over the same array.**
+**The guard is at the top of the same function, over the same array** — fifty
+lines up before this note was written, and no number is given because a
+citation into the file it sits in is self-invalidating: adding the PORT comment
+moved its own target by twenty-nine lines.  (The first draft of this sentence
+said *eleven*, invented from memory, and the same wrong number reached three
+other files before anyone measured it.)
 One loop was written defensively and the other was not — this repository's most
 repeated shape, arriving inside a single 90-line file.
 

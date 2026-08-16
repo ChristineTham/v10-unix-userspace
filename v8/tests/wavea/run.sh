@@ -1879,8 +1879,8 @@ check 'showq says it cannot read memory' '1|1' \
        "$(grep -c 'open /dev/mem' sq.out | tr -d ' ')")"
 # dmesg SIGSEGV'd here until this batch, and the bug was in nlist(3) rather
 # than in dmesg: the matching loop walked to the caller's `{ 0 }' terminator
-# and read name[0] off address 0, where the counting loop ELEVEN LINES ABOVE
-# already had the null test.  Nothing had reached it because the loop breaks at
+# and read name[0] off address 0, where the counting loop AT THE TOP OF THE
+# SAME FUNCTION already had the null test.  Nothing had reached it because the loop breaks at
 # the requested symbol first, so every caller whose symbols are PRESENT walks
 # past it -- dmesg is the first program here to ask for one that is absent.
 # The status is asserted because a case whose expected output is empty cannot

@@ -1756,8 +1756,8 @@ were in neither the programs nor their build:
   shape: a `-l` flag naming an archive that does not define what the caller
   needs. It also brings an idiom nothing here has met — the sources live inside
   an `ar` archive and the makefile runs `ar x` to get them.
-- **`nlist(3)` DEREFERENCED THE LIST TERMINATOR, AND THE GUARD WAS ELEVEN LINES
-  ABOVE IT.** The address-0 class, tenth instance and the **first in libc**;
+- **`nlist(3)` DEREFERENCED THE LIST TERMINATOR, AND THE GUARD IS AT THE TOP OF
+  THE SAME FUNCTION.** The address-0 class, tenth instance and the **first in libc**;
   `nlist.c` is byte-identical to upstream. The counting loop is
   `q->n_un.n_name && q->n_un.n_name[0]`; the matching loop, same function, same
   array, is `p->n_un.n_name[0]`. A caller ends its list with `{ 0 }`.

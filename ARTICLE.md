@@ -3838,7 +3838,7 @@ upstream's: the loop that matches a symbol against the caller's list walks to th
 list's terminator and reads through a null pointer. On a VAX address 0 held a
 zero byte and the loop stopped; macOS leaves that page unmapped.
 
-The guard was **eleven lines above, in the same function** — the counting loop
+The guard is **at the top of the same function** — the counting loop
 over the same array has the null test that the matching loop lacks. And nothing
 had reached it because the matching loop breaks at the symbol it wants: every
 caller the port had asks for symbols that are *present*, so none of them ever

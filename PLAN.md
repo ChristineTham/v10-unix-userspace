@@ -3163,8 +3163,8 @@ of the programs.
   - **`nlist(3)` had an address-0 dereference and it is the first in libc.**
     `dmesg` SIGSEGV'd; the file is byte-identical to upstream. The loop that
     matches a symbol against the caller's list walks to the `{ 0 }` terminator
-    and reads `name[0]` through a null pointer — **and the guard is eleven lines
-    above in the same function**, where the counting loop over the same array
+    and reads `name[0]` through a null pointer — **and the guard is at the top of
+    the same function**, where the counting loop over the same array
     already tests it. Nothing had reached it because the loop `break`s at the
     requested symbol, so every caller whose symbols are PRESENT stops short:
     `libkmemu` manufactures `_avenrun` and `_bootime`, which is exactly what
