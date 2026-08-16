@@ -2034,6 +2034,34 @@ standing in for the VAX kernel.
 `src/`: `tools/import.sh v8/usr/src/cmd/cpp`, which records the upstream blob
 hash in a `PROVENANCE` file so the diff against pristine V8 stays reconstructible.
 
+**AND `.gitignore` HAS BEEN DELETING PART OF IT SINCE IT WAS VENDORED, WHICH
+ONLY A FRESH CHECKOUT CAN SEE.** `*.a`, `*.o`, `*.out` and `*.i` are there for
+BUILD outputs and they match by extension everywhere, including inside the
+pristine archive. `usr/src/libplot` stores each library's C sources **inside an
+`ar` archive** — `tek.c.a`, `plot.c.a` — so ten bundles of Bell Labs source
+were never committed: `git log --all -- '*.c.a'` was empty. Fixed with
+`!*.c.a`; on a fresh clone `tools/import.sh` could not previously have imported
+any plot library at all, which is part of why that tree went unexamined.
+
+- **THE FAILURE MODE IS A GREEN LOCAL TREE.** The files were present here, so
+  the build, all seventeen suites and a 7579-invocation crash probe passed
+  against source that did not exist in the repository. CI is the only machine
+  with no history — same reason the `/etc/utmp` case in `tests/jail` could only
+  fail there. **Ask of any new file: would a clone have it?**
+- **190 FILES AND 2.6 MB ARE STILL IGNORED IN `third_party/`** (66 `.a` — every
+  shipped library; 79 `.out` — the troff font tables; 26 `.i`; 19 `.o`). None
+  is a build input, which is why this stayed green for the life of the project.
+  What it costs is that **several measurements recorded here cite them and are
+  not reproducible from a clone** — "the shipped `libm.a` is 216 bytes, one
+  member whose whole symbol table is a row of underscores" among them. Task #90.
+- **THE RULES MEAN "under build/ and rootfs/" AND SHOULD SAY SO.** Anchoring
+  them is the real fix; matching by extension anywhere is what let a `.c.a`
+  source look like a `.a` output.
+- **AND `tools/import.sh` NEVER ASKS GIT**, which is why nothing spoke at import
+  time. It copies the file and records the hash; a `git check-ignore` on the
+  destination would have caught this at the point of the mistake rather than
+  five commits later on a runner.
+
 ### Where a command is INSTALLED is upstream's decision, and upstream wrote it down
 
 This port put everything in `/bin` for as long as `/bin` was the only directory
