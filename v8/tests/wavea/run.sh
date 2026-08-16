@@ -2149,6 +2149,75 @@ realcount=$(find "$V8ROOT/bin" "$V8ROOT/usr/bin" "$V8ROOT/etc" -maxdepth 1 \
             sed 's|.*/||' | sort -u | wc -l | tr -d ' ')
 check "ARTICLE.md's command count matches the installed world" "$realcount" "$artcount"
 
+# ---------------------------------------------------------------------------
+# struct(1) -- batch 2e.  Brenda Baker's Fortran-to-Ratfor restructurer.
+#
+# THE FOUR GOTO CASES ARE THE LOAD-BEARING ONES, and they are four rather than
+# one on purpose: each asserts a DIFFERENT structured construct, so a
+# regression in one arm cannot hide behind the others.  Every one of them
+# SIGSEGV'd in fixvalue before batch 2e -- including the straight-line case,
+# which is why the plain ones are here too as the floor.
+#
+# The pipeline is the real test: /usr/bin/struct is a shell script with no
+# `#!' line, run by V8's sh, calling /usr/lib/struct/{structure,beautify}.
+# So a passing case exercises the script, both binaries, and the jail
+# resolving /usr/lib/struct -- which no single-binary case would.
+mkdir -p struct && cd struct || exit 1
+STRUCTSH="$V8ROOT/usr/bin/struct"
+strunt() { # strunt <fortran-on-stdin> -> beautified ratfor, blank lines gone
+	cat > s.f
+	"$V8ROOT/bin/sh" "$STRUCTSH" s.f 2>/dev/null | sed '/^[[:blank:]]*$/d' |
+	    tr '\n' '|' | sed 's/|$//'
+}
+
+check 'struct: straight-line code survives' \
+    'subroutine a(n)|n = 1|return|end' \
+    "$(printf '      SUBROUTINE A(N)\n      N = 1\n      RETURN\n      END\n' | strunt)"
+
+# A backward GOTO is a loop, and REPEAT/UNTIL is what says so.  This is the
+# case that exchange()'s half-width swap broke: negate() flips the IF, and
+# with a 32-bit swap the undefined child read as +4294967295 so DEFINED() was
+# true and mkthen asserted.  src/cmd/struct/PORTING.md defect 6.
+check 'struct: backward GOTO becomes REPEAT/UNTIL' \
+    'subroutine d(n)|repeat|	n = n-1|	until(n<=0)|return|end' \
+    "$(printf '      SUBROUTINE D(N)\n   10 N = N - 1\n      IF (N .GT. 0) GOTO 10\n      RETURN\n      END\n' | strunt)"
+
+# A GOTO out of a DO loop is a break.  Exercises a different arm of getthen
+# than the one above -- this one keeps the loop and rewrites the exit.
+check 'struct: GOTO out of a DO becomes break' \
+    'subroutine e(n,m)|do i = 1,n {|	if (i==m)|		break 1|	m = m+i|	}|return|end' \
+    "$(printf '      SUBROUTINE E(N,M)\n      DO 20 I = 1, N\n         IF (I .EQ. M) GOTO 30\n         M = M + I\n   20 CONTINUE\n   30 CONTINUE\n      RETURN\n      END\n' | strunt)"
+
+# Three-way branch -> IF/ELSE IF/ELSE.  Reaches negate() by the OTHER arm
+# (BRANCHTYPE on the false child), so it discriminates from the REPEAT case.
+check 'struct: three-way GOTO becomes IF/ELSE IF/ELSE' \
+    'subroutine f(a,b,n)|if (n<0)|	a = -b|else if (n==0)|	a = 0|else|	a = b|return|end' \
+    "$(printf '      SUBROUTINE F(A,B,N)\n      IF (N .LT. 0) GOTO 10\n      IF (N .EQ. 0) GOTO 20\n      A = B\n      GOTO 30\n   10 A = -B\n      GOTO 30\n   20 A = 0\n   30 CONTINUE\n      RETURN\n      END\n' | strunt)"
+
+# A computed GOTO is a switch, and two subroutines in one file prove the
+# per-routine state is reset rather than carried.
+check 'struct: computed GOTO becomes SWITCH, and 2 routines' \
+    'subroutine g(k)|switch(k) {|	case 1:|		k = 1|	case 2:|		k = 2|	case 3:|		k = 3|	}|return|end|subroutine h(j)|j = j+1|return|end' \
+    "$(printf '      SUBROUTINE G(K)\n      GOTO (10,20,30), K\n   10 K = 1\n      GOTO 40\n   20 K = 2\n      GOTO 40\n   30 K = 3\n   40 CONTINUE\n      RETURN\n      END\n      SUBROUTINE H(J)\n      J = J + 1\n      RETURN\n      END\n' | strunt)"
+
+# beautify alone, because the pipeline above would pass if structure emitted
+# already-beautiful output.  What beautify adds is lowercasing, operator
+# rewriting (.gt. -> >) and spacing, so assert those on input it did not make.
+check 'struct: beautify lowercases and rewrites operators' \
+    'if (a>b)|	x = 1' \
+    "$(printf 'IF(a .gt. b)\n\tx = 1\n' | "$V8ROOT/usr/lib/struct/beautify" 2>/dev/null |
+       sed '/^[[:blank:]]*$/d' | tr '\n' '|' | sed 's/|$//')"
+
+# The two binaries are in /usr/lib/struct and NOT in a command directory --
+# upstream's own `cp structure beautify /usr/lib/struct'.  Asserted because
+# $(call v8dest,...) would answer /usr/bin by fall-through, struct being in no
+# Admin table at all, and that fall-through is what this rule overrides.
+check 'struct: binaries live in /usr/lib/struct' 'beautify structure' \
+    "$(ls "$V8ROOT/usr/lib/struct" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+check 'struct: and the command is the shell script' 'yes' \
+    "$(head -1 "$V8ROOT/usr/bin/struct" 2>/dev/null | grep -q 'trap' && echo yes)"
+cd "$TMP" || exit 1
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 
@@ -2214,6 +2283,7 @@ echo "wavea: $pass passed, $fail failed"
 # The general shape again: neither was a defect in the ported program.  One was
 # a target-model decision made wrongly, one was a missing library file.
 # ---------------------------------------------------------------------------
+
 
 # ---------------------------------------------------------------------------
 # NOT PORTED, and why. Compiling every command in usr/src/cmd leaves seven that

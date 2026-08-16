@@ -5,7 +5,29 @@
 #define input()	ninput()
 #undef	unput
 #define unput(c)	nunput(c)
-extern int yylval;
+/*
+ * PORT: `extern long yylval', was `int', plus the `char *malloc()' below.
+ *
+ * SECOND INSTANCE OF awk's BUG, found by the sweep src/cmd/awk/PORTING.md
+ * says to run.  This port's yacc emits `#define YYSTYPE long' (y2.c:318) --
+ * the global fix for the yylval.p token bug -- so the GRAMMAR side declares
+ * `long yylval' and this line declared the same object `int'.  Every value
+ * the lexer puts there is a POINTER: `yylval = malloc(i)' at fixval(),
+ * `yylval = xxtbuff' below, `xxp = yylval' read back, and beauty.y:408
+ * free()s it.  So a truncated heap address was malloc'd, copied into,
+ * returned to the parser and freed.
+ *
+ * `malloc' was undeclared as well, which puts TWO truncations on the one
+ * line -- the undeclared return, then the store into an int.
+ *
+ * Measured: beautify SIGSEGV on the first real input and exit 0 on empty
+ * stdin, because an empty file never reaches fixval().  The sweep:
+ *
+ *   grep -rnE '(extern|static)?[[:blank:]]*(int|short)[[:blank:]]+yylval' \
+ *        src/cmd/ * / *.l src/cmd/ * / *.c
+ */
+extern long yylval;
+char *malloc();
 #define xxbpmax	1700
 char xxbuf[xxbpmax + 2];
 int xxbp = -1;

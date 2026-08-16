@@ -486,6 +486,34 @@ dep 'pp.h -> pp.o'             src/cmd/pp/pp.h                 $B/pp/pp.o
 dep 'dev.h -> pp.o'            src/cmd/pp/dev.h                $B/pp/pp.o
 nodep 'dev.h is not scan.o edge' src/cmd/pp/dev.h              $B/pp/scan.o
 dep 'pp install'               $B/bin/pp                       rootfs/usr/bin/pp
+
+# struct -- batch 2e.  def.h is the one that matters and is asserted first:
+# it holds `#define VERT long', so a stale object here is a graph BUILT at one
+# cell width and READ at another, which is silent.  Upstream's makefile spells
+# the same edge (`main.o $(0FILES.o) ... : def.h'), and the numbered headers
+# reach only their own group -- asserted both ways, since a too-wide edge
+# rebuilds the world on every touch and nothing would notice.
+dep 'struct def.h -> 1.hash.o'  src/cmd/struct/def.h            $B/struct/1.hash.o
+dep 'struct def.h -> 3.then.o'  src/cmd/struct/def.h            $B/struct/3.then.o
+dep 'struct 2.def.h -> 2.dfs.o' src/cmd/struct/2.def.h          $B/struct/2.dfs.o
+nodep '2.def.h is not a 1.* edge' src/cmd/struct/2.def.h        $B/struct/1.hash.o
+dep 'struct -> structure'       src/cmd/struct/2.dfs.c          $B/bin/structure
+dep 'structure install'         $B/bin/structure                rootfs/usr/lib/struct/structure
+# beautify: the lex file with no yacc file beside it (pp's idiom), and the
+# CHECKED-IN y.tab.h, which both lextab.o and tree.o include.  A stale y.tab.h
+# is a token-number skew and those produce wrong parses rather than errors,
+# so the edge is asserted rather than left to the comment in upstream's
+# makefile that names it.
+dep 'struct lexer -> scanner'   src/cmd/struct/lextab.l         $B/struct/lex.yy.c
+dep 'struct lexer -> object'    src/cmd/struct/lextab.l         $B/struct/lextab.o
+dep 'y.tab.h -> lextab.o'       src/cmd/struct/y.tab.h          $B/struct/lextab.o
+dep 'y.tab.h -> tree.o'         src/cmd/struct/y.tab.h          $B/struct/tree.o
+dep 'b.h -> beauty.o'           src/cmd/struct/b.h              $B/struct/beauty.o
+dep 'libl.a -> beautify'        $B/libl/libl.a                  $B/bin/beautify
+dep 'beautify install'          $B/bin/beautify                 rootfs/usr/lib/struct/beautify
+# The COMMAND is the shell script, and it is a real prerequisite of the
+# installed file -- the same shape as diff3.sh.
+dep 'struct.sh -> command'      src/cmd/struct/struct.sh        rootfs/usr/bin/struct
 # libl -- the SECOND library import after libtermlib, and pp is its only
 # consumer.  The chain that matters is source -> archive -> program: a lex
 # program with no yywrap() of its own does not link without it, and the failure
