@@ -3375,6 +3375,81 @@ moved, because before the deletion it would assert a gap nobody chose — nothin
 builds `/dev/console` by accident rather than by decision, and nothing opens it.
 The person writing a fix is the last one who can see it repeating the bug.
 
+### The deferral that lasted one measurement
+
+I had left the device-number encoding alone deliberately, and written down why:
+once `/dev/null` had its own row, every device V8 actually shipped reported V8's
+numbers from one synthesizer or another, so the only things still mis-encoded
+were host devices V8 never had — where there is no 1985 answer to restore. That
+argument has a hole in it, and the hole is the word *reported*. I was thinking of
+the number as something a program **prints**. Mostly it is something a program
+**compares**.
+
+Fifteen places in the tree read it. The ones that matter do not display it:
+`fsck` twice, and `df`, ask whether a block device's number equals the number of
+the filesystem mounted on it — that is how they decide "this is the root device".
+`diff` compares two of them to decide two files are the same device. So two
+devices that translate to the same number are two devices the caller cannot tell
+apart, and the mask was collapsing them wholesale:
+
+| over | truth | `& 0xffff` | proper re-encoding |
+|---|---|---|---|
+| this Mac's `/dev` (403 nodes) | 345 distinct | **131** | **345** |
+| the mount table | 14 filesystems | **13** | **14** |
+
+The second row is the one that stopped being theoretical. `/Volumes/Cloud` is
+major 54 minor 7; an APFS volume is major 1 minor 7; the mask kept only the
+minor, so both were device 7, and every V8 program on this machine was seeing one
+filesystem where the host sees two. The shim's notes say, in as many words, that
+the device number is **the only thing separating** eight mount points that all
+share host inode 2. That is the `pwd`-names-the-wrong-directory bug from earlier
+in this article, arriving through the other half of the same pair.
+
+What I want to record is not the fix, which is one function. It is that the
+paragraph asserting the pair was safe **contained its own refutation**. It read:
+*"15 mounted filesystems, whose truncated devs are `0003 0005 0007 0008 000e 0010
+0011 0012 0017 001b 001f 0023 0026 88d9` — all distinct, so the pair is injective
+today."* Count the values. There are fourteen, for fifteen filesystems. Fourteen
+numbers cannot be the distinct images of fifteen inputs; the sentence is
+impossible on its own terms, and it had been sitting there being read.
+
+It even carried the correct warning — *"distinct because macOS keeps APFS volume
+minors small, not by construction"* — which is exactly right, and is precisely
+why someone should have re-run it. A hedge is not a guard. If a claim is only
+true by luck, the thing to write down is the test, not the caveat.
+
+### The one red CI run, and the log I had thrown away
+
+Three commits went out in this sequence and the middle one failed. Its
+functionally identical successor passed, which is the signature of a flaky test
+rather than a broken one — and it was the same failure I had seen locally an hour
+earlier and been unable to diagnose, because I had piped the run to `tail -1` and
+kept only `make: *** Error 1`. That is the third time in this project that a
+filter has destroyed a diagnosis, and the second in one sitting.
+
+CI keeps whole logs, so this time the evidence existed:
+
+```
+FAIL ps -T lists the same processes as ps
+  want [65603ba829b54599b766e1814be884f4]
+  got  [d069892fa093e6a273b65509293cce80]
+```
+
+It ran `ps`, then ran `ps -T`, hashed the first twenty process IDs of each, and
+required the hashes to match — which is only true if nothing on the machine
+started or exited in between. A test asserting a property of the host, in a suite
+that has been swept for exactly that three times, surviving in the one place
+nobody looked. What made it fire locally was a background loop I had started to
+poll CI: it was spawning a process every thirty seconds.
+
+Two things beyond the fix. Hashing a set you cannot then diff is a defect of its
+own — two differing MD5s tell you nothing about *which* process moved, and the
+replacement prints it. And the stable relation was cheap and sitting right there:
+sample `ps` again *after* the `-T` run and intersect the two. Anything alive
+across both plain samples was alive during the one between them, so churn can
+only shrink that set, never invent a missing entry. It now checks six hundred and
+fourteen processes where the old one checked twenty.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,

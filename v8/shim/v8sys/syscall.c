@@ -1830,6 +1830,49 @@ struct hoststat64 {			/* macOS arm64 struct stat64 */
 _Static_assert(sizeof(struct hoststat64) <= V8_STATBUF,
     "V8_STATBUF is smaller than the kernel's stat64 -- rootfs_has would smash its stack");
 
+/*
+ * A HOST DEVICE NUMBER IN V8's SIXTEEN BITS, AND THE OLD `& 0xffff' WAS NOT A
+ * NARROWING.  It read like one -- v8_dev_t is 16 bits, so mask to 16 bits --
+ * and the two machines do not merely differ in WIDTH, they differ in LAYOUT:
+ *
+ *	Darwin	makedev(x,y) = (x << 24) | y	major at bit 24
+ *	V8	makedev(x,y) = (x <<  8) | y	major at bit 8   (types.h:44)
+ *
+ * A mask cannot preserve a field at bit 24 at ANY destination width, so the
+ * major was not truncated, it was DELETED, and what survived was the minor
+ * alone.  This is the 16-bit-range table's class (DIRSIZ, d_ino, p_pid,
+ * FSNMLG, u_uid) with the twist that widening the field would not have helped.
+ *
+ * IT IS NOT A DISPLAY BUG, WHICH IS WHY IT IS FIXED RATHER THAN DOCUMENTED.
+ * Discarding the major makes distinct devices compare EQUAL, and comparison is
+ * what the consumers do: fsck.c:435 and :1252 test `stat_slash.st_dev ==
+ * stat_block.st_rdev' to decide whether a block device is the root's, df.c:142
+ * does the same for a mount point, and diffdir.c:247 compares two rdevs to
+ * decide two files are one device.  Measured over this host's /dev -- 403
+ * nodes, 345 distinct (major, minor) pairs:
+ *
+ *	truth					345 distinct
+ *	& 0xffff				131 distinct	62% collide
+ *	makedev(major(h), minor(h))		345 distinct	 0% collide
+ *
+ * so re-encoding is strictly better at the thing the callers use it for, on
+ * top of making `ls -l' and file(1) print the right pair.  (It is not better
+ * in PRINCIPLE: two nodes differing only above bit 8 of the minor would
+ * collide here and not under the mask.  It is better on every device this host
+ * has, and it is the only form that keeps the major at all.)
+ *
+ * WHY NOT A HEADER, when v8_foldid is one.  That rule has four call sites in
+ * three components that may not share an archive, so it had to be a static
+ * inline in a header or be spelled four times.  This one has two call sites,
+ * adjacent, in this file.  A header would be inviting the next component to
+ * grow a second opinion about device numbers.
+ */
+static v8_dev_t
+hostdev(unsigned int h)
+{
+	return (v8_dev_t)((((h >> 24) & 0xff) << 8) | (h & 0xff));
+}
+
 static void
 stat_translate(struct hoststat64 *hs, struct v8_stat *vs)
 {
@@ -1837,7 +1880,7 @@ stat_translate(struct hoststat64 *hs, struct v8_stat *vs)
 	char *p = (char *)vs;
 
 	for (i = 0; i < (int)sizeof *vs; i++) p[i] = 0;
-	vs->st_dev   = (v8_dev_t)(hs->st_dev & 0xffff);
+	vs->st_dev   = hostdev(hs->st_dev);
 	vs->st_ino   = v8sys_fold_ino(hs->st_ino);
 	vs->st_mode  = hs->st_mode;
 	vs->st_nlink = (short)hs->st_nlink;
@@ -1855,7 +1898,11 @@ stat_translate(struct hoststat64 *hs, struct v8_stat *vs)
 	 */
 	vs->st_uid   = v8_foldid((long)hs->st_uid);
 	vs->st_gid   = v8_foldid((long)hs->st_gid);
-	vs->st_rdev  = (v8_dev_t)(hs->st_rdev & 0xffff);
+	vs->st_rdev  = hostdev(hs->st_rdev);	/* see hostdev() above -- BOTH
+						   fields must use it, because
+						   df.c:142 and fsck.c:435
+						   compare one against the
+						   other */
 	vs->st_size  = (v8_off_t)hs->st_size;
 	vs->st_atime = (v8_time_t)hs->st_atime_sec;
 	vs->st_mtime = (v8_time_t)hs->st_mtime_sec;

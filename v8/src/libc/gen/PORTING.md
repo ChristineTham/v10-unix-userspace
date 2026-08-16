@@ -91,7 +91,7 @@ within a device** there: 16 bits, and a V7 volume could not hold 65536 inodes.
 It is not exact here. `v8sys_fold_ino()` (`shim/v8sys/dir.c:309`) maps a
 64-bit host inode into V7's `u_short ino_t`, and the same function feeds *both*
 sides of that comparison -- `d_ino` in the directory snapshot (`dir.c:467,469`)
-and `st_ino` in `stat_translate` (`shim/v8sys/syscall.c:1841`). While that map
+and `st_ino` in `stat_translate` (`shim/v8sys/syscall.c:1884`). While that map
 was a plain XOR fold, two files in one directory could share a `d_ino` and this
 loop stopped on whichever `readdir` yielded **first**. It is a table now, and
 the rest of this entry is how that was measured and what it cost.
@@ -190,7 +190,7 @@ another process reads", and that was used to rule out any order-dependent
 scheme. Three things wrong with the sentence, measured:
 
 - **`v8sys_fold_ino` has exactly three call sites** — `dir.c`, twice, and
-  `syscall.c:1841`. Nothing in `libkmemu` calls it; `grep` found it in
+  `syscall.c:1884`. Nothing in `libkmemu` calls it; `grep` found it in
   `procfs.c:169` and `:603`, and both are **comments**.
 - **The cited note says the opposite.** `NOTES.md:247` is about `u_ttyino` in
   `/proc`'s u-area, which is "left zero"; filling it *would* be a stat folded
@@ -288,14 +288,37 @@ rather than by construction, and a fourth filesystem type should be asked the
 same question. Reserving their ranges in the claim bitmap would cost 130
 values out of 65535 and buy construction instead of argument.
 
-**`st_dev` is still narrowed by truncation, and the pair leans on it harder
-than it looks.** `stat_translate` does `hs->st_dev & 0xffff` one line above the
-inode (`syscall.c:1840`), a bare 16-bit cut of a 32-bit host `dev_t` with no
-injectivity of its own. Measured on this host: 15 mounted filesystems, whose
-truncated devs are `0003 0005 0007 0008 000e 0010 0011 0012 0017 001b 001f
-0023 0026 88d9` — all distinct, so the pair *is* injective today. It is
-distinct because macOS keeps APFS volume minors small, not by construction:
-`/dev` is minor 2328793 and survives only as `0x88d9`.
+**`st_dev` WAS narrowed by truncation, the pair leaned on it harder than it
+looked, and it had ALREADY STOPPED BEING INJECTIVE — which this paragraph said
+was fine.** It used to read: *"15 mounted filesystems, whose truncated devs are
+`0003 0005 0007 0008 000e 0010 0011 0012 0017 001b 001f 0023 0026 88d9` — all
+distinct, so the pair* is *injective today,"* qualified with the honest caveat
+that this was *"because macOS keeps APFS volume minors small, not by
+construction."*
+
+**Count the values it lists. There are fourteen, for fifteen filesystems.** A
+list of 14 numbers cannot be the distinct images of 15 inputs, so the sentence
+refuted itself in its own evidence — the same shape as the `64/768` directory
+pair, where two plausible numbers side by side read as one measurement and were
+arithmetically impossible together.
+
+Re-measured, and the caveat had come true. `stat_translate`'s `& 0xffff` reads
+like a narrowing into V8's 16-bit `dev_t` and is not one: Darwin packs the major
+at **bit 24** and V8 at bit 8, so the mask kept the minor and deleted the major
+outright. Over this host's mount table — 15 mount points, **14 distinct
+filesystems**:
+
+| | distinct `st_dev` |
+|---|---|
+| `& 0xffff` | **13** — `/Volumes/Cloud` (major 54, minor 7) and an APFS volume (major 1, minor 7) both become `0x0007` |
+| `makedev(major(h), minor(h))` | **14** — injective |
+
+Two filesystems the host calls different were one filesystem to every V8 program
+on this machine, today. `syscall.c`'s `hostdev()` re-encodes into V8's own
+layout now (`syscall.c:1883` for `st_dev`, `:1901` for `st_rdev` — **both**, since
+`df.c:142` and `fsck.c:435` compare one against the other). The exact counts
+above are properties of this Mac's mount table; what the port controls, and what
+`tests/v8sys` asserts, is that **distinct host devices stay distinct**.
 
 And the pair is doing real work rather than sitting idle: **eight of those
 fifteen mount points share host inode 2** — every APFS volume root — so they

@@ -890,7 +890,7 @@ convenience. Host directories are an explicit opt-in.
    returns `/usr/local/v8/usr/src`. Fix: have the shim report `$V8ROOT` as its
    own parent — same `st_dev`/`st_ino` as its `..` — and getwd stops there,
    yielding `/usr/src`. The shim already reconciles getwd's expectations
-   against the host at `syscall.c:1886`, so this is the same kind of lie in the
+   against the host at `syscall.c:1933`, so this is the same kind of lie in the
    same place, not a new mechanism.
 
 2. **`open(O_CREAT)` resolves the parent, not the target.** `rootpath()`

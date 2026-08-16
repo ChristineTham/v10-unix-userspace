@@ -1659,7 +1659,7 @@ seen to be incomplete. Expect a fourth type to find a third.
 REACHED.** `/dev/null` is the first type whose object is a **host device node
 whose numbers matter**: `/dev/fd` synthesizes its `st_rdev` outright, `/proc`
 and `v8fs` have none, and passthrough's callers are files. So nothing had ever
-consulted `syscall.c:1858`'s `& 0xffff` for a node V8 cares about — and it is
+consulted `syscall.c:1901`'s `& 0xffff` for a node V8 cares about — and it is
 wrong for every one of them, because Darwin packs a major at bit 24 and V8 at
 bit 8, so the mask *deletes* the major rather than narrowing it. The prediction
 holds a second time, and the lesson sharpens: **a new type finds the rule that
@@ -1832,7 +1832,7 @@ function "because folded values are written into files
 (`shim/libkmemu/NOTES.md:247` — `e_tdev` in the manufactured `/etc/utmp`) that
 another process reads", and used that to rule out the one easy fix for the
 `pwd` collision. Every part of it is false: the function has **three** call
-sites (`dir.c:467`, `dir.c:469`, `syscall.c:1841`) and none is in `libkmemu` —
+sites (`dir.c:467`, `dir.c:469`, `syscall.c:1884`) and none is in `libkmemu` —
 the two `grep` hits there are comments; `NOTES.md:247` is about `u_ttyino` in
 `/proc`'s u-area, says it is left zero, and calls filling it hypothetical; and
 V8's `struct utmp` is `{ut_line[8], ut_name[8], ut_time}`, 24 bytes, with no
@@ -3651,14 +3651,47 @@ not testable until it is installed.
     17,0 and it says `0, 0`. For `/dev/null` that is major **0**, which is
     `console` in `conf/devices` — a plausible wrong answer, not a failure.
 
-    **The general fix is DELIBERATELY NOT TAKEN, on a measurement.** After this
-    row, every node V8 ACTUALLY SHIPPED reports V8's numbers (`/dev/tty`,
-    `/dev/std*` and the 128 fd nodes from `fd_stat`, `/dev/null` from here,
-    `/dev/kmem` and `/unix` as ordinary files). What is left mis-encoded is
-    exactly the set of host nodes V8 never had, where there is **no V8 answer
-    to restore** and the host's own numbers narrowed are the honest report.
-    Re-encoding also needs a rule for a major above 255, which is `v8_foldid`'s
-    problem. Its own item, not folded in.
+    **THE GENERAL FIX WAS DEFERRED ON A REASON THAT DID NOT SURVIVE BEING
+    CHECKED, WHICH IS THE ENTRY BELOW.** What was written here was: after this
+    row every node V8 actually shipped reports V8's numbers, so what is left
+    mis-encoded is only the set of host nodes V8 never had, where there is no
+    V8 answer to restore. The first clause is true. The conclusion assumed the
+    field is *displayed*, and it is mostly **compared**.
+  - **AND THE DEFERRAL LASTED ONE MEASUREMENT: `& 0xffff` MERGES DEVICES, AND
+    ONE PAIR WAS MERGED ON THIS MACHINE TODAY.** The deferral's own first step
+    was "check whether anything reads `st_rdev` other than `ls -l`". Swept:
+    **fifteen call sites**, and the ones that matter do not print it, they
+    compare it — `fsck.c:435` and `:1252` test `stat_slash.st_dev ==
+    stat_block.st_rdev` to decide whether a block device is the root's,
+    `df.c:142` does the same for a mount point, `diffdir.c:247` compares two
+    rdevs to decide two files are one device. **Two devices that translate to
+    the same number are two devices the caller cannot tell apart.** Measured:
+
+    | over | truth | `& 0xffff` | `makedev(major,minor)` |
+    |---|---|---|---|
+    | this host's `/dev` (403 nodes) | 345 | **131** (62% collide) | **345** (0%) |
+    | the mount table (15 points) | 14 fs | **13** | **14** |
+
+    The mount-table row is the live one: `/Volumes/Cloud` (major 54, minor 7)
+    and an APFS volume (major 1, minor 7) both became `0x0007`, and
+    `src/libc/gen/PORTING.md` records that `st_dev` is **the only thing
+    separating** eight mount points that share host inode 2. That is bug #48's
+    mechanism — `pwd` naming the wrong directory — arriving through the
+    *device* half of the folded pair instead of the inode half. `hostdev()` in
+    `syscall.c` re-encodes both fields now; **both**, because `df` and `fsck`
+    compare one against the other.
+  - **AND THE PARAGRAPH THAT SAID THE PAIR WAS SAFE REFUTED ITSELF IN ITS OWN
+    EVIDENCE.** `src/libc/gen/PORTING.md` said *"15 mounted filesystems, whose
+    truncated devs are `0003 0005 0007 0008 000e 0010 0011 0012 0017 001b 001f
+    0023 0026 88d9` — all distinct, so the pair IS injective today"*. **Count
+    them: fourteen values for fifteen filesystems.** A list of 14 numbers
+    cannot be the distinct images of 15 inputs. Same shape as the `64/768`
+    directory pair — two plausible numbers side by side read as one
+    measurement and were impossible together. It even carried the right
+    caveat, *"distinct because macOS keeps APFS volume minors small, not by
+    construction"*, and nobody re-ran it. **A hedge is not a guard**: if a
+    claim is true only by luck, the thing to write is the test, not the
+    caveat.
   - **AND THE MUTATION THAT DID NOT FIRE WAS A FOURTH KIND OF VACUOUS CASE:
     TWO RUNS OF ONE CASE, SHARING THE ARTEFACT THE CASE IS ABOUT.** Four
     mutations; the one reintroducing the bug fired two cases and **not** the
@@ -3712,6 +3745,26 @@ not testable until it is installed.
     the case would only freeze the accident. **The author of a fix is the person
     least able to see the fix repeating the defect**, which is the auditor rule
     with the auditor being a mutation.
+  - **AND THE ONE CI FAILURE IN THE SEQUENCE WAS A HOST-PROPERTY CASE, WITH THE
+    LOG I HAD THROWN AWAY LOCALLY.** `tests/kmemu` went red once here and once
+    on a runner; the local run had been piped to `tail -1`, so all that
+    survived was `make: *** Error 1` — **the third time a filter has destroyed
+    a diagnosis in this tree**, and the second in one session. CI kept it:
+    `FAIL ps -T lists the same processes as ps / want [65603b…] got [d06989…]`.
+    The case md5'd the first twenty sorted pids of `ps` and of `ps -T` and
+    required them equal, which is true only if **nothing started or exited
+    between two separate samples** — the host-property class this suite has
+    already been swept for three times, surviving in the one place the sweep
+    did not look. Three things follow beyond the fix. **Hashing a set you
+    cannot then diff is its own defect**: two differing md5s name nothing,
+    where the replacement prints the pid that went missing. **The stable
+    relation was available and cheap** — sample `ps` *again after* the `-T` run
+    and intersect, since a process alive across both plain samples was alive
+    during the one between them, so churn can only shrink that intersection
+    and never invent a missing pid; measured, it covers **614** processes where
+    the old case covered 20. And the fix must not import a host property of its
+    own: `<(...)` is a bash extension and this suite is `#!/bin/sh`, so the
+    intersection goes through temp files.
   - **THE SHAPE TO CARRY: A CONTAINMENT CHECK IS ALSO A COMPLETENESS CHECK ON
     THE ROOTFS.** Both findings are the jail's creat fall-through, and both
     were invisible on a tree that had been used. Ask of any such guard whether

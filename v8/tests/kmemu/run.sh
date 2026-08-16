@@ -1772,9 +1772,38 @@ fi
 # ...and -T must not disturb the rest of the line.  A truncated ctime would
 # still have produced SOME string, so the case above could have passed on a
 # wrong-but-parseable date; this one says the columns either side survived.
-check "ps -T lists the same processes as ps" \
-    "$(echo "$psout" | tail -n +2 | awk '{print $1}' | sort | head -20 | md5)" \
-    "$(echo "$tout"  | tail -n +2 | awk '{print $1}' | sort | head -20 | md5)"
+#
+# THIS ASSERTED A HOST PROPERTY AND WENT RED IN CI, which is the class this
+# suite has been swept for three times already.  It md5'd the first twenty
+# sorted pids of `ps' and of `ps -T' and required them equal -- true only if
+# NOTHING STARTED OR EXITED between two separate samples.  Measured: it failed
+# once here (with a background `gh' poll running) and once on a runner, and the
+# runner is where the log survived, because the local run had been piped to
+# `tail -1' and the diagnosis thrown away.  Two hashes differing tells you
+# nothing about which pid moved, which is its own argument against hashing a
+# set you cannot then diff.
+#
+# THE STABLE RELATION.  Sample `ps' again AFTER the -T run and intersect: a
+# process listed by both plain samples was alive across the whole window, so it
+# was alive during the -T sample that happened between them, and -T must list
+# it.  Churn can only remove pids from the intersection, never add a pid that
+# -T should have had and did not -- so the case cannot go red for a process
+# starting or stopping, and still goes red if the -T pid column is corrupted.
+# Temp files rather than <(...): this script is #!/bin/sh, and process
+# substitution is a bash/zsh extension.  Writing a host-shell dependency into
+# the fix for a host-property case would be the same mistake one layer down.
+psout2=$("$PS" hax 2>/dev/null)
+_pids() { tail -n +2 | awk '{print $1}' | grep -E '^[0-9]+$' | LC_ALL=C sort -u; }
+echo "$psout"  | _pids > "$TMP/pids.a"
+echo "$psout2" | _pids > "$TMP/pids.b"
+echo "$tout"   | _pids > "$TMP/pids.t"
+comm -12 "$TMP/pids.a" "$TMP/pids.b" > "$TMP/pids.stable"
+if [ ! -s "$TMP/pids.stable" ]; then
+	bad "ps -T: two plain samples share at least one process" "intersection empty"
+else
+	check "ps -T lists every process alive across the whole window" '' \
+	    "$(comm -23 "$TMP/pids.stable" "$TMP/pids.t" | tr '\n' ' ' | sed 's/ *$//')"
+fi
 
 echo "kmemu: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <dirent.h>
 #include "../../shim/v8sys/v8sys.h"
 #include "../../shim/v8sys/vfs.h"
 #include "../../shim/p9/p9.h"
@@ -1478,6 +1479,85 @@ main(void)
 		    "...says character device, so `test -c' is true and `-f' false");
 		ok(s2.st_rdev == (v8_dev_t)((3 << 8) | 2),
 		    "...with rdev makedev(3, 2) -- proto-dev:25, not the masked 0,2");
+	}
+
+	/*
+	 * ---------------------------------------------------------------
+	 * Host device numbers through stat_translate -- the general half of the
+	 * case above, and the reason it is a separate block is that /dev/null
+	 * SYNTHESIZES its rdev and therefore cannot test the translation at all.
+	 *
+	 * The old code masked with & 0xffff, which reads like a narrowing into
+	 * V8's 16-bit dev_t and is not one: Darwin packs the major at bit 24 and
+	 * V8 at bit 8 (types.h:44), so the mask deleted the major and kept the
+	 * minor alone.  That is not a display bug.  fsck.c:435 and df.c:142
+	 * compare an st_rdev against an st_dev to decide whether a block device
+	 * is the one a filesystem is mounted on, so two devices that translate
+	 * to the same number are two devices the caller cannot tell apart.
+	 *
+	 * ASSERTED AS DISTINCTNESS, NOT AS A VALUE, for the reason the folded
+	 * inode case is: which device nodes this machine has is a property of
+	 * the machine, and any particular number is a property of the machine.
+	 * What the port controls is that it does not MERGE two devices the host
+	 * says are different.  Same shape as the $TMPDIR inode sweep, and it
+	 * says out loud when the population is too small to mean anything.
+	 */
+	{
+		struct v8_stat vs;
+		struct stat hb;
+		char path[256];
+		v8_dev_t seen[512];
+		unsigned long truth[512];
+		int nseen = 0, dup = 0, i, j, k;
+		DIR *d;
+		struct dirent *de;
+
+		if ((d = opendir("/dev")) != 0) {
+			while ((de = readdir(d)) != 0 && nseen < 512) {
+				snprintf(path, sizeof path, "/dev/%s", de->d_name);
+				if (lstat(path, &hb) != 0) continue;
+				if (!S_ISCHR(hb.st_mode) && !S_ISBLK(hb.st_mode)) continue;
+				/* skip the names the mount table claims -- those
+				 * synthesize and do not exercise the translation */
+				if (v8fs_typefor(path, V8P_LOOK) != &v8fs_pass) continue;
+				if (v8s_stat(path, &vs) != 0) continue;
+				/* dedupe on the HOST's truth, so two links to one
+				 * device are not counted as a collision */
+				for (k = 0; k < nseen; k++)
+					if (truth[k] == (unsigned long)hb.st_rdev) break;
+				if (k < nseen) continue;
+				truth[nseen] = (unsigned long)hb.st_rdev;
+				seen[nseen++] = vs.st_rdev;
+			}
+			closedir(d);
+		}
+		for (i = 0; i < nseen; i++)
+			for (j = i + 1; j < nseen; j++)
+				if (seen[i] == seen[j]) dup++;
+
+		if (nseen < 8) {
+			printf("  (not exercised: only %d host device nodes reach"
+			       " the translation)\n", nseen);
+		} else {
+			ok(dup == 0,
+			    "distinct host devices stay distinct through stat_translate");
+			if (dup) printf("  %d colliding pairs out of %d nodes\n", dup, nseen);
+			/*
+			 * ...and the major SURVIVES, which is the half
+			 * distinctness alone would not catch: an encoding that
+			 * kept the minor and threw the major away could still
+			 * be injective on a host whose minors happen to differ.
+			 * Measured against the host's own major, on a node the
+			 * loop above already accepted.
+			 */
+			for (i = 0, k = -1; i < nseen; i++)
+				if ((truth[i] >> 24) != 0) { k = i; break; }
+			if (k < 0)
+				printf("  (not exercised: every host device has major 0)\n");
+			else
+				ok((unsigned)(seen[k] >> 8) == ((truth[k] >> 24) & 0xff),
+				    "...and a non-zero host major survives the translation");
+		}
 	}
 
 	/*

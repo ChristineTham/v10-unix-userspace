@@ -969,7 +969,7 @@ struct v8fstyp v8fs_fdfs = {
  * and the shim still gets it wrong, because they disagree about how a major
  * and a minor are PACKED.  Darwin's makedev is (major << 24) | minor; V8's is
  * (major << 8) | minor; and stat_translate narrows with `& 0xffff'
- * (syscall.c:1858).  A mask cannot preserve a field at bit 24 no matter how
+ * (syscall.c:1901).  A mask cannot preserve a field at bit 24 no matter how
  * wide the destination is, so the major is not truncated, it is DELETED.
  *
  * Measured on host nodes that fall through today: /dev/zero is 3,3 and the
