@@ -3133,7 +3133,7 @@ puns in a single file.
     reads as a pass. Four millisecond-cost cases in `tests/wavea` check the floor
     file parses, names only installed programs, and has exactly one tolerated
     entry, because a 13-minute job is a slow way to discover a malformed
-    expectation. `wavea` 145 → 172.
+    expectation. `wavea` 145 → 169.
 
     **And the FIRST CI run found a crash no local run has shown**, which is the
     argument for the whole exercise and also broke the design: `tar -u`
