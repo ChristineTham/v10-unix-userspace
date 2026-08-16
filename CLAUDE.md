@@ -3680,6 +3680,28 @@ not testable until it is installed.
     *device* half of the folded pair instead of the inode half. `hostdev()` in
     `syscall.c` re-encodes both fields now; **both**, because `df` and `fsck`
     compare one against the other.
+  - **AND THE COLLISION WAS VISIBLE IN A SHIPPED PROGRAM'S OUTPUT ALL ALONG, IF
+    ANYONE HAD READ IT.** Built with the old encoding, `df` printed
+    `/System/Volumes/iSCPreboot` **twice** — once correctly and once as
+    `-1968638524 -1014876880 -953761644  52%` — and omitted `/Volumes/Cloud`
+    entirely. That is `df.c:142` matching a cloud mount to `disk1s1` because
+    the two share a device number, then computing block counts from the wrong
+    superblock. With the fix each appears once and `/Volumes/Cloud` says
+    `mounted on unknown device`, which is the truth: it has no local block
+    device. **Negative free space is not a subtle symptom**, and it had been
+    in `df`'s output on this machine for the life of the port. Before deciding
+    a numeric defect is unobservable, run the programs that consume it and
+    *read* the output — the sweep that says "nothing reads this" and the
+    program printing nonsense are two different questions.
+  - **AND THE `df` EXPERIMENT'S OWN VERIFY STEP WAS VACUOUS, IN THIS FILE'S
+    MOST-REPEATED WAY.** To confirm the tree was rebuilt after restoring the
+    source I ran `file /dev/null` — which reports `3/2` under **both**
+    encodings, because `null_stat` synthesizes it and never reaches
+    `stat_translate`. The instrument was pointed at the one path the change
+    cannot affect. `/dev/zero` (3,3 → `0/3` before, `3/3` after) and
+    `/dev/random` (17,0 → `0/0` before, `17/0` after) are the probes that
+    discriminate. **A rebuild check must exercise the code that changed**, not
+    merely something nearby.
   - **AND THE PARAGRAPH THAT SAID THE PAIR WAS SAFE REFUTED ITSELF IN ITS OWN
     EVIDENCE.** `src/libc/gen/PORTING.md` said *"15 mounted filesystems, whose
     truncated devs are `0003 0005 0007 0008 000e 0010 0011 0012 0017 001b 001f

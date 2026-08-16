@@ -3418,6 +3418,26 @@ minors small, not by construction"* — which is exactly right, and is precisely
 why someone should have re-run it. A hedge is not a guard. If a claim is only
 true by luck, the thing to write down is the test, not the caveat.
 
+And then, having convinced myself by arithmetic, I ran the program. `df`, built
+the old way, prints this:
+
+```
+/System/Volumes/iSCPreboot  disk1s1  -1968638524 -1014876880 -953761644  52%
+/System/Volumes/iSCPreboot  disk1s1       512000       18036      493964   4%
+```
+
+The same volume twice, once with negative free space — and `/Volumes/Cloud`
+missing from the listing altogether. That is the collision, rendered: `df` found
+a device number matching the cloud mount, decided it was `disk1s1`, and read the
+block counts out of the wrong superblock. With the encoding fixed, each appears
+once and the cloud mount says `mounted on unknown device`, which is simply true —
+it has no local block device to report.
+
+Negative free space is not a subtle symptom. It had been in `df`'s output on this
+machine for the life of the port, and I found it by running the program *after*
+I had already worked out from first principles that it must be wrong. The
+arithmetic was the harder route and I took it first. Run the consumers.
+
 ### The one red CI run, and the log I had thrown away
 
 Three commits went out in this sequence and the middle one failed. Its
