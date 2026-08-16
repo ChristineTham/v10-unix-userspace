@@ -3642,6 +3642,63 @@ numbers travelled through argument slots as a struct passed by value, and a
 broken struct-by-value still shows up as wrong numbers. Only the spelling of the
 right answer moved.
 
+### The set that was recorded as finished, and was not
+
+The single-file commands — the ones that are one `.c` in `cmd/` and nothing
+else — were done in a batch of thirty-seven, and the note I wrote afterwards
+said so: batch one imported "all 37 single-file commands", and the next batch
+was to be the directory programs. Re-measured before starting that next batch,
+**thirty-six of the still-missing programs have a bare `.c` sitting in `cmd/`**.
+
+Most of them are genuinely out of scope, and it takes reading each one to say
+so: `ar`, `ld`, `nm`, `ranlib` and `size` are the object-format tools this port
+deliberately borrows from the host; `halt`, `reboot`, `init`, `mount`,
+`swapon`, `getty`, `savecore` and a dozen more act on a machine rather than on
+files. Five are not. So the honest position was never "the single-file set is
+exhausted" but "the single-file set minus the ones nobody triaged."
+
+They are in now. `uuencode` and `uudecode` round-trip a file byte for byte.
+`spline` interpolates a hundred points through four, which is also the first
+new exercise of the floating-point path since the math library was fixed.
+`stty` is here because of something `ex` established: it had been recorded as
+blocked on `tty_ld` and `ntty_ld` being "genuinely kernel state", and they are
+twenty-four initialised integers in a library file nobody had imported. With no
+controlling terminal it says `stty: can't open /dev/tty`, which is the truth —
+this world's `/dev/tty` is a link to `/dev/fd/3`, so with no fd 3 there is
+nothing to open.
+
+`mc` — columnate — carried a bug this project has now fixed eight times:
+
+```c
+while(*argv[1]=='-'){
+	--argc; argv++;
+```
+
+Every arm of the switch inside consumes an argument, so once the loop has eaten
+the last option `argv[1]` is the vector's null terminator. For a program whose
+entire interface is `mc [-][-WIDTH][-t] [file...]`, an option in the final
+position is the ordinary invocation, not an edge case. `mc -20 < file` crashed
+after reading the width and before reading a byte of input. A VAX mapped
+address 0 — crt0's first byte, `0x00` — which is not `'-'`, so the loop simply
+ended and `mc` read standard input. That is what the guard restores.
+
+Its other change is an include: `#include "/usr/jerq/include/jioctl.h"`, an
+absolute path into the 1985 filesystem, which is the one kind of include the
+preprocessor cannot be told to resolve elsewhere. The header is authentic and
+the rootfs already carried it — `ls(1)` needed the same thing, and the rule
+that copies it named `mc(1)` in its comment as the other consumer, written
+before `mc` existed here.
+
+I spent two experiments on the wrong suspect first. The build failed on that
+include, and the include is inside `#ifdef JERQ`, so the natural reading was
+that V8's 1985 preprocessor evaluates `#include` inside a false conditional.
+Tested with a space after `#ifdef` and again with a tab, against a path that
+does not exist: both compile clean. The preprocessor is fine. `mc.c`'s **first
+line** is `#define JERQ` — the file turns the Blit code on itself, where the
+other two consumers leave it to the compile line and nothing defines it. One
+command reading the top of the file would have settled what two experiments
+could not.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,
@@ -3660,7 +3717,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **139** of the 286 V8 shipped, and the ones still missing mostly
+port installs **144** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 - **Visual mode.** `ex` edits; invoked as `vi` it correctly answers that open

@@ -1655,6 +1655,48 @@ program that SIGSEGVs produces no output either, and `check <name> ''
 re-mutating fires all four. **A case whose expected output is empty is vacuous
 against a crash unless it also asserts the status.**
 
+**AND THE SINGLE-FILE SET WAS RECORDED AS EXHAUSTED AND WAS NOT: 36 OF THE 156
+MISSING PROGRAMS STILL HAD A BARE `.c` IN `cmd/`.** Wave A2 batch 1's note said
+it had imported "all 37 single-file commands" and that batch 2 was the
+directory programs. Re-measured before starting batch 2, the count is a
+population claim like any other and it was wrong. Most of the 36 are genuinely
+out of scope — 5 are the `ar ld nm ranlib size` toolchain exception, ~20 act on
+a machine rather than on files, 2 are process accounting — but **saying so took
+reading each one**, which is what the original note skipped. Five were in
+scope and are in: `spline`, `uuencode`, `uudecode`, `stty`, `mc`. Four are
+byte-identical to upstream. Three things:
+
+- **`stty` WAS BLOCKED BY A NOTE, AND `ex` HAD ALREADY DISPROVED IT.** It was
+  recorded as needing `tty_ld`/`ntty_ld`, "genuinely kernel state"; they are 24
+  initialised ints in `libc/gen/linedis.c`, which the ex/vi step imported. The
+  entry above says this; nothing connected it to the program it was blocking.
+  **When a blocker is retired, grep for what it was blocking.**
+- **`mc` IS THE EIGHTH INSTANCE OF THE ADDRESS-0 ARGV CLASS, and for it the
+  crashing invocation is the ORDINARY one.** `mc.c:49`'s
+  `while(*argv[1]=='-')` walks onto the argv terminator once the loop has eaten
+  the last option — and mc's whole interface is `mc [-][-WIDTH][-t] [file...]`,
+  so `mc -20 < file` is how it is used. Measured: SIGSEGV after reading the
+  width and before reading a byte of input. Same guard as `diffh.c:93`.
+- **AND IT IS THE FIRST PROGRAM HERE WHERE THE JERQ BLOCK IS LIVE**, which cost
+  two experiments aimed at the wrong suspect. The build failed on
+  `#include "/usr/jerq/include/jioctl.h"` — inside `#ifdef JERQ` — so the
+  natural reading was that V8's cpp evaluates includes in a false conditional.
+  Tested with a space and with a tab after `#ifdef`, against a path that does
+  not exist: **both compile clean, cpp is innocent.** `mc.c`'s FIRST LINE is
+  `#define JERQ`. One command reading the top of the file would have settled
+  what two experiments could not. The include change itself is `ls.c:11`'s,
+  already in the tree twice; the ioctl still fails, so mc keeps `WIDTH`, which
+  is upstream's own fallback. `src/cmd/mc.PORTING.md`.
+
+**AND THE OBVIOUS `tests/deps` CASE FOR THAT INCLUDE IS FALSE, FOR A REASON
+WORTH KNOWING BEFORE WRITING THE NEXT ONE.** `dep rootfs/usr/include/jioctl.h
+-> bin/mc` fails: the rootfs copy is a **build product**, and what the rule
+names is `$(ROOTFS_INC)`, the stamp beside it — so touching the copy makes
+nothing stale. The source-side edge is real and is deliberately not asserted,
+because `dep()` touches its input and that input lives in `third_party/`, which
+an interrupted run would leave pristine-but-restamped and git could not show.
+Assert the stamp.
+
 **AND `src/v8/etc/` BECAME `src/etc/`, BECAUSE THE IMPORT TOOL AND THE TREE HAD
 DISAGREED SINCE THE RELEASE SPLIT.** `destfor()` maps `v8/etc/*` to
 `v8/src/etc/*`; the four files already there sat at `v8/src/v8/etc/`, which the
@@ -1754,7 +1796,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 139 installed**, stable. (It moves when something is imported,
+**286 shipped, 144 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.)
 

@@ -1505,6 +1505,76 @@ check 'but the build did make and run it' '1' \
        echo 1 || echo 0)"
 
 # ---------------------------------------------------------------------------
+# Wave A2 batch 2b -- the five single-file commands still in scope.  Batch 1
+# was recorded as having exhausted that set and had not: re-measured, 36 of the
+# 156 missing programs still have a bare .c in cmd/.  Most are the toolchain
+# exception (ar ld nm ranlib size) or act on the host (halt reboot init mount
+# ...); these five are the remainder.
+#
+# uuencode / uudecode: a ROUND TRIP, because either half alone can be
+# self-consistently wrong -- the encoding is six bits per character and a table
+# error that both share is invisible until something else decodes it.  The
+# decoded name comes from uuencode's `begin' line, not from the shell.
+uuin=uu.in; printf 'Hello, Research Unix V8.\n' > $uuin
+rm -f uudec.out
+"$(v8which uuencode)" "$uuin" uudec.out > uu.enc 2>&1
+check 'uuencode writes a begin line' 'begin 644 uudec.out' "$(head -1 uu.enc)"
+"$(v8which uudecode)" uu.enc >/dev/null 2>&1
+check 'and uudecode reproduces the bytes' 'same' \
+    "$(cmp -s "$uuin" uudec.out && echo same || echo differs)"
+
+# spline: 100 interpolated points from 4, which is upstream's default -- and it
+# is the FP path, so a broken double return or a wrong register class shows up
+# as zeros rather than as a crash.  The endpoints are asserted because
+# interpolation must pass through the data it was given.
+printf '0 0\n1 1\n2 4\n3 9\n' > sp.in
+"$(v8which spline)" < sp.in > sp.out 2>&1
+check 'spline interpolates 100 points' '100' "$(wc -l < sp.out | tr -d ' ')"
+check 'and passes through an endpoint'  '3.000000 9.000000' "$(head -1 sp.out)"
+
+# mc: columnation, and the case that matters is `-20' -- an option in the LAST
+# position, which is where mc.c:49's `while(*argv[1]=='-')' walked onto the
+# argv terminator.  Measured before the guard: SIGSEGV after reading the width
+# and before reading a byte of input.  A VAX read 0x00 at address 0, so the
+# loop ended and mc read stdin, which is what this asserts.
+mcin='alpha
+beta
+gamma
+delta
+epsilon
+zeta'
+check 'mc columnates to a width'   'alpha	delta' \
+    "$(printf '%s\n' "$mcin" | "$(v8which mc)" -20 | head -1)"
+check 'and a trailing option does not crash it' '0' \
+    "$(printf '%s\n' "$mcin" | "$(v8which mc)" -20 >/dev/null 2>&1; echo $?)"
+check 'bare mc reads stdin'        'alpha beta  gamma' \
+    "$(printf 'alpha\nbeta\ngamma\n' | "$(v8which mc)")"
+
+# stty: it opens /dev/tty, which in this world is /dev/fd/3 -- so with no fd 3
+# the honest answer is that it cannot open it, and that is what a suite gets.
+# The case is here rather than absent because stty was recorded as BLOCKED on
+# tty_ld/ntty_ld being "genuinely kernel state", which ex/vi disproved: they
+# are 24 initialised ints in libc/gen/linedis.c.  Both are `D' symbols in
+# libv8c today, so the link is what proves the unblocking.
+check 'stty says it cannot open the terminal' 'yes' \
+    "$("$(v8which stty)" 2>&1 | grep -c "can't open /dev/tty" | tr -d ' ' |
+       sed 's/^1$/yes/')"
+check 'and it links tty_ld out of libv8c' '2' \
+    "$(nm -g "$ROOT/rootfs/lib/libv8c.a" 2>/dev/null |
+       grep -cE '_(n)?tty_ld$' | tr -d ' ')"
+
+# WHERE THE FIVE LANDED, and only stty is not /usr/bin.  Derived from Bell
+# Labs' tables by $(call v8dest,...), never chosen here -- stty is in
+# Admin/binfiles because V8's /bin is the 56-entry root-filesystem set.
+check 'the batch installed where V8 put it' \
+    'usr/bin usr/bin usr/bin bin usr/bin' \
+    "$(for n in spline uuencode uudecode stty mc; do
+         for d in bin usr/bin etc; do
+           [ -x "$V8ROOT/$d/$n" ] && { printf '%s ' "$d"; break; }
+         done
+       done | sed 's/ $//')"
+
+# ---------------------------------------------------------------------------
 # THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.
 #
 # Citations are swept, build edges are asserted, imported == installed is

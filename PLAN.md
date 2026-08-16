@@ -3052,7 +3052,7 @@ restores the host PATH and execs. Bare `/usr/` joined the mount table so a home
 directory exists inside the world; it is a union, so `/usr/include` still falls
 through. Exercised end to end, not asserted.
 
-**7b. Wave A2 — IN PROGRESS, 91 → 139.** Batch 1: 37 single-file commands, all
+**7b. Wave A2 — IN PROGRESS, 91 → 144.** Batch 1: 37 single-file commands, all
 compiling with zero failures. Batch 2: `diff` (two programs and three derived
 `-D` install paths), `cb`, `su`, `compress`, plus `crypt`, `getpwnam`,
 `getgrgid` and `getpass` into libc. The suites did the triage and caught three
@@ -3090,6 +3090,32 @@ non-defect:
   It also found two libc defects that had nothing to do with awk — `%g` never
   stripping trailing zeros (§4l) and `%s` of NULL printing `(null)` where V8
   printed nothing (open, deliberately deferred).
+
+**Batch 2b: `spline`, `uuencode`, `uudecode`, `stty`, `mc`** — and the reason
+they exist is that batch 1 was *recorded* as having exhausted the single-file
+set and had not. Re-measured: 36 of the 156 missing programs still have a bare
+`.c` in `cmd/`. Triaged by reading each — 5 are the toolchain exception
+(`ar ld nm ranlib size`), about 20 act on a machine rather than on files
+(`halt reboot init mount umount swapon update accton savecore getty mkbitfs
+dskcpy mt arff finddev procmount netfsbug renice rcp tk mknod`), 2 are process
+accounting (`ac sa`), and these five are the remainder.
+
+  - `stty` is here because **`ex` unblocked it**: it had been recorded as
+    blocked on `tty_ld`/`ntty_ld` being kernel state, and they are 24
+    initialised ints in `libc/gen/linedis.c`. With no fd 3 it answers
+    `can't open /dev/tty`, which is the truth in a world whose `/dev/tty` is a
+    link to `/dev/fd/3`.
+  - `mc` needed two changes: the argv-exhaustion guard (`while(*argv[1]=='-')`
+    walking onto the terminator — the eighth instance of §4i's class, and for a
+    program whose whole interface is options it is the ORDINARY invocation),
+    and the absolute jerq include that `ls.c` and `termcap.c` already carry.
+    **It is the first program here where the jerq block is live**, because
+    `mc.c`'s first line is `#define JERQ`; the ioctl still fails, so it keeps
+    `WIDTH`, which is upstream's own fallback. `src/cmd/mc.PORTING.md`.
+  - `uuencode`/`uudecode` are asserted as a **round trip**, because either half
+    alone can be self-consistently wrong.
+  - Zero signal deaths across every single-letter option for all five, measured
+    before the crash-probe run, so the floor stays at 55.
 
 **7c. What is left, in order of unlock:**
 

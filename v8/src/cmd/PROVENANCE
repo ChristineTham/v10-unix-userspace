@@ -100,3 +100,8 @@ de3d7a3d2b12e127e707e558bf2e37e7959b82e1  v8/usr/src/cmd/xstr.c
 3afb9b82569cd213e250fc413d88a4c62546e336  v8/usr/src/cmd/sync.c
 81778b81ea5faa9b8647e27447197ffd3a73e4b6  v8/usr/src/cmd/hang.c
 224b0c0ca89552f612e9bd3fc55f6c4638d435fd  v8/usr/src/cmd/tape.c
+97e0223c5b6e2287dbaccee18e787cb77501bafe  v8/usr/src/cmd/spline.c
+3d1418a51761fce2c4df617668572f166a1096f7  v8/usr/src/cmd/uuencode.c
+c5625265e032b2f7269f07fa0883015de6f1010c  v8/usr/src/cmd/uudecode.c
+46aa57e6de89f6933776562719212d583ca7d17b  v8/usr/src/cmd/stty.c
+60384b8b5c9a409161669b88321b745c83e1a935  v8/usr/src/cmd/mc.c

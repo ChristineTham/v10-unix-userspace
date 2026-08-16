@@ -337,6 +337,28 @@ fi
 # --- Wave A: installed commands and the data two of them read ----------------
 dep 'wave A command source'   src/cmd/cal.c   $B/bin/cal
 dep 'wave A command install'  $B/bin/cal      rootfs/usr/bin/cal
+
+# Wave A2 batch 2b.  One of the five is here rather than all five: the generic
+# $(V8BIN) pattern rule builds them all identically, so five cases would assert
+# the same edge five times.  `stty' is the one worth naming because it is the
+# only one of the five that lands in /bin rather than /usr/bin -- the
+# destination is DERIVED from Bell Labs' tables, so a case that fixes the path
+# is also asserting the derivation.
+dep 'stty source -> /bin/stty' src/cmd/stty.c                 $B/bin/stty
+dep 'stty install'             $B/bin/stty                    rootfs/bin/stty
+# mc is the only one of the five whose source changed, and its change is an
+# INCLUDE: `#include "/usr/jerq/include/jioctl.h"' became `<jioctl.h>', the
+# same change ls.c and termcap.c already carry.  So the header has to reach it.
+#
+# THE OBVIOUS CASE IS WRONG AND WAS MEASURED BEFORE THAT WAS NOTICED.
+# `dep rootfs/usr/include/jioctl.h -> $B/bin/mc' fails: the rootfs copy is a
+# BUILD PRODUCT, and what the rule names is the stamp beside it, so touching
+# the copy makes nothing stale.  The source-side edge -- third_party's
+# jerq/include/jioctl.h -> the stamp -- is real and is deliberately NOT
+# asserted here, for the reason the units/eign block above gives: dep() touches
+# its input, and an interrupted run would leave a pristine third_party file
+# with a rewritten mtime that git cannot show.
+dep 'rootfs headers -> mc'     rootfs/usr/include/.stamp      $B/bin/mc
 # units and ptx open /usr/lib/units and /usr/lib/eign by absolute path at RUN
 # time, so a missing install shows up as "no table" or "Cannot open  file
 # /usr/lib/eign" rather than as a build failure.  Their rules are asserted by

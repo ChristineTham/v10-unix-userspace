@@ -1579,7 +1579,9 @@ V8BIN = cat echo cmp rm touch ln test chmod pwd wc head tail tee tr \
 \
         apply asa byteyears checkeq chgrp chown coreid cpio ctags dd du file \
         find fsplit getopt getuid id idiff last mesg mkstr news nice random \
-        readslow sdiff sleep tabs tar time tty xstr crypt kill sync hang tape
+        readslow sdiff sleep tabs tar time tty xstr crypt kill sync hang tape \
+\
+        spline uuencode uudecode stty mc
 
 # Every single-file command imported into src/cmd is now installed, not just
 # the ones the bootstrap needs.  `cc' is the only .c in there that is NOT in
