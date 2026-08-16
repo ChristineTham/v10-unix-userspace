@@ -3052,7 +3052,7 @@ restores the host PATH and execs. Bare `/usr/` joined the mount table so a home
 directory exists inside the world; it is a union, so `/usr/include` still falls
 through. Exercised end to end, not asserted.
 
-**7b. Wave A2 — IN PROGRESS, 91 → 150.** Batch 1: 37 single-file commands, all
+**7b. Wave A2 — IN PROGRESS, 91 → 157.** Batch 1: 37 single-file commands, all
 compiling with zero failures. Batch 2: `diff` (two programs and three derived
 `-D` install paths), `cb`, `su`, `compress`, plus `crypt`, `getpwnam`,
 `getgrgid` and `getpass` into libc. The suites did the triage and caught three
@@ -3138,6 +3138,81 @@ a shell script in `/usr/bin` and the binary in `/usr/lib`.
     invocation crashed.
   - Zero signal deaths across every single-letter option for all six installed
     names, measured before the probe ran.
+
+**Batch 2d: `hoc`, `p`, `pp`, `calendar`, `newgrp`, `showq`, `dmesg`, and
+`libl`** — scoped as ten and delivered as seven, because three of the ten share
+one blocker that nobody had measured. 13 of the 16 imported source files are
+**byte-identical to upstream**; the two findings that mattered were not in any
+of the programs.
+
+  - **`usr/src/libplot` EXISTS AND NO SURVEY HAD LOOKED AT IT.** `graph`, `plot`
+    and `prof` are all blocked on it and it is a tree of **seven** libraries —
+    `libplot lib4014 lib2621 lib5620 libblit libpen libtr` — sitting a directory
+    over from `usr/src/lib`, which every previous sweep read. The `vi`-under-`ex`
+    shape again: something recorded as absent that was in the tree, unread.
+    What makes it worth a task of its own (§8b) rather than a line here is the
+    measurement: **`-lplot` would not have linked on a VAX either.** The shipped
+    `libplot.a` is 1008 bytes holding `subr.o` and `whoami.o`, its source bundle
+    agrees exactly, and `graph` calls six primitives it defines none of. There
+    is **no plot(5)-writing implementation anywhere in the archive** — every
+    `openpl()` is device-specific (tek escapes, `initscr()`, jerq ioctls,
+    `/dev/hp7580`, troff) — so V8's `graph` was linked against a *device*
+    library. The 216-byte `libm.a` finding, a second time.
+    It also brings a build idiom nothing here has met: the sources live inside
+    an `ar` archive and the makefile runs `ar x` to get at them.
+  - **`nlist(3)` had an address-0 dereference and it is the first in libc.**
+    `dmesg` SIGSEGV'd; the file is byte-identical to upstream. The loop that
+    matches a symbol against the caller's list walks to the `{ 0 }` terminator
+    and reads `name[0]` through a null pointer — **and the guard is eleven lines
+    above in the same function**, where the counting loop over the same array
+    already tests it. Nothing had reached it because the loop `break`s at the
+    requested symbol, so every caller whose symbols are PRESENT stops short:
+    `libkmemu` manufactures `_avenrun` and `_bootime`, which is exactly what
+    `load(1)` and `w(1)` ask for. `dmesg` is the first program here to ask for
+    one that is ABSENT, which is the honest-refusal path, and it faulted on the
+    way to reporting it. `src/libc/gen/PORTING.md`; the case that matters is the
+    control, since a fix returning early would break `load`.
+  - **`p` carries the THIRD copy of `spname`**, and not the one already
+    repaired. `sh`'s is the later rewrite with a bound test; this is the
+    original with none. Raising `DIRSIZ` 14 → 254 broke both, and the shapes are
+    opposite: `sh`'s guard `newname[128-DIRSIZ-2]` went NEGATIVE, so it returned
+    "no suggestion" on the first pass and `cd` stopped correcting — loud. Here
+    there was nothing to go negative, so an 80-byte path buffer silently became
+    one a single component overruns. **A missing guard is harder to find than a
+    wrong one.** And `best[]` needed the opposite half: `sh` carries upstream's
+    `#undef DIRSIZ 14` and this copy does not, so `best[]` is correctly sized
+    here and was one byte short there. `src/cmd/p/PORTING.md`.
+  - **`showq`'s four ABSOLUTE kernel includes** (`"/usr/sys/h/param.h"` and
+    three more) become `<sys/...>` — `ls.c:11`'s change, and the strongest case
+    of it yet, because all four pairs are **byte-identical upstream**: V8
+    installs its kernel headers into `/usr/include/sys` as well, so the two
+    spellings named one file. Only `param.h` differs here, and `showq` reads no
+    directories. `src/cmd/showq/PORTING.md`.
+  - **`hoc` reaches V8's maths through a function pointer**, which nothing had
+    done: `sqrt(2)` goes through `Symbol.u.ptr`, a `double (*)()`. It answers
+    `1.4142136`, which needs both halves of §4-era task 28 already correct —
+    the `float atof()` declaration reading the wrong register, and v8cc passing
+    doubles in `x0`-`x7` against AAPCS64's `d0`-`d7`.
+  - **`pp` is the first lex file with no yacc file**, so `libl` is the second
+    library this port has imported. Only `yywrap()` is consumed; `main.o` is in
+    the archive and must never be pulled, which is guaranteed by an archive
+    being searched only for still-undefined symbols.
+  - **`calendar` widened a sweep and it found five disagreements at once.**
+    `tests/wavea`'s makefile-versus-`Admin/dest` check enumerated **directory
+    names**, so it could only ever see a program named after its directory —
+    and `calendar` installs `calendar1`..`calendar4` out of a directory called
+    `calendar`. Making the candidate set a union of directory names and
+    install-line names took the disagreement set from three to **eight**: the
+    four calendar helpers plus `diffh`, which this port has installed to
+    `/usr/lib` since Wave A and which the sweep had never examined. Same class
+    as the `f[3]` bug batch 2c found — a parser correct for every input it had
+    been given.
+  - **Two things measured and deliberately NOT changed.** `pad.c`'s seven
+    `illegal pointer combination` warnings are upstream's own: `<stdio.h>`
+    declares `_ptr`/`_base` as `unsigned char *` **upstream**, byte for byte.
+    And `pp.c:11`'s `BMASK redefined` is upstream's too — upstream's
+    `sys/types.h:35` includes upstream's `sys/param.h`, which defines `BMASK`.
+    Both diagnostics fired on a VAX.
 
 **7c. What is left, in order of unlock:**
 

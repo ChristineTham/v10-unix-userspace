@@ -3784,8 +3784,69 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **150** of the 286 V8 shipped, and the ones still missing mostly
+port installs **157** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
+
+### Seven more, and the two most useful things were not in any of them
+
+The latest batch was scoped as ten small directory programs and turned out to be
+seven, a library, and two findings that had nothing to do with the programs being
+ported. That ratio is now the normal one.
+
+`hoc` is Kernighan and Pike's calculator — a grammar, four sources, and the first
+program here to reach V8's own maths through a function pointer stored in a symbol
+table. `sqrt(2)` returning `1.4142136` is a narrower claim than it looks: two
+separate defects had to already be fixed for it, a declaration that promised
+`float` where a `double` comes back in a different register, and a calling
+convention that put doubles in the integer registers. Neither had ever been
+exercised through an indirect call.
+
+`p`, a pager, turned out to carry **the third copy of `spname` in the tree**, and
+it is not the one that was already repaired. `sh`'s copy is the later rewrite,
+with a bound test; this is the original, without one. Raising `DIRSIZ` from 14 to
+254 — a change this port made years ago — broke both, and the difference is
+instructive. In `sh` the guard was written as `newname[128-DIRSIZ-2]`, which went
+*negative*, so the function returned "no suggestion" on the first pass and `cd`
+stopped correcting spellings: loud, immediate, and found. Here there was no guard
+to go negative, so the same change quietly turned an 80-byte path buffer into one
+a single 254-character filename overruns. **A missing guard is harder to find than
+a wrong one**, because the wrong one fails visibly the moment its premise moves.
+
+The two findings outside the programs:
+
+**`usr/src/libplot` exists, and nothing had ever looked at it.** Three of the
+original ten — `graph`, `plot`, `prof` — share one blocker, and it is a tree of
+seven plot libraries sitting a directory over from the one every previous survey
+swept. That is `vi` all over again: something recorded as missing that was in the
+tree, unread. The measurement that makes it worth writing down is what the
+libraries contain. `graph`'s makefile links `-lplot`, and the shipped
+`libplot.a` is 1008 bytes holding two objects, neither of which defines a single
+one of the six plotting primitives `graph` calls. There is no plot(5)-writing
+implementation anywhere in the archive: every `openpl()` is device-specific, one
+emitting Tektronix escapes, one calling `initscr()`, one opening `/dev/hp7580`.
+So `-lplot` would not have linked on a VAX either — the same shape as the 216-byte
+`libm.a` this port found before, a `-l` flag naming an archive that does not
+define what the program needs.
+
+**And `nlist(3)` had a null dereference that no previous consumer could reach.**
+`dmesg` and `showq` are grovelers: they look a symbol up in a kernel's name list
+and read it out of `/dev/kmem`. Neither can answer here — the shim manufactures a
+name list holding two symbols and neither program's are among them — and saying
+so honestly is the whole reason to port them, following `w`, which says `No mem`.
+`dmesg` crashed instead. The bug is in libc, in a file byte-identical to
+upstream's: the loop that matches a symbol against the caller's list walks to the
+list's terminator and reads through a null pointer. On a VAX address 0 held a
+zero byte and the loop stopped; macOS leaves that page unmapped.
+
+The guard was **eleven lines above, in the same function** — the counting loop
+over the same array has the null test that the matching loop lacks. And nothing
+had reached it because the matching loop breaks at the symbol it wants: every
+caller the port had asks for symbols that are *present*, so none of them ever
+walks as far as the terminator. `dmesg` is the first program here to ask for one
+that is absent, which is precisely the honest-refusal path, and it faulted on the
+way to reporting it. The fix is one `&&`; the test that matters is the control,
+because a repair that made the function return early would silence the crash and
+break `load`, which reads a symbol that *is* there.
 
 - **Visual mode.** `ex` edits; invoked as `vi` it correctly answers that open
   and visual must be used interactively, which is right and also the limit of
@@ -3799,9 +3860,14 @@ have source sitting in the tree.
   `struct`. `awk` is in, and it turned out to be the interesting one: the
   build now runs the ported `yacc` and `lex` per program, and in awk's case a
   third generator that the build has to compile before it can run.
+- **The plot libraries.** Seven of them, in a tree nobody had swept, and the
+  three programs above wait on a decision rather than on work: V8's "generic"
+  plot library defines none of the primitives, so porting `graph` means
+  choosing a *device* — Tektronix is the natural one, being escape sequences
+  and nothing else.
 - **The language systems**: Fortran with its two runtime libraries, both
-  present upstream and unimported, plus `efl`, `ratfor`, the C++ front end,
-  `hoc` and `lcomp`. These are the largest ports left and the most interesting,
+  present upstream and unimported, plus `efl`, `ratfor`, the C++ front end and
+  `lcomp`. These are the largest ports left and the most interesting,
   because a Fortran compiler that runs on a Mac is a claim of a different
   order from a filter that does.
 - **Two small honesty items.** The world installs Bell Labs' `/etc/ttys`

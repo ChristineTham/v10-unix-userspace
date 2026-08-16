@@ -19,7 +19,26 @@
 # a human runs is a number that rots.
 #
 # ---------------------------------------------------------------------------
-# THE THREE GROUPS, AND WHY EACH IS PERMANENT
+# THE FOUR GROUPS, AND WHY EACH IS PERMANENT
+#
+# READ THE COUNTS BEFORE THE LINES.  106 entries are FOUR bugs, and two of them
+# account for 104: one mechanism can have fifty spellings, so a long floor is
+# not the same thing as a neglected one.  What would be alarming is a new
+# PROGRAM, not a new line.
+#
+# dmesg (51) -- every single-letter option except -i.  Berkeley's, 1981, and
+#   unbounded mutual recursion rather than a bad pointer: done() ends
+#   `if (wflg) writebuf();' and writebuf() calls done("can't open buffer\n")
+#   when it cannot open /usr/adm/msgbuf, so the two call each other until the
+#   stack goes.  BUFFER is opened O_WRONLY with no O_CREAT, and the archive
+#   ships no /usr/adm at all -- it is runtime state, like /etc/utmp, made when
+#   a system is installed rather than shipped in a tarball -- so a VAX
+#   recursed identically.
+#
+#   The count is 51 and not 53 because the switch has exactly one arm that
+#   does not set wflg (`case 'i': break;'), and bare `dmesg' never enters the
+#   block, which is why the program's documented primary invocation is the one
+#   that reports cleanly (`No namelist', exit 1).  src/cmd/dmesg/PORTING.md.
 #
 # lex (53) -- every invocation including bare.  THREE separate faults, not one,
 #   all upstream's on upstream's hardware: see src/cmd/lex/PORTING.md.  The
@@ -79,6 +98,57 @@
 # ENTRIES
 11 bcd (no arguments)
 11 cpio -i
+11 dmesg -A
+11 dmesg -B
+11 dmesg -C
+11 dmesg -D
+11 dmesg -E
+11 dmesg -F
+11 dmesg -G
+11 dmesg -H
+11 dmesg -I
+11 dmesg -J
+11 dmesg -K
+11 dmesg -L
+11 dmesg -M
+11 dmesg -N
+11 dmesg -O
+11 dmesg -P
+11 dmesg -Q
+11 dmesg -R
+11 dmesg -S
+11 dmesg -T
+11 dmesg -U
+11 dmesg -V
+11 dmesg -W
+11 dmesg -X
+11 dmesg -Y
+11 dmesg -Z
+11 dmesg -a
+11 dmesg -b
+11 dmesg -c
+11 dmesg -d
+11 dmesg -e
+11 dmesg -f
+11 dmesg -g
+11 dmesg -h
+11 dmesg -j
+11 dmesg -k
+11 dmesg -l
+11 dmesg -m
+11 dmesg -n
+11 dmesg -o
+11 dmesg -p
+11 dmesg -q
+11 dmesg -r
+11 dmesg -s
+11 dmesg -t
+11 dmesg -u
+11 dmesg -v
+11 dmesg -w
+11 dmesg -x
+11 dmesg -y
+11 dmesg -z
 11 lex (no arguments)
 11 lex -A
 11 lex -B

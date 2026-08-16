@@ -1,0 +1,8 @@
+# Provenance for v8/src/cmd/newgrp
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+5062a47dd72cbf9c9b4f87ed99028af6d1a4039e  v8/usr/src/cmd/newgrp/makefile
+a026f145a25cb3b3b61044c45922c69b27569e01  v8/usr/src/cmd/newgrp/newgrp.c

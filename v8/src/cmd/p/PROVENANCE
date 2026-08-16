@@ -1,0 +1,11 @@
+# Provenance for v8/src/cmd/p
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+8d747a4b263f0f0249c538261b36fcda191b1a8f  v8/usr/src/cmd/p/spname.c
+d6f0813f0b4406c475081d37a99bf6718b30d9af  v8/usr/src/cmd/p/makefile
+fe95afa9073f2affdd4dec5db32421f9ce71597e  v8/usr/src/cmd/p/pad.h
+c27416342b6d5f94554be5b7148d1bf6cfbd613a  v8/usr/src/cmd/p/pad.c
+033ea251a668c593b6e9e7ad40f4eade9f77c53c  v8/usr/src/cmd/p/p.c

@@ -1,0 +1,16 @@
+# Provenance for v8/src/cmd/hoc
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+335244c434083bdc7c1f9881347ac9e9a6b7b5c1  v8/usr/src/cmd/hoc/math.c
+12e6ee7b503227ee6809357e83d9d704a8ab2ba7  v8/usr/src/cmd/hoc/hoc.y
+030a6492528c0e7d230ee400bf10cf0721c59a61  v8/usr/src/cmd/hoc/tests.a
+2703e05d958e645fd3b916950c8c4f9bd380b2a2  v8/usr/src/cmd/hoc/init.c
+4d0232af56bf0aed8e5e9added3891e6541b19ed  v8/usr/src/cmd/hoc/makefile
+dd51b388c5ddb0c5f98c436caaa2e5d8bc1f7387  v8/usr/src/cmd/hoc/README
+e69152201f0a3926e483d0fbb8c0443440194d82  v8/usr/src/cmd/hoc/symbol.c
+b57c103099c275d8abe626c621d2577b7c076101  v8/usr/src/cmd/hoc/hoc.1
+85b777963af9d8abf85f91938313f515cc9e39bf  v8/usr/src/cmd/hoc/hoc.h
+2b6db3c59ddd7f545a4dcc39d1fcc088ad50ea18  v8/usr/src/cmd/hoc/code.c

@@ -46,8 +46,11 @@ make -j8              # full build (~4s clean) -- dispatches to v8/
 make test             # all 17 suites (2222 cases, 2221 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
-make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
+make -C v8 test-wavec # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
+                      # -C v8 is REQUIRED: the root Makefile forwards only all,
+                      # test, clean, distclean and install, so `make test-wavec'
+                      # at the root is "No rule to make target"
 v8/tests/deps/run.sh  # a suite directly (same thing, no build first)
 make clean            # remove v8/build and v8/rootfs
 ```
@@ -1733,6 +1736,99 @@ nothing stale. The source-side edge is real and is deliberately not asserted,
 because `dep()` touches its input and that input lives in `third_party/`, which
 an interrupted run would leave pristine-but-restamped and git could not show.
 Assert the stamp.
+
+**AND BATCH 2d WAS SCOPED AS TEN AND DELIVERED SEVEN, BECAUSE A WHOLE LIBRARY
+TREE HAD NEVER BEEN SWEPT.** `hoc p pp calendar newgrp showq dmesg` plus
+`libl`, 13 of 16 source files byte-identical. The two findings that mattered
+were in neither the programs nor their build:
+
+- **`usr/src/libplot` IS A SIBLING OF `usr/src/lib`, NOT A CHILD, and every
+  survey read the child.** Seven libraries. `graph`, `plot` and `prof` all
+  block on it. `vi`-under-`ex` again: *described as missing, sitting in the
+  tree, unread* — and the remedy this file already prescribes, grep the WHOLE
+  archive rather than the release subtree, applied to a directory rather than
+  to a file. **The measurement is the interesting half: `-lplot` WOULD NOT HAVE
+  LINKED ON A VAX EITHER.** The shipped `libplot.a` is 1008 bytes holding
+  `subr.o` (a `%g` printer) and `whoami.o` (`return("general")`); its source
+  bundle agrees exactly; `graph` calls six primitives it defines none of; and
+  **no plot(5)-writing implementation exists anywhere in the archive** — every
+  `openpl()` is device-specific. Second instance of the 216-byte `libm.a`
+  shape: a `-l` flag naming an archive that does not define what the caller
+  needs. It also brings an idiom nothing here has met — the sources live inside
+  an `ar` archive and the makefile runs `ar x` to get them.
+- **`nlist(3)` DEREFERENCED THE LIST TERMINATOR, AND THE GUARD WAS ELEVEN LINES
+  ABOVE IT.** The address-0 class, tenth instance and the **first in libc**;
+  `nlist.c` is byte-identical to upstream. The counting loop is
+  `q->n_un.n_name && q->n_un.n_name[0]`; the matching loop, same function, same
+  array, is `p->n_un.n_name[0]`. A caller ends its list with `{ 0 }`.
+  **NOTHING HAD REACHED IT BECAUSE THE `break` COMES FIRST**: the loop stops at
+  the requested symbol, so a caller whose symbols are all PRESENT never walks
+  to the terminator, and `libkmemu` manufactures exactly the two `load(1)` and
+  `w(1)` ask for. `dmesg` is the first program here to ask for one that is
+  ABSENT — the *honest-refusal* path a groveler is supposed to take — and it
+  SIGSEGV'd on the way to reporting it. So the trigger is "a requested symbol
+  is missing and the namelist is not empty", and the case that matters is the
+  CONTROL: a fix returning early silences the crash and breaks `load`.
+
+Five more generalise:
+
+- **A MISSING GUARD IS HARDER TO FIND THAN A WRONG ONE**, and `spname` proves
+  it twice from one change. `p` carries the THIRD copy in the tree and it is
+  not the repaired one: `sh`'s is the later `<ndir.h>`/`readdir` rewrite WITH a
+  bound test, this is the original with none. Raising `DIRSIZ` 14 → 254 broke
+  both in opposite ways — `sh`'s `newname[128-DIRSIZ-2]` went **negative**, so
+  it returned "no suggestion" on the first pass and `cd` stopped correcting,
+  loudly; here there was nothing to go negative and an 80-byte path buffer
+  silently became one a single component overruns. **And `best[]` needed the
+  opposite half**: `sh` carries upstream's `#undef DIRSIZ 14` (because
+  `<ndir.h>` makes DIRSIZ function-like) so its `best[]` was one byte short,
+  and this copy includes `<sys/dir.h>`, has no `#undef`, and is correctly
+  sized. Two copies of one function needing complementary fixes.
+- **A SWEEP KEYED ON DIRECTORY NAMES CANNOT SEE A PROGRAM NAMED DIFFERENTLY**,
+  and widening it found FIVE at once. `tests/wavea`'s makefile-versus-
+  `Admin/dest` check asked `mkdest <directory>`, which is every program the
+  port had until `calendar` — whose makefile installs `calendar1`..`calendar4`
+  out of a directory called `calendar`. Making the candidate set a **union** of
+  directory names and install-line names took the disagreement set 3 → 8: the
+  four helpers plus **`diffh`**, installed to `/usr/lib` since Wave A and never
+  examined. Same class as the `f[3]` bug one batch earlier — a parser correct
+  for every input it had been given. The union is load-bearing in both
+  directions: install-line names must be filtered to shipped executables (an
+  install line also names headers and scripts), and that filter drops `dump`,
+  which V8 never shipped, so the directory name is what keeps it.
+- **BEFORE ANSWERING A WARNING, CHECK WHETHER IT IS UPSTREAM'S OWN**, which
+  settled two of the nine diagnostics this batch produced and cost nothing.
+  `pad.c`'s seven `illegal pointer combination` are `char *` against `FILE`'s
+  `_ptr`/`_base` — and **upstream's `<stdio.h>` declares those `unsigned char
+  *`**, byte for byte the same line this port installs, so a VAX printed them
+  too. `pp.c:11`'s `BMASK redefined` likewise: upstream's `sys/types.h:35`
+  includes upstream's `sys/param.h`, which defines `BMASK`. The audit had
+  flagged `pad.c` for `malloc` and the compiler was complaining about something
+  else entirely — **the diagnostic you get is not always the hazard you
+  looked for.**
+- **A CHAINED PATTERN RULE MAKES THE MIDDLE FILE AN INTERMEDIATE AND MAKE
+  DELETES IT.** `$(BINDIR)/calendar%: $(BUILD)/calendar/calendar%.o` plus
+  `$(BUILD)/calendar/%.o: $(CALSRC)/%.c` ended every build with
+  `rm .../calendar1.o calendar2.o calendar4.o`, and a no-op `make` still did
+  zero work, so nothing complained — but `tests/deps` had no object to name. A
+  **static** pattern rule makes the prerequisites explicit per target and they
+  survive. `.SECONDARY` is the other answer; this one needs no extra line.
+- **`make test-<suite>` DOES NOT WORK AT THE REPO ROOT**, which the Commands
+  block above got wrong for as long as the dispatcher has existed. The root
+  Makefile forwards `all`, `test`, `clean`, `distclean` and `install` and
+  nothing else, so a per-suite target needs `make -C v8 test-mkfs`. Corrected
+  in the Commands block.
+
+**AND `dmesg` ADDS 51 TO THE CRASH-PROBE FLOOR, WHICH IS ONE BERKELEY BUG WITH
+51 SPELLINGS.** `done()` ends `if (wflg) writebuf();` and `writebuf()` calls
+`done()` when it cannot open `/usr/adm/msgbuf` — unbounded mutual recursion
+until the stack goes. Every single-letter option except `-i` sets `wflg`,
+because `-i` is the one arm of the switch that does not fall to `default`.
+Upstream's on upstream's hardware: the archive ships no `/usr/adm` at all (it
+is runtime state, like `/etc/utmp`), `open(BUFFER, 1)` has no `O_CREAT`, and a
+VAX recursed identically. Recorded rather than patched, per S1 — and worth
+saying out loud in the floor file that 51 of its lines are one mechanism, the
+same way `lex`'s 53 are three.
 
 **AND `src/v8/etc/` BECAME `src/etc/`, BECAUSE THE IMPORT TOOL AND THE TREE HAD
 DISAGREED SINCE THE RELEASE SPLIT.** `destfor()` maps `v8/etc/*` to

@@ -70,7 +70,44 @@ nlist(name, list)
 				sc = q->n_un.n_strx;
 				soff = 0;
 			}
-			for (p = list; p->n_un.n_name[0]; p++) {
+			/*
+			 * PORT: `p->n_un.n_name &&' added.  The address-0
+			 * class (PLAN.md S4i), and the first instance of it in
+			 * libc rather than in a command.
+			 *
+			 * A caller's list can be terminated by an entry whose
+			 * name is a null POINTER -- dmesg.c:25 writes it
+			 * `{ 0 }' and w.c:71 writes `{ 0 },' -- and this loop
+			 * walks to the terminator and reads name[0] off
+			 * address 0.  On the VAX that returned crt0's first
+			 * byte, 0x00, so the loop ended; macOS leaves page 0
+			 * unmapped and it is a SIGSEGV.  The guard restores
+			 * exactly the VAX answer: stop at the terminator.
+			 *
+			 * (showq.c:58 writes `{ "" },' instead -- an empty
+			 * STRING, not a null pointer -- so it was never at
+			 * risk.  Two of the three callers spell the same
+			 * sentinel two ways, and only one spelling faults.)
+			 *
+			 * THE SAME GUARD IS AT THE TOP OF THIS FUNCTION, in
+			 * the loop that counts the list, which already says
+			 * `q->n_un.n_name && q->n_un.n_name[0]'.  One loop
+			 * over this array was written defensively and the
+			 * other was not.  No line number: a citation inside
+			 * the file it cites is self-invalidating, and this
+			 * comment moved its own target by 29 lines.
+			 *
+			 * NOTHING HAD REACHED IT BECAUSE THE BREAK COMES
+			 * FIRST.  The loop stops at the requested symbol, so a
+			 * caller whose symbols are all PRESENT never sees the
+			 * terminator -- load(1) and w(1) ask for _avenrun and
+			 * _bootime, which is exactly what shim/libkmemu/kmem.c
+			 * manufactures.  dmesg is the first program here to
+			 * ask for a symbol that is ABSENT (_msgbuf), which is
+			 * the honest-refusal path a groveler is supposed to
+			 * take, and it crashed on the way to reporting it.
+			 */
+			for (p = list; p->n_un.n_name && p->n_un.n_name[0]; p++) {
 				if (strcmp(p->n_un.n_name, &names[soff]) == 0) {
 					p->n_value = q->n_value;
 					p->n_type = q->n_type;

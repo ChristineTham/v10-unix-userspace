@@ -1,0 +1,8 @@
+# Provenance for v8/src/cmd/showq
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+577f0de5f574f945a181c47975c930e3ee13ffb0  v8/usr/src/cmd/showq/makefile
+699b67cb4706a2c7f49a6fa7c883787b4aa59c03  v8/usr/src/cmd/showq/showq.c

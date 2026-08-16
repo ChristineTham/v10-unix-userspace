@@ -1,0 +1,12 @@
+# Provenance for v8/src/lib/libl
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+b50f75564e52a204fe7e2fb704af3a4fa29e8e12  v8/usr/src/lib/libl/Makefile
+08669938ba83dd6d55e63bc3f1cf3cad9aab29c5  v8/usr/src/lib/libl/yywrap.c
+5914bd9630e935c46eedefa92e68754f3b6c9e01  v8/usr/src/lib/libl/yyless.c
+123b66591d4e01711ba9c90689d0cf38713a81f3  v8/usr/src/lib/libl/main.c
+7fa928201bc56990ee734058898d493cc1567308  v8/usr/src/lib/libl/reject.c
+238cade1c88f2bc60219f415740e971815b76bb2  v8/usr/src/lib/libl/allprint.c

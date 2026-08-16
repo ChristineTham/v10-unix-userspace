@@ -1,0 +1,13 @@
+# Provenance for v8/src/cmd/calendar
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+7af0627898c8aa399d68ec8558a1c6940d2224a3  v8/usr/src/cmd/calendar/calendar2.c
+05a5b96239aedb3a06dbecb7402788b353d071e0  v8/usr/src/cmd/calendar/calendar
+1c908adfc3d1f91dcf72efa74463beb8d2f83afb  v8/usr/src/cmd/calendar/Makefile
+fe33caa97c77d272dc7161f4905338c16f0912bc  v8/usr/src/cmd/calendar/calendar1.c
+d7052bd503e7fad20e3787f4a6abcac6aa1b3374  v8/usr/src/cmd/calendar/calendar3
+c741342de39b10e2721dbe107e799c3168ff1574  v8/usr/src/cmd/calendar/calendar4.c
+bc4679a62835eacc329da770647340e820499084  v8/usr/src/cmd/calendar/whereis

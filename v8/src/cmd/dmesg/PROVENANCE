@@ -1,0 +1,8 @@
+# Provenance for v8/src/cmd/dmesg
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+e2b7275c288276130b8342bff64d3a328ab73e83  v8/usr/src/cmd/dmesg/Makefile
+06082a2af12cc6bc48b78c465dc504e4fc614ab4  v8/usr/src/cmd/dmesg/dmesg.c

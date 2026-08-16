@@ -450,6 +450,85 @@ dep 'awk install'              $B/bin/awk                      rootfs/usr/bin/aw
 # where it is observable instead: tests/wavea checks that maketab is not
 # installed, since a tool in $(ROOTFS) would be a component by any measure.
 
+# --- Wave A2 batch 2d: seven programs and a library -------------------------
+# hoc: a grammar plus four .c.  Upstream's dependency lines are
+#	hoc.o code.o init.o symbol.o: hoc.h
+#	code.o init.o symbol.o:       x.tab.h
+# and math.o is deliberately in NEITHER -- it includes <math.h> and nothing of
+# hoc's -- so the nodep is what keeps this tree from widening a claim upstream
+# did not make.  Same discipline as m4y.o above.
+dep 'hoc grammar -> tables'    src/cmd/hoc/hoc.y               $B/hoc/y.tab.c
+dep 'hoc grammar -> object'    src/cmd/hoc/hoc.y               $B/hoc/hocgram.o
+dep 'hoc.h -> code.o'          src/cmd/hoc/hoc.h               $B/hoc/code.o
+nodep 'hoc.h is not math.o edge' src/cmd/hoc/hoc.h             $B/hoc/math.o
+# The TOKEN NUMBERS have to reach the three objects that read y.tab.h, and this
+# is the case that says so: an edit to the grammar restages the header and
+# every one of them recompiles.  Upstream gets there through x.tab.h, a file
+# nothing includes, whose mtime moves only when the CONTENT of y.tab.h changes
+# -- content-addressed rebuild avoidance in 1984 make, spelled with `cmp -s'.
+# This port reaches the same correctness through the y.tab.c edge and skips the
+# optimisation; see the Makefile for why (no grouped targets in make 3.81).
+dep 'hoc grammar -> init.o'    src/cmd/hoc/hoc.y               $B/hoc/init.o
+dep 'hoc install'              $B/bin/hoc                      rootfs/usr/bin/hoc
+# p: three objects, and upstream's one dependency line is `pad.o: pad.h'.
+dep 'pad.h -> pad.o'           src/cmd/p/pad.h                 $B/p/pad.o
+nodep 'pad.h is not p.o edge'  src/cmd/p/pad.h                 $B/p/p.o
+dep 'spname -> p'              src/cmd/p/spname.c              $B/p/spname.o
+dep 'p install'                $B/bin/p                        rootfs/usr/bin/p
+# pp: A LEX FILE WITH NO GRAMMAR, which is an idiom nothing before 2d had --
+# every other lexer here is half of a yacc/lex pair and depends on y.tab.c for
+# its token numbers.  This scanner stands alone, so the ONLY generated input is
+# lex.yy.c and pp.h is what the two objects share.
+dep 'pp lexer -> scanner'      src/cmd/pp/scan.l               $B/pp/lex.yy.c
+dep 'pp lexer -> object'       src/cmd/pp/scan.l               $B/pp/scan.o
+dep 'pp.h -> scan.o'           src/cmd/pp/pp.h                 $B/pp/scan.o
+dep 'pp.h -> pp.o'             src/cmd/pp/pp.h                 $B/pp/pp.o
+dep 'dev.h -> pp.o'            src/cmd/pp/dev.h                $B/pp/pp.o
+nodep 'dev.h is not scan.o edge' src/cmd/pp/dev.h              $B/pp/scan.o
+dep 'pp install'               $B/bin/pp                       rootfs/usr/bin/pp
+# libl -- the SECOND library import after libtermlib, and pp is its only
+# consumer.  The chain that matters is source -> archive -> program: a lex
+# program with no yywrap() of its own does not link without it, and the failure
+# is an undefined symbol rather than anything subtler.
+dep 'libl source -> archive'   src/lib/libl/yywrap.c           $B/libl/libl.a
+dep 'libl reject -> archive'   src/lib/libl/reject.c           $B/libl/libl.a
+dep 'libl archive -> pp'       $B/libl/libl.a                  $B/bin/pp
+dep 'libl install'             $B/libl/libl.a                  rootfs/usr/lib/libl.a
+# calendar: five artefacts, three of them binaries that install to /usr/lib and
+# two of them shell scripts.  The objects are asserted at all only because the
+# link rule is a STATIC pattern rule: written as a chained pattern rule
+# (`$(BINDIR)/calendar%: .../calendar%.o') make classed each object as an
+# INTERMEDIATE and deleted it after every build -- measured, and these cases
+# would have had nothing to name.
+dep 'calendar1 source'         src/cmd/calendar/calendar1.c    $B/calendar/calendar1.o
+dep 'calendar2 source'         src/cmd/calendar/calendar2.c    $B/calendar/calendar2.o
+dep 'calendar1 -> /usr/lib'    $B/bin/calendar1                rootfs/usr/lib/calendar1
+dep 'calendar script'          src/cmd/calendar/calendar       rootfs/usr/bin/calendar
+dep 'calendar3 script'         src/cmd/calendar/calendar3      rootfs/usr/lib/calendar3
+nodep 'calendar1.c is not calendar2' src/cmd/calendar/calendar1.c $B/calendar/calendar2.o
+# newgrp, showq and dmesg install OUTSIDE /usr/bin, which is derived from Bell
+# Labs' own tables rather than spelled in our Makefile -- so these three cases
+# are the only thing that would notice $(call v8dest,...) starting to answer
+# /usr/bin for them.
+dep 'newgrp -> /bin'           $B/bin/newgrp                   rootfs/bin/newgrp
+dep 'showq -> /etc'            $B/bin/showq                    rootfs/etc/showq
+dep 'dmesg -> /etc'            $B/bin/dmesg                    rootfs/etc/dmesg
+# showq's four includes were ABSOLUTE ("/usr/sys/h/param.h") and are now
+# <sys/...>.  That makes our patched sys/param.h a real build input, which it
+# was not before, and this is the edge that says the change actually landed --
+# an absolute include resolves outside the tree and would produce no edge at
+# all.
+dep 'sys/param.h -> showq.o'   src/include/sys/param.h         $B/showq/showq.o
+# The other three -- sys/stream.h, sys/inode.h, sys/conf.h -- CANNOT be
+# asserted here and the reason is worth writing down rather than discovering
+# twice.  This port patches none of them, so they reach the rootfs straight
+# from third_party/ via $(ROOTFS_INC), and there is no file under src/include/
+# to name.  dep() would have to touch a pristine upstream file, which is the
+# same objection the units/eign block above raises.  What is assertable is the
+# stamp, and the stamp is a prerequisite of EVERY v8cc object through
+# $(V8CC_DEPS), so it says nothing about showq in particular.  param.h alone
+# carries the claim, and it is the only one of the four this port modifies.
+
 # --- Phase 4: libkmemu, and the edges that keep it out of everything else ---
 dep 'kmemu source -> archive'  shim/libkmemu/utmp.c            $B/kmemu/libkmemu.a
 dep 'kmemu header -> archive'  shim/libkmemu/kmemu.h           $B/kmemu/libkmemu.a

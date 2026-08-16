@@ -487,9 +487,10 @@ check 'the tables and the shipped tree disagree about exactly these six' \
 # looks like a disagreement -- which is how this parser first reported one.
 # A single non-recursive pass is enough for 1985 makefiles; note `$B' with no
 # parentheses is make's single-character form and has to be handled too.
-mkdest() {	# where a program's OWN makefile installs it, or nothing
+mkdest() {	# mkdest <directory> <program> -- where its OWN makefile puts it
 	_m=$(ls "$ROOT/src/cmd/$1"/[Mm]akefile 2>/dev/null | head -1)
 	[ -n "$_m" ] || return 1
+	shift
 	awk -v p="$1" '
 	    { line[NR] = $0 }
 	    /^[A-Za-z_][A-Za-z0-9_]*[ \t]*=/ {
@@ -540,13 +541,47 @@ mkdest() {	# where a program's OWN makefile installs it, or nothing
 		} }
 	' "$_m"
 }
+# THE CANDIDATE SET IS A UNION, AND FOR MOST OF THIS SWEEP'S LIFE IT WAS HALF
+# OF ONE.  The loop asked `mkdest <directory>' and so could only ever see a
+# program whose name IS its directory's -- which is every program the port had
+# imported until calendar, whose makefile installs calendar1, calendar2,
+# calendar3 and calendar4 out of a directory called calendar.  Four genuine
+# disagreements, invisible by construction: the makefile says /usr/lib for all
+# four and Admin/dest answers /usr/bin by fall-through, which is cpp's exact
+# pattern and the thing this sweep exists to find.  Structurally the same
+# oversight as the f[3] bug two batches ago -- a parser correct for every input
+# it had been given.
+#
+# THE SECOND HALF CANNOT REPLACE THE FIRST, which is why this is a union.
+# Install-line names are filtered to those the SHIPPED TREE has as executables,
+# because an install line also names headers, tables and scripts; and `dump' is
+# a program V8 did not ship at all, so that filter drops it while the directory
+# name keeps it.  Take either source alone and coverage goes down.
+mkprogs() {	# every program name a directory's makefile installs
+	_m=$(ls "$ROOT/src/cmd/$1"/[Mm]akefile 2>/dev/null | head -1)
+	[ -n "$_m" ] || return 0
+	awk '{ sub(/^[ \t]+/, ""); n = split($0, f, /[ \t]+/)
+	       if (n >= 3 && (f[1] == "cp" || f[1] == "mv"))
+		       for (k = 2; k < n; k++) print f[k] }' "$_m" |
+	sort -u | while read -r _n; do
+		case "$_n" in */*|'$'*|-*|'') continue;; esac
+		for _p in bin usr/bin lib etc usr/lib; do
+			if [ -f "$SHIPPED/$_p/$_n" ] && [ -x "$SHIPPED/$_p/$_n" ]; then
+				echo "$_n"; break
+			fi
+		done
+	done
+}
 mkdiffer= mkseen=
 for d in "$ROOT"/src/cmd/*/; do
-	name=$(basename "$d")
-	want=$(mkdest "$name"); [ -n "$want" ] || continue
-	mkseen="$mkseen $name"
-	got=$(adest "$name")
-	[ "$want" = "$got" ] || mkdiffer="$mkdiffer $name($want,dest=$got)"
+	dir=$(basename "$d")
+	for name in $dir $(mkprogs "$dir"); do
+		case " $mkseen " in *" $name "*) continue;; esac
+		want=$(mkdest "$dir" "$name"); [ -n "$want" ] || continue
+		mkseen="$mkseen $name"
+		got=$(adest "$name")
+		[ "$want" = "$got" ] || mkdiffer="$mkdiffer $name($want,dest=$got)"
+	done
 done
 # The sweep has to have found them, or the disagreement set is empty for the
 # wrong reason -- tests/cpp's failure exactly.
@@ -568,9 +603,30 @@ else fail=$((fail+1)); echo "FAIL only $(echo $mkseen | wc -w) makefiles state a
 # The Makefile does not route diff3 through v8dest at all: the binary is
 # /usr/lib/diff3 and the COMMAND is a shell script in /usr/bin, which is the
 # spell/spellprog split and not a destination question.
-check 'an imported makefile and Admin/dest disagree about exactly these three' \
-   ' cpp(lib,dest=usr/bin) diff3(usr/lib,dest=usr/bin) dump(etc,dest=usr/bin)' \
+# EIGHT NOW, AND FIVE OF THEM ARRIVED BY WIDENING THE SWEEP RATHER THAN BY
+# IMPORTING ANYTHING.  Batch 2d made the candidate set a union (see mkprogs
+# above), and the moment the sweep could see programs whose names differ from
+# their directory's it found five it had never asked about: calendar1..4, and
+# `diffh', which has been installed to /usr/lib by this port since Wave A and
+# was simply never examined.  Every one is the same shape as cpp -- the program
+# is in no Admin table, so dest answers usr/bin by FALL-THROUGH, and both the
+# makefile and the shipped tree say otherwise.  Two sources against a
+# non-answer.
+#
+# So the set is not "three things upstream got wrong"; it is "every program
+# upstream installs somewhere other than /usr/bin without writing it in a
+# table", and the count moves when the SWEEP improves as well as when the tree
+# does.  Ordered by directory, then by makefile appearance, which is why diffh
+# (src/cmd/diff) precedes diff3 (src/cmd/diff3).
+check 'an imported makefile and Admin/dest disagree about exactly these eight' \
+   ' calendar1(usr/lib,dest=usr/bin) calendar2(usr/lib,dest=usr/bin) calendar3(usr/lib,dest=usr/bin) calendar4(usr/lib,dest=usr/bin) cpp(lib,dest=usr/bin) diffh(usr/lib,dest=usr/bin) diff3(usr/lib,dest=usr/bin) dump(etc,dest=usr/bin)' \
    "$mkdiffer"
+# ...and the port sides with the makefile in every one of the five new cases,
+# which is what says the widening found a blind spot rather than a bug.  diffh
+# and the four calendar helpers are all installed where their makefiles say.
+check 'and the port already installs all five where the makefile says' 'usr/lib x5' \
+   "$(n=0; for f in diffh calendar1 calendar2 calendar3 calendar4; do
+        [ -f "$V8ROOT/usr/lib/$f" ] && n=$((n+1)); done; echo "usr/lib x$n")"
 check 'and for cpp the shipped tree sides with the makefile' 'lib' "$(shipfile cpp)"
 # diff3 needs a DIFFERENT assertion from cpp, and the first draft used cpp's
 # and went red: shipfile() answers with the first directory holding that NAME,
@@ -1676,6 +1732,204 @@ check 'pcat writes the original to stdout' 'same' \
 check 'pcat and unpack are one inode' '1' \
     "$(cd "$V8ROOT/usr/bin" && ls -i pcat unpack 2>/dev/null |
        awk '{print $1}' | sort -u | wc -l | tr -d ' ')"
+
+# ---------------------------------------------------------------------------
+# Wave A2 batch 2d -- seven programs and a library.  The batch was scoped as
+# ten; graph, plot and prof turned out to share one blocker (usr/src/libplot,
+# task #89) and are not here.
+
+# hoc: an INTERPRETER, so the cases walk up from arithmetic to a user-defined
+# function.  sqrt() is the one that matters most and it is not about hoc: it
+# reaches Symbol.u.ptr, a `double (*)()' called through a function pointer, so
+# a pass means V8's own math is being called with the argument in the register
+# V8's compiler puts it in.  That is the pair of defects task #28 fixed --
+# `float atof()' read s0 where a double comes back in d0, and v8cc passing
+# doubles in x0-x7 against AAPCS64's d0-d7 -- and nothing since has exercised
+# them through an indirect call.
+hocbin=$(v8which hoc)
+hoc() { printf '%s\n' "$1" | "$hocbin" 2>&1 | tr -d '\t' | tr '\n' ' ' | sed 's/ $//'; }
+check 'hoc adds'                 '3'         "$(hoc '1+2')"
+check 'hoc has variables'        '9'         "$(hoc 'x = 3
+x*x')"
+check 'hoc calls the math library' '1.4142136' "$(hoc 'sqrt(2)')"
+check 'hoc defines a function'   '49'        "$(hoc 'func sq() { return $1*$1 }
+sq(7)')"
+check 'hoc loops'                '1 2 3'     "$(printf 'for (i=1; i<4; i=i+1) print i\n' | "$hocbin" 2>&1 | sed 's/ *$//')"
+
+# p: the pager, and the case that earns its keep is the MISSPELLING, because
+# that is the only path reaching spname() -- the third copy of that function in
+# the tree, and the one whose newname[] had no bound at all.  See
+# src/cmd/p/PORTING.md: raising DIRSIZ 14 -> 254 made sh's copy fail LOUDLY (a
+# guard that went negative) and this one fail SILENTLY (no guard to go
+# negative), which is why it survived.
+#
+# fd 3 is /dev/tty here -- V8's /dev/tty is a hard link to /dev/fd/3 -- and it
+# must ANSWER, not merely be open: spopen()'s `while(c != '\n') c = getc(tty);'
+# spins forever at EOF.  That loop is upstream's and stays (there is no VAX
+# answer to restore: a V8 /dev/tty at EOF did the same), so the test supplies a
+# newline rather than /dev/null.
+pbin=$(v8which p)
+printf 'one\ntwo\nthree\n' > p.txt
+printf '\n' > p.tty
+check 'p without /dev/tty declines' 'p: no /dev/tty' \
+    "$("$pbin" p.txt </dev/null 2>&1 | head -1)"
+check 'p prints a file'          'one two three' \
+    "$("$pbin" -5 p.txt 3<p.tty </dev/null 2>&1 | tr '\n' ' ' | sed 's/ $//')"
+check 'p corrects a misspelling through spname' '"p p.txt"?' \
+    "$("$pbin" p.tx 3<p.tty </dev/null 2>&1 | head -1 | sed 's/[?].*/?/')"
+# ...AND SAY WHAT THIS SECOND ONE CANNOT SEE, because the mutation that should
+# have proved it DID NOT FIRE and the reason is worth more than the case.
+#
+# spname accumulates the corrected path a component at a time into newname[],
+# and upstream sized that 80 -- about five components of DIRSIZ 14.  At DIRSIZ
+# 254 a SINGLE component overruns it, so this case supplies one: 255
+# characters, macOS's NAME_MAX, misspelt in the last character so SPdist scores
+# 2 and the unbounded copy runs.  It asserts that spname still WORKS at that
+# length, which the five-character case above cannot (revert newname to 80 and
+# "p.txt" still fits).
+#
+# IT DOES NOT ASSERT THE OVERFLOW, and cannot.  Measured: with newname[80] and
+# the bound test deleted, this case stays GREEN, and so does a 1017-character
+# five-component path.  newname[80] is followed in BSS by guess[255],
+# best[255] and nbuf[257] -- 767 bytes of adjacent static storage that absorb
+# the write -- so the string ends up contiguous and correct and the program
+# behaves.  Third documented reason a mutation does not fire (undefined
+# behaviour that happens to give the right answer), with a mechanism worth
+# naming: the neighbours soak it.  Same verdict as strncat's overread, where
+# the answer was right the whole time.
+#
+# So the fix rests on arithmetic rather than on this case -- 255 bytes copied
+# into 80 is not a judgement call -- and the case guards the half that IS
+# observable.  src/cmd/p/PORTING.md records the measurement.
+#
+# Relative, and run from the suite's own directory, deliberately: an absolute
+# host path would be resolved against the rootfs root by the jail, spname would
+# correctly find no match for its first component, and the case would assert
+# nothing.  Measured -- /private/tmp/... returns "can't open", which is the
+# jail working.
+mkdir -p pbuf && ( cd pbuf
+  long=$(printf 'x%.0s' $(seq 1 250))
+  printf 'hi\n' > "${long}abcde"
+  echo "${long}abcdX" > ../pbuf.name )
+check 'p spname survives a 255-character component' 'suggested' \
+    "$(cd pbuf && "$pbin" "$(cat ../pbuf.name)" 3<../p.tty </dev/null 2>&1 |
+       head -1 | grep -q '^"p x' && echo suggested || echo no)"
+
+# pp: a lex scanner with NO grammar, which is the idiom, and libl underneath
+# it, which is the second library this port has imported.  What the output
+# proves is the whole chain -- V8's lex generated the scanner, libl supplied
+# yywrap(), and pp read troff's binary font tables out of the jail.
+#
+# -fR rather than the default: pp's default font is Memphis, and V8 shipped
+# Memphis.out as a BINARY with no source table anywhere in the archive (the
+# more(1)/pg(1) category).  Our dev202 installs exactly the eleven fonts
+# troff's own DESC mounts, derived rather than listed, and R is one of them.
+ppbin=$(v8which pp)
+printf '/* c */\nint main(){ return 0; }\n' > pp.c
+check 'pp emits troff intermediate output' 'x T 202|x init|x font 1 R' \
+    "$("$ppbin" -fR pp.c </dev/null 2>&1 |
+       grep -E '^x (T|init|font 1 )' | tr '\n' '|' | sed 's/|$//')"
+
+# calendar: five artefacts from one directory, two of them shell scripts, and
+# the split is upstream's -- the COMMAND is /usr/bin/calendar and the four
+# helpers are in /usr/lib.  None of calendar1..4 is in any Admin table, so
+# Admin/dest answers /usr/bin by FALL-THROUGH; the makefile and the shipped
+# tree both say /usr/lib, which is two sources against the fall-through and
+# exactly cpp's pattern.  The disagreement set below grows from three to six
+# for this reason.
+check 'calendar helpers are in /usr/lib' '4' \
+    "$(n=0; for f in calendar1 calendar2 calendar3 calendar4; do
+         [ -f "$V8ROOT/usr/lib/$f" ] && n=$((n+1)); done; echo $n)"
+check 'and the command is in /usr/bin' 'script' \
+    "$([ -x "$V8ROOT/usr/bin/calendar" ] &&
+       grep -q '^PATH=' "$V8ROOT/usr/bin/calendar" && echo script)"
+# calendar2 writes the egrep pattern for the next N days.  Asserting the whole
+# pattern would freeze today's date into the suite, so what is checked is the
+# RELATION: the pattern must match a line naming today and must not match one
+# naming a date three months out.  Both months are computed here.
+today=$(date '+%b %-d'); far=$(date -v+95d '+%b %-d' 2>/dev/null || echo 'Xxx 1')
+"$V8ROOT/usr/lib/calendar2" </dev/null > cal.pat 2>&1
+check 'calendar2 matches today' 'yes' \
+    "$(printf '%s something\n' "$today" | grep -Ei -f cal.pat >/dev/null && echo yes || echo no)"
+check 'and not a date months away' 'no' \
+    "$(printf '%s something\n' "$far" | grep -Ei -f cal.pat >/dev/null && echo yes || echo no)"
+# calendar4 filters a list of paths down to the readable-but-not-writable ones,
+# which is the access(2) pair.  The negative half is what discriminates.
+check 'calendar4 keeps a readable file' '/etc/passwd' \
+    "$(printf '/etc/passwd\n/nonexistent\n' | "$V8ROOT/usr/lib/calendar4" 2>&1)"
+
+# newgrp, showq, dmesg: the three that install OUTSIDE /usr/bin.  Their
+# destinations are DERIVED from Bell Labs' tables (newgrp in Admin/binfiles,
+# the other two in Admin/etcfiles); nothing in our Makefile spells them.
+check 'newgrp installs to /bin'  'yes' "$([ -x "$V8ROOT/bin/newgrp" ] && echo yes)"
+check 'showq installs to /etc'   'yes' "$([ -x "$V8ROOT/etc/showq" ] && echo yes)"
+check 'dmesg installs to /etc'   'yes' "$([ -x "$V8ROOT/etc/dmesg" ] && echo yes)"
+# THE TWO GROVELERS DECLINE, AND THE DECLINING IS THE POINT.  Both nlist() a
+# kernel and read /dev/kmem; libkmemu manufactures a namelist holding _avenrun
+# and _bootime and neither program's symbols are in it.  Supplying them would
+# mean inventing a STREAMS subsystem and a kernel message buffer.  This is
+# load(1) and w(1)'s precedent -- w says `No mem' -- and a correctly built
+# program that cannot answer is a correct outcome.
+# The message is `can't open /dev/mem' and the apostrophe is NOT quoted away
+# here.  tests/wavea's own awk-in-single-quotes block already carries a warning
+# that an apostrophe closes the string just as well in a comment as in code;
+# the safe form is to match a substring that has none.  grep -c, not the text.
+check 'showq says it cannot read memory' '1|1' \
+    "$("$V8ROOT/etc/showq" </dev/null >sq.out 2>&1; printf '%s|%s' "$?" \
+       "$(grep -c 'open /dev/mem' sq.out | tr -d ' ')")"
+# dmesg SIGSEGV'd here until this batch, and the bug was in nlist(3) rather
+# than in dmesg: the matching loop walked to the caller's `{ 0 }' terminator
+# and read name[0] off address 0, where the counting loop ELEVEN LINES ABOVE
+# already had the null test.  Nothing had reached it because the loop breaks at
+# the requested symbol first, so every caller whose symbols are PRESENT walks
+# past it -- dmesg is the first program here to ask for one that is absent.
+# The status is asserted because a case whose expected output is empty cannot
+# discriminate a crash, and 139 is what this printed.
+check 'dmesg reports no namelist rather than crashing' '1|No namelist' \
+    "$("$V8ROOT/etc/dmesg" </dev/null >dm.out 2>&1; printf '%s|%s' "$?" "$(grep -c . dm.out >/dev/null; sed -n '/No namelist/p' dm.out)")"
+# ...and the CONTROL for that fix, because a "fix" that made nlist() return
+# early would silence the crash and break the present-symbol path.  load(1)
+# asks for _avenrun, which libkmemu does manufacture, and must still answer
+# three numbers.
+check 'load still reads a symbol that IS present' '3' \
+    "$("$V8ROOT/usr/bin/load" </dev/null 2>&1 | sed -n 2p | wc -w | tr -d ' ')"
+# dmesg IS THE LARGEST FLOOR GROUP AFTER lex -- 51 of 106 entries -- and this
+# is the two-invocation guard for it rather than the 53-invocation sweep the
+# cb/diffh/cpio block runs.  Fifty-one stack overflows is not a price `make
+# test' should pay, and the discriminator needs only two: the option that does
+# NOT set wflg and one that does.
+#
+# The bug is Berkeley's, 1981, and unbounded mutual recursion rather than a bad
+# pointer -- done() ends `if (wflg) writebuf();' and writebuf() calls done()
+# when /usr/adm/msgbuf will not open, which it never will, because the archive
+# ships no /usr/adm and BUFFER is opened with no O_CREAT.  A VAX recursed
+# identically, so S1 leaves it; see src/cmd/dmesg/PORTING.md and the group
+# comment in tests/crash-probe.floor.
+#
+# `-i' is the ONE arm of the switch that does not set wflg, which is why the
+# count is 51 and not 53.  If a change ever makes these two agree, the floor is
+# wrong in one direction or the other and this goes red before the 13-minute
+# probe does.
+check 'dmesg -i reports and exits, like the bare invocation' '1' \
+    "$("$V8ROOT/etc/dmesg" -i </dev/null >/dev/null 2>&1; echo $?)"
+check 'dmesg -a still recurses to death, as the floor declares' '139' \
+    "$("$V8ROOT/etc/dmesg" -a </dev/null >/dev/null 2>&1; echo $?)"
+
+# libl: pp is its only consumer, and what the archive has to contain is
+# yywrap() -- a lex program without one does not link.  Asserted on the
+# ARCHIVE rather than on pp's behaviour, because pp linking at all is already
+# the behavioural half and this says WHERE the symbol came from.
+check 'libl.a is installed' 'yes' "$([ -f "$V8ROOT/usr/lib/libl.a" ] && echo yes)"
+check 'libl.a defines yywrap' '1' \
+    "$(nm "$V8ROOT/usr/lib/libl.a" 2>/dev/null | grep -c '^[0-9a-f]* T _yywrap')"
+# main.o is in the archive and MUST NOT reach pp.  Upstream ships it for
+# `lex spec.l && cc lex.yy.c -ll' with no main of your own; a linker searches
+# an archive only for symbols still undefined, and pp.o -- an explicit object
+# on the link line -- has already satisfied crt0's reference.  If that ever
+# stopped being true the link would fail with a duplicate main, so what this
+# checks is the premise: the member is really there to collide.
+check 'libl.a carries main.o for lex programs without one' '1' \
+    "$(ar t "$V8ROOT/usr/lib/libl.a" 2>/dev/null | grep -c '^main\.o$')"
 
 # ---------------------------------------------------------------------------
 # THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.

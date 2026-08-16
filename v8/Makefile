@@ -1981,12 +1981,198 @@ $(ROOTFS)/$(call v8dest,pcat)/pcat: $(ROOTFS)/$(call v8dest,unpack)/unpack
 	@rm -f $@ && ln $< $@
 PACK_INSTALL = $(call v8install,pack unpack) $(ROOTFS)/$(call v8dest,pcat)/pcat
 
+# ---------------------------------------------------------------------------
+# Wave A2 batch 2d -- seven directory programs and one LIBRARY.  The batch was
+# scoped as "ten, all pure computation"; three of the ten (graph, plot, prof)
+# turned out to share one blocker and are task #89, so what is here is seven.
+#
+# libl   V8's lex library, and the SECOND library import after libtermlib.  pp
+#        is the first program here to link -ll.
+# hoc    Kernighan and Pike's calculator: a grammar, four .c, and a build idiom
+#        nothing else here has -- see x.tab.h below.
+# calendar the SPELL SHAPE at its largest: five artefacts from one directory,
+#        two of them shell scripts, and the only member of the batch whose
+#        makefile disagrees with Admin/dest.
+# p      a pager, and the THIRD copy of spname.c in the tree.
+# pp     one .c and one .l -- a lex file with NO yacc file, which is an idiom
+#        none of 2a-2c had.
+# newgrp, showq, dmesg  the three that install outside /usr/bin, and the last
+#        two are grovelers in the load(1)/w(1) sense.
+# ---------------------------------------------------------------------------
+
+# libl: five tiny objects, and main.o is the interesting one.  It defines
+# main(), which every lex program also does -- and that is fine rather than a
+# collision, because a linker searches an archive only for symbols still
+# undefined, and pp.o (an explicit object on the link line) has already
+# satisfied crt0's reference.  Upstream relies on exactly that; the member
+# exists for `lex spec.l && cc lex.yy.c -ll' with no main of your own.
+LIBLSRC   = $(SRC)/lib/libl
+LIBL_NAME = allprint main reject yyless yywrap
+LIBL_OBJ  = $(patsubst %,$(BUILD)/libl/%.o,$(LIBL_NAME))
+$(BUILD)/libl/%.o: $(LIBLSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BUILD)/libl/libl.a: $(LIBL_OBJ)
+	@rm -f $@ && ar rcs $@ $(LIBL_OBJ)
+	@echo "built $@"
+$(ROOTFS)/usr/lib/libl.a: $(BUILD)/libl/libl.a
+	@mkdir -p $(@D) && cp $< $@
+
+# hoc.  The link needs no -lm: upstream says `$(CC) $(OBJS) -lm -o hoc' and
+# V8's math is in libc here, with shim/libm/dummy.c reproducing the 216-byte
+# empty archive V8 actually shipped -- so -lm links nothing on either machine.
+#
+# x.tab.h IS A REAL OPTIMISATION AND NOT A VESTIGE, which is worth saying
+# because it reads like one: the three objects `#include "y.tab.h"' and NOTHING
+# includes x.tab.h.  Upstream's rule is
+#       x.tab.h: y.tab.h
+#               -cmp -s x.tab.h y.tab.h || cp y.tab.h x.tab.h
+#       code.o init.o symbol.o: x.tab.h
+# so the PREREQUISITE is a file whose mtime moves only when the token numbers
+# actually change -- content-addressed rebuild avoidance, in 1984 make, spelled
+# with cmp and the `-' that lets the first run fail.  It is deliberately NOT
+# reproduced: our y.tab.c rule already gates on the grammar, GNU make 3.81 has
+# no grouped targets so y.tab.h is not a target of its own here (the awk block
+# says why), and adding a second header target would be a rule that races
+# under -j to save three compiles.  Recorded rather than copied.
+HOCSRC   = $(SRC)/cmd/hoc
+HOC_NAME = code init math symbol
+HOC_OBJ  = $(patsubst %,$(BUILD)/hoc/%.o,$(HOC_NAME)) $(BUILD)/hoc/hocgram.o
+$(BUILD)/hoc/y.tab.c: $(HOCSRC)/hoc.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/hoc
+	cd $(BUILD)/hoc && V8ROOT=$(ROOTFS) $(YACC) -d $(HOCSRC)/hoc.y
+$(BUILD)/hoc/hocgram.o: $(BUILD)/hoc/y.tab.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/hoc -I$(HOCSRC) -c -o $@ $(BUILD)/hoc/y.tab.c
+$(BUILD)/hoc/%.o: $(HOCSRC)/%.c $(BUILD)/hoc/y.tab.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(BUILD)/hoc -I$(HOCSRC) -c -o $@ $<
+# Upstream: `hoc.o code.o init.o symbol.o: hoc.h' and `code.o init.o symbol.o:
+# x.tab.h'.  math.o is deliberately absent from the first line and present in
+# neither -- it includes <math.h> and nothing of hoc's -- so it is not listed.
+$(BUILD)/hoc/hocgram.o $(patsubst %,$(BUILD)/hoc/%.o,code init symbol): $(HOCSRC)/hoc.h
+$(BINDIR)/hoc: $(HOC_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(HOC_OBJ) $(V8LIBS)
+
+# calendar: FIVE artefacts, and the split is upstream's --
+#       cp calendar /usr/bin;  cp calendar3 /usr/lib
+#       mv calendar1 calendar2 calendar4 /usr/lib
+# so the COMMAND is a shell script in /usr/bin and the four helpers (three
+# binaries and a second script) are in /usr/lib.  spell/spellprog and
+# diff3/diff3.sh are the same shape with fewer pieces.
+#
+# $(call v8dest,...) is not used for the helpers: none of calendar1..4 appears
+# in any Admin table, so dest answers /usr/bin by FALL-THROUGH -- "nobody said",
+# not "V8 said".  The makefile and the shipped tree both say /usr/lib, which is
+# two sources against the fall-through, exactly cpp's pattern.  tests/wavea's
+# disagreement set grows from three to seven for this reason.
+#
+# whereis is imported and NOT installed, deliberately: it is a script sitting in
+# the source directory that upstream's makefile never mentions and that the
+# shipped tree does not have.  A file in a source directory is not an artefact.
+CALSRC  = $(SRC)/cmd/calendar
+CAL_BIN = calendar1 calendar2 calendar4
+$(BUILD)/calendar/%.o: $(CALSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+# A STATIC pattern rule, not `$(BINDIR)/calendar%: .../calendar%.o'.  Chaining
+# two pattern rules makes the object an INTERMEDIATE and make deletes it --
+# measured, `rm .../calendar1.o calendar2.o calendar4.o' at the end of every
+# build.  A static pattern rule's prerequisites are explicit for each named
+# target, so the objects survive and tests/deps can name them.
+$(patsubst %,$(BINDIR)/%,$(CAL_BIN)): $(BINDIR)/%: $(BUILD)/calendar/%.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $< $(V8LIBS)
+$(ROOTFS)/usr/lib/calendar1 $(ROOTFS)/usr/lib/calendar2 $(ROOTFS)/usr/lib/calendar4: \
+    $(ROOTFS)/usr/lib/%: $(BINDIR)/%
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/calendar: $(CALSRC)/calendar
+	@mkdir -p $(@D) && cp $< $@ && chmod +x $@
+$(ROOTFS)/usr/lib/calendar3: $(CALSRC)/calendar3
+	@mkdir -p $(@D) && cp $< $@ && chmod +x $@
+CAL_INSTALL = $(patsubst %,$(ROOTFS)/usr/lib/%,$(CAL_BIN)) \
+              $(ROOTFS)/usr/bin/calendar $(ROOTFS)/usr/lib/calendar3
+
+# p: three objects, and upstream's one dependency line is `pad.o: pad.h'.
+PSRC   = $(SRC)/cmd/p
+P_NAME = p pad spname
+P_OBJ  = $(patsubst %,$(BUILD)/p/%.o,$(P_NAME))
+$(BUILD)/p/%.o: $(PSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BUILD)/p/pad.o: $(PSRC)/pad.h
+$(BINDIR)/p: $(P_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(P_OBJ) $(V8LIBS)
+
+# pp: a lex file with no grammar, so there is no y.tab.h and the scanner
+# stands alone.  libl goes BEFORE $(V8LIBS) on the link line for the reason
+# libtermcap does: it is a consumer of libc, not a peer of it.
+PPSRC  = $(SRC)/cmd/pp
+PP_OBJ = $(BUILD)/pp/pp.o $(BUILD)/pp/scan.o
+$(BUILD)/pp/lex.yy.c: $(PPSRC)/scan.l $(LEX) $(ROOTFS_NCFORM)
+	@mkdir -p $(BUILD)/pp
+	cd $(BUILD)/pp && V8ROOT=$(ROOTFS) $(LEX) $(PPSRC)/scan.l
+$(BUILD)/pp/scan.o: $(BUILD)/pp/lex.yy.c $(PPSRC)/pp.h $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/pp -I$(PPSRC) -c -o $@ $(BUILD)/pp/lex.yy.c
+$(BUILD)/pp/pp.o: $(PPSRC)/pp.c $(PPSRC)/pp.h $(PPSRC)/dev.h $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(PPSRC) -c -o $@ $<
+$(BINDIR)/pp: $(PP_OBJ) $(BUILD)/libl/libl.a $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(PP_OBJ) \
+	    $(BUILD)/libl/libl.a $(V8LIBS)
+
+# newgrp, showq, dmesg: one object each, and all three install OUTSIDE
+# /usr/bin -- newgrp to /bin (Admin/binfiles), showq and dmesg to /etc
+# (Admin/etcfiles).  $(call v8dest,...) derives that; nothing is spelled here.
+#
+# showq and dmesg are GROVELERS and neither can answer.  Both nlist() a kernel
+# and read /dev/kmem: dmesg wants _msgbuf, showq wants eight STREAMS symbols
+# (_queue _cblock _streams _qfreelist _dtlinfo _dkpinfo _Nblock _Nqueue).
+# libkmemu manufactures a namelist and a /dev/kmem from one table and that
+# table has none of the nine, so both say so and exit -- which is the load(1)
+# and w(1) precedent, and the reason neither is linked against libkmemu here.
+# Adding nine symbols would mean manufacturing a STREAMS subsystem and a kernel
+# message buffer, which is a decision and not a side effect of this batch.
+B2DSRC = $(SRC)/cmd
+$(BUILD)/newgrp/newgrp.o: $(B2DSRC)/newgrp/newgrp.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BUILD)/showq/showq.o: $(B2DSRC)/showq/showq.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BUILD)/dmesg/dmesg.o: $(B2DSRC)/dmesg/dmesg.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BINDIR)/newgrp: $(BUILD)/newgrp/newgrp.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $< $(V8LIBS)
+$(BINDIR)/showq: $(BUILD)/showq/showq.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $< $(V8LIBS)
+$(BINDIR)/dmesg: $(BUILD)/dmesg/dmesg.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $< $(V8LIBS)
+
+# B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
+# also what the $(ROOTFS)/etc/% generator further down has to iterate over --
+# showq and dmesg land in /etc and the generator's own comment promises "the
+# next section-8 command imported needs no new line".  That promise is only
+# kept if a new list of programs is added to the foreach, so it is, and this
+# variable is defined here because make expands a variable in a rule when it
+# READS the rule and a definition below first use silently expands to nothing.
+B2D_NAMES   = hoc p pp newgrp showq dmesg
+B2D_BUILT   = $(patsubst %,$(BINDIR)/%,$(B2D_NAMES) $(CAL_BIN))
+B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
+              $(ROOTFS)/usr/lib/libl.a
+
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
-                   $(BINDIR)/pack $(BINDIR)/unpack
+                   $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr m4) \
-                   $(DIFF3_INSTALL) $(PACK_INSTALL)
+                   $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
@@ -2365,7 +2551,7 @@ define v8bin_etc_rule
 $(ROOTFS)/etc/$(1): $(BINDIR)/$(1)
 	@mkdir -p $$(@D) && cp $$< $$@
 endef
-$(foreach p,$(V8BIN) $(V8DIRBIN),\
+$(foreach p,$(V8BIN) $(V8DIRBIN) $(B2D_NAMES),\
   $(if $(filter etc,$(call v8dest,$(p))),$(eval $(call v8bin_etc_rule,$(p)))))
 
 # macos(1) -- THIS PORT'S OWN, and it lives in shim/ rather than src/ for the

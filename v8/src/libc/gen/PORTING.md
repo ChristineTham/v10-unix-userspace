@@ -328,3 +328,61 @@ all map to v7 inode 2 and `st_dev` is the only thing separating them.
 `getdirentries64` reports `d_ino` and no `d_dev`, and keying only `stat` on the
 pair would make the two call sites disagree — which is the bug this whole entry
 is about.
+
+## `nlist.c` — the address-0 class, first instance in libc
+
+Found by Wave A2 batch 2d, and by a program that has nothing to do with libc.
+`nlist.c` is otherwise **byte-identical to upstream** — the blob hash in
+`PROVENANCE` still matches — and the one change is a null test.
+
+`nlist(name, list)` walks the caller's list twice.  The counting loop at the top
+is careful:
+
+```c
+for (q = list, nreq = 0; q->n_un.n_name && q->n_un.n_name[0]; q++, nreq++)
+```
+
+The matching loop, in the same function, is not:
+
+```c
+for (p = list; p->n_un.n_name[0]; p++)		/* upstream */
+```
+
+A caller terminates its list with an entry whose name is a null **pointer** —
+`dmesg.c:25` writes it `{ 0 }` and `w.c:71` writes `{ 0 },` — so that loop
+reads `name[0]` off address 0.
+
+(The third caller does **not**: `showq.c:58` is `{ "" },`, an empty *string*,
+which both loops stop on correctly. Two of the three spell one sentinel two
+ways and only one spelling faults — which is worth knowing before assuming a
+null-terminated list is the convention here.)  On the VAX that returned crt0's first byte,
+`0x00`, and the loop ended; macOS leaves page 0 unmapped and it is a SIGSEGV.
+The fix restores exactly the VAX answer: stop at the terminator.
+
+**Two things make this one worth recording beyond the fix.**
+
+**The guard was eleven lines up, in the same function, over the same array.**
+One loop was written defensively and the other was not — this repository's most
+repeated shape, arriving inside a single 90-line file.
+
+**NOTHING HAD REACHED IT BECAUSE THE `break` COMES FIRST.**  The matching loop
+stops at the requested symbol, so a caller whose symbols are all *present* never
+sees the terminator.  `shim/libkmemu/kmem.c` manufactures a namelist holding
+exactly `_avenrun` and `_bootime`, and `load(1)` and `w(1)` — the only two
+consumers the port had — ask for precisely those.  `dmesg(8)` is the first
+program here to ask for a symbol that is **absent** (`_msgbuf`), and `showq(8)`
+the second (eight STREAMS symbols).  That is the *honest-refusal* path a
+groveler is supposed to take, and it crashed on the way to reporting it.
+
+So the trigger is: **a requested symbol is missing, and the namelist is not
+empty.**  Measured both sides —
+
+| | before | after |
+|---|---|---|
+| `dmesg` (`_msgbuf`, absent) | SIGSEGV | `No namelist`, exit 1 |
+| `load` (`_avenrun`, present) | `3.8 3.8 4.2` | `3.8 3.8 4.2` |
+| `w` (present) | `No mem` | `No mem` |
+
+The control matters: a "fix" that made `nlist` return early would silence the
+crash and break `load`, and `load` is the only thing that proves the
+present-symbol path still walks the file.
