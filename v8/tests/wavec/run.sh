@@ -221,8 +221,21 @@ if [ -x "$V8ROOT/usr/bin/grap" ]; then
 	# crash -- the values travel through the argument slots.
 	check 'grap plots one line per interval' '3' \
 	    "$(printf '%s\n' "$grapout" | grep -c '^line  from')"
+	# THIS CASE WAS CALIBRATED AGAINST A LIBC BUG, and the numbers are the
+	# whole of what changed.  It used to expect `xy_gg(10.0000,100.000)':
+	# ticks.c and plot.c print coordinates with %g, and our doprnt.c never
+	# stripped %g's trailing zeros -- the one thing its own comment said it
+	# did.  So every graph grap has produced here carried 10.0000 where V8
+	# prints 10, and the suite had frozen it.  Third instance of the shape
+	# (after wavec's own drawing-command count, which matched only while
+	# every coordinate was zero, and v8ccom's `long arithmetic'): WHEN A
+	# LIBRARY FIX TURNS A TEST RED, FIND OUT WHICH OF THE TWO WAS WRONG.
+	#
+	# What it discriminates is unchanged and is not about formatting: these
+	# are the values plot.c passed BY VALUE through the argument slots, so a
+	# broken STARG still shows up as wrong numbers here.
 	check 'grap transforms the last point' '1' \
-	    "$(printf '%s\n' "$grapout" | grep -c 'xy_gg(10.0000,100.000)')"
+	    "$(printf '%s\n' "$grapout" | grep -c 'xy_gg(10,100)')"
 	# grap.defines is a RUNTIME file at /usr/lib/grap.defines, not an include;
 	# without the install rule grap warns on every run.
 	check 'grap finds its defines file' '0' \

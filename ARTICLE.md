@@ -3470,6 +3470,178 @@ across both plain samples was alive during the one between them, so churn can
 only shrink that set, never invent a missing entry. It now checks six hundred and
 fourteen processes where the old one checked twenty.
 
+### awk, and a program that carried addresses in four kinds of integer
+
+`awk` was the largest single thing missing from the world, and it is the first
+program here whose *value stack*, whose *regular-expression table* and whose
+*scanner* all keep pointers in objects declared as integers. On a VAX that was
+not a design decision; it was the same thing. `int`, `char *` and yacc's
+`YYSTYPE` were all four bytes, so writing a symbol-table address into `yylval`
+and reading it back as a `Node *` was exact. On this machine each of those
+crossings loses the top half of an address.
+
+The one that would have destroyed everything is a single line:
+
+```c
+extern int	yylval;
+```
+
+That object belongs to yacc, and this port's yacc defines it as a `long` —
+which was itself a fix, made years ago, for a token-typing bug found in `pic`
+and then swept for across the tree. So the lexer's declaration described four
+bytes of an eight-byte object. That alone is a width bug. What makes it fatal
+is what gets stored: seven of the assignments are pointers, cast down through
+`int` on the way in —
+
+```c
+<A>"$0"		{ yylval = (int) lookup("$0", symtab); RET(FIELD); }
+```
+
+— covering every variable, number, string constant, field reference and regular
+expression an awk program can contain, and the grammar reads each of them back
+as `(Node *) $1`. Two more of the same shape sit in the regex engine: `rlxval`,
+which holds a character for `/a/` and a heap pointer for `/[abc]/`, and the
+`lval` field of the DFA's transition table, which is written as an `int` and
+read back as a `char *` about four hundred lines later. Bell Labs wrote the
+comment that gives that one away, at the top of the file: *"right contains
+value or pointer to value."*
+
+None of the four is a cast that loses a pointer. They are all **declarations
+that describe the wrong type**, which is the class the compiler cannot help
+with, because a declaration is what it has been told to believe.
+
+The build is unusual for a different reason. awk has nine translation units and
+one of them does not exist: `proctab.c` is a table of function pointers, one per
+grammar token in token order, written at build time by a program called
+`maketab` — which itself has to be compiled and run, and which reads the header
+`yacc` produced. Two generators in series, which nothing else in this tree has.
+Upstream's makefile opens by admitting theirs does not get the dependencies
+right:
+
+```
+# This makefile is wrong -- it doesn't properly
+# recompile everything when a new token is added
+# to awk.g.y.
+# Watch out!
+```
+
+Ours does, and eight cases in the dependency suite say so — the one that
+matters walking the whole chain in a single assertion, from the grammar to
+`proctab.o`. `maketab` is compiled by V8's `cc` and run, because that is
+literally what upstream's makefile does and because `yacc` and `lex` are already
+V8 binaries this build executes. And its output goes through a temporary file
+before being moved into place: `> proctab.c` creates the file *before* the
+program runs, so a `maketab` that died would leave an empty, freshly-dated
+`proctab.c` and the next build would call it current. That is the stale-object
+failure this project has already paid for four times, arriving through a shell
+redirect instead of a rule.
+
+#### The change I made, measured, and then took back out
+
+`maketab.c` calls `malloc` without declaring it and casts the result to
+`char *`. That is precisely the shape a sweep in this tree exists to catch — an
+undeclared function returns `int`, so a heap address loses its top half — and
+that sweep structurally cannot see this one, because `maketab` is a build tool
+and never gets installed. So I added the declaration and wrote a paragraph of
+comment explaining why it was forced.
+
+Then I measured it, because the rule here is that a change to Bell Labs' source
+has to be forced by the target rather than by a plausible story. The generated
+`proctab.c` is byte-identical with and without the declaration, and so is the
+emitted assembly, instruction for instruction:
+
+```
+	bl	_malloc
+	ldr	x9, [sp, #256]
+	mov	x10, x0        <- the whole register
+	str	x10, [x9]
+```
+
+The distinction turns out to be narrower than the rule I had in my head. An
+undeclared pointer-returning function is truncated **where the `int` type is
+used** — and an explicit cast applied directly to the call is not a use. The
+value never has to be materialised as a 32-bit quantity, so there is nothing to
+cut. Compare the real instance the sweep found, in `last`:
+`asctime(gmtime(&delta))+11` does arithmetic on the int, and there the int-ness
+is load-bearing. The declaration came back out and `maketab.c` is byte-identical
+to 1985. The measurement is the record.
+
+### The number that was right for nine years and wrong here
+
+awk printed this:
+
+```
+3.0000000000000000000 15.000000000000000000
+```
+
+where every awk since 1977 prints `3 15`. It is not awk's defect. `tran.c` does
+what awk has always done — if a value is integral, print it with `%.20g` and let
+the conversion drop the fraction — and our `printf` never dropped it. The
+comment directly above the code says the rule out loud:
+
+```c
+/*
+ * %g: %e if the exponent is below -4 or at least the precision,
+ * %f otherwise, with trailing zeros removed.
+ */
+```
+
+and the twenty lines under it never remove one. A comment stating the rule while
+the code beside it implements a different one is the single most repeated shape
+in this project's own notes, and here it was sitting in a file I wrote.
+
+There was a right answer to restore rather than a decision to make, and it is in
+Bell Labs' assembler:
+
+```
+g1:	jbs $numsgn,flags,g2	# `#' given: keep them
+	jbs $dpflag,flags,g2	# dont strip if no decimal point
+g3:	cmpb -(r5),$'0		# strip trailing zeroes
+	jeql g3
+	cmpb (r5),$'.		# and trailing decimal point
+	jeql g2
+	incl r5
+```
+
+Seven instructions, including the `%#g` exemption — ANSI's rule four years
+before ANSI. Berkeley's `gcvt.c`, sitting in the same directory, strips them
+too. This port's C rewrite of that file dropped both.
+
+Fixing it turned up a second defect standing next to the first. `%g`'s precision
+counts *significant* digits and `%e`'s counts digits *after the point*, so the
+scientific form of `%.Pg` is `%.(P-1)e`. Ours passed the precision straight
+through, and `%g` of 1234567 came out `1.234567e+06` — seven significant digits
+from a conversion that asked for six. The VAX makes exactly that distinction, in
+the other direction: the `%e` entry point increments the digit count on the way
+in and the `%g` entry point jumps over that instruction.
+
+Neither defect is visible unless a value's last significant digit happens to be
+a zero, or the exponent form is reached. That is why thirty-eight library cases
+and every Wave C program had walked past both. Forty combinations now agree with
+the host's `printf` character for character, and five of them are cases.
+
+#### One test went red, and it was the test that was wrong
+
+`grap` prints coordinates with `%g`. So every graph this port has ever produced
+carried tick labels reading `1.00000`, `1.50000`, `2.00000` where V8 prints `1`,
+`1.5`, `2` — and a case in the document-preparation suite had frozen that:
+
+```sh
+check 'grap transforms the last point' '1' \
+    "$(printf '%s\n' "$grapout" | grep -c 'xy_gg(10.0000,100.000)')"
+```
+
+That is the third time in this project a test has been calibrated against broken
+output and gone red when the program was fixed. The first counted drawing
+commands that only matched because every coordinate was zero; the second
+expected a full-width answer from an arithmetic expression that should have
+wrapped at 32 bits. The discipline that comes out of it is short: when a library
+fix turns a test red, find out which of the two was wrong before assuming it was
+the fix. Here what the case *discriminates* has not changed at all — those
+numbers travelled through argument slots as a struct passed by value, and a
+broken struct-by-value still shows up as wrong numbers. Only the spelling of the
+right answer moved.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,
@@ -3488,7 +3660,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **138** of the 286 V8 shipped, and the ones still missing mostly
+port installs **139** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 - **Visual mode.** `ex` edits; invoked as `vi` it correctly answers that open
@@ -3499,9 +3671,10 @@ have source sitting in the tree.
 - **The rest of the terminal stack.** `libcurses` is 43 files and now has the
   library it sits on. The launcher still sets no `TERM`, which is a one-line
   decision that has to be made honestly rather than defaulted.
-- **The programs with grammars** — `awk`, `expr`, `m4`, `bc` — which need the
-  build to run the ported `yacc` and `lex` per program rather than for the
-  handful that already do.
+- **The remaining programs with grammars** — `expr`, `m4`, `bc`, `qed`,
+  `struct`. `awk` is in, and it turned out to be the interesting one: the
+  build now runs the ported `yacc` and `lex` per program, and in awk's case a
+  third generator that the build has to compile before it can run.
 - **The language systems**: Fortran with its two runtime libraries, both
   present upstream and unimported, plus `efl`, `ratfor`, the C++ front end,
   `hoc` and `lcomp`. These are the largest ports left and the most interesting,

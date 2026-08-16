@@ -1371,6 +1371,140 @@ check 'invoked as ex it does not' '' \
        grep -o 'interactively' | head -1)"
 
 # ---------------------------------------------------------------------------
+# awk(1) -- and every case below is aimed at ONE of the four places a pointer
+# was being carried in an `int'.  awk is the first program here whose value
+# stack, whose regex table and whose scanner all hold addresses in objects
+# declared as integers, because on a VAX that was the same thing.
+#
+#   awk.lx.l:10   `extern int yylval' against yacc's `#define YYSTYPE long'
+#   awk.lx.l x7   `(int) lookup/fieldadr/setsymtab/tostring' into it
+#   b.c:38        `int rlxval', which holds `(long) tostring(cbuf)' for a CCL
+#   awk.h:165     `int lval' in struct rrow, read back as `(char *) lval'
+#
+# See src/cmd/awk/PORTING.md.  A truncated pointer in any of them is a wild
+# address, so the failure mode is a crash or a nonsense answer rather than a
+# subtly wrong one -- which is why these read like ordinary awk usage.
+awkbin=$(v8which awk)
+printf 'alpha 3 x\nbeta 5 y\ngamma 7 z\n' > awk.in
+
+# THE VALUE STACK: every one of these goes through yylval as a pointer.
+# `$1' is fieldadr(), a bare name is setsymtab(), a string constant is
+# setsymtab() over tostring(), and `$0' is lookup().
+check 'awk prints a field'        'alpha beta gamma' \
+    "$("$awkbin" '{print $1}' awk.in | tr '\n' ' ' | sed 's/ $//')"
+check 'awk prints the whole record' 'alpha 3 x' \
+    "$("$awkbin" 'NR==1 {print $0}' awk.in)"
+check 'awk prints a string constant' 'row: alpha' \
+    "$("$awkbin" 'NR==1 {print "row:", $1}' awk.in)"
+
+# THE REGEX TABLE.  A character class is the ONLY path that puts a pointer in
+# struct rrow's lval: b.c stores `(long) right(v)' there and reads it back as
+# `(char *)' for member().  A plain /beta/ is CHAR nodes and would pass with
+# the field four bytes wide, so the class is the case that discriminates.
+check 'awk matches a character class'  'beta gamma' \
+    "$("$awkbin" '/[bg]/ {print $1}' awk.in | tr '\n' ' ' | sed 's/ $//')"
+check 'awk matches a NEGATED class'    'alpha' \
+    "$("$awkbin" '$1 ~ /^[^bg]/ {print $1}' awk.in | tr '\n' ' ' | sed 's/ $//')"
+check 'and a plain string, which is the control' 'beta' \
+    "$("$awkbin" '/beta/ {print $1}' awk.in)"
+
+# NUMBERS.  awk prints an integral value with "%.20g" (tran.c:271), so this is
+# also the end-to-end case for the %g trailing-zero fix in doprnt.c -- before
+# it, `3 15' came out `3.0000000000000000000 15.000000000000000000'.
+check 'awk sums a column'         '3 15' \
+    "$("$awkbin" '{s += $2} END {print NR, s}' awk.in)"
+check 'awk formats a non-integer with OFMT' '2.5' \
+    "$(echo | "$awkbin" '{print 5/2}')"
+check 'awk reaches the math library' '1.41421' \
+    "$(echo | "$awkbin" '{print sqrt(2)}')"
+
+# ARRAYS, the built-ins, and -F.  The array subscript is a string built from
+# the symbol table, so it is the value stack again one level down.
+check 'awk associates an array' 'keys 3' \
+    "$("$awkbin" '{a[$1] = $2} END {n = 0; for (k in a) n++; print "keys", n}' awk.in)"
+check 'awk substr and index'    'al 1 5' \
+    "$("$awkbin" 'NR==1 {print substr($1,1,2), index($1,"a"), length($1)}' awk.in)"
+check 'awk -F takes a separator' 'b' \
+    "$(printf 'a:b:c\n' | "$awkbin" -F: '{print $2}')"
+check 'awk printf'              'alpha=3' \
+    "$(printf 'alpha 3\n' | "$awkbin" '{printf "%s=%d\n", $1, $2}')"
+
+# THE EMPTY MAIN RULE, which is the case that matters most and reads like the
+# least.  `BEGIN{...}' has NO main pattern-action statement, so awk.g.y:177's
+# empty `pa_stats' puts a null in narg[1] of the PROGRAM node and program()
+# executes it once per input record.  real_execute() guards a null; the
+# `execute' MACRO reads (p)->ntype first, which a VAX could do and this machine
+# cannot -- so `BEGIN{print 1}' was a SIGSEGV.
+#
+# EVERY ONE OF THESE MUST HAVE INPUT.  With empty stdin the record loop never
+# runs, the null is never executed, and all four pass against the broken macro.
+# That is what hid it for the first hour: `awk 'BEGIN{print 1}' < /dev/null'
+# exits 0 either way.
+#
+# THE TWO EMPTY-OUTPUT CASES CARRY THEIR EXIT STATUS, and mutation is what
+# said they had to.  Restoring the broken macro fired the BEGIN and END cases
+# and left `{}' and `'' green -- because a program that SIGSEGVs produces no
+# output either, so `check <name> '' "$(...)"' cannot tell a crash from a
+# correct silent run.  A case whose expected output is empty is vacuous
+# against a crash unless it also asserts the status.
+awkq() { # awkq <program>: "<status>|<output>"
+	printf 'a\nb\n' | "$awkbin" "$1" > awkq.out 2>&1
+	printf '%s|%s' "$?" "$(cat awkq.out)"
+}
+check 'awk runs a BEGIN-only program'   '0|start' "$(awkq 'BEGIN{print "start"}')"
+check 'awk runs an END-only program'    '0|2'     "$(awkq 'END{print NR}')"
+check 'awk runs an empty action'        '0|'      "$(awkq '{}')"
+check 'awk runs an empty program'       '0|'      "$(awkq '')"
+check 'and all three parts together'    'start 3 5 7 n=3' \
+    "$("$awkbin" 'BEGIN{print "start"} {print $2} END{print "n="NR}' awk.in |
+       tr '\n' ' ' | sed 's/ $//')"
+
+# AN OPTION IN THE LAST POSITION, where argv[1] is the argv terminator.  63 of
+# the 64 single-letter options reached it, because the loop consumes an unknown
+# letter and falls through to `lexprog = argv[1]'.  A VAX read the empty string
+# at address 0, so the answer to restore is the EMPTY PROGRAM -- exit 0 and no
+# output -- rather than a diagnostic this port invented.
+check 'an unknown trailing option is the empty program' '0|' \
+    "$(printf 'a\nb\n' | "$awkbin" -a > awkopt.out 2>&1; printf '%s|%s' "$?" "$(cat awkopt.out)")"
+check 'and so is a trailing --' '0|' \
+    "$(printf 'a\nb\n' | "$awkbin" -- > awkopt.out 2>&1; printf '%s|%s' "$?" "$(cat awkopt.out)")"
+# -f with no name is fopen("") -- which V7's namei and this shim both make the
+# CURRENT DIRECTORY, so awk parses the raw bytes of a directory as its program.
+#
+# ONLY THE ABSENCE OF A SIGNAL IS ASSERTABLE, and the first draft of this case
+# asserted the exit STATUS and went red on its second run.  What awk makes of
+# those bytes is a function of what happens to be in the suite's temp
+# directory, which the cases above change as they go -- so it exited 2 with a
+# syntax error one run and 0 the next, from the same binary.  That is a
+# property of the directory rather than of the port, which is this suite's
+# most-swept-for defect arriving in a case written the same hour; and it is
+# also V8's own behaviour, since a VAX read the same directory the same way.
+check 'a trailing -f does not die on a signal' 'ok' \
+    "$(printf 'a\n' | "$awkbin" -f >/dev/null 2>&1; s=$?
+       [ "$s" -lt 128 ] && echo ok || echo "signal $((s - 128))")"
+check 'and -f with a real program file works' 'x y z' \
+    "$(printf '{print $3}\n' > awk.prog; "$awkbin" -f awk.prog awk.in |
+       tr '\n' ' ' | sed 's/ $//')"
+
+# WHERE IT LANDED, and it is upstream's decision: the shipped tree has
+# usr/bin/awk and no bin/awk, and awk's own makefile says `cp a.out
+# /usr/bin/awk'.  Nothing in the Makefile chose it -- $(call v8dest,awk) falls
+# through to usr/bin because awk is in none of Admin's three tables.
+check 'awk installs in /usr/bin' "$V8ROOT/usr/bin/awk" "$awkbin"
+
+# MAKETAB IS A BUILD TOOL AND MUST NOT BE IN THE WORLD.  It compiles and links
+# exactly like a command here -- it is a V8 binary built by v8cc and run by the
+# build -- so the only thing keeping it out of $(ROOTFS) is that no rule puts
+# it there.  tests/deps cannot assert this: touching maketab.c legitimately
+# makes awk stale, because maketab writes proctab.c.  "Is it a prerequisite"
+# and "is it a component" are different questions and this is the second.
+check 'maketab is not installed' '' \
+    "$(v8which maketab 2>/dev/null)"
+check 'but the build did make and run it' '1' \
+    "$([ -x "$ROOT/build/stage0/awk/maketab" ] && [ -s "$ROOT/build/stage0/awk/proctab.c" ] &&
+       echo 1 || echo 0)"
+
+# ---------------------------------------------------------------------------
 # THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.
 #
 # Citations are swept, build edges are asserted, imported == installed is

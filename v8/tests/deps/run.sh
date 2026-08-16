@@ -363,6 +363,42 @@ dep 'grap install'             $B/grap/grap                    rootfs/usr/bin/gr
 dep 'grap defines install'     src/cmd/grap/grap.defines       rootfs/usr/lib/grap.defines
 nodep 'grap.defines is not a build input' src/cmd/grap/grap.defines $B/grap/plot.o
 
+# --- awk: the tree's only TWO-STEP generator chain --------------------------
+# Everything else here generates a source file from one input.  awk's proctab.c
+# is written by a program this build first has to compile and run, and that
+# program reads a header a DIFFERENT generator wrote:
+#
+#	awk.g.y --yacc--> y.tab.c + y.tab.h
+#	maketab.c + y.tab.h --v8cc--> maketab --run--> proctab.c --v8cc--> proctab.o
+#
+# So a new token in the grammar has to reach proctab.o through four rules, and
+# upstream's own makefile says in its first four lines that theirs does not do
+# it ("This makefile is wrong -- it doesn't properly recompile everything when a
+# new token is added to awk.g.y.  Watch out!").  The whole point of the block in
+# our Makefile is that this chain exists; these cases are what says it is real
+# rather than that the files happen to be present.
+#
+# The interesting one is the LAST: it walks the entire chain in a single case,
+# which is the only assertion that would notice the middle of it being cut.
+dep 'awk grammar -> tables'    src/cmd/awk/awk.g.y             $B/awk/y.tab.c
+dep 'awk lexer -> scanner'     src/cmd/awk/awk.lx.l            $B/awk/lex.yy.c
+dep 'awk header -> an object'  src/cmd/awk/awk.h               $B/awk/run.o
+dep 'awk tables -> maketab'    $B/awk/y.tab.c                  $B/awk/maketab
+dep 'maketab source -> maketab' src/cmd/awk/maketab.c          $B/awk/maketab
+dep 'maketab -> proctab.c'     $B/awk/maketab                  $B/awk/proctab.c
+dep 'proctab.c -> proctab.o'   $B/awk/proctab.c                $B/awk/proctab.o
+dep 'awk grammar -> proctab.o' src/cmd/awk/awk.g.y             $B/awk/proctab.o
+dep 'awk install'              $B/bin/awk                      rootfs/usr/bin/awk
+# THE OBVIOUS NEGATIVE CASE HERE IS FALSE, and it was written and measured
+# before that was noticed: `nodep maketab.c -> bin/awk' fails, because touching
+# maketab.c legitimately DOES make awk stale -- maketab.c builds maketab, which
+# writes proctab.c, which compiles into the link.  A build tool's SOURCE is a
+# transitive prerequisite of the program even though its OBJECT is not linked,
+# and "is it a component" and "is it a prerequisite" are different questions
+# that a dependency test can only answer the second of.  The first is asserted
+# where it is observable instead: tests/wavea checks that maketab is not
+# installed, since a tool in $(ROOTFS) would be a component by any measure.
+
 # --- Phase 4: libkmemu, and the edges that keep it out of everything else ---
 dep 'kmemu source -> archive'  shim/libkmemu/utmp.c            $B/kmemu/libkmemu.a
 dep 'kmemu header -> archive'  shim/libkmemu/kmemu.h           $B/kmemu/libkmemu.a

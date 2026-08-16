@@ -1823,9 +1823,83 @@ EX_INSTALL = $(ROOTFS)/$(call v8dest,ex)/ex \
 $(patsubst %,$(ROOTFS)/$(call v8dest,ex)/%,$(EX_LINKS)): $(ROOTFS)/$(call v8dest,ex)/ex
 	@rm -f $@ && ln $< $@
 
-V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex
+# ---------------------------------------------------------------------------
+# awk -- a yacc grammar, a lex scanner, six ordinary objects, and a NINTH
+# source file that does not exist until the build makes it.
+#
+# THE GENERATOR IS THE REASON THIS CANNOT BE A $(V8DIRBIN) ENTRY.  proctab.c
+# holds `Cell *(*proctab[])()' -- one function pointer per grammar token, in
+# token order -- and awk's own makefile builds it by compiling maketab.c,
+# running it, and capturing its stdout.  maketab reads y.tab.h, so the table
+# cannot be written by hand without going stale the moment the grammar gains a
+# token; upstream's makefile opens with four lines of comment saying exactly
+# that ("This makefile is wrong -- it doesn't properly recompile everything
+# when a new token is added to awk.g.y.  Watch out!").  The dependency here is
+# the one upstream wished it had: proctab.c <- maketab <- y.tab.c.
+#
+# maketab is built by V8's cc and RUN, which is upstream's own mechanism and
+# not a host convenience -- $(YACC) and $(LEX) in the grap and pic blocks are
+# V8 binaries executed by this Makefile for the same reason.  It is the third
+# kind of build-time V8 program in the tree.
+#
+# The redirection goes through a temporary because .DELETE_ON_ERROR is not set
+# here: `> proctab.c' creates the file before maketab runs, so a maketab that
+# died would leave an empty proctab.c newer than its prerequisites and the next
+# make would call it current.  That is the stale-object failure this tree has
+# already paid for twice, arriving through a shell redirect rather than a rule.
+AWKSRC = $(SRC)/cmd/awk
+AWK_NAMES = b lib main parse run tran
+AWK_OBJ = $(patsubst %,$(BUILD)/awk/%.o,$(AWK_NAMES)) \
+          $(BUILD)/awk/awkgram.o $(BUILD)/awk/awklex.o $(BUILD)/awk/proctab.o
+
+$(BINDIR)/awk: $(AWK_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(AWK_OBJ) $(V8LIBS)
+	@echo "built $@"
+
+# y.tab.h comes out of this same invocation and is deliberately not a target of
+# its own: GNU make 3.81 has no grouped targets, so naming both would be two
+# rules sharing a recipe and would race under -j.  Everything that needs the
+# header depends on y.tab.c instead, as the grap block does.
+$(BUILD)/awk/y.tab.c: $(AWKSRC)/awk.g.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/awk
+	cd $(BUILD)/awk && V8ROOT=$(ROOTFS) $(YACC) -d $(AWKSRC)/awk.g.y
+
+$(BUILD)/awk/lex.yy.c: $(AWKSRC)/awk.lx.l $(LEX) $(ROOTFS_NCFORM) $(BUILD)/awk/y.tab.c
+	@mkdir -p $(BUILD)/awk
+	cd $(BUILD)/awk && V8ROOT=$(ROOTFS) $(LEX) $(AWKSRC)/awk.lx.l
+
+$(BUILD)/awk/maketab: $(AWKSRC)/maketab.c $(BUILD)/awk/y.tab.c $(V8CC_DEPS) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(BUILD)/awk -I$(AWKSRC) -c -o $(BUILD)/awk/maketab.o $<
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/awk/maketab.o $(V8LIBS)
+
+# maketab opens "y.tab.h" by that name, so it has to run in the directory yacc
+# wrote it in.
+$(BUILD)/awk/proctab.c: $(BUILD)/awk/maketab
+	cd $(BUILD)/awk && V8ROOT=$(ROOTFS) ./maketab > proctab.c.tmp \
+	    && mv proctab.c.tmp proctab.c
+
+$(BUILD)/awk/awkgram.o: $(BUILD)/awk/y.tab.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/awk -I$(AWKSRC) -c -o $@ $(BUILD)/awk/y.tab.c
+$(BUILD)/awk/awklex.o: $(BUILD)/awk/lex.yy.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/awk -I$(AWKSRC) -c -o $@ $(BUILD)/awk/lex.yy.c
+$(BUILD)/awk/proctab.o: $(BUILD)/awk/proctab.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/awk -I$(AWKSRC) -c -o $@ $(BUILD)/awk/proctab.c
+$(BUILD)/awk/%.o: $(AWKSRC)/%.c $(BUILD)/awk/y.tab.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(BUILD)/awk -I$(AWKSRC) -c -o $@ $<
+
+# Every one of the nine includes awk.h, generated ones included -- maketab
+# writes `#include "awk.h"' as proctab.c's first line.  Upstream says
+# `$(OFILES): prevy.tab.h awk.h'; the y.tab.c edge is already in the rules
+# above, so this is the other half of that line.
+$(AWK_OBJ) $(BUILD)/awk/maketab.o: $(AWKSRC)/awk.h
+
+V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
+                   $(BINDIR)/awk
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
-                   $(EX_INSTALL)
+                   $(EX_INSTALL) $(call v8install,awk)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

@@ -1,0 +1,18 @@
+# Provenance for v8/src/cmd/awk
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+989b080e2fc6a17c48673bf812788d01918bb49c  v8/usr/src/cmd/awk/lib.c
+aaf0ac132e774f86bd62b0cf6e102a75d13b6aec  v8/usr/src/cmd/awk/tran.c
+f23ca1e3480d78ee03f93a1d6530f8e59f11302d  v8/usr/src/cmd/awk/makefile
+3d80c33788cfac6c9ae0d9524a73aebe54410217  v8/usr/src/cmd/awk/run.c
+d1140f696f48a484c513e14bc76921da96edb5b1  v8/usr/src/cmd/awk/main.c
+7b27e1d011ef2b0ad4031d2a5a74418d90e00c5e  v8/usr/src/cmd/awk/maketab.c
+9572c2066e215408c36d3b855629c4fe5d7462ab  v8/usr/src/cmd/awk/NEW
+d7742e120b5f838e5d44d582c3966a0a2edaaa3f  v8/usr/src/cmd/awk/parse.c
+27dcc25e5459cd1f49df533f77c6fa8322e944c7  v8/usr/src/cmd/awk/awk.g.y
+d1011f489843580ddd8e1d60d3cd438ba135f37a  v8/usr/src/cmd/awk/b.c
+920e777b466b926c97fbc6c9dde427716f09f1b1  v8/usr/src/cmd/awk/awk.h
+851eb2ea81f64d1809fc33362b14349baa651aba  v8/usr/src/cmd/awk/awk.lx.l

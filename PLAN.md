@@ -3052,7 +3052,7 @@ restores the host PATH and execs. Bare `/usr/` joined the mount table so a home
 directory exists inside the world; it is a union, so `/usr/include` still falls
 through. Exercised end to end, not asserted.
 
-**7b. Wave A2 — IN PROGRESS, 91 → 133.** Batch 1: 37 single-file commands, all
+**7b. Wave A2 — IN PROGRESS, 91 → 139.** Batch 1: 37 single-file commands, all
 compiling with zero failures. Batch 2: `diff` (two programs and three derived
 `-D` install paths), `cb`, `su`, `compress`, plus `crypt`, `getpwnam`,
 `getgrgid` and `getpass` into libc. The suites did the triage and caught three
@@ -3060,6 +3060,36 @@ real bugs the compiler did not -- `last`'s truncated `asctime`/`gmtime`, five
 programs taking libc symbols from `-lSystem`, and `cb`'s `#include`d
 non-header. `find` alone needed four forced changes, one of them eleven LP64
 puns in a single file.
+
+**Batch 2a: `awk`** — the largest single gain and the first program here to
+carry addresses in four different kinds of integer, three of them LP64 and the
+fourth not. Nine translation units, one of them written at build time by a
+program the build has to compile and run first — the tree's only two-step
+generator chain, and upstream's makefile opens by admitting theirs does not get
+the dependencies right. `src/cmd/awk/PORTING.md`; five defects and one
+non-defect:
+
+  - `extern int yylval` against yacc's `#define YYSTYPE long`, with **seven
+    pointer stores** through it, so every variable, number, string, field and
+    regex went through a truncated address;
+  - `int rlxval` and `struct rrow`'s `int lval`, both round-tripping a
+    character-class pointer, the second announced by `b.c`'s own header comment
+    (*"right contains value or pointer to value"*);
+  - **`BEGIN{print 1}` was a SIGSEGV** — `real_execute()` guards a null and the
+    `execute` MACRO in front of it reads `(p)->ntype` first. An empty
+    `pa_stats` is the integer 0, so any program with no main rule executes a
+    null once per input record. Invisible under empty stdin, which is what the
+    crash probe feeds;
+  - the argv-exhaustion shape a fourth time: **63 of 64 single-letter options**
+    crashed, fixed by supplying the empty string a VAX read at address 0;
+  - and **`maketab.c` needed no change**, measured: an undeclared pointer
+    return is truncated where the `int` type is *used*, and a cast applied
+    directly to the call is not a use. Identical assembly, byte-identical
+    output, so the declaration came back out and the file is upstream's.
+
+  It also found two libc defects that had nothing to do with awk — `%g` never
+  stripping trailing zeros (§4l) and `%s` of NULL printing `(null)` where V8
+  printed nothing (open, deliberately deferred).
 
 **7c. What is left, in order of unlock:**
 
@@ -3721,3 +3751,96 @@ compared byte for byte against a same-binary clock noise floor, and a
 mutation-verified guard that fires ahead of its own symptoms) and the discovery
 that `sys/fblk.h` had never been imported at all — so an on-disk record had
 been compiling against 1985's own header, correct only by coincidence.
+
+## 4l. `%g` never stripped its trailing zeros — CLOSED, and V8's own assembler had the answer
+
+Found by porting `awk` rather than by any sweep, which is the argument for
+importing upstream programs in bulk: they exercise the toolchain in ways our
+own rules, written to work, never do. `tran.c:271` prints an integral value
+with `sprintf(s, "%.20g", vp->fval)` — what every awk has done since 1977 —
+and this port answered `3.0000000000000000000`.
+
+It is ours. `src/libc/stdio/doprnt.c` is this port's C rewrite of V8's
+`doprnt.S`, and `fmtfloat()`'s own comment reads
+
+```c
+/*
+ * %g: %e if the exponent is below -4 or at least the precision,
+ * %f otherwise, with trailing zeros removed.
+ */
+```
+
+with twenty lines under it that never remove one. A comment stating the rule
+while the code beside it implements a different one is this project's most
+repeated shape, and here it was in a file written for the port.
+
+### There is a VAX answer, and it is seven instructions
+
+`doprnt.S:625-631`:
+
+```
+g1:	jbs $numsgn,flags,g2	# `#' given: keep them
+	jbs $dpflag,flags,g2	# dont strip if no decimal point
+g3:	cmpb -(r5),$'0		# strip trailing zeroes
+	jeql g3
+	cmpb (r5),$'.		# and trailing decimal point
+	jeql g2
+	incl r5
+```
+
+including the `%#g` exemption — ANSI's rule four years before ANSI. Berkeley's
+`gcvt.c`, in the same directory, strips them too. The rewrite dropped both, so
+this is a restoration and not a decision.
+
+The strip belongs to the **mantissa**, not to the whole buffer: `doprnt.S`'s
+`gfmte` path calls `eedit`, jumps back to `g1` to strip, and only then falls
+into `eexp` to append the exponent. Our `%e` arm writes the exponent inline, so
+`gstrip()` runs before that character.
+
+### A second defect was standing next to the first
+
+`%g`'s precision counts **significant** digits and `%e`'s counts digits *after
+the point*, so the e-style form of `%.Pg` is `%.(P-1)e`. Ours passed P through,
+and `%g` of 1234567 came out `1.234567e+06` — seven significant digits from a
+conversion that asked for six. `doprnt.S` makes the same distinction in the
+other direction: `scien:569` does `incl ndigit` on the way in and
+`general:639` jumps past it, so `ndigit` is P+1 for `%e` and P for `%g`.
+
+And `alt` — the `#` flag — was parsed at `doprnt.c:128` and never passed to
+`fmtfloat()`, so `%#g` and `%g` could not have differed whatever either
+printed. It is threaded through now, and it is the **negative control**: a fix
+that stripped unconditionally passes the other cases and fails this one.
+Measured, that mutation fires on exactly one case.
+
+### Why nothing caught it, and what it had been disfiguring
+
+Neither defect is visible unless a value's last significant digit is a zero, or
+the exponent form is reached. Thirty-eight library cases and every Wave C
+program walked past both. Forty format/value combinations now agree with the
+host's `printf` character for character; five of them are cases in
+`tests/libv8c`.
+
+The blast radius was on screen the whole time. `grap` prints coordinates and
+tick labels with `%g`, so every graph this port has ever produced said
+`1.00000  1.50000  2.00000` where V8 says `1  1.5  2` — and `tests/wavec` had
+frozen it:
+
+```sh
+check 'grap transforms the last point' '1' \
+    "$(printf '%s\n' "$grapout" | grep -c 'xy_gg(10.0000,100.000)')"
+```
+
+Third instance of a test calibrated against broken output, after wavec's own
+drawing-command count (which matched only while every coordinate was zero) and
+`tests/v8ccom`'s `long arithmetic`. What that case discriminates — STARG, a
+struct passed by value through the argument slots — did not change; only the
+spelling of the right answer did.
+
+### Still open
+
+`%s` of a null pointer prints `(null)` where V8 printed **nothing**: `doprnt.S`
+walks from the pointer it is given, and on a VAX that is the first byte of
+crt0, measured `0x00`. Deliberately not changed in the same step — it alters
+output for every installed binary and at least one recorded behaviour depends
+on it (`yacc -o` with no name leaves `(null).tab.c`, where V8 would have
+written `.tab.c`). It is its own measured step.

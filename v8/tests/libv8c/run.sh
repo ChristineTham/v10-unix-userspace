@@ -194,6 +194,63 @@ run 'printf %e' 'e=3.141590e+04' <<'EOF'
 main() { printf("e=%e\n", 31415.9); fflush(stdout); return 0; }
 EOF
 
+# --- %g, which had TWO defects and no case at all --------------------------
+# Found by porting awk: tran.c:271 prints an integral value with "%.20g" and
+# this port answered `3.0000000000000000000'.  Both halves are ours, and both
+# have a VAX answer to restore in doprnt.S rather than a decision to make:
+#
+#   trailing zeros were never stripped   doprnt.S:625-631 (g1/g3), and
+#                                        Berkeley's gcvt.c in the same directory
+#   the e-style precision was not reduced   %g's precision counts SIGNIFICANT
+#                                        digits, %e's counts digits after the
+#                                        point, so %.Pg in e style is %.(P-1)e.
+#                                        `scien' does `incl ndigit' on the way
+#                                        in and `general' jumps past it.
+#
+# Neither is visible unless the value's last significant digit is a zero or the
+# exponent form is reached, which is why 38 cases and every Wave C program had
+# gone past them.  Measured against the host's printf over 40 combinations; the
+# nine here are the ones that discriminate.
+run 'printf %g strips trailing zeros' '3|3|15|0.5|0' <<'EOF'
+#include <stdio.h>
+main() { printf("%g|%.20g|%.20g|%.20g|%g\n", 3.0, 3.0, 15.0, 0.5, 0.0);
+         fflush(stdout); return 0; }
+EOF
+
+# The e-style arm strips in the MANTISSA and keeps the exponent, which is why
+# doprnt.S splits gfmte -> eedit -> g1 -> eexp rather than stripping at the end.
+run 'printf %g strips before the exponent' '1e+20|1e-07|1e+06' <<'EOF'
+#include <stdio.h>
+main() { printf("%.20g|%g|%g\n", 1e20, 1e-7, 1000000.0);
+         fflush(stdout); return 0; }
+EOF
+
+# %g's precision is significant digits.  Before the fix this line was
+# `1.234567e+06' -- seven of them from a conversion that asked for six.
+run 'printf %g precision counts significant digits' '1.23457e+06|1e+06|1.2e+06|123.456' <<'EOF'
+#include <stdio.h>
+main() { printf("%g|%.1g|%.2g|%.10g\n", 1234567.0, 1234567.0, 1234567.0, 123.456);
+         fflush(stdout); return 0; }
+EOF
+
+# `#' is doprnt.S's numsgn, and g1 skips the strip when it is set -- ANSI's rule
+# four years before ANSI.  It is the NEGATIVE CONTROL for the two cases above:
+# a fix that stripped unconditionally passes both of them and fails this.
+# `alt' was parsed at doprnt.c:128 and never passed to fmtfloat(), so before
+# this work %#g and %g could not have differed whatever either printed.
+run 'printf %#g keeps them' '3.00000|3.0000000000000000000|1.00000e+20' <<'EOF'
+#include <stdio.h>
+main() { printf("%#g|%#.20g|%#g\n", 3.0, 3.0, 1e20); fflush(stdout); return 0; }
+EOF
+
+# Rounding that carries into a new digit, and the width/sign flags over a
+# stripped result -- the strip must not run before the padding is computed.
+run 'printf %g rounds and pads' '10|10|[         3][3         ][+3][ 3]' <<'EOF'
+#include <stdio.h>
+main() { printf("%.3g|%.2g|[%10g][%-10g][%+g][% g]\n",
+                9.999, 9.99, 3.0, 3.0, 3.0, 3.0); fflush(stdout); return 0; }
+EOF
+
 # --- string literals are WRITABLE -----------------------------------------
 # 1985 C had no `const` and the tree relies on it: tr(1)'s nextc() ends with
 # `if(c==0) *--s->p = 0;`, pushing the NUL back after reading past it, and

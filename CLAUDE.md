@@ -1512,6 +1512,149 @@ fourth is the most expensive lesson in this file:
   calling an output convention a port defect, look for the option that turns
   it off.**
 
+**AND awk IS IN, WHICH IS THE FIRST PROGRAM HERE THAT CARRIES ADDRESSES IN FOUR
+DIFFERENT KINDS OF INTEGER -- AND THE ONE THAT MATTERED WAS NOT LP64 AT ALL.**
+Nine translation units, one of which does not exist until the build makes it.
+`src/cmd/awk/PORTING.md`. Six things generalise:
+
+- **A DECLARATION THAT LIES ABOUT A TYPE, IN THE FILE yacc DOES NOT WRITE.**
+  `awk.lx.l:24` is `extern int yylval` and this port's yacc emits
+  `#define YYSTYPE long` (`y2.c:318`) -- the global fix for the `yylval.p`
+  token bug, applied to the *grammar* side years ago and never swept for on the
+  *lexer* side. Seven of the stores are pointers (`lookup`, `fieldadr`,
+  `setsymtab` x4, `tostring`), so every variable, number, string, field and
+  regex in an awk program went through a truncated address. The sweep the
+  grammar side already has needs a partner:
+
+  ```bash
+  grep -rnE '(extern|static)?[[:blank:]]*(int|short)[[:blank:]]+yylval' src/cmd/*/*.l src/cmd/*/*.c
+  ```
+- **AND A POINTER CAN ROUND-TRIP THROUGH A STRUCT FIELD, WHICH THE FILE'S OWN
+  COMMENT ANNOUNCES.** `struct rrow`'s `int lval` is written `(long) right(v)`
+  and read back `(char *) f->re[i].lval`; `b.c`'s header comment says *"right
+  contains value OR POINTER TO VALUE"*. Safe to widen because the struct has
+  only one end -- not on disk, not across the shim seam -- which is the
+  question to ask before widening any field.
+- **THE ADDRESS-0 CLASS ARRIVED IN A MACRO, WITH THE GUARD ONE CALL DEEPER.**
+  `real_execute()` opens `if (u == NULL) return(true);`, so a null statement is
+  *expected*; `#define execute(p) (isvalue(p) ? ... )` reads `(p)->ntype`
+  before that guard is ever reached. `awk.g.y:177` makes an empty `pa_stats`
+  the integer 0, so **`BEGIN{print 1}` -- the commonest awk invocation there
+  is -- was a SIGSEGV**. Upstream's own null check is the evidence a VAX
+  survived the read. When a function guards a null, look for a MACRO in front
+  of it that does not.
+- **AND EMPTY STDIN HID IT, WHICH IS THE CRASH PROBE'S OWN BLIND SPOT.** The
+  null is executed once per input RECORD, so `awk 'BEGIN{print 1}' < /dev/null`
+  exits 0 whether or not the bug is there. The probe feeds every program
+  `/dev/null`; it found awk's 63 argv crashes and could not have found this
+  one. **A prober's fixed stdin is a fixed input, and a record loop that never
+  runs is a code path never entered.**
+- **THE ARGV-EXHAUSTION SHAPE, A FOURTH TIME, AND IT WAS 63 OF 64 OPTIONS.**
+  `main.c`'s option loop consumes an unknown letter and falls through to
+  `lexprog = argv[1]`, which is the argv terminator. A VAX read the empty
+  string at address 0, so `ARG1` supplies one and `awk -a` is the empty program
+  -- exit 0, no output -- rather than a diagnostic this port invented. Same
+  treatment as `ncheck`'s `argv[1] == 0 ? 0L : atol(argv[1])`.
+- **AN UNDECLARED POINTER RETURN IS TRUNCATED WHERE THE `int` TYPE IS *USED*,
+  AND A CAST ON THE CALL IS NOT A USE.** `maketab.c` does
+  `(char *) malloc(strlen(name)+1)` with malloc undeclared -- the shape
+  `tests/v8ccom`'s sweep catches, and which it structurally cannot see here
+  because maketab is a build tool that is never installed. A declaration was
+  added on that reasoning and then **removed**: measured, the emitted assembly
+  is identical instruction for instruction (`mov x10, x0`, the whole register)
+  and the generated `proctab.c` is byte-identical. v8cc never materialises the
+  result as a 32-bit quantity, so there is nothing to cut. Compare `last`,
+  where the sweep found a real one: `asctime(gmtime(&delta))+11` does
+  arithmetic on the int. `maketab.c` is byte-identical to upstream and the
+  PORTING.md records the measurement instead.
+
+**AND THE BUILD HAS A TWO-STEP GENERATOR CHAIN, WHICH NOTHING ELSE HERE DOES.**
+`proctab.c` -- one function pointer per grammar token, in token order -- is
+written by `maketab`, which the build compiles *and runs*, and which reads the
+`y.tab.h` a different generator wrote. Upstream's makefile opens by admitting
+theirs gets it wrong (*"This makefile is wrong -- it doesn't properly recompile
+everything when a new token is added to awk.g.y. Watch out!"*). `tests/deps`
+has eight cases; the load-bearing one is `awk grammar -> proctab.o`, which
+walks the whole chain in a single assertion. Two decisions in that block:
+
+- **maketab is built by V8's cc and RUN**, which is upstream's own mechanism
+  (`cc maketab.c -o maketab`) and has precedent -- `$(YACC)` and `$(LEX)` are
+  already V8 binaries this Makefile executes.
+- **its output goes through a temporary.** `.DELETE_ON_ERROR` is not set here,
+  and `> proctab.c` creates the file *before* the program runs, so a maketab
+  that died would leave an empty, freshly-dated `proctab.c` and the next make
+  would call it current. The stale-object failure, arriving through a shell
+  redirect rather than a rule.
+
+**AND THE OBVIOUS NEGATIVE CASE FOR THAT CHAIN IS FALSE.** `nodep maketab.c ->
+bin/awk` fails: touching maketab.c legitimately makes awk stale, because
+maketab writes proctab.c which compiles into the link. **A build tool's SOURCE
+is a transitive prerequisite of the program even though its OBJECT is not
+linked** -- "is it a component" and "is it a prerequisite" are different
+questions, and `tests/deps` can only answer the second. The first is asserted
+in `tests/wavea` instead: maketab must not be installed.
+
+**AND awk FOUND A LIBC BUG THAT HAD BEEN DISFIGURING A SHIPPED PROGRAM ALL
+ALONG: `%g` NEVER STRIPPED TRAILING ZEROS.** `tran.c:271` prints an integral
+value with `sprintf(s, "%.20g", fval)` -- what every awk has done since 1977 --
+and this port answered `3.0000000000000000000`. It is ours: `doprnt.c` is this
+port's C rewrite of `doprnt.S`, and `fmtfloat()`'s own comment says *"%f
+otherwise, with trailing zeros removed"* directly above twenty lines that never
+remove one. Four things:
+
+- **THERE IS A VAX ANSWER AND IT IS SEVEN INSTRUCTIONS.** `doprnt.S:625-631`
+  (`g1`/`g3`) strips them, skips when `#` is given (`numsgn`) and skips when no
+  decimal point was emitted (`dpflag`) -- ANSI's rule four years before ANSI.
+  Berkeley's `gcvt.c`, in the same directory, strips them too. The rewrite
+  dropped both.
+- **AND A SECOND DEFECT WAS STANDING NEXT TO IT.** `%g`'s precision counts
+  SIGNIFICANT digits and `%e`'s counts digits after the point, so `%.Pg` in
+  e-style is `%.(P-1)e`. Ours passed P through and `%g` of 1234567 gave
+  `1.234567e+06` -- seven significant digits from a conversion that asked for
+  six. `doprnt.S` makes the same distinction the other way (`scien:569` does
+  `incl ndigit`, `general:639` jumps past it).
+- **AND `#` WAS PARSED AND NEVER PASSED**, so `%#g` and `%g` could not have
+  differed whatever either printed. It is the NEGATIVE CONTROL for the other
+  two cases: a fix that stripped unconditionally passes them and fails this.
+  Measured: that mutation fires on exactly one case.
+- **NEITHER IS VISIBLE UNLESS THE LAST SIGNIFICANT DIGIT IS A ZERO**, which is
+  why 38 libc cases and every Wave C program walked past both. 40
+  format/value combinations now agree with the host's printf character for
+  character. **The blast radius was already on screen**: grap prints tick
+  labels with `%g`, so every graph this port ever produced said `1.00000
+  1.50000 2.00000`, and `tests/wavec` had frozen it -- third instance of a test
+  calibrated against broken output, after wavec's own drawing-command count and
+  v8ccom's `long arithmetic`. What the case discriminates (STARG, a struct
+  passed by value) did not change; only the spelling of the right answer did.
+
+**AND A JAIL TEST NAMED A PROGRAM AS "host-only", WHICH THE PORT MADE FALSE --
+AND BOTH HALVES THEN MEASURED NOTHING.** `tests/jail`'s escape-guard block
+spelled `/usr/bin/awk` as *"a tool the rootfs does NOT have"*. True when
+written; false the moment awk was ported. The failure is worse than one case
+going red: warn found no escape *because there was none*, and strict "refused"
+a command that had run perfectly well inside the jail. Two assertions about a
+working jail, silently inverted by a success elsewhere in the tree. The target
+is DERIVED now -- the first candidate the host has and the rootfs does not,
+from a list of programs V8 shipped no source for at all -- and an empty result
+is a failure rather than a skip. **Ask of any test that names a program as
+absent whether the project's own roadmap will make it present.**
+
+- **AND THE FIRST DRAFT OF THAT FIX INVERTED IT AGAIN, THROUGH A REDIRECT.**
+  The recipe was `/usr/bin/$esc > escran.txt 2>&1`, and the jail's warning is
+  written by the process doing the execve -- V8's `sh`, which has already
+  applied the recipe's redirections -- so `2>&1` puts "exec leaves the jail"
+  *inside the file the case reads to decide whether the command ran*. Both
+  halves wrong again, from one added token. Measured against the shim
+  directly, which reported the escape correctly the whole time.
+
+**AND MUTATION FOUND A FOURTH KIND OF VACUOUS CASE: EXPECTED OUTPUT THAT IS
+EMPTY CANNOT DISCRIMINATE A CRASH.** Restoring the broken `execute` macro fired
+`BEGIN`-only and `END`-only and left `awk '{}'` and `awk ''` green -- because a
+program that SIGSEGVs produces no output either, and `check <name> ''
+"$(...)"` compares the same empty string. Both carry their exit status now, and
+re-mutating fires all four. **A case whose expected output is empty is vacuous
+against a crash unless it also asserts the status.**
+
 **AND `src/v8/etc/` BECAME `src/etc/`, BECAUSE THE IMPORT TOOL AND THE TREE HAD
 DISAGREED SINCE THE RELEASE SPLIT.** `destfor()` maps `v8/etc/*` to
 `v8/src/etc/*`; the four files already there sat at `v8/src/v8/etc/`, which the
@@ -1611,7 +1754,9 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 138 installed**, stable.
+**286 shipped, 139 installed**, stable. (It moves when something is imported,
+which is the whole point; the guard is what makes it move in ARTICLE.md too,
+and awk took it from 138.)
 
 ## Architecture: three layers, three different rules
 

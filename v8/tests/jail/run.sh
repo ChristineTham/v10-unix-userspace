@@ -203,27 +203,71 @@ esac
 # before running it, so a marker inside the command text appears in the output
 # whether or not the command ever ran -- which made the first version of this
 # test report a pass for strict mode and a pass for unset mode, both wrong.
-cat > mk2 <<'EOF'
+#
+# AND THE TOOL IS DERIVED, BECAUSE THE NAMED ONE ROTTED THE DAY THE PORT
+# SUCCEEDED.  This block spelled /usr/bin/awk, which was a host-only binary
+# when it was written and stopped being one when awk was ported -- and then
+# BOTH halves measured nothing rather than one of them going red in a way that
+# named the cause: warn found no escape because there was no escape, and strict
+# "refused" a command that had in fact run perfectly well inside the jail.  Two
+# assertions about a jail that was working, quietly inverted by a success
+# somewhere else in the tree.
+#
+# So the name is computed at run time: the first candidate the HOST has and the
+# ROOTFS does not.  The list is programs V8 shipped NO SOURCE for -- none of
+# them is in usr/src/cmd as a directory, a bare .c, or a link -- so it should
+# not rot again, but the derivation is what makes that a property rather than a
+# hope.  An empty result is a FAILURE and not a skip, for tests/cpp's reason.
+esc=
+for c in env arch logname groups uname whoami; do
+	if [ -x "/usr/bin/$c" ] &&
+	   [ ! -e "$V8ROOT/usr/bin/$c" ] && [ ! -e "$V8ROOT/bin/$c" ] &&
+	   [ ! -e "$V8ROOT/etc/$c" ]; then esc=$c; break; fi
+done
+if [ -n "$esc" ]; then pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL no host-only /usr/bin program is left to test the escape guard with"
+	esc=env		# carry on, so the cases below report what they see
+fi
+
+# Unquoted heredoc, so $esc expands; the recipe line still begins with a TAB.
+#
+# NO `2>&1' IN THE RECIPE, and the first draft had one.  The jail's warning is
+# written by the process doing the execve -- V8's sh, which has ALREADY applied
+# the recipe's redirections -- so `2>&1' puts "exec leaves the jail" inside
+# escran.txt instead of into make's output.  That inverts both halves at once:
+# the warn case sees no warning, and the strict case sees a non-empty file and
+# concludes the command ran.  Measured: the shim reports the escape correctly
+# for /usr/bin/env when asked directly, so the fault was entirely the
+# instrument's.
+cat > mk2 <<EOF
 all:
-	/usr/bin/awk 'BEGIN{print "ran"}' > awkran.txt
+	/usr/bin/$esc > escran.txt
 EOF
 
-rm -f awkran.txt
+# The old marker was awk's own `print "ran"'.  A derived program cannot be
+# asked for a particular string, so the observable is that it produced OUTPUT
+# AT ALL -- which is why every candidate above writes to stdout when run with
+# no arguments.
+ranmark() { [ -s escran.txt ] && echo ran || echo ''; }
+
+rm -f escran.txt
 warn=$(V8JAIL=warn "$MAKE8" -f mk2 2>&1)
 case "$warn" in
-*"exec leaves the jail: /usr/bin/awk"*) pass=$((pass+1)) ;;
+*"exec leaves the jail: /usr/bin/$esc"*) pass=$((pass+1)) ;;
 *) fail=$((fail+1)); echo "FAIL warn mode did not report the escape"; echo "  got [$warn]" ;;
 esac
-ck 'warn mode still lets it run' 'ran' "$(cat awkran.txt 2>/dev/null)"
+ck 'warn mode still lets it run' 'ran' "$(ranmark)"
 
-rm -f awkran.txt
+rm -f escran.txt
 V8JAIL=strict "$MAKE8" -f mk2 >/dev/null 2>&1
-ck 'strict mode refuses the host binary' '' "$(cat awkran.txt 2>/dev/null)"
+ck 'strict mode refuses the host binary' '' "$(ranmark)"
 
 # --- unset stays quiet, so a partly-ported tree still works -----------------
-rm -f awkran.txt
+rm -f escran.txt
 quiet=$(V8JAIL= "$MAKE8" -f mk2 2>&1)
-ck 'unset lets the host tool run' 'ran' "$(cat awkran.txt 2>/dev/null)"
+ck 'unset lets the host tool run' 'ran' "$(ranmark)"
 case "$quiet" in
 *"leaves the jail"*) fail=$((fail+1)); echo "FAIL unset should not report" ;;
 *) pass=$((pass+1)) ;;

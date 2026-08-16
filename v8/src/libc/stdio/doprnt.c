@@ -296,7 +296,7 @@ _doprnt(fmt, argp, iop)
 		case 'G':
 			dval = NEXTDOUBLE(argp);
 			len = fmtfloat(fmt[-1], dval, haveprec ? prec : 6,
-			    plussign, blanksign, fbuf);
+			    plussign, blanksign, alt, fbuf);
 			if (!leftjust && zeropad && fbuf[0] != '-')
 				total += pad(iop, '0', width - len);
 			else if (!leftjust)
@@ -316,34 +316,90 @@ _doprnt(fmt, argp, iop)
 }
 
 /*
+ * %g's trailing-zero strip, and it is the VAX's own.  doprnt.S:625-631:
+ *
+ *	g1:	jbs $numsgn,flags,g2	# `#' given: keep them
+ *		jbs $dpflag,flags,g2	# dont strip if no decimal point
+ *	g3:	cmpb -(r5),$'0		# strip trailing zeroes
+ *		jeql g3
+ *		cmpb (r5),$'.		# and trailing decimal point
+ *		jeql g2
+ *		incl r5
+ *
+ * `dpflag' records whether a decimal point was emitted; scanning the region for
+ * one asks the same question, since these two arms write a point only when they
+ * write a fraction.  numsgn is `#', so %#g keeps its zeros, which is ANSI's rule
+ * and was V8's four years before the standard.
+ *
+ * Returns the new end of the buffer.
+ */
+static char *
+gstrip(start, o)
+	char *start, *o;
+{
+	register char *p;
+
+	for (p = start; p < o; p++)
+		if (*p == '.')
+			break;
+	if (p >= o)
+		return (o);		/* no decimal point: nothing to strip */
+	while (o > p + 1 && o[-1] == '0')
+		o--;
+	if (o == p + 1)
+		o--;			/* the whole fraction went: take the '.' */
+	return (o);
+}
+
+/*
  * Floating conversion, built on ecvt/fcvt the way the VAX version was.  Those
  * are now IEEE rather than VAX D-format, which is the one place output can
  * differ from a real V8: the last digit or two of a value that was not exactly
  * representable in either format.
  */
 static
-fmtfloat(conv, val, prec, plussign, blanksign, out)
+fmtfloat(conv, val, prec, plussign, blanksign, alt, out)
 	int conv;
 	double val;
-	int prec, plussign, blanksign;
+	int prec, plussign, blanksign, alt;
 	char *out;
 {
 	char *digits;
 	int decpt, sign, nd, i;
 	char *o = out;
 	int expo;
+	int gfmt = 0;
 
 	if (conv == 'g' || conv == 'G') {
 		/*
 		 * %g: %e if the exponent is below -4 or at least the precision,
 		 * %f otherwise, with trailing zeros removed.
+		 *
+		 * The stripping is what `gfmt' carries down: it belongs to the
+		 * MANTISSA and not to the whole buffer, so the %e arm below has
+		 * to do it before it writes the `e'.  The VAX splits the same
+		 * way -- gfmte calls eedit, jumps back to g1 to strip, and only
+		 * then falls into eexp to append the exponent.
 		 */
 		if (prec == 0) prec = 1;
 		digits = ecvt(val, prec, &decpt, &sign);
 		expo = decpt - 1;
-		if (expo < -4 || expo >= prec)
+		gfmt = !alt;
+		if (expo < -4 || expo >= prec) {
 			conv = (conv == 'G') ? 'E' : 'e';
-		else {
+			/*
+			 * %g's precision counts SIGNIFICANT digits and %e's
+			 * counts digits after the point, so the e-style form of
+			 * %.Pg is %.(P-1)e.  Without this, %g of 1234567 came
+			 * out `1.234567e+06' -- seven significant digits from a
+			 * conversion that asked for six.  The VAX makes the
+			 * same distinction in the other direction: `scien'
+			 * (doprnt.S:569) does `incl ndigit' on the way in and
+			 * `general' (doprnt.S:639) jumps past it, so ndigit is
+			 * P+1 for %e and P for %g.
+			 */
+			prec = prec - 1;
+		} else {
 			conv = 'f';
 			prec = prec - decpt;
 			if (prec < 0) prec = 0;
@@ -377,6 +433,7 @@ fmtfloat(conv, val, prec, plussign, blanksign, out)
 					    digits[decpt + nd] : '0';
 			}
 		}
+		if (gfmt) o = gstrip(out, o);
 		*o = '\0';
 		return ((int)(o - out));
 	}
@@ -393,6 +450,7 @@ fmtfloat(conv, val, prec, plussign, blanksign, out)
 		for (i = 1; i <= prec; i++)
 			*o++ = digits[i] ? digits[i] : '0';
 	}
+	if (gfmt) o = gstrip(out, o);
 	*o++ = (conv == 'E') ? 'E' : 'e';
 
 	expo = (val == 0.0) ? 0 : decpt - 1;
