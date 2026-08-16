@@ -235,7 +235,7 @@ case entry:	fprintf(debfd,"entry statement ");  break;
 
 
 
-makeif(first,labe,test,arc1,arc2)			/* construct IFVX with arcs to labels arc1,arc2 */
+VERT makeif(	/* PORT: was implicit int -- returns a VERT */first,labe,test,arc1,arc2)			/* construct IFVX with arcs to labels arc1,arc2 */
 int first;
 long labe, arc1,arc2;
 char *test;
@@ -251,7 +251,7 @@ char *test;
 	}
 
 
-innerdo(labe)		/* return number of DOVX associated with labe, or UNDEFINED */
+VERT innerdo(labe)	/* PORT: was implicit int -- returns a VERT */		/* return number of DOVX associated with labe, or UNDEFINED */
 long labe;
 	{
 	if (DEFINED(doptr))

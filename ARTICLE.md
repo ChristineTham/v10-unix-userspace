@@ -3915,13 +3915,41 @@ uses reads *call sites*, so a function narrowing its own result leaves nothing
 at the call to match; it reported zero hits over this binary throughout, which
 was correct. What found the bug was reading two adjacent declarations.
 
+The fourth defect is the same class pointing the other way, and it is the one
+that does not crash. **Eleven functions return a vertex and were declared
+implicit `int`.** `UNDEFINED` is −1; returned from an implicit-`int` function
+it comes back in the 32-bit half of the register, a write to which zeroes the
+top half architecturally, so the caller reads 4294967295. The test for
+"is this defined" is `v >= 0`. After widening the cell type, **every undefined
+value returned by one of those eleven tested as defined.**
+
+I found five of them by sweeping for `return(UNDEFINED)`, which was the wrong
+question, and six more by asking the right one: which functions return a
+variable *declared* as a vertex while carrying no return type of their own.
+Two of the six that only the second sweep could find do not set a field, they
+set the shape of the output — they fill the dominator and loop-header tables
+that the tree builder branches on. A truncated value there does not crash. It
+compiles a different program.
+
 `structure` now translates straight-line Fortran and `IF` statements into
 correct Ratfor, where before it died on every input including the trivial one.
-It still fails on a `GOTO`, and the instrumented values name the remaining
-defect precisely: one variable reads as `0xFFFFFFFF00000008` — top half all
-ones, low half 8 — which is **two adjacent four-byte `int`s being read as one
-eight-byte `long`**. Some 32-bit-element array is still being read at cell
-stride. That is the next turn of the same loop.
+It still fails on a `GOTO`, and dumping the whole graph row for the failing
+node both narrowed the remaining defect and corrected me twice. One cell read
+as `4425033912` and looked like garbage; it is a string pointer, and the tell
+that it is *correct* is that it **changes between runs** — ASLR moving it is
+what proves a genuine 64-bit pointer, which is exactly what widening the cell
+was for. And the two cells that are wrong are provably right when the tree
+builder finishes writing them, so the corruption belongs to a later phase than
+the one I had been reading. That is the next turn of the loop, and it is now a
+two-function search rather than a forty-file one.
+
+There is also a hazard I found and deliberately did not fix, because it is not
+reachable by anything I can test: the graph is allocated by the program's own
+arena allocator, which sub-allocates inside a larger block, and then grown with
+the C library's `realloc` and `free`. Neither may legally be called on that
+pointer, and the `free` comes *after* the `realloc` that already released it.
+It fires at 400 nodes — a large Fortran routine, which is precisely the input
+nobody tries until the small ones work.
 
 It is deliberately still not installed. `struct` exists to turn `GOTO`s into
 loops, so a `struct` that fails on a `GOTO` fails at the one thing it is for,

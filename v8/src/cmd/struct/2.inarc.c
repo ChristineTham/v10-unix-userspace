@@ -41,7 +41,7 @@ VERT *head;
 
 
 
-maxentry(x,y,head)	/* return z if z is ITERVX of largest loop containing y but not x, UNDEFINED otherwise */
+VERT maxentry(x,y,head)	/* PORT: was implicit int -- returns a VERT */	/* return z if z is ITERVX of largest loop containing y but not x, UNDEFINED otherwise */
 VERT x,y, *head;
 	{
 	if (head[y] == UNDEFINED)  return(UNDEFINED);

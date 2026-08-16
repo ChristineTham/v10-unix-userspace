@@ -108,7 +108,7 @@ VERT v;
 	}
 
 
-NUM(v)
+VERT NUM(v)	/* PORT: was implicit int -- returns a VERT */
 VERT v;
 	{
 	if (!DEFINED(v)) return(UNDEFINED);

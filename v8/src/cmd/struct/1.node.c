@@ -2,7 +2,7 @@
 #include "def.h"
 #include "1.incl.h"
 
-makenode(type,addimp,addcom, labe,arcnum,arctype,arclab)
+VERT makenode(	/* PORT: was implicit int -- returns a VERT */type,addimp,addcom, labe,arcnum,arctype,arclab)
 LOGICAL addimp,addcom;
 int type, arctype[], arcnum;
 long arclab[], labe;

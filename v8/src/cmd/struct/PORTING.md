@@ -144,6 +144,54 @@ So the warning diff and the sweep between them covered the assignment
 direction twice and the return direction not at all.  What found defect 3 was
 reading two adjacent declarations.
 
+**Defect 5, FIXED: ELEVEN functions RETURN a VERT and were declared implicit
+`int`.**  This is the widened-VERT half of defect 3's class, and it is the
+worse half, because it does not crash — **it inverts a predicate**.
+`UNDEFINED` is −1; returned from an implicit-`int` function it goes back in
+`w0`, a write to `w0` zeroes bits 63:32, and the caller reads
+`0x00000000FFFFFFFF` = 4294967295.  `DEFINED(v)` is `(v >= 0)`.  So after
+widening VERT, **every undefined value returned by one of these tested as
+defined.**
+
+Found by sweeping, in two passes, and **the first pass was too narrow**:
+
+| pass | what it asked | found |
+|---|---|---|
+| 1 | which functions `return(UNDEFINED)` | `oneelt innerdo maxentry lexval NUM` |
+| 2 | which return a **VERT-typed local** with no return type | `addum makenode makeif comdom lowanc makebr` |
+
+The second pass is the right question and the first is a special case of it.
+Two of the six only pass 2 could find decide the tree's **shape** rather than
+one node's field: `comdom` fills `dom[]` and `lowanc` fills `head[]`, and
+`gettree` branches on `head[v] == head[from]`.  A truncated `UNDEFINED` there
+does not crash — it builds a different program.
+
+Each is called before its own definition, so all eleven needed the forward
+declaration and not merely the definition corrected.
+
+## A verified latent hazard, NOT the current cause: `create()` reallocs an
+## arena pointer
+
+`0.parts.c` grows the graph with
+
+```c
+temp = realloc(graph, maxnode*sizeof(*graph));
+free(graph);            /* after realloc has already released it */
+graph = temp;
+```
+
+Two things are wrong and both are measured, not read.  `graph` is allocated by
+**`challoc`** (`1.init.c:11`), and `challoc` sub-allocates inside a larger
+block — `morespace()` does `q = malloc(...)` then `q->blk = q + 1` — so
+`graph` **is not a `malloc` pointer** and neither `realloc` nor `free` may be
+called on it.  And `free(graph)` after `realloc(graph, …)` is a double free
+when the block moved, or frees the block just returned when it did not.
+
+**Not reachable in anything tested here**: `maxnode` starts at **400**
+(`0.args.c:10`) and the reproducers create ~10 nodes.  It is recorded because
+it fires on a large Fortran routine, which is exactly the input nobody will
+try until the small ones work.
+
 ## Where to start next: the same loop, one more turn
 
 `mkthen` asserts `!DEFINED(w) || (DEFINED(tc) && BRANCHTYPE(NTYPE(tc)))`.
@@ -158,19 +206,42 @@ written as 32 bits and read as 64, so it reads *positive* and `DEFINED(w)` is
 true when it must be false.  `tc` is **0xFFFFFFFF00000008**: top half all-ones,
 low half 8.
 
-**That pair is two adjacent 4-byte `int`s being read as one 8-byte `long`** —
-little-endian, low element 8, high element −1.  So a 32-bit-element array is
-still being read at VERT stride somewhere between `recognize()` and the graph.
-Ruled out by measurement already: all eight graph-cell returners in
-`0.parts.c` are `VERT *`; `makenode` is self-consistent (`int arctype[]` read
-as `int`, widened on store at `ARC(num,i) = arctype[i]`); and the only `int *`
-left in any header is `ntobef`/`ntoaft`, which are node-index arrays and not
-cells.  The remaining `int *` locals are the candidate set —
-`1.recog.c:9,310` (`arctype`), `1.line.c:32`, `2.dfs.c:21,148`.
+**The values are unchanged by all eleven fixes of defect 5**, which is what
+says the remaining defect is a different one and not a missed instance.
+
+**Dumping the whole row is what narrowed it, and it refuted two hypotheses.**
+For the failing node (`NTYPE`=IFVX, `nonarcs`=8, `childper`=2, so `LCHILD`
+THEN is `[7]` and ELSE is `[6]`):
+
+```
+[0]=1 [1]=-1 [2]=-1 [3]=-1 [4]=4425033912 [5]=1 [6]=4294967295 [7]=-4294967288 [8]=7 [9]=4
+```
+
+- **`[4]` is NOT corrupt**, though it reads like it.  It is `PREDIC(v)`, a
+  string pointer, and it **changes between runs** (`12884912312`, then
+  `4425033912` = `0x107C4C0B8`, an ordinary macOS heap address).  ASLR varying
+  it is what says it is a correctly stored 64-bit pointer — which is the whole
+  point of widening VERT.  A first reading called it garbage; the second run
+  is what corrected that.
+- **`[6]` and `[7]` are correct when `gettree` finishes initialising them.**
+  Instrumented, `INIT v=3 i=0 cell=-1` and `INIT v=3 i=1 cell=-1`, and the
+  `LCHILD(from,THEN) = v` write **never executes** for this node.  So the
+  corruption is in a *later phase*, not in `gettree`.
+
+The phase order is `build()` → `gettree`, then `structure()` (`3.main.c`) →
+`getreach` → `getflow` → `getthen`, and `mkthen` is inside `getthen`.  So the
+corrupter is **`getreach` or `getflow`**.  `getflow`'s `fixflow`
+(`3.flow.c:54`) is the one that writes `LCHILD(v,i) = x` with
+`x = makebr(z)` — the prime suspect, and the next thing to instrument.
 
 **Do not reach for lldb**: v8cc emits no unwind info, so a backtrace stops at
-frame #0 every time.  What worked was instrumenting the scratch copy and
-printing the values, which named the two-adjacent-ints pattern in one run.
+frame #0 every time.  What worked was instrumenting the scratch copy.
+
+**And instrument a brace-less loop with braces.**  `gettree`'s initialiser is
+`for (i = 0; i < CHILDNUM(v); ++i)` with **no braces**, so a `fprintf` added
+after the body lands *outside* the loop where `i == CHILDNUM(v)`, and
+`lchild`'s own assertion fires.  That reads as a new finding and is the
+instrument.  Third instance here of *an instrument you wrote is a suspect*.
 
 **And still do not add it to the Makefile.**  A program installed into the
 world that dies on its own primary input is worse than one that is not there:

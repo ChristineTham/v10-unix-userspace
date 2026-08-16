@@ -68,6 +68,41 @@ extern int stopflg;		/* turns off generation of stop statements */
 extern int hascom[TYPENUM];		/* FALSE for types with no comments, 2 otherwise */
 extern int nonarcs[TYPENUM];		/* number of wds per node other than arcs */
 extern VERT *arc(), *lchild();
+
+/*
+ * PORT: five functions RETURN a VERT and were declared implicit int, so every
+ * one of them destroyed the top half.  This is the widened-VERT half of the
+ * class the eight pointer-returners above are the other half of, and it is
+ * the worse half, because it does not crash -- IT INVERTS A PREDICATE.
+ *
+ * `UNDEFINED' is -1.  Returned from an implicit-int function it goes back in
+ * w0, a write to w0 zeroes bits 63:32 architecturally, and the caller reads
+ * 0x00000000FFFFFFFF = 4294967295.  `DEFINED(v)' is `(v >= 0)'.  So after
+ * widening VERT, EVERY UNDEFINED VALUE IN THE PROGRAM TESTED AS DEFINED.
+ * Measured in mkthen: `w=4294967295' where -1 was meant.
+ *
+ * Each is called from exactly one file and each is called BEFORE its own
+ * definition, so all five need the forward declaration and not merely the
+ * definition corrected; `oneelt' additionally crosses files (defined
+ * 0.list.c, called 2.tree.c).  They are together here because they are one
+ * finding -- found by sweeping `return(UNDEFINED)' against declared return
+ * types, rather than by meeting them one crash at a time.
+ */
+extern VERT oneelt(), innerdo(), maxentry(), lexval(), NUM();
+
+/*
+ * PORT: and SIX MORE, which the first sweep missed because it searched
+ * `return(UNDEFINED)' and these return a VERT-typed LOCAL.  Same class, wider
+ * population -- the sweep that finds it asks which functions return a
+ * variable declared VERT while carrying no return type of their own, not
+ * which ones mention UNDEFINED.
+ *
+ * Two of these decide the tree's SHAPE rather than one node's field:
+ * `comdom' fills dom[] and `lowanc' fills head[], and gettree branches on
+ * `head[v] == head[from]'.  A truncated UNDEFINED there does not crash, it
+ * builds a different program.
+ */
+extern VERT addum(), makenode(), makeif(), comdom(), lowanc(), makebr();
 /*
  * PORT: `VERT *', all six -- and THIS IS THE LINE BESIDE IT, literally.  The
  * line directly above declares `arc()' and `lchild()' as VERT *; these six

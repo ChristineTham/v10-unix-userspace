@@ -33,7 +33,7 @@ VERT *dom;
 	}
 
 
-comdom(u,v,dom)			/* find closest common dominator of u,v */
+VERT comdom(	/* PORT: was implicit int -- returns a VERT */u,v,dom)			/* find closest common dominator of u,v */
 VERT u,v, *dom;
 	{
 	if (u == UNDEFINED) return(v);

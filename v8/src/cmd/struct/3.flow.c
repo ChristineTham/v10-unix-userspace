@@ -61,7 +61,7 @@ VERT autolex;		/* lexical successor of v */
 	}
 
 
-lexval(v,lastlex)
+VERT lexval(v,lastlex)	/* PORT: was implicit int -- returns a VERT */
 VERT v,lastlex;
 	{
 	VERT sib;
@@ -77,7 +77,7 @@ VERT v,lastlex;
 	}
 
 
-makebr(w)		/* make branching node leading to w */
+VERT makebr(	/* PORT: was implicit int -- returns a VERT */w)		/* make branching node leading to w */
 VERT w;
 	{
 	VERT new;

@@ -18,7 +18,7 @@ fingraph()
 		}
 	}
 
-addum(v,lst)
+VERT addum(	/* PORT: was implicit int -- returns a VERT */v,lst)
 VERT v;
 struct list *lst;
 	{

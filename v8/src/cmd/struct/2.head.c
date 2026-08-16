@@ -57,7 +57,7 @@ VERT *head;
 	}
 
 
-lowanc(y,z,head)		/* find the first node in chain of y which is anc of z, if it exists */
+VERT lowanc(	/* PORT: was implicit int -- returns a VERT */y,z,head)		/* find the first node in chain of y which is anc of z, if it exists */
 VERT y,z, *head;
 	{
 	while (y != -1 && !ANC(y,z))

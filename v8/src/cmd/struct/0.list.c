@@ -35,7 +35,7 @@ struct list *ls;
 	}
 
 
-oneelt(ls)		/* return w if w is only elt of ls, UNDEFINED otherwise */
+VERT oneelt(ls)	/* PORT: was implicit int -- returns a VERT */		/* return w if w is only elt of ls, UNDEFINED otherwise */
 struct list *ls;
 	{
 	if (!ls) return(UNDEFINED);
