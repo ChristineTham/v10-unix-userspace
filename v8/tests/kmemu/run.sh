@@ -460,11 +460,14 @@ LOAD=$V8ROOT/usr/bin/load
 # SNAPSHOT BEFORE THE rm, AND RESTORE FROM THE SNAPSHOT -- not from a list.
 # This block used to put back three names by hand (`dk', `pt', `drum'), and by
 # the time /dev/fd, the four std nodes and /dev/null had arrived that was
-# THREE OF 136.  So every `make test' left the installed world without a
+# THREE OF 136.  So every `make test' left the BUILD TREE's rootfs without a
 # /dev/null, a /dev/tty or a /dev/fd until the next `make' quietly rebuilt
-# them -- invisible because every suite that reads those runs BEFORE this one,
-# and running one alone rebuilds its prerequisites first.  A hand-written
-# restore list is the two-copies-of-a-list trap with the copies a year apart.
+# them -- invisible three ways: every suite that reads those runs BEFORE this
+# one, running one alone rebuilds its prerequisites first, and $(PREFIX)/golden
+# was never affected because `make install' opens with `make clean' for an
+# unrelated reason.  The artefact anyone would inspect was the correct one.
+# A hand-written restore list is the two-copies-of-a-list trap with the copies
+# a year apart.
 cp -a "$V8ROOT/dev" "$TMP/devsave"
 rm -rf "$V8ROOT/unix" "$V8ROOT/dev"
 "$LOAD" > "$TMP/load.out" 2>"$TMP/load.err"

@@ -3691,10 +3691,16 @@ not testable until it is installed.
     above had just made it true**: the loop asserted a post-condition of its
     own cleanup rather than a property of the build. And the restore beneath it
     put back a hand-written three names — `dk`, `pt`, `drum` — which by then was
-    **three of 136**, so every `make test` left the installed world with no
+    **three of 136**, so every `make test` left the BUILD TREE's rootfs with no
     `/dev/null`, no `/dev/tty` and no `/dev/fd` until the next `make` quietly
-    rebuilt them. Invisible twice over: every suite that reads those runs
-    *before* kmemu, and running one alone rebuilds its prerequisites first.
+    rebuilt them. Invisible **three** ways over: every suite that reads those
+    runs *before* kmemu; running one alone rebuilds its prerequisites first;
+    and `$(PREFIX)/golden` was never affected at all, because `make install`
+    opens with `make clean` for an unrelated reason (`V8ROOT_DEFAULT` is a
+    recipe flag rather than a prerequisite). So the shipped world was always
+    whole and only the tree a developer actually runs out of was not — which
+    is the direction that keeps a defect alive longest, since the artefact
+    anyone would think to check is the correct one.
     Snapshot-and-restore now, so the suite need not know what the build owns.
   - **AND WRITING THAT FIX REPRODUCED THE BUG BEING FIXED, one draft later.**
     The `console` third of the old loop was kept and reworded — and left

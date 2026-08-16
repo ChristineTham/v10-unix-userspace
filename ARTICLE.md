@@ -3350,10 +3350,14 @@ almost empty — on a tree where the tests had just passed. One of the suites
 deletes `/dev` on purpose, to prove that the load-average program manufactures
 its fake kernel on demand, and then puts back what the build owns. It put back
 three names. By now the build owns a hundred and thirty-six, so every full test
-run had been leaving the installed world without a `/dev/null`, a `/dev/tty` or
-a `/dev/fd` until the next build silently rebuilt them. Two things hid it: every
-suite that reads those runs earlier in the sequence, and running one suite on its
-own rebuilds what it needs first.
+run had been leaving the build tree's world without a `/dev/null`, a `/dev/tty`
+or a `/dev/fd` until the next build silently rebuilt them. Three things hid it:
+every suite that reads those runs earlier in the sequence; running one suite on
+its own rebuilds what it needs first; and the *installed* world was never
+affected, because `make install` begins with a clean for an unrelated reason. So
+the artefact anyone would have thought to inspect was the one that was fine, and
+the broken one was the tree you actually work in — which is the direction that
+keeps a defect alive longest.
 
 Sitting immediately above that three-name restore was a loop asserting that
 `/dev/null` and `/dev/tty` *do not exist* — word for word the claim I had just
