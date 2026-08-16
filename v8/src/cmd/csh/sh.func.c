@@ -1005,7 +1005,7 @@ setlim(lp, limit)
 dosuspend()
 {
 	int old, ldisc;
-	short ctpgrp;
+	int ctpgrp;		/* PORT: sh.h's tpgrp reason */
 	int o;
 
 	if (loginsh)

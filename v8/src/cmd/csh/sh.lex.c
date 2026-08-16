@@ -1133,7 +1133,7 @@ reread:
 				return (-1);
 			/* was isatty but raw with ignoreeof yields problems */
 			if (ioctl(SHIN, TIOCGETP, &tty)==0 && (tty.sg_flags & RAW) == 0) {
-				short ctpgrp;
+				int ctpgrp;	/* PORT: sh.h's tpgrp reason */
 
 				if (++sincereal > 25)
 					goto oops;

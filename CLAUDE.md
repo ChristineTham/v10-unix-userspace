@@ -2057,9 +2057,14 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 150 installed**, stable. (It moves when something is imported,
+**286 shipped, 163 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
-and awk took it from 138.)
+and awk took it from 138.  This sentence said 150 for several batches while the
+guard kept ARTICLE.md exact — **a number with a test beside it stays current and
+a number in prose does not**, which is the same asymmetry that made the test
+count the one thing in ARTICLE.md that never went stale.  Re-measure it, do not
+increment it:
+`find rootfs/bin rootfs/usr/bin rootfs/etc -maxdepth 1 -type f -perm -u+x | wc -l`.)
 
 ## Architecture: three layers, three different rules
 
@@ -3287,6 +3292,78 @@ a stream's exclusive-use lock. So the contract is two properties rather than a
 formula — **root maps to root, and non-root never maps to root** — with every
 value that fits kept exact.
 
+**AND THE SIXTH INSTANCE IS IN A PROGRAM'S OWN STRUCT RATHER THAN A KERNEL
+ONE, WHICH IS WHERE NOBODY WAS LOOKING.** Every earlier member of the table is a
+field the *shim* narrows on the way past a seam. `csh`'s `sh.proc.h` declares
+`short p_pid` in `struct process`, its own in-core job list, and nothing in the
+shim touches it: `palloc` stores what `fork` returned and `pchild` compares that
+against what `wait3` returned (`sh.proc.c:51`). Above 32767 the stored copy is
+negative, the comparison never matches, `PRUNNING` is never cleared, and
+`pjwait` waits forever for a child it has already reaped. Measured: palloc
+recorded **45267** and pjwait read back **−20269**, the same sixteen bits signed.
+It is the **identity** half of the class, like `d_ino` — a key that does not
+compare equal is not a rounding error — and widening is safe by the one-end
+rule, since the list is not on disk and does not cross the seam. The sweep is
+
+```bash
+grep -rnE '(^|[^a-z_])(short|u_short|unsigned short)([[:blank:]]+(unsigned|int))?[[:blank:]]+[a-z_]*(pid|pgrp|jobid|ppid)[a-z_0-9]*' src shim compiler --include='*.c' --include='*.h' | grep -v '\.md:'
+```
+
+Five things generalise, and the first two are about diagnosis rather than code:
+
+- **A TRUE STACK SAMPLE CAN CARRY A FALSE INFERENCE, AND IT COST A WHOLE
+  SESSION.** The sample said `pjwait → sigpause → sigsuspend`, which is exactly
+  where it was, so a whole session went into the signal layer — two real bugs
+  found there (an unblock/suspend race, an invalid `sigprocmask` `how`), both
+  fixed, **neither moving the symptom**. That should have been read as evidence
+  much sooner: *two correct fixes to a layer, neither changing the behaviour, is
+  the layer telling you it is not the layer.* What ended it was a **probe** —
+  `pjwait`'s loop rewritten in forty lines outside csh against the same
+  `libjobs` — which worked on the first run and moved the search into csh.
+- **AND THE INSTRUMENT WAS WRONG BEFORE THE PROGRAM WAS, in a way that reads as
+  a finding.** The first trace wrote to fd 2 and printed *nothing at all*, which
+  looks exactly like "these functions are never called" — a conclusion that
+  would have been completely wrong. csh moves 0/1/2 to high descriptors at
+  startup (`sh.c:861-864`). The binary was checked for the trace strings before
+  the silence was believed, which is what caught it; a tracer that opens its own
+  file answered immediately. Fourth instance of *an instrument you wrote is a
+  suspect*.
+- **A FRESHLY BOOTED HOST HANDS OUT LOW PIDS, SO EVERY BEHAVIOURAL CASE PASSES
+  ON A RUNNER.** This is the recorded host-property trap arriving as the *only*
+  guard anyone would think to write: run a command, run a pipeline, run twenty
+  in a row — all of them pass against the broken shell wherever pids stay under
+  32767, which is every CI runner. So the load-bearing case is the **width**,
+  which is wrong at every pid, and `tests/wavea` also **prints how high this
+  host's pids actually go** and says out loud when the value cases can see
+  nothing. Same answer `tests/kmemu` reached for the kernel's `p_pid`.
+- **AND MUTATION MEASURED SOMETHING WORSE THAN "PASSES ON A RUNNER": THE VALUE
+  CASES ARE FLAKY UNDER THE BUG, ON A HOST THAT CAN SEE IT.** Restoring the
+  `short` fired **three of six**, not six — because what matters is the pid the
+  *child* happens to get, not how high the counter has climbed, and a machine
+  hands out low pids from its free pool at any ceiling. The earlier "12 of 12
+  deterministic" reading was a property of a host whose pids were *all* above
+  32767. So the value cases are a demonstration and never a guard. The mutation
+  that validates the guard is the one aimed at a variable no behavioural case
+  touches — `shpgrp` is job-control-only, and reverting it fires the width case
+  and **nothing else**, at pids of 46564. *A mutation that fires everywhere
+  tells you the code matters; one that fires on exactly the case written for it
+  tells you the case is aimed.*
+- **THE FILE SET OF A SOURCE SWEEP IS PART OF ITS CLAIM, AND DERIVING IT
+  SETTLED A REAL QUESTION.** `nfunc.c` sits in the csh directory carrying the
+  identical defect, and upstream's own makefile builds `sh.func.o` and never
+  names it — so nothing forces a change to a file no build reads, and an
+  allow-list naming it would be one more entry to go stale. The sweep takes its
+  files from the **built objects** instead, so nfunc.c is excluded as a
+  consequence and would be covered automatically the day anything compiles it.
+  `tests/deps` asserts the same fact from the other end, as a `nodep`.
+- **AND THE SWEEP FOUND A SECOND INSTANCE THAT IS THIS PORT'S OWN CASCADE.**
+  `w.c:41` is `short w_pid; /* proc.p_pid */` and `w.c:550` is
+  `pr[np].w_pid = mproc.p_pid` — and `p_pid` is `int` here *because this port
+  widened it* for the row above. A global type change reaches past the headers,
+  which narrowing `daddr_t` already demonstrated once in `libc/gen/ltol3.c`.
+  Not exercised (w's proc half exits at `:469` with `No mem`), and recorded as
+  unexercised rather than left implied.
+
 **A 1985 BUFFER SIZE IS THE SAME CLASS, and the ratio is what breaks.** Raising
 `DIRSIZ` 14 → 254 did not just widen a field; it invalidated every buffer sized
 *against* it. Four programs, all found by the `lp64-auditor` subagent reading
@@ -3805,9 +3882,13 @@ following it. The workflow file is the authority, and it says why in a comment.
 
 **There are TWO jobs now**, and the split is about time-to-signal rather than
 tidiness. `build-and-test` is the fast one. `crash-probe` runs
-`tests/crash-probe.sh` — 6360 invocations, ~13 minutes — against
-`tests/crash-probe.floor`, plus the `PROBE=mutating` set whose expectation is
-**empty**. In one job the fast signal would arrive thirteen minutes late on
+`tests/crash-probe.sh` — **7685 invocations over 145 programs**, ~13 minutes —
+against `tests/crash-probe.floor`, plus the `PROBE=mutating` set whose
+expectation is **empty**.  (That figure is informational and grows with every
+import; the guard is the floor FILE, which is why this sentence going stale
+costs nothing.  It said 6360/120 until csh landed.  The historical numbers in
+the entries below are records of what was measured at the time and are
+deliberately not rewritten.) In one job the fast signal would arrive thirteen minutes late on
 every push, and a slow check is one people stop reading. Note the probe must
 be the only thing touching the tree while it runs: a concurrent rebuild
 replacing a Mach-O mid-execution shows up as SIGKILL, which the script counts
@@ -4555,6 +4636,41 @@ not testable until it is installed.
   with a diff that reads like `who` printing the user twice. Do not treat "green
   in CI" as evidence the assumption is gone; a runner is a *machine*, with its
   own peculiarities, not a neutral referee.
+
+  **AND A FOURTH SHAPE, WHICH IS THE CHEAPEST AUDIT AVAILABLE FOR ALL OF THEM:
+  MOVE THE TREE TO ANOTHER MACHINE.** The repository was relocated to a second
+  physical volume mid-session and that one change found **two** assumptions
+  nothing else had, in a tree that was 2451 green minutes earlier:
+
+  - **`tests/jail`'s `ln /bin/cat lnprobe` linked into `$TMPDIR`**, and a hard
+    link cannot cross a filesystem. `$TMPDIR` was on `/dev/disk3s5` and the
+    tree on `/dev/disk5s1`, so it failed **EXDEV** and reported `ln produced
+    nothing`. The case had also only ever tested the FIRST name — the second
+    was a relative path in a host temp directory and never went near the jail.
+    Linking to a path *inside the rootfs* is on the same filesystem as
+    `/bin/cat` by construction, tests both names, and lets the case assert by
+    **inode** rather than by size: a hard link is one inode with two names, and
+    two identical copies pass a size comparison while being precisely what a
+    broken link would leave.
+  - **AND THE OTHER WAS NOT A TEST AT ALL — `df` HAD BEEN WRONG FOR THE LIFE OF
+    THE PORT.** `dfree()` matches an mtab entry by device number and takes both
+    display columns from it, and took its NUMBERS from the caller's path. In
+    the jail `stat("/")` is `$V8ROOT`, so the `/` row is correctly labelled with
+    the volume holding the rootfs and reported the host root's block count —
+    1948455240 against 976557016, two rows naming one filesystem and disagreeing
+    by a factor of two. Invisible while the repo lived on the root volume, where
+    the two paths name the same thing. **The host-property trap in a PROGRAM
+    rather than in a test**, and the test beside it carried the same assumption
+    from the other end, which is why neither could catch the other.
+
+  Two rules. **A green suite is evidence about one machine**, and the second
+  machine is cheap next to what it finds — this is the same argument CI already
+  makes, except CI only ever runs on *its* volume layout. And **when a test and
+  the code it exercises share an assumption, neither can catch the other**: the
+  `df` case compared one row, chosen as df's own first row, against the host's
+  figure for that row's device, which agrees exactly when the bug is invisible.
+  It checks every row by mount point now, and re-running the defect against it
+  names **two** bad rows where the old form saw one.
 
   **And a THIRD shape, which is not a property of the machine but of what ran
   before it.** `libkmemu` manufactures `/etc/utmp` lazily, when the first reader

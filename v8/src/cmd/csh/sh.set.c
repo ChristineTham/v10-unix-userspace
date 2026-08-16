@@ -270,7 +270,7 @@ operate(op, vp, p)
  *
  * The two callers bound the risk in opposite directions, which is why this is
  * safe to get slightly wrong and was still measured: onlyread() has ONE caller
- * (`:413', onlyread(value) ? savestr(value) : value) where answering yes only
+ * (`:441', onlyread(value) ? savestr(value) : value) where answering yes only
  * copies, and xfree() has 87, where freeing a non-heap pointer is the crash.
  */
 onlyread(cp)

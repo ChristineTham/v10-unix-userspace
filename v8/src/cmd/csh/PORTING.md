@@ -4,53 +4,93 @@ Task #93.  Bill Joy's C shell, 4.1BSD vintage: 31 files, 12524 lines.
 Upstream `v8/usr/src/cmd/csh`, installs to `/bin` (`Admin/binfiles:10`, and
 the shipped tree has `/bin/csh`).
 
-**BUILT AND DELIBERATELY NOT INSTALLED.**  The Makefile has its rules and
-they run; `$(CSH_BUILT)` is deliberately absent from `$(V8DIRBIN_BUILT)`, and
-`tests/wavea` exempts it by name.
+**BUILT AND INSTALLED.**  It links with an **empty `nm -u`** and runs the whole
+language, including external commands, pipelines and backquotes.
 
-It links with an **empty `nm -u`** and runs the whole language:
+## The defect that mattered: a `short` holding a host pid
 
-| | |
-|---|---|
-| `@` arithmetic | `set x = 6; @ y = $x * 7` → **42** |
-| `foreach` | `foreach i (p q r)` → **pqr** |
-| `while` | counts **321** |
-| `switch`/`case` | **matched** |
-| globbing | `gt/*.txt` expands; `[nosuch]` is correctly an error |
-| `if ( -e /bin/sh )` | **present** |
+It stood built-and-not-installed for exactly one commit, because it produced
+correct output and then hung on every external command.  The recorded diagnosis
+was a `SIGCHLD` that never woke `pjwait`, taken from a stack sample.  **The
+sample was true and the inference from it was wrong**: the signal machinery was
+correct throughout.
 
-**And it hangs on every external command**, which is why it is not installed.
-A shell that prints the right answer and then waits forever is worse in the
-world than no `csh` at all — the same rule that kept `struct` out until it
-worked.
+`sh.proc.h` declared (now `:39` after the PORT comment)
 
-The output is CORRECT and arrives first; only the exit never comes.  Sampled,
-the stack names one function and no guessing is required:
-
-```
-process -> execute -> pwait -> pjwait -> sigpause -> sigsys
-        -> v8s_sigsys -> v8s_sigpause_wait -> sigsuspend
+```c
+	short	p_pid;
+	short	p_jobid;		/* pid of job leader */
 ```
 
-so `pjwait` blocks for a `SIGCHLD` that never wakes it.  **Two candidate
-causes were measured and are not it**, which is worth recording because both
-were plausible:
+`palloc` stores what `fork` returned; `pchild` compares it against what `wait3`
+returns (`sh.proc.c:51`, `pid == pp->p_pid`).  V8 pids wrapped at 30000 and a
+VAX `short` held every one of them.  macOS hands out pids to 99998, so above
+32767 the stored copy is negative, the comparison never matches, `PRUNNING` is
+never cleared, and `pjwait` pauses forever for a child it has already reaped.
 
-- **An unblock/suspend race.**  `sigset.c` spells sigpause as ONE call
-  (`sigsys(n|SIGDOPAUSE, act)`) because the VAX set the action and slept
-  atomically, so unblocking and then suspending would lose a signal arriving
-  in between.  Real, fixed (`sigsuspend` does the unblocking now) — and **not
-  the cause**: the hang is deterministic, 12 runs of 12.  The intermittency
-  that suggested a race was my own harness, an 8-second deadline in one run
-  and 6 in the next.
-- **An invalid `sigprocmask` `how` of 0.**  A genuine bug — SIG_BLOCK is 1, so
-  the mask query silently failed and returned an empty mask.  Fixed.  No
-  change to the hang.
+Measured, with the two ends printed side by side:
 
-Also ruled out by measurement rather than argument: the shape of stdin (file,
-pipe and detached all hang identically), and a missing `/dev` from
-`tests/kmemu`'s delete-and-restore (`/dev` is intact and a rebuild changes
-nothing).
+```
+palloc: recorded pid 45267
+pjwait: pp->p_pid    -20269       <- 0xB0D3 read as a signed short
+pchild: wait3 ->      45267
+pchild: NO MATCH for  45267
+```
+
+It is the **identity** half of the 16-bit-range class, the same shape as
+`d_ino`: the field is not a quantity being approximated, it is a key, and a key
+that does not compare equal is not a rounding error.  Widening is safe for the
+reason `awk`'s `struct rrow` was — the struct has **one end**.  It is csh's own
+in-core list: not on disk, not across the shim seam.
+
+`p_jobid` goes with it and is not decoration: it is a pgrp, and `pkill` hands it
+to `killpg` (`sh.proc.c:860`).
+
+### A second defect rode with the same fix
+
+`sh.h`'s `shpgrp`, `tpgrp` and `opgrp` were `short` too, and every one of them
+has its **address taken** for `ioctl(TIOCGPGRP/TIOCSPGRP)` — an `int *` in V8's
+own header and in this port's shim (`shim/v8sys/ioctl.c:225`, `*(int *)arg = n`).
+So the get wrote four bytes into a two-byte global and the set read two bytes of
+whatever followed it.  Widening is what makes the declaration agree with the
+ioctl it is passed to.
+
+`nfunc.c` carries the identical `short ctpgrp` and is **deliberately not
+changed**: upstream's own makefile builds `sh.func.o` and never names it, so
+nothing forces a change to a file no build reads.  Both guards are scoped so
+that this is a consequence rather than an exception — `tests/wavea`'s width
+sweep derives its file set from the **built objects**, and `tests/deps` asserts
+from the other end that `nfunc.c` is a prerequisite of nothing.
+
+## How it was found, and what the wrong turn cost
+
+The recorded stack sample sent a whole session at the signal layer.  What ended
+that was a **probe**: `pjwait`'s loop — `sighold`, read the flag, `sigpause` —
+written as forty lines outside csh and linked against the same `libjobs`.  It
+worked on the first run, which said the defect was in csh and not underneath it.
+
+Then instrumentation, and **the instrument was wrong before the program was**:
+the first trace wrote to fd 2 and printed nothing at all, which reads exactly
+like "these functions are never called".  csh reshuffles 0/1/2 to high
+descriptors at startup (`sh.c:861-864`).  The second version opened its own file
+and the answer arrived immediately.  *An instrument you wrote is a suspect*, for
+the fourth time in this tree.
+
+## Why no behavioural test can guard it, and what does
+
+**A freshly booted host hands out low pids**, so every behavioural case here —
+run a command, run a pipeline, run twenty in a row — passes against the broken
+shell on a CI runner.  That is the same property that let the 16-bit `p_pid`
+survive in `tests/kmemu`, and it is why this reached a commit.
+
+So `tests/wavea` carries three kinds of case:
+
+- the **value** cases (six of them, one per fork path plus `$status`), which are
+  the demonstration and are live only above 32767;
+- the **width** case, which is wrong at every pid — no built csh source may
+  declare a pid in a `short`, over a file set derived from the built objects;
+- a line that prints how high this host's pids actually go, and says out loud
+  when the value cases cannot see anything.
 
 ## What was fixed getting here, and all of it is independently right
 
@@ -72,9 +112,16 @@ Four of these are defects in code csh merely *reached* first:
 - **`getpgrp` was missing while `setpgrp` was present**, which is how one half
   of a pair sits absent with nothing to say so.
 
-New and awaiting their consumer: `v8s_sigsys` and `v8s_sigpeel`.  They are
-syscall-table entries rather than library code, which is why they are in the
-shim beside `killpg` and `setpgrp`.
+Two more were found while chasing the hang, and are real bugs that were simply
+not the cause: an unblock/suspend race in `v8s_sigsys` (`sigsuspend` does the
+unblocking now, because it installs its mask and waits as one operation), and a
+`sigprocmask` called with a `how` of 0, which is not a valid operation.  Both
+are kept.  **Neither changed the hang**, which is what should have been read as
+evidence sooner: two correct fixes to a layer, neither moving the symptom, is
+the layer telling you it is not the layer.
+
+`v8s_sigsys` and `v8s_sigpeel` are syscall-table entries rather than library
+code, which is why they are in the shim beside `killpg` and `setpgrp`.
 
 ## Four apparent blockers, none of them real
 
@@ -101,7 +148,9 @@ against `sys/param.h`, which is the DIRSIZ multi-spelling shape and a warning.
 
 The LP64 audit is **clean** — none of the undeclared-pointer-return, the
 `int`-holding-`malloc`, the `#include`d-non-header or the address-0 argv
-sweeps finds anything.  csh is BSD code and better declared than V7's.
+sweeps finds anything.  csh is BSD code and better declared than V7's.  **The
+sweep that was missing is the one that found the bug**, and it is now written
+down beside the others: a `short` holding a host pid.
 
 Linking gives `_sigsys` and `_end`, and nothing else.
 
@@ -127,7 +176,8 @@ kernel's `sigaction` wants a trampoline, which is the same job.
 
 ### `_end` — NOT a missing symbol, a missing MEMORY MODEL
 
-`sh.set.c:251,259` is `extern char end[]`, and the two users are
+`onlyread` and `xfree` (`sh.set.c:276` and `:284`) each used `extern char
+end[]`, and reduce to
 
 ```c
 onlyread(cp) { return (cp < end); }
@@ -146,26 +196,29 @@ available.
 exactly: the arena is `[arena_base, arena_brk)`.  Both call sites also have a
 safe direction, which bounds the risk:
 
-- `onlyread` has **one** caller (`sh.set.c:413`, `onlyread(value) ?
+- `onlyread` has **one** caller (`sh.set.c:441`, `onlyread(value) ?
   savestr(value) : value`) where answering "yes" merely copies.
 - `xfree` has **87**, where freeing a non-heap pointer is the crash.
 
 A shim predicate is therefore *stronger* than upstream, which would happily
 free a stack pointer if one ever reached it.
 
-## Do not link it until sigsys exists, and here is why
+## Do not link it without sigsys, and here is why
 
 Only `sigsys` errored.  `sigset`, `sighold` and `sigrelse` **resolved
 silently from `-lSystem`** — measured; macOS ships System V compatibility
 versions of all three.  That is the host leak `tests/kmemu` exists to catch,
-and it would have been invisible in a build that "worked".
+and it would have been invisible in a build that "worked".  `tests/deps`
+asserts the archive is a real prerequisite of the binary for that reason: the
+failure it guards is not a link error but a silent substitution of macOS's
+signal semantics for V8's.
 
-## Three decisions left, each with a precedent here
+## Three decisions, each with a precedent here
 
 - **`sigset.c` defines `signal()` and so does libv8stubs.**  The
   duplicate-definition class.  Upstream resolves it by link order (`-ljobs`
-  before libc) and so can this port, but it must be **asserted** rather than
-  assumed: a stub member already pulled in for another reason wins instead.
+  before libc) and so does this port, and `tests/kmemu`'s collision sweep is
+  what keeps it honest rather than an assumption.
 - **csh builds its own `printf.c`, `doprnt.c` and `alloc.c`** against libv8c.
   That is population #3 of the same sweep — a program's own objects against
   an archive — where 25 of 56 collisions were silent.  Note `doprnt.c` **is
@@ -177,3 +230,13 @@ and it would have been invisible in a build that "worked".
   stop that already blocks rung 5 for `cpp` and `sh`.  Building without the
   pass is an optimisation lost, not semantics — the same call already made
   twice.
+
+## Still open
+
+- **Job control is untested.**  `csh -c` and script execution are exercised;
+  `%1`, `fg`, `bg`, `stop` and `^Z` need a controlling terminal, which is the
+  `/dev/fd/3` arrangement the `v8` launcher makes rather than something a
+  suite can set up cheaply.  `tpgrp` is `-1` in every case run here, which is
+  csh's own "no job control" value, so the widened pgrp variables are
+  exercised for width and not for job control.
+- **`nfunc.c`** is the alternate `sh.func.c` and is not built; see above.

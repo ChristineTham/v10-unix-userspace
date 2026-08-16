@@ -977,7 +977,18 @@ R=$ROOT/rootfs
 INTFNS='_strlen _dysize _slength _maplow _length _width _sgn _roman _decml
         _atoi _abc _read _jan1 _findcol _dolncnt _apack
         _column _tabcol _lineDOT _lineDOL
-        _getnum _getsigned'
+        _getnum _getsigned
+        _blklen'
+# `_blklen' is csh's sh.misc.c:100 -- `register int i = 0; while (*av++) i++;
+# return (i)', the length of a string vector, so a genuine int.  The sweep
+# flagged it the moment csh reached the rootfs, which is the sweep working: it
+# cannot tell a count from a truncated pointer, so it reports every narrowed
+# result and asks a human to classify it.
+#
+# It was added once before and REMOVED again when csh was backed out unbuilt,
+# and that round trip proved the half of this guard nobody exercises: the suite
+# also fails when INTFNS names something the sweep no longer finds.  An
+# allow-list that only ever grows is how tests/kmemu's allowed leaks went stale.
 # `_blklen' BELONGS HERE THE DAY csh IS INSTALLED and is deliberately absent
 # until then.  It is csh's sh.misc.c:100 -- `register int i = 0; while (*av++)
 # i++; return (i)', the length of a string vector, so a genuine int -- and the

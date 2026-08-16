@@ -311,19 +311,39 @@ else ok; fi
 
 # The numbers are the host's. df's kbytes column is s_fsize - s_isize, which
 # libkmemu fills from statfs f_blocks scaled to 1K -- so it must equal what the
-# host's own df -k calls 1024-blocks for the same device.
+# host's own df -k calls 1024-blocks for the same filesystem.
 #
-# The device is taken from df's OWN first row rather than from the host's `/'.
-# In the V8 world "/" is $V8ROOT, which lives on whichever volume holds the
-# repo -- so df legitimately reports that one and not the host's root device.
-# Asking the host about the device df named is the comparison that means
-# something; asking about a device df never mentions only tests the test.
-hostdev=$(awk 'NR==2 {print $2}' "$TMP/df.out")
-hostkb=$(df -k "/dev/$hostdev" 2>/dev/null | awk 'NR==2 {print $2}')
-v8kb=$(awk -v d="$hostdev" '$2 == d {print $3; exit}' "$TMP/df.out")
-if [ -n "$hostkb" ]; then
-	check "df's kbytes matches the host for $hostdev" "$hostkb" "$v8kb"
-else bad "could not ask the host about /dev/$hostdev"; fi
+# EVERY ROW, KEYED ON THE DIRECTORY, and both halves of that are corrections.
+# This case used to take the device out of df's FIRST row and ask the host about
+# /dev/<that>.  It passed for the life of the port and then failed the day the
+# tree was moved to a second volume -- not because df regressed but because the
+# case had a host property in it: in the V8 world "/" is $V8ROOT, so df's first
+# row is labelled with whatever volume holds the REPO, and comparing that
+# label's host figure against that row's numbers only agrees when the repo sits
+# on the host's root volume.
+#
+# IT WAS ALSO HIDING A REAL DEFECT, which is why the fix is not merely to skip
+# that row.  df resolved the row's dev and dir from the mtab entry it matched by
+# device number and took its NUMBERS from the caller's path, so the `/' row said
+# disk5s1 and reported the host root's block count -- 1948455240 against
+# 976557016.  src/cmd/df/PORTING.md.  Checking every row against the host by
+# MOUNT POINT is the relation the port controls, it is true on any machine, and
+# it is what catches that class rather than one instance of it.
+dfrows=0 dfbad=
+while read -r dfdir dfkb; do
+	[ -n "$dfdir" ] || continue
+	dfhost=$(df -k "$dfdir" 2>/dev/null | awk 'NR==2 {print $2}')
+	[ -n "$dfhost" ] || continue		# the host cannot describe it either
+	dfrows=$((dfrows+1))
+	[ "$dfhost" = "$dfkb" ] || dfbad="$dfbad $dfdir(v8=$dfkb host=$dfhost)"
+done <<EOF
+$(awk 'NR>1 {print $1, $3}' "$TMP/df.out")
+EOF
+if [ "$dfrows" -eq 0 ]; then
+	bad "df named no filesystem the host could confirm"
+else
+	check "df's kbytes matches the host on all $dfrows rows" 'none' "${dfbad:-none}"
+fi
 
 # df -i reports the FORMAT's ceiling, not the volume's contents, and that is
 # the honest answer rather than a plausible one: s_isize and s_tinode are 16-bit
@@ -335,9 +355,16 @@ else bad "could not ask the host about /dev/$hostdev"; fi
 # so it saturates; a small or nearly-full filesystem arriving first would give a
 # legitimate in-range number and fail. The relation is true at every volume and
 # still catches a truncated hand-off, which is the whole point.
+#
+# KEYED ON THE DIRECTORY, for the reason the kbytes case above now is: this
+# block used to share that case's `hostdev' -- df's own first row, which is
+# labelled with whatever volume holds the repo -- and asking the host about
+# /dev/<that> carries the same assumption.  Taking the row df prints and asking
+# the host about the same MOUNT POINT is a relation rather than a coincidence.
 "$DF" -i > "$TMP/dfi.out" 2>/dev/null
-ifree=$(awk -v d="$hostdev" '$2 == d {print $(NF-1); exit}' "$TMP/dfi.out")
-hostff=$(/bin/df -i "/dev/$hostdev" 2>/dev/null | awk 'NR==2 {print $7}')
+dfidir=$(awk 'NR==2 {print $1}' "$TMP/dfi.out")
+ifree=$(awk -v d="$dfidir" '$1 == d {print $(NF-1); exit}' "$TMP/dfi.out")
+hostff=$(/bin/df -i "$dfidir" 2>/dev/null | awk 'NR==2 {print $7}')
 if [ -n "$hostff" ] && [ "$hostff" -eq "$hostff" ] 2>/dev/null; then
 	want=$hostff; [ "$want" -gt 65535 ] && want=65535
 	check "df -i reports min(host free inodes, the 16-bit ceiling)" "$want" "$ifree"
@@ -346,7 +373,7 @@ else
 	# still the only value V7's 16-bit s_tinode can express, so assert that
 	# and say the weaker form was used.
 	check "df -i saturates ifree at the 16-bit ceiling" "65535" "$ifree"
-	echo "  (host free-inode count unavailable for /dev/$hostdev; ceiling only)"
+	echo "  (host free-inode count unavailable for $dfidir; ceiling only)"
 fi
 
 # -l walks the free-block list, and there is no free list -- there is no disk.

@@ -323,3 +323,40 @@ standing was that a mount in the window is one `df` can put in a table at all.
 
 A sweep is a snapshot of the machine it ran on. That is not an argument against
 sweeping; it is the reason the fixes must assert relations rather than values.
+
+## The row's identity came from one place and its numbers from another
+
+Found by moving the repository to a second volume, which is the only condition
+that can expose it — and it had been wrong for the life of the port.
+
+`dfree()` is handed a mount point.  When that is a directory it walks the mtab
+looking for the entry whose device number matches, and on a match it rewrites
+`file` to `/dev/<spec>`; both display columns then come from that entry (the
+`dev` column is the spec, the `dir` column is `mpath(file)`).  The **numbers**
+were still taken from `mp0`, the path the caller passed in.
+
+Inside the jail those two are not the same thing.  `stat("/")` resolves to
+`$V8ROOT`, so the `/` row is *correctly* labelled with the volume that holds
+the rootfs — and it was reporting the block count of the host's root.  Measured
+on a tree living on `/Volumes/Photos`:
+
+```
+dir                        dev       kbytes
+/Volumes/Photos            disk5s1   1948455240     <- host root's count
+...
+/Volumes/Photos            disk5s1   976557016      <- what disk5s1 actually has
+```
+
+Two rows naming one filesystem and disagreeing by a factor of two.  The fix is
+one line — take `mp0` from the entry the loop matched — and it is the
+"check which end supplies each operand" rule: the dev and dir columns had
+already moved to the matched entry and the numbers had not.
+
+**It was invisible because the repository had always sat on the host's root
+volume**, where the caller's path and the matched entry's path name the same
+filesystem.  That is the host-property trap arriving in a *program* rather than
+in a test, and the test beside it had the same assumption from the other end —
+`tests/kmemu` compared one row, chosen as df's own first row, against the host's
+figure for that row's device, which agrees only under the same condition.  It
+now checks **every** row by mount point, which is a relation this port controls;
+re-running the old defect against it names two bad rows rather than one.

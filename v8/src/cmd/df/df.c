@@ -142,6 +142,24 @@ char *file;
 			if(!stat(specbuf, &mstbuf) && mstbuf.st_rdev == stbuf.st_dev)
 			{
 				file = specbuf;
+				/* PORT: and the NUMBERS must come from the entry
+				 * this loop just matched, not from the argument.
+				 * Both display columns already do -- the dev is
+				 * specbuf and the dir is mpath(file) -- while
+				 * kmemu_fsstat below was still being handed mp0,
+				 * the caller's path.  Inside the jail those are
+				 * DIFFERENT whenever $V8ROOT is not on the host's
+				 * root volume: stat("/") is the rootfs, so the
+				 * `/' row is correctly labelled with the rootfs's
+				 * device and was reporting the host root's block
+				 * count.  Measured on a tree moved to a second
+				 * volume: the row said disk5s1 and 1948455240,
+				 * where disk5s1 has 976557016.  Invisible for the
+				 * life of the port because the repo had always
+				 * sat on the root volume, which is the
+				 * host-property trap in a program rather than in
+				 * a test. */
+				mp0 = mtab[i].path;
 				break;
 			}
 		}

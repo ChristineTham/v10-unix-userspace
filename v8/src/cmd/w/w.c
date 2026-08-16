@@ -24,7 +24,21 @@ static char *sccsid = "@(#)w.c	4.4 (Berkeley) 6/5/81";
 #define ARGWIDTH	24	/* # chars left on 80 col crt for args */
 
 struct pr {
-	short	w_pid;			/* proc.p_pid */
+	/*
+	 * PORT: `int' for `short'.  This is a CASCADE of the port's own change
+	 * rather than a fresh finding: sys/proc.h's p_pid was widened to int for
+	 * the 16-bit-range table's p_pid row, and w.c:536 is
+	 * `pr[np].w_pid = mproc.p_pid' -- a short copy left behind, which is the
+	 * shape narrowing daddr_t already produced once in libc/gen/ltol3.c.
+	 * Found by the sweep csh's pjwait hang forced; csh had the identical
+	 * defect in sh.proc.h.
+	 *
+	 * NOT EXERCISED TODAY, and saying so is the point: w's proc-reading half
+	 * exits at :469 with `No mem' on this target, so nothing reaches :550 and
+	 * no behavioural case can see this.  The guard is the WIDTH, which is true
+	 * at every pid, not the value, which is wrong only above 32767.
+	 */
+	int	w_pid;			/* proc.p_pid */
 	char	w_flag;			/* proc.p_flag */
 	short	w_size;			/* proc.p_size */
 	float   w_pctcpu;		/* proc.p_pctcpu */

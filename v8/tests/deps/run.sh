@@ -515,6 +515,35 @@ dep 'beautify install'          $B/bin/beautify                 rootfs/usr/lib/s
 # installed file -- the same shape as diff3.sh.
 dep 'struct.sh -> command'      src/cmd/struct/struct.sh        rootfs/usr/bin/struct
 
+# csh -- task #93.  Nineteen objects share three headers, and upstream's own
+# makefile names only one of them (`csh: ${OBJS} sh.local.h'), so the other two
+# edges are this port's addition and are exactly the ones worth asserting: a
+# stale sh.proc.h is a struct-layout skew between sh.proc.o and sh.sem.o, and
+# that header is where the 16-bit p_pid that hung the shell lived.  A build
+# that half-recompiled it would give two objects different ideas of where
+# p_flags sits.
+dep 'csh sh.h -> sh.o'          src/cmd/csh/sh.h                build/stage0/csh/sh.o
+dep 'csh sh.local.h -> sh.o'    src/cmd/csh/sh.local.h          build/stage0/csh/sh.o
+dep 'csh sh.proc.h -> sh.proc.o' src/cmd/csh/sh.proc.h          build/stage0/csh/sh.proc.o
+dep 'csh sh.proc.h -> sh.sem.o' src/cmd/csh/sh.proc.h           build/stage0/csh/sh.sem.o
+dep 'csh sh.dir.h -> sh.dir.o'  src/cmd/csh/sh.dir.h            build/stage0/csh/sh.dir.o
+dep 'csh sh.proc.c -> sh.proc.o' src/cmd/csh/sh.proc.c          build/stage0/csh/sh.proc.o
+# The library chain, source -> archive -> program.  libjobs is one member and
+# csh calls into it 88 times; the failure it guards against is not a link error
+# but a SILENT one, because macOS ships System V sigset/sighold/sigrelse and a
+# csh that lost the archive would resolve them from -lSystem and run on the
+# host's signal semantics.
+dep 'sigset.c -> libjobs.a'     src/lib/libjobs/sigset.c        build/stage0/libjobs/libjobs.a
+dep 'libjobs.a -> bin/csh'      build/stage0/libjobs/libjobs.a  build/stage0/bin/csh
+dep 'csh install'               build/stage0/bin/csh            rootfs/bin/csh
+dep 'libjobs.a install'         build/stage0/libjobs/libjobs.a  rootfs/usr/lib/libjobs.a
+# NEGATIVE CONTROL.  nfunc.c sits in the csh directory and is an alternate
+# sh.func.c that upstream's OBJS does not name, so it must reach nothing.  It
+# is also the file the wavea pid-width sweep deliberately does not scan, and
+# these two cases are the same claim measured from opposite ends: no object, no
+# prerequisite.
+nodep 'nodep nfunc.c -> bin/csh' src/cmd/csh/nfunc.c            build/stage0/bin/csh
+
 # libl -- the SECOND library import after libtermlib, and pp is its only
 # consumer.  The chain that matters is source -> archive -> program: a lex
 # program with no yywrap() of its own does not link without it, and the failure

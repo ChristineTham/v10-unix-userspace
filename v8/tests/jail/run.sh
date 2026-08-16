@@ -147,16 +147,37 @@ ck 'rmdir(1) removes it from the jail' 'gone' \
 rm -rf "$V8ROOT/usr/lib/v8mknodprobe"
 
 # link took NEITHER of its names through rootpath, so `ln /bin/cat x' linked the
-# MAC's /bin/cat -- a file the V8 world cannot even see with open(2).  Compared
-# by size, because the two /bin/cat are different programs.
-"$V8ROOT/bin/ln" /bin/cat lnprobe 2>/dev/null
-if [ -f lnprobe ]; then
-	ck 'link resolves its existing name inside the jail' \
-	   "$(wc -c < "$V8ROOT/bin/cat")" "$(wc -c < lnprobe)"
+# MAC's /bin/cat -- a file the V8 world cannot even see with open(2).
+#
+# BOTH NAMES ARE JAILED PATHS, and that is a correctness fix rather than tidying.
+# This case used to link into the suite's own $TMPDIR with a relative name, which
+# tested only the FIRST name -- the second never went near the jail -- and it
+# carried a hidden host property: a hard link cannot cross a filesystem, so the
+# moment $TMPDIR and the repo sat on different volumes it failed with EXDEV and
+# reported `ln produced nothing'.  Measured on exactly that: /dev/disk3s5 for
+# $TMPDIR against /dev/disk5s1 for the tree.  A path inside the rootfs is on the
+# same filesystem as /bin/cat BY CONSTRUCTION, so the relation is one the port
+# controls -- which is the standing rule for this class.
+#
+# ASSERTED BY INODE, not by size.  A hard link is one inode with two names, and
+# two identical COPIES pass a size or content comparison while being exactly the
+# thing a broken link would produce.  Same discipline as libtermlib.a and
+# pcat/unpack.
+rm -f "$V8ROOT/usr/lib/v8lnprobe"
+"$V8ROOT/bin/ln" /bin/cat /usr/lib/v8lnprobe 2>/dev/null
+if [ -f "$V8ROOT/usr/lib/v8lnprobe" ]; then
+	ck 'link resolves both its names inside the jail' \
+	   "$(ls -i "$V8ROOT/bin/cat" | awk '{print $1}')" \
+	   "$(ls -i "$V8ROOT/usr/lib/v8lnprobe" | awk '{print $1}')"
 else
 	fail=$((fail+1)); echo "FAIL ln /bin/cat produced nothing"
 fi
-rm -f lnprobe
+# ...and the new name did not land on the Mac, which is the mkdir(1) assertion
+# above applied to the other creating syscall.
+[ -e /usr/lib/v8lnprobe ] &&
+	{ fail=$((fail+1)); echo "FAIL ln escaped to the Mac's /usr/lib"; } ||
+	pass=$((pass+1))
+rm -f "$V8ROOT/usr/lib/v8lnprobe"
 rm -rf "$V8ROOT/etc/v8jailprobe" "$V8ROOT/usr/lib/v8jaildir"
 
 # ...and the union's READ rule is untouched by all of that: a path the rootfs

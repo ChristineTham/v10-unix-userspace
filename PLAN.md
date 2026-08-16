@@ -3295,7 +3295,28 @@ fifteen files byte-identical, and one defect with five faces.
     DIFFERENT vintage of pcc from the one this port already has (trees.c
     differs by 2131 lines), so it is a second compiler port.
 
-  - **`csh' IS COSTED NOW, and none of its four apparent blockers is one.**
+  - **`csh' IS DONE AND INSTALLED** (task #93), and the costing below stood up
+    -- none of the four apparent blockers was one, and the estimate's only
+    error was in the other direction: the thing that actually cost the step is
+    not in the table at all.  **It was a `short p_pid' in csh's OWN
+    `struct process'**, so `pchild' could not match a host pid past 32767
+    against what `fork' returned, `PRUNNING' was never cleared, and `pjwait'
+    waited forever for a child it had already reaped.  It shipped once as
+    built-but-not-installed, with a stack sample that was true and an
+    inference from it that was wrong -- the signal layer named in the sample
+    was correct throughout.  The sixth member of §4's 16-bit-range table and
+    the first in a program's own structure rather than behind a shim seam.
+    `src/cmd/csh/PORTING.md'; the sweep it forced also found `w.c:41'.
+
+    **AND THE GUARD CANNOT BE BEHAVIOURAL**, which is the reusable half: a
+    freshly booted host hands out low pids, so every "run a command" case
+    passes against the broken shell on any CI runner.  `tests/wavea' asserts
+    the FIELD WIDTH -- wrong at every pid -- and prints how high this host's
+    pids go so a green run says out loud when the value cases saw nothing.
+
+    The original costing follows, unedited, because it was right:
+
+  - **`csh' AS COSTED, and none of its four apparent blockers is one.**
     12524 lines over 31 files, `/bin' per `Admin/binfiles:10' and the shipped
     tree agrees.  Measured rather than guessed, because guessing from a `-l'
     name is the mistake `src/libplot/PORTING.md' records:
@@ -3335,7 +3356,9 @@ fifteen files byte-identical, and one defect with five faces.
 
     **Scale: this is an ex/vi-sized piece, not a batch-2e-sized one** (ex was
     61 files and its own numbered task), so it should be one too rather than
-    a tail on this batch.
+    a tail on this batch.  *That was right, and for the wrong reason: the file
+    count was never the difficulty -- all 19 objects compiled first time and
+    the LP64 audit came back clean.  One declaration did.*
 
 **7c. What is left, in order of unlock:**
 

@@ -67,10 +67,19 @@ time_t	time0;			/* Time at which the shell started */
 char	*doldol;		/* Character pid for $$ */
 int	uid;			/* Invokers uid */
 time_t	chktim;			/* Time mail last checked */
-short	shpgrp;			/* Pgrp of shell */
-short	tpgrp;			/* Terminal process group */
+/*
+ * PORT: `int' for `short' in all three below.  Same fact as sh.proc.h's
+ * p_pid -- a pgrp IS a pid -- and here a SECOND defect rides with it: every
+ * one of these has its ADDRESS taken for ioctl(TIOCGPGRP/TIOCSPGRP), and both
+ * V8's header and this port's shim (shim/v8sys/ioctl.c:225) spell that
+ * argument `int *'.  So the get wrote FOUR bytes into a two-byte global and
+ * the set read two bytes of whatever followed it.  Widening is what makes the
+ * declaration agree with the ioctl it is passed to.
+ */
+int	shpgrp;			/* Pgrp of shell */
+int	tpgrp;			/* Terminal process group */
 /* If tpgrp is -1, leave tty alone! */
-short	opgrp;			/* Initial pgrp and tty pgrp */
+int	opgrp;			/* Initial pgrp and tty pgrp */
 int	oldisc;			/* Initial line discipline or -1 */
 struct	tms shtimes;		/* shell and child times for process timing */
 

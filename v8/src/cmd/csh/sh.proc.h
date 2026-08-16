@@ -19,8 +19,25 @@ struct process	{
 	short	unsigned p_flags;	/* various job status flags */
 	char	p_reason;		/* reason for entering this state */
 	char	p_index;		/* shorthand job index */
-	short	p_pid;
-	short	p_jobid;		/* pid of job leader */
+/*
+ * PORT: `int' for `short' in BOTH.  These hold HOST pids, and macOS hands out
+ * pids to 99998 where a VAX wrapped at 30000 -- the 16-bit-range table's
+ * p_pid row, arriving in a program's own structure rather than in a kernel
+ * one.  It is the IDENTITY half of that class, like d_ino: pchild compares
+ * `pid == pp->p_pid' (sh.proc.c:51) with pid an int from wait3, so a pid past
+ * 32767 stores negative, never matches, PRUNNING is never cleared, and pjwait
+ * pauses forever.  Measured: palloc recorded 45267 and pjwait read -20269,
+ * which is 0xB0D3 read as a signed short.
+ *
+ * SAFE BECAUSE THE STRUCT HAS ONE END.  It is csh's own in-core list -- not on
+ * disk, not across the shim seam -- which is the question to ask before
+ * widening any field.
+ *
+ * p_jobid goes with it and is not decoration: it is a pgrp, pkill passes it to
+ * killpg(sh.proc.c:860) and pstart to ioctl TIOCSPGRP (sh.proc.c:913).
+ */
+	int	p_pid;
+	int	p_jobid;		/* pid of job leader */
 	/* if a job is stopped/background p_jobid gives its pgrp */
 	time_t	p_btime;		/* begin time */
 	time_t	p_etime;		/* end time */

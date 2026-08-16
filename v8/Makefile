@@ -2453,12 +2453,9 @@ $(BINDIR)/csh: $(CSH_OBJ) $(BUILD)/libjobs/libjobs.a $(V8DEPS)
 	@mkdir -p $(@D)
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(CSH_OBJ) \
 	    $(BUILD)/libjobs/libjobs.a $(V8LIBS)
-# NOT WIRED INTO $(V8DIRBIN_BUILT) OR _INSTALL.  The rules above are correct
-# and csh links with an empty nm -u, and it HANGS on every external command --
-# see src/cmd/csh/PORTING.md.  A shell that prints the right answer and then
-# waits forever is worse in the world than no csh at all, which is the same
-# rule that kept struct out until it worked.  Building it here on purpose so
-# the rules do not rot; installing it would be the lie.
+# INSTALLED.  It stood built-but-not-installed for one commit because it ran
+# the whole language and then hung on every external command; that was a
+# 16-bit p_pid in sh.proc.h, not a signal bug, and the hang is gone.
 CSH_BUILT   = $(BINDIR)/csh
 CSH_INSTALL = $(call v8install,csh) $(ROOTFS)/usr/lib/libjobs.a
 
@@ -2477,11 +2474,11 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
-                   $(STRUCT_BUILT)
+                   $(STRUCT_BUILT) $(CSH_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
-                   $(PLOT_INSTALL) $(STRUCT_INSTALL)
+                   $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

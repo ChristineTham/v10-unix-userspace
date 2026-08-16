@@ -690,25 +690,13 @@ for d in "$ROOT"/src/cmd/*/; do
 	case "$name" in
 	# built into the toolchain rather than installed under their own name
 	ccom|cc) continue ;;
-	# struct's exemption is GONE: it is built and installed now, so the
-	# guard verifies it like anything else.  A skip left behind after its
-	# reason expires is a hole, and this list is a set of claims.
-	#
-	# csh IS BUILT AND DELIBERATELY NOT INSTALLED, which is a narrower
-	# claim than the one that stood here before.  It compiles (19 objects),
-	# links with an EMPTY nm -u, and runs the whole language -- @ arithmetic,
-	# foreach, while, switch, globbing, if -e.  What it cannot do is finish
-	# an external command: the output is correct and then it waits forever.
-	# Sampled, the stack is exact and names one function:
-	#
-	#   process -> execute -> pwait -> pjwait -> sigpause -> sigsys
-	#           -> v8s_sigsys -> v8s_sigpause_wait -> sigsuspend
-	#
-	# so pjwait blocks for a SIGCHLD that never wakes it.  Two candidate
-	# causes were measured and are NOT it -- an unblock/suspend race (the
-	# hang is deterministic, 12 of 12) and an invalid sigprocmask `how' of 0
-	# (a real bug, fixed, no change).  src/cmd/csh/PORTING.md, task #93.
-	csh) continue ;;
+	# struct's and csh's exemptions are BOTH GONE: each is built and
+	# installed now, so the guard verifies them like anything else.  A skip
+	# left behind after its reason expires is a hole, and this list is a set
+	# of claims.  csh's stood for exactly one commit and its stated reason
+	# -- a SIGCHLD that never wakes pjwait -- was wrong about the layer: the
+	# signal machinery was correct throughout and sh.proc.h's `short p_pid'
+	# was truncating the host pid so pchild could never match it.
 	# src/cmd/plot builds `tek' and `hpplot', never a program called `plot'.
 	# The COMMAND of that name is a 16-line shell dispatcher V8 ships with no
 	# source at all -- usr/src/cmd/plot's makefile does not install it -- so
@@ -2244,6 +2232,121 @@ check 'struct: and the command is the shell script' 'yes' \
     "$(head -1 "$V8ROOT/usr/bin/struct" 2>/dev/null | grep -q 'trap' && echo yes)"
 cd "$TMP" || exit 1
 
+
+# ---------------------------------------------------------------------------
+# csh(1) -- Bill Joy's C shell, 4.1BSD.  Task #93.
+#
+# THE POINT OF THESE CASES IS A BUG THAT IS INVISIBLE ON HALF THE MACHINES IN
+# THE WORLD, so read the pid-width case below as the load-bearing one and these
+# as the demonstration.  sh.proc.h declared `short p_pid'; palloc stores what
+# fork returned and pchild compares it against what wait3 returns, so above
+# 32767 the stored copy goes negative, never matches, PRUNNING is never
+# cleared, and pjwait pauses forever.  Measured: palloc recorded 45267 and
+# pjwait read back -20269, which is 0xB0D3 as a signed short.
+#
+# A FRESHLY BOOTED HOST HANDS OUT LOW PIDS, which is the same property that let
+# the 16-bit p_pid survive in tests/kmemu, so every case here would have passed
+# on a CI runner against the broken shell.  The suite says so out loud below
+# rather than reporting a green run that proves nothing.
+#
+# The deadline is perl's alarm with exec -- NOT a backgrounding wrapper.
+# src/cmd/ex/PORTING.md spends a page on why: a backgrounded job in a
+# non-interactive shell gets its stdin from /dev/null, and that cost a whole
+# false diagnosis.  `exec' keeps the descriptors csh was given.  csh mentions
+# neither alarm nor SIGALRM anywhere (measured, 0 hits), so the deadline is
+# transparent to it -- unlike V8's sh, which catches SIGALRM on purpose.
+#
+# FIVE SECONDS, AND THE NUMBER WAS SET BY MUTATION RATHER THAN CHOSEN.  The
+# first draft said 20, and restoring the 16-bit p_pid to check that these cases
+# can fail made the suite take NINE MINUTES to say so -- 26 invocations each
+# waiting out its own deadline.  A bounded hang is not the same as a usable
+# failure signal.  A run is ~10ms, so 5s is 500x headroom, and the repeat loop
+# below stops at the first failure instead of paying the deadline twenty times.
+CSHBIN=$V8ROOT/bin/csh
+csh_c() { perl -e 'alarm 5; exec @ARGV' "$CSHBIN" -c "$1" 2>&1; }
+
+# The four fork paths csh has, one case each, because they are different code
+# and a single `it runs a command' case would let three of them rot.
+check 'csh: an external command finishes'   'external' "$(csh_c '/bin/echo external')"
+check 'csh: a pipeline finishes'            'piped'    "$(csh_c '/bin/echo piped | /bin/cat')"
+check 'csh: backquotes finish'              'inner'    "$(csh_c 'set v = `/bin/echo inner`; echo $v')"
+check 'csh: a sequence of three finishes'   'a|b|c' \
+    "$(csh_c '/bin/echo a; /bin/echo b; /bin/echo c' | tr '\n' '|' | sed 's/|$//')"
+
+# $status is the AIMED case: pchild only records p_reason after it has matched
+# the pid in proclist (sh.proc.c:54), so a shell that reaped the child without
+# matching it could still terminate and would report the wrong status.  The
+# four cases above cannot tell those apart; this one can.
+check 'csh: $status comes from the reaped child' 'status 1' \
+    "$(csh_c '/bin/false ; echo status $status')"
+
+# A builtin takes no fork at all, so it is the negative control: it passed
+# throughout the hang, and a `fix' that broke csh entirely would fail it.
+check 'csh: a builtin needs no child'       '42'       "$(csh_c '@ y = 6 * 7; echo $y')"
+
+# Twenty in a row.  The hang was deterministic here and this is not aimed at
+# flakiness -- it is aimed at a pid COUNTER, since a host sitting just below
+# 32767 crosses it during a run and the failure would arrive mid-suite.
+cshruns=0 cshi=0
+while [ "$cshi" -lt 20 ]; do
+	[ "$(csh_c '/bin/echo x')" = x ] || break	# see the deadline note
+	cshruns=$((cshruns+1))
+	cshi=$((cshi+1))
+done
+check 'csh: 20 consecutive externals all finish' '20' "$cshruns"
+
+# THE GUARD THAT IS TRUE AT EVERY PID.  The cases above test the value, which
+# is only wrong above 32767; this tests the WIDTH, which is wrong always.  Same
+# reasoning as tests/kmemu asserting p_pid's field width beside its runtime
+# value.
+#
+# THE FILE SET IS DERIVED FROM THE BUILT OBJECTS, not transcribed, and that is
+# what makes it correct about nfunc.c: that file carries the identical `short
+# ctpgrp' and upstream's own makefile does not build it (OBJS names sh.func.o),
+# so nothing forces a change there and an allow-list naming it would be one
+# more entry to go stale.  No object, no claim.  If anything ever compiles it,
+# this sweep covers it with no edit.
+cshshort= cshscanned=0
+for o in "$ROOT"/build/stage0/csh/*.o; do
+	[ -f "$o" ] || continue
+	c="$ROOT/src/cmd/csh/$(basename "$o" .o).c"
+	[ -f "$c" ] || continue
+	cshscanned=$((cshscanned+1))
+	grep -nE '^[[:blank:]]*(register[[:blank:]]+)?short[[:blank:]]+[a-z_]*(pid|pgrp|jobid)' \
+	    "$c" >/dev/null 2>&1 && cshshort="$cshshort $(basename "$c")"
+done
+# The headers are not objects, so they are named from the Makefile's own
+# dependency lines rather than found by the loop.  They are where the bug was.
+for h in sh.h sh.proc.h; do
+	cshscanned=$((cshscanned+1))
+	grep -nE '^[[:blank:]]*short[[:blank:]]+(unsigned[[:blank:]]+)?[a-z_]*(pid|pgrp|jobid)' \
+	    "$ROOT/src/cmd/csh/$h" >/dev/null 2>&1 && cshshort="$cshshort $h"
+done
+check "csh: no built source holds a pid in a short ($cshscanned files scanned)" \
+    'none' "${cshshort:-none}"
+
+# SAY WHETHER THIS HOST COULD HAVE SEEN IT.  A green run below 32767 is a green
+# run against a shell that would hang on any developer's machine, and the whole
+# reason this bug reached a commit is that nothing said so.
+cshmaxpid=$(ps -Ao pid= 2>/dev/null | awk '{ if ($1+0 > m) m = $1+0 } END { print m+0 }')
+if [ "${cshmaxpid:-0}" -gt 32767 ]; then
+	echo "csh: host pids reach $cshmaxpid -- the value cases above are live"
+else
+	echo "csh: host pids only reach ${cshmaxpid:-0}, under 32767 -- the value" \
+	     "cases above CANNOT see a 16-bit p_pid; only the width case can"
+fi
+
+# Installed to /bin, not /usr/bin: Admin/binfiles:10, and the shipped tree has
+# /bin/csh.  $(call v8dest,...) derives it, so this asserts the derivation.
+check 'csh: installed in /bin'          'yes' \
+    "$([ -x "$V8ROOT/bin/csh" ] && echo yes)"
+check 'csh: libjobs.a installed beside it' 'yes' \
+    "$([ -f "$V8ROOT/usr/lib/libjobs.a" ] && echo yes)"
+# Nothing from the host.  sigset/sighold/sigrelse all EXIST in -lSystem as
+# System V compatibility routines -- measured -- so a csh that lost libjobs
+# would link silently and run on macOS's signal semantics instead of V8's.
+check 'csh: imports nothing from libSystem' '' \
+    "$(nm -u "$V8ROOT/bin/csh" 2>/dev/null | tr -d '[:space:]')"
 
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

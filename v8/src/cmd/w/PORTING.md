@@ -170,3 +170,29 @@ Berkeley four years earlier — never did.
 
 The consequence is that a `/proc` server answers both of them, and answers `ps`
 *natively* rather than by emulation. Recorded in PLAN.md §7 and §8a.
+
+## `w_pid` was a short, and it is a cascade of this port's own widening
+
+Found by the sweep csh's `pjwait` hang forced (task #93), not by reading `w`.
+`struct pr` at `w.c:41` declared
+
+```c
+	short	w_pid;			/* proc.p_pid */
+```
+
+and `w.c:550` is `pr[np].w_pid = mproc.p_pid`.  The comment is exact about where
+the field comes from — and **this port widened `p_pid` to `int`** in
+`src/include/sys/proc.h` for the 16-bit-range table's own entry, which left a
+`short` copy behind one assignment downstream.  Same shape as narrowing
+`daddr_t` silently breaking `libc/gen/ltol3.c`: a global type change reaches
+past the headers, and the fix lands on one line while the line beside it keeps
+the assumption.  Widened to `int`.
+
+**Deliberately recorded as unexercised.**  `w`'s proc-reading half exits at
+`w.c:469` with `No mem` on this target, so nothing reaches `:550` and no
+behavioural case can see this — the consumers would be the pid column at
+`w.c:313` and the `w_pid > curpid` comparison at `:323` that picks which
+process to show per terminal, which is wrong for a negative value in a way that
+prints a plausible answer.  The guard is therefore the **width**, which is true
+at every pid, and not the value, which is wrong only above 32767.  If `/dev/mem`
+ever arrives, that comparison is worth a case of its own.

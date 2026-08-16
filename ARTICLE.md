@@ -4020,7 +4020,7 @@ loops, so a `struct` that fails on a `GOTO` fails at the one thing it is for,
 and a command in the world that dies on its own primary input is worse than a
 command that is not there.
 
-### csh, which runs the whole language and hangs on `ls`
+### csh, and a bug that half the world's machines cannot see
 
 The C shell is 12,524 lines and it carried four apparent blockers. None of them
 survived measurement: `xstr` was already ported, `-ljobs` turned out to be a
@@ -4051,23 +4051,74 @@ it wrote 104 bytes past a stack variable and over the return address. csh ran a
 command, printed the output correctly, and jumped to address zero.
 
 With those fixed, csh links with nothing from the host and runs the entire
-language — `@` arithmetic, `foreach`, `while`, `switch`, globbing, file tests.
-And it hangs on every external command. The output is right and arrives first;
-only the exit never comes.
+language — and hung on every external command. The output was right and arrived
+first; only the exit never came. I shipped it that way for exactly one commit,
+built but deliberately not installed, with a stack sample that named the
+function it was stuck in and two eliminated hypotheses beside it.
 
-**It is not installed, and that is the deliberate part.** A shell that prints
-the correct answer and then waits forever is worse in the world than no shell at
-all, which is the same rule that kept `struct` out until it worked.
+**The stack sample was true and the conclusion drawn from it was wrong.** It
+showed `pjwait` asleep waiting for a `SIGCHLD`, so I spent the session on the
+signal machinery — and the signal machinery had been correct the whole time. A
+probe reproducing `pjwait`'s loop outside csh worked perfectly on the first run,
+which is what finally pointed somewhere else.
 
-What I can hand over is a hang narrowed to one function rather than a mystery. A
-stack sample names the path exactly — `pjwait` waiting on a `SIGCHLD` that never
-wakes it — and two plausible causes have been measured and eliminated: a race
-between unblocking and suspending (real bug, fixed, but the hang is
-deterministic twelve times out of twelve), and an invalid argument to the mask
-query (also a real bug, also fixed, also not it). The intermittency that first
-suggested a race was my own test harness using an eight-second deadline in one
-run and six in the next — which is the instrument-is-a-suspect rule arriving in
-the timing rather than in the output.
+The actual bug is one word. `struct process` declares `short p_pid`. csh stores
+what `fork` returned and later compares it against what `wait3` returns, and on
+this machine pids run to 99,998 where a VAX wrapped at 30,000 — so 45,267 went
+into the field and −20,269 came back out, the same sixteen bits read as signed.
+The comparison never matched, the "still running" flag was never cleared, and
+the shell waited for a child it had already buried.
+
+What makes this one worth writing down is not the fix but **who could have seen
+it**. A freshly booted machine hands out low pids. Every one of these cases —
+run a command, run a pipeline, run twenty in a row — would have passed against
+the broken shell on a continuous-integration runner, because a runner is always
+freshly booted. That is the same property that let a 16-bit process id survive
+elsewhere in this port for months. So the test that actually guards this is not
+any of the behavioural ones: it is a check on the *width of the field*, which is
+wrong at every pid, next to a line that prints how high this host's pids go and
+says out loud when the behavioural cases cannot see anything.
+
+The sweep that followed found the same class one more time, in `w`, where a
+`short` copy had been left behind when this port widened the process structure
+it is copied from.
+
+### Moving the tree to another disk, which found two more
+
+Halfway through that work the repository moved to a different machine and a
+different physical volume. The tree had been green minutes earlier — 2,451
+assertions across seventeen suites — and the move broke two of them.
+
+The first was a test. A case linked `/bin/cat` into the suite's temporary
+directory to prove that `ln` resolves its argument inside the jail rather than
+reaching the Mac's `/bin`. A hard link cannot cross a filesystem, and the
+temporary directory and the repository were now on different disks, so it
+failed with a cross-device error and reported that `ln` had produced nothing.
+The case had also only ever checked the *first* of the two names — the second
+was a relative path in a host temp directory that never went near the jail. It
+now links to a path inside the rootfs, which is on the same disk as `/bin/cat`
+by construction, and asserts by inode number rather than by file size, because
+a hard link is one inode with two names and two identical copies would pass a
+size comparison while being exactly what a broken link leaves behind.
+
+The second was not a test. `df` had been reporting the wrong number for the
+root filesystem since the day it was written, and only a tree on a non-root
+volume could show it. The program finds which device a mount point lives on,
+takes its device and directory columns from that entry — and took its *numbers*
+from the path it was originally handed. Inside the jail those are different
+things: `/` resolves to the port's own root directory, so the row was correctly
+labelled with the volume holding the rootfs while reporting the block count of
+the machine's real root. Two rows naming one filesystem and disagreeing by a
+factor of two. The fix is one line; the interesting part is that the test
+standing next to it had the same assumption from the other end, comparing a
+single row against the host's figure for that row's device — which agrees
+exactly when the bug is invisible. When a test and the code it checks share an
+assumption, neither can catch the other. It compares every row by mount point
+now, and replaying the old defect against it names two bad rows where the
+previous form saw one.
+
+A second machine is a cheap audit. Continuous integration only ever runs on its
+own disk layout, so it cannot ask this question at all.
 
 ## What is left
 
@@ -4087,7 +4138,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **162** of the 286 V8 shipped, and the ones still missing mostly
+port installs **163** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
