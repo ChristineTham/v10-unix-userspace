@@ -3288,11 +3288,54 @@ fifteen files byte-identical, and one defect with five faces.
     is the PROGRAM stream, so it competes with the parser and stdio buffering
     means the parser wins.  Measured three ways, all failing at the program's
     LAST line.  Interactive-only, like ex's visual mode.
-  - Remaining in 2e: `struct' (5695 lines, self-contained, spell shape) and
-    `csh' (12524 lines, in Admin/binfiles so V8 shipped it in /bin).  `lint'
-    MOVED TO S7d/batch 3 on a measurement -- it is 2122 lines plus 6786 from
-    `../pcc1/mip', a DIFFERENT vintage of pcc from the one this port already
-    has (trees.c differs by 2131 lines), so it is a second compiler port.
+  - Batch 2e: `struct' (5695 lines, spell shape) is **DONE and installed** --
+    /usr/lib/struct/{structure,beautify} plus struct.sh as /usr/bin/struct,
+    eight defects, `src/cmd/struct/PORTING.md'.  `lint' MOVED TO S7d/batch 3
+    on a measurement -- it is 2122 lines plus 6786 from `../pcc1/mip', a
+    DIFFERENT vintage of pcc from the one this port already has (trees.c
+    differs by 2131 lines), so it is a second compiler port.
+
+  - **`csh' IS COSTED NOW, and none of its four apparent blockers is one.**
+    12524 lines over 31 files, `/bin' per `Admin/binfiles:10' and the shipped
+    tree agrees.  Measured rather than guessed, because guessing from a `-l'
+    name is the mistake `src/libplot/PORTING.md' records:
+
+    | apparent blocker | measured |
+    |---|---|
+    | `xstr' string sharing | **already ported** -- `v8/src/cmd/xstr.c' |
+    | `-ljobs' | **real archive**, 6348 bytes with source, NOT libm's 216-byte stub |
+    | libjobs is 7 files | 268 lines, and **4 are VAX `.s'** |
+    | those 4 `.s' | `killpg' `setpgrp' `wait3' already in the shim; `getwd.c' already in libc |
+
+    So **libjobs reduces to `sigset.c', 185 lines of C** -- `sigset sighold
+    sigpause sigrelse sigignore' plus its own `signal', which is the System V
+    reliable-signal layer csh calls 88 times.  What has no C source is
+    `signal.s', providing `_sigsys' (the raw syscall) and `_sigpeel' (the
+    signal-return trampoline) -- and `shim/v8sys/sigtramp.s' already exists
+    for exactly that reason, so it is the shim's existing machinery rather
+    than new ground.
+
+    **Three decisions the port has to make, and each has a precedent here:**
+
+    - **`sigset.c' defines `signal()' and so does libv8stubs.**  That is the
+      duplicate-definition class `tests/kmemu' sweeps.  Upstream resolves it
+      by link order (`-ljobs' before libc) and so can we, but it must be
+      *asserted* rather than assumed, because a stub member already pulled in
+      for another reason wins instead.
+    - **csh builds its own `printf.c', `doprnt.c', `alloc.c'** -- three more
+      of the same, against libv8c this time.  This is population #3 from the
+      duplicate-definition entry (a program's own objects against an archive),
+      where 25 of 56 collisions were silent.
+    - **`xstr' cannot be used end to end.**  Its point is `cc -c -R' putting
+      the shared string table in read-only TEXT, and `-R' is the shared-text
+      stop that already blocks rung 5 for `cpp' and `sh': an initialised
+      pointer in `__TEXT' is a text relocation and `-no_pie' is ignored for
+      arm64.  So csh is built without the xstr pass, which is an optimisation
+      rather than semantics -- the same call already made twice.
+
+    **Scale: this is an ex/vi-sized piece, not a batch-2e-sized one** (ex was
+    61 files and its own numbered task), so it should be one too rather than
+    a tail on this batch.
 
 **7c. What is left, in order of unlock:**
 
