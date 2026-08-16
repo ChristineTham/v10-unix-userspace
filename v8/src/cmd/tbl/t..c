@@ -51,7 +51,21 @@ extern char *exstore, *exlim, *exspace;
 extern int *sep;
 extern int *used, *lused, *rused;
 extern int linestop[];
-extern int leftover;
+/*
+ * PORT: `long leftover', was `int'.  The tm.c defect a second time, in the
+ * same program and with the same flag-and-pointer idiom -- t5.c:25 is
+ * `leftover=(int)cstore' and t5.c:15 is `leftover=0', so one variable is both
+ * a boolean (t7.c:18 `if (leftover)') and the address of the line that did not
+ * fit.  t9.c:14 then passes it to `domore(dataln) char *dataln;' which hands
+ * it to prefix(), and prefix dereferences it.  Measured: EXC_BAD_ACCESS at
+ * 0x4ac8141, a 32-bit value, in prefix.
+ *
+ * BOTH DECLARATIONS MOVE, and this one is in an #include'd non-header, so
+ * every object in tbl sees it -- which is what makes the coupling real here
+ * where qed's savint had none.  The cast at t5.c:25 has to move too: an
+ * explicit (int) truncates before the value is widened into the long.
+ */
+extern long leftover;
 extern char *last, *ifile;
 extern int texname;
 extern int texct, texmax;

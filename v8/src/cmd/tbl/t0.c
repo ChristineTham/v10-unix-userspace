@@ -14,7 +14,7 @@ int *evenup;
 int F1 = 0;
 int F2 = 0;
 int allflg = 0;
-int leftover = 0;
+long leftover = 0;	/* PORT: int -- see t..c */
 int textflg = 0;
 int left1flg = 0;
 int rightl = 0;

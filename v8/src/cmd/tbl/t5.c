@@ -22,7 +22,7 @@ for (nlin=nslin=0; gets1(cstore); nlin++)
 		}
 	if (nlin>=MAXLIN)
 		{
-		leftover=(int)cstore;
+		leftover=(long)cstore;	/* PORT: (int) */
 		break;
 		}
 	fullbot[nlin]=0;

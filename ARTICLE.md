@@ -3277,6 +3277,29 @@ bundles of **137 test cases written by the programs' own authors** — 37 for eq
 54 for tbl, 36 for pic, 10 for hoc — sitting in the tree, uncommitted and unrun,
 while this port tested those four programs against cases it had written itself.
 
+**Running the other three found two live crashes in `tbl`.** Sixteen of its 54
+cases died on SIGSEGV — 30% — while `tests/wavec` was green and had been for the
+life of the port. Both are the same one-word defect: an `int` holding a pointer.
+`maknew`'s `dpoint` carries the address of a decimal point, and `leftover`
+carries the address of a line that would not fit; each is also used as a
+boolean, which is why upstream declared them `int` and why it was exact on a
+VAX. Here the cast keeps the low 32 bits, and the crash address gives the class
+away — `0x1e6058a9`, `0x4ac8141`, both plainly 32-bit values.
+
+The first is the `n` column, which is *tbl's characteristic feature* — numeric
+alignment on the decimal point — and twenty bytes reproduce it. `l`, `c`, `r`
+and `a` columns are all clean, which is exactly why it survived: the hand-written
+tables in `tests/wavec` had never once used an `n`. That is the whole argument for
+an independent suite, and it took one run to make it.
+
+Two details worth carrying. Widening the declaration alone fixes neither, because
+`(int)str` truncates *before* the value is widened into the `long` — the explicit
+cast is the truncation, not the storage. And `leftover` is declared in three
+places, one of them an `#include`d non-header, so all three had to move together.
+Sixteen failures became one; the survivor is a different class, a null row
+pointer, and the suite now asserts that it *still* dies so that fixing it has to
+be a decision.
+
 `hoc`'s ten went straight into the suite and it passes them, which is a better
 result than the ones I wrote because they are adversarial in a way an author's
 own cases are not. `ack` is Ackermann's function: `A(3,3)` is 61, reached in
