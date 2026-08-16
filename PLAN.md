@@ -3167,7 +3167,16 @@ puns in a single file.
     those four are exempt **by name with the exemptions printed**, because
     measuring beat assuming again — a first draft claimed they always exist,
     and deleting all five showed `make` restores only `/etc/fstab`, so on a
-    clean CI checkout the guard would have fired on our own shim. Two red CI runs, both my sweep. tar
+    clean CI checkout the guard would have fired on our own shim.
+
+    **And that guard's first real run found a SECOND escape, `/dev/null`** — a
+    jailed `creat` makes a regular file there by the same parent-keyed
+    fall-through, invisible on any tree that had been used because the file was
+    no longer *new*. V8 shipped it (`proto-dev:25`, major 3 minor 2), so its
+    absence from `ROOTFS_DEVSTD` was a gap; it is built now. Writes to it still
+    accumulate rather than being discarded — **task #78**, a `vfs.c` slot rather
+    than a file. So a containment check doubles as a **completeness check on
+    `/dev`**, and both findings were only visible on a machine with no history. Two red CI runs, both my sweep. tar
     is out of the wavea sweep (a clone per invocation is not a price `make test`
     should pay) and swept in CI under `PROBE=mutating`. The `?` mechanism was
     built for that one entry and diagnosing it made the entry unnecessary, which

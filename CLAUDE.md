@@ -3567,6 +3567,22 @@ not testable until it is installed.
     ARE additions on a clean CI checkout, and the guard would have fired on our
     own shim. They are exempt by name and **used exemptions are printed**, so
     the list cannot quietly cover something new.
+  - **AND THE GUARD'S FIRST REAL RUN FOUND A SECOND ESCAPE: `/dev/null`.** A
+    jailed `creat("/dev/null")` makes a **regular file** in the rootfs, by the
+    same parent-keyed fall-through tar used — and it surfaced only on a fresh
+    checkout, because this tree had had one for so long that nothing noticed.
+    **V8 shipped `/dev/null`** (`proto-dev:25`, `crw-rw-rw- ... 3, 2 null`), so
+    its absence from `ROOTFS_DEVSTD` was a *gap* rather than a decision, and
+    the fix is to materialise it beside `tty`/`stdin`/`stdout`/`stderr`. What
+    that does **not** fix is that writes to it accumulate instead of being
+    discarded — nothing writes enough to notice today, which is precisely the
+    "not observable yet" this file keeps getting caught by. Task #78, and the
+    fix is a `vfs.c` slot rather than a file.
+  - **THE SHAPE TO CARRY: A CONTAINMENT CHECK IS ALSO A COMPLETENESS CHECK ON
+    THE ROOTFS.** Both findings are the jail's creat fall-through, and both
+    were invisible on a tree that had been used. Ask of any such guard whether
+    it would say the same thing on a tree that has never been run — which is
+    the same question this file already asks of green suites.
   - **AND IT COST TWO RED CI RUNS, BOTH OF THEM MY SWEEP.** `tar -c` and
     `tar -r` each crashed once on a runner and a create case saw an empty
     archive — all downstream of one leftover tape. `tar` is out of the wavea

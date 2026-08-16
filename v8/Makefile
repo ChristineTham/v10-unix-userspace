@@ -92,7 +92,22 @@ ROOTFS_ETC     := $(patsubst $(SRC)/etc/%,$(ROOTFS)/etc/%, \
 # synthesized.  What these files provide is the NAME, because `ls /dev/fd' has
 # to read a real directory.
 ROOTFS_DEVFD   := $(addprefix $(ROOTFS)/dev/fd/,$(shell seq 0 127))
-ROOTFS_DEVSTD  := $(addprefix $(ROOTFS)/dev/,tty stdin stdout stderr)
+# `null' is here for a different reason from the other four and was MISSING
+# until the crash probe's containment check found it.  V8 shipped it --
+# proto-dev:25 is `crw-rw-rw- 1 root man 3, 2 ... null' -- so its absence was a
+# gap rather than a decision, and a jailed program doing creat("/dev/null")
+# made one at run time, because creat keys on the parent and $V8ROOT/dev
+# exists.  That is the same fall-through tar used for /dev/rmt1, and it showed
+# up the same way: as a NEW PATH on a fresh CI checkout, where this tree had
+# had one for so long that nothing noticed.
+#
+# Materialising it changes no behaviour -- the file a program would have
+# created is now already there -- but it makes `ls /dev' authentic and stops a
+# containment check reporting our own gap as an escape.  What it does NOT fix
+# is that a write to it accumulates rather than being discarded; nothing in the
+# tree writes enough to notice, and the fix is a shim special case rather than
+# a file.  Task #78.
+ROOTFS_DEVSTD  := $(addprefix $(ROOTFS)/dev/,tty stdin stdout stderr null)
 ROOTFS_DEV     := $(ROOTFS)/dev/dk $(ROOTFS)/dev/pt $(ROOTFS)/dev/drum \
                   $(ROOTFS_DEVFD) $(ROOTFS_DEVSTD)
 

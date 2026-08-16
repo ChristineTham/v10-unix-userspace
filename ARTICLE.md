@@ -3220,6 +3220,27 @@ ordinary cause is worth remembering the next time something looks unknowable.
 The bar for declaring a thing unexplainable should be higher than two wrong
 labels and an afternoon.
 
+The fix, naturally, was not to add a special case for tar. It was to make the
+probe check the thing it had been assuming: take the list of files in the root
+filesystem before the sweep and again after, and treat any new path as a
+program that got out. That check is three lines and it immediately found a
+second one — `/dev/null`.
+
+A program asking to create `/dev/null` inside the jail gets an ordinary empty
+file, for the identical reason tar got a tape: creating a file resolves against
+its parent directory, and the jail has a `/dev`. This had been happening
+forever and was invisible here, because my working tree had had such a file for
+so long that it was no longer *new*. Only a machine that had never run the
+system could see it — and the fix turned out to be that Bell Labs shipped a
+`/dev/null` and we had simply never made one. The build creates it now, beside
+the four sibling device names it was already creating.
+
+So a containment check turns out to double as a completeness check on the
+world: two of the things it caught were not programs misbehaving but nodes
+missing from `/dev`. And both were only visible on a machine with no history,
+which is a question worth asking of any green test — would this still pass on a
+tree that has never been used?
+
 So there is a third category now: entries marked as tolerated, removed from both
 sides of the comparison, neither required nor forbidden. That is a hole in an
 otherwise strict check, and holes like it are how the original number rotted, so
