@@ -144,10 +144,38 @@ VERT v;
 	FATH(iter) = UNDEFINED;	/* will be defined later along with FATH for DOVX */
 	}
 
+/*
+ * PORT: `long' throughout, was `int'.  This is a GENERIC MACHINE-WORD SWAP and
+ * the machine word grew; it is not a swap of ints that happens to be reused.
+ * Its four callers pass three different things, and on a VAX all three were
+ * four bytes:
+ *
+ *	2.dfs.c:140   &graph[v], &graph[loo]        VERT ** -- ROW POINTERS
+ *	2.dfs.c:141   &v, &loo                      VERT *  -- vertex numbers
+ *	3.loop.c:136  &graph[temp], &graph[v]       VERT ** -- row pointers
+ *	3.then.c:73   &LCHILD(v,THEN), &..(v,ELSE)  VERT *  -- graph cells
+ *
+ * With `int *' it exchanged only the LOW 32 BITS of each object and left both
+ * high halves in place.  Measured on `IF (N .GT. 0) GOTO 10': negate() swaps
+ * THEN=-1 with ELSE=8 and the cells came out
+ *
+ *	THEN = 0xFFFFFFFF00000008   (low half 8 correct, high half the old -1)
+ *	ELSE = 0x00000000FFFFFFFF   (low half -1 correct, high half the old 8)
+ *
+ * so DEFINED() -- which is `v >= 0' -- read the undefined child as the
+ * positive 4294967295 and mkthen's assertion fired.  The two rows that swap
+ * ROW POINTERS are worse and were never reached by these inputs: a half-width
+ * pointer swap corrupts the graph's row table outright.
+ *
+ * `long' rather than VERT because two of the four callers pass pointers, and
+ * what upstream means here is "one machine word" -- which is what `int' was
+ * on a VAX and what `long' is under LP64.  There is no one V8 type spelling
+ * that; VERT would be right for two callers and a lie for the other two.
+ */
 exchange(p1,p2)		/* exchange values of p1,p2 */
-int *p1,*p2;
+long *p1,*p2;
 	{
-	int temp;
+	long temp;
 	temp = *p1;
 	*p1 = *p2;
 	*p2 = temp;

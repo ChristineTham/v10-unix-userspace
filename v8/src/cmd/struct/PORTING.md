@@ -37,24 +37,34 @@ objects wants `yywrap` and nothing else, and `libl.a` (imported in batch 2d for
 
 ## Why it is not built: it is written in `int` where it means pointer
 
-`structure` SIGSEGVs on its first line of real Fortran.  **It no longer does.**
-Measured, on four inputs of increasing shape:
+`structure` SIGSEGVs on its first line of real Fortran.  **IT NOW DOES ITS
+JOB.**  Measured, on seven inputs of increasing shape:
 
 | input | before | now |
 |---|---|---|
-| straight-line assignment | SIGSEGV in `fixvalue` | **correct Ratfor**, exit 0 |
-| two statements | SIGSEGV in `fixvalue` | **correct Ratfor**, exit 0 |
-| a plain `IF` | SIGSEGV in `fixvalue` | **correct Ratfor**, exit 0 |
-| `IF … GOTO` (a loop) | SIGSEGV in `fixvalue` | assertion in `mkthen` |
+| straight-line assignment | SIGSEGV in `fixvalue` | correct Ratfor |
+| two statements | SIGSEGV in `fixvalue` | correct Ratfor |
+| a plain `IF` | SIGSEGV in `fixvalue` | correct Ratfor |
+| `IF … GOTO` backwards | SIGSEGV in `fixvalue` | **`REPEAT … UNTIL`** |
+| `DO` with a `GOTO` out | SIGSEGV in `fixvalue` | **`DO … { break 1 }`** |
+| three-way `GOTO` branch | SIGSEGV in `fixvalue` | **`IF / ELSE IF / ELSE`** |
+| computed `GOTO`, 2 routines | SIGSEGV in `fixvalue` | **`SWITCH … CASE`** |
 
 The baseline column is a *control*, not a memory: the pre-change sources were
-rebuilt in a scratch tree and run on the same four files, and **every one of
-them died in `fixvalue`, including the trivial one**.  That is what says the
-remaining `mkthen` failure is newly *reachable* rather than a regression.
+rebuilt in a scratch tree and run on the same files, and **every one died in
+`fixvalue`, including the trivial one.**
 
-It is still not in the Makefile, for the reason below that has not changed:
-`struct` exists to turn `GOTO`s into loops, so a `struct` that fails on a
-`GOTO` fails at the one thing it is for.
+The bottom four are the point of the program — every `GOTO` is gone, replaced
+by the structured construct it encoded:
+
+```
+      SUBROUTINE D(N)              subroutine d(n)
+   10 N = N - 1                    REPEAT
+      IF (N .GT. 0) GOTO 10   -->  	n = n - 1
+      RETURN                       	UNTIL(!(n .gt. 0))
+      END                          return
+                                   END
+```
 
 **Defect 1, FIXED here: the five allocators in `0.alloc.c`.**  Every one returns
 a pointer through an implicit `int`, and `challoc` stacks two truncations:
@@ -169,6 +179,44 @@ does not crash — it builds a different program.
 Each is called before its own definition, so all eleven needed the forward
 declaration and not merely the definition corrected.
 
+**Defect 6, FIXED, AND IT IS THE ONE THAT MADE IT WORK: `exchange()` is a
+generic MACHINE-WORD swap, and the machine word grew.**  `2.dfs.c` declares
+
+```c
+exchange(p1,p2)  int *p1,*p2;  { int temp; temp = *p1; *p1 = *p2; *p2 = temp; }
+```
+
+and its four callers pass **three different things**, all four bytes on a VAX:
+
+| site | argument | what it is |
+|---|---|---|
+| `2.dfs.c:140` | `&graph[v], &graph[loo]` | `VERT **` — **row pointers** |
+| `2.dfs.c:141` | `&v, &loo` | `VERT *` — vertex numbers |
+| `3.loop.c:136` | `&graph[temp], &graph[v]` | `VERT **` — row pointers |
+| `3.then.c:73` | `&LCHILD(v,THEN), &..ELSE` | `VERT *` — graph cells |
+
+With `int *` it exchanged only the **low 32 bits** and left both high halves.
+`negate()` swaps THEN=−1 with ELSE=8, and the cells came out
+`0xFFFFFFFF00000008` and `0x00000000FFFFFFFF` — each with the correct low half
+and *the other value's* high half.  `DEFINED()` is `v >= 0`, so the undefined
+child read as the positive 4294967295 and `mkthen` fired.
+
+Declared `long` rather than `VERT`, and that is the only honest choice: two
+callers pass pointers.  What upstream means is *one machine word*, which `int`
+was on a VAX and `long` is here; `VERT` would be right for two callers and a
+lie for the other two.
+
+**The two row-pointer sites are worse and were never reached** by any of these
+inputs — a half-width swap of two heap pointers corrupts the graph's row table
+outright.  They are fixed by the same one line.
+
+**IT WAS IN MY OWN SWEEP OUTPUT AND I MISREAD THE LINE.**  The `int *` sweep
+printed `2.dfs.c:148:int *p1,*p2;` under a heading I had written as "int\*
+locals", and I moved past it looking for locals.  It is a **K&R parameter
+list**, which is the one context where a declaration on its own line is not a
+local at all.  Two further phases of instrumentation were spent re-deriving
+what that line had already said.
+
 ## A verified latent hazard, NOT the current cause: `create()` reallocs an
 ## arena pointer
 
@@ -192,7 +240,7 @@ when the block moved, or frees the block just returned when it did not.
 it fires on a large Fortran routine, which is exactly the input nobody will
 try until the small ones work.
 
-## Where to start next: the same loop, one more turn
+## How the last one was found, because the route matters more than the fix
 
 `mkthen` asserts `!DEFINED(w) || (DEFINED(tc) && BRANCHTYPE(NTYPE(tc)))`.
 Instrumented (in a scratch copy — never in `src/`), the values are
@@ -228,24 +276,53 @@ THEN is `[7]` and ELSE is `[6]`):
   `LCHILD(from,THEN) = v` write **never executes** for this node.  So the
   corruption is in a *later phase*, not in `gettree`.
 
-The phase order is `build()` → `gettree`, then `structure()` (`3.main.c`) →
-`getreach` → `getflow` → `getthen`, and `mkthen` is inside `getthen`.  So the
-corrupter is **`getreach` or `getflow`**.  `getflow`'s `fixflow`
-(`3.flow.c:54`) is the one that writes `LCHILD(v,i) = x` with
-`x = makebr(z)` — the prime suspect, and the next thing to instrument.
+**And a per-phase dump found it in ONE run, after two phases of guessing.**
+The order is `build()` → `gettree`, then `structure()` (`3.main.c`) →
+`getreach` → `getflow` → `getthen`, with `mkthen` inside `getthen`.  Printing
+the two cells between each phase:
 
-**Do not reach for lldb**: v8cc emits no unwind info, so a backtrace stops at
-frame #0 every time.  What worked was instrumenting the scratch copy.
+```
+BEFORE getreach [6]=-1 [7]=-1
+AFTER  getreach [6]=-1 [7]=-1
+AFTER  getflow  [6]=8  [7]=-1        <-- still CLEAN
+```
 
-**And instrument a brace-less loop with braces.**  `gettree`'s initialiser is
-`for (i = 0; i < CHILDNUM(v); ++i)` with **no braces**, so a `fprintf` added
-after the body lands *outside* the loop where `i == CHILDNUM(v)`, and
-`lchild`'s own assertion fires.  That reads as a new finding and is the
-instrument.  Third instance here of *an instrument you wrote is a suspect*.
+So nothing was corrupt going into `getthen`, which refuted the whole
+"something writes at the wrong stride during graph construction" line of
+enquiry.  `getthen` reads `tch = LCHILD(v,THEN)` = −1 and
+`fch = LCHILD(v,ELSE)` = 8, takes the `!DEFINED(tch)` arm, and calls
+**`negate(v)`** — one line, `exchange(&LCHILD(v,THEN), &LCHILD(v,ELSE))`.
+Comparing the clean pair `(8, −1)` against what `mkthen` then saw showed each
+cell holding the correct low half and *the other one's* high half, which
+names a half-width swap and nothing else.
 
-**And still do not add it to the Makefile.**  A program installed into the
-world that dies on its own primary input is worse than one that is not there:
-the crash probe would gain a floor entry, `tests/wavea`'s
-imported-equals-installed guard would go green on a lie, and the world would
-grow a command that cannot be used.  `struct` restructures `GOTO`s; until the
-`GOTO` case runs, it does not do its job.
+Three things about the route generalise:
+
+- **Bisect by phase before reasoning about mechanism.**  Three `fprintf`s in
+  the phase driver did in one run what two rounds of reading declarations and
+  one row dump had not.
+- **Do not reach for lldb**: v8cc emits no unwind info, so a backtrace stops
+  at frame #0 every time.  Every useful measurement here came from
+  instrumenting the scratch copy.
+- **Instrument a brace-less loop WITH BRACES.**  `gettree`'s initialiser is
+  `for (i = 0; i < CHILDNUM(v); ++i)` with no braces, so a `fprintf` after the
+  body lands *outside* the loop where `i == CHILDNUM(v)`, and `lchild`'s own
+  assertion fires.  That reads as a new finding and is the instrument.
+
+## What is left
+
+It does its job, so the standing reason not to build it is discharged.  What
+remains is integration, and it is ordinary work rather than diagnosis:
+
+1. **Makefile rules.**  35 objects → `structure`; `beauty.o tree.o lextab.o
+   bdef.o` + `libl.a` → `beautify`; `lextab.o` from a lex file with no yacc
+   file beside it (`pp`'s idiom).  Compile only what the FILES lists name —
+   `2.test.c` and `3.test.c` each have their own `main`.
+2. **`tests/deps` cases** for those rules, including the lex edge, verified by
+   mutation.
+3. **`tests/wavea` cases.**  The seven reproducers above are the obvious set,
+   and the four `GOTO` ones are the load-bearing half: each asserts a
+   *different* structured construct (`REPEAT/UNTIL`, `break`, `ELSE IF`,
+   `SWITCH`), so a regression in one arm cannot hide behind the others.
+4. **Re-measure the crash-probe floor**, since installing a program adds it to
+   the swept population.

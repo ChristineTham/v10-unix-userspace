@@ -3931,17 +3931,49 @@ set the shape of the output — they fill the dominator and loop-header tables
 that the tree builder branches on. A truncated value there does not crash. It
 compiles a different program.
 
-`structure` now translates straight-line Fortran and `IF` statements into
-correct Ratfor, where before it died on every input including the trivial one.
-It still fails on a `GOTO`, and dumping the whole graph row for the failing
-node both narrowed the remaining defect and corrected me twice. One cell read
-as `4425033912` and looked like garbage; it is a string pointer, and the tell
-that it is *correct* is that it **changes between runs** — ASLR moving it is
-what proves a genuine 64-bit pointer, which is exactly what widening the cell
-was for. And the two cells that are wrong are provably right when the tree
-builder finishes writing them, so the corruption belongs to a later phase than
-the one I had been reading. That is the next turn of the loop, and it is now a
-two-function search rather than a forty-file one.
+The last defect took three wrong turns to reach, and the route is worth more
+than the fix. First I dumped the whole graph row for the failing node, which
+corrected me twice at once: one cell read as `4425033912` and looked like
+garbage, but it is a string pointer, and the tell that it is *correct* is that
+it **changes between runs** — ASLR moving it is what proves a genuine 64-bit
+pointer, which is exactly what widening the cell was for. And the two cells
+that really were wrong turned out to be provably right when the tree builder
+finished writing them.
+
+So I stopped reasoning about mechanism and bisected by phase instead — three
+print statements in the driver, one run. The cells were clean after every
+phase up to the last one. The corruption was a single line inside it:
+`negate()`, which flips an `IF`, does its work by calling a small generic
+`exchange(p1, p2)` helper. That helper is declared to swap two `int`s. Its four
+callers pass three different kinds of thing — two of them pass *pointers* — and
+on a VAX all three were four bytes wide, so one helper covered all of them.
+Under LP64 it swapped the low half of each object and left the high halves
+where they were, which is why each cell ended up holding its own correct low
+word and the other one's high word.
+
+**And it was in my own sweep output.** I had run a search for `int *`
+declarations and printed a line reading `2.dfs.c:148: int *p1,*p2;` under a
+heading I had written as "int\* locals" — then scanned past it, because I was
+looking for locals. It is a K&R parameter list, which is the one place a
+declaration sits alone on a line and is not a local. Two further rounds of
+instrumentation went into re-deriving what that line had already told me.
+
+With that one word changed, `struct` does the thing it exists to do:
+
+```
+      SUBROUTINE D(N)              subroutine d(n)
+   10 N = N - 1                    REPEAT
+      IF (N .GT. 0) GOTO 10   -->  	n = n - 1
+      RETURN                       	UNTIL(!(n .gt. 0))
+      END                          return
+                                   END
+```
+
+A `DO` loop with a `GOTO` out of it becomes `DO … { break }`. A three-way
+`GOTO` branch becomes `IF / ELSE IF / ELSE`. A computed `GOTO` becomes a
+`SWITCH` with `CASE`s. Every `GOTO` is gone, replaced by the structured
+construct it was standing in for — which is Brenda Baker's whole point, running
+on hardware built forty years after she wrote it.
 
 There is also a hazard I found and deliberately did not fix, because it is not
 reachable by anything I can test: the graph is allocated by the program's own
