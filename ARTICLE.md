@@ -3243,6 +3243,32 @@ missing from `/dev`. And both were only visible on a machine with no history,
 which is a question worth asking of any green test — would this still pass on a
 tree that has never been used?
 
+The sharpest version of that question arrived later, and the answer was no. A
+build failed on CI with `No rule to make target …/plot.c.a`, and the file was
+sitting on my disk. `usr/src/libplot` stores each library's C sources **inside
+an `ar` archive** — `tek.c.a`, `plot.c.a` — and `.gitignore` has carried `*.a`
+since the first commit, for build outputs. So `git add -A` had silently added
+nothing, and 937 lines of Bell Labs source were never committed. Every suite,
+and a 7579-invocation crash probe, had passed against source that did not exist
+in the repository.
+
+The wider version is worse and is not really about me. Ten `.c.a` bundles are
+affected and eight of them are in the *vendored upstream*, so `third_party/` —
+the pristine archive the whole fidelity claim rests on — has been incomplete in
+git since the day it was vendored. `git log --all -- '*.c.a'` is empty; they
+were never tracked once. On a fresh clone, `tools/import.sh` could not have
+imported any plot library at all, which is part of why nobody had ever looked
+at that tree.
+
+And 190 files, 2.6 MB, are still ignored there by the same three rules: every
+shipped library, the troff font tables, the object files. None of them is a
+build input, which is exactly why this stayed green for so long — but several
+*measurements* in these notes cite them. "The shipped `libm.a` is 216 bytes, one
+member, whose entire symbol table is a row of underscores" is a real finding and
+it is not reproducible from a clone. A repository that cannot reproduce its own
+evidence is a weaker artefact than one that can, and that is now written down as
+work rather than as a footnote.
+
 So there is a third category now: entries marked as tolerated, removed from both
 sides of the comparison, neither required nor forbidden. That is a hole in an
 otherwise strict check, and holes like it are how the original number rotted, so

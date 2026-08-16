@@ -7,6 +7,18 @@ rootfs/
 *.i
 *.out
 
+# ...EXCEPT THE `.c.a' SOURCE BUNDLES, WHICH ARE SOURCE AND NOT OUTPUT.
+# usr/src/libplot stores each library's C files INSIDE an ar archive and the
+# makefile runs `ar x' to get at them, so tek.c.a and plot.c.a are the only
+# copy of 937 lines of Bell Labs source in this tree -- and `*.a' above, which
+# exists for BUILD outputs, swallowed both.
+#
+# It failed on CI and could not have failed anywhere else: the files were
+# present locally, so every build, every suite and the crash probe passed here
+# while a fresh checkout had no source to compile.  Same shape as the /etc/utmp
+# case tests/jail records -- a runner is the only machine with no history.
+!*.c.a
+
 # Scratch at the REPO ROOT, which is where debugging lands when a reproduction
 # is quicker to write than to place.  313 KB of it got committed -- fourteen
 # files including four Mach-O binaries (gw, ls1, pwd2, so) -- because the list
