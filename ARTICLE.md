@@ -4020,6 +4020,55 @@ loops, so a `struct` that fails on a `GOTO` fails at the one thing it is for,
 and a command in the world that dies on its own primary input is worse than a
 command that is not there.
 
+### csh, which runs the whole language and hangs on `ls`
+
+The C shell is 12,524 lines and it carried four apparent blockers. None of them
+survived measurement: `xstr` was already ported, `-ljobs` turned out to be a
+real 6,348-byte archive rather than another empty stub like `libm`, and four of
+libjobs' seven files are VAX assembly whose contents — `killpg`, `setpgrp`,
+`wait3`, `getwd` — this port already had. The library reduced to one 185-line C
+file, and the link came down to exactly two undefined symbols.
+
+One of those two is the interesting one, and it is **not a missing symbol but a
+missing memory model**. csh asks "is this pointer heap or static" by comparing
+against `end`, the linker's end-of-BSS marker, because a VAX laid text, data,
+bss, heap and stack out in that order. This shim takes its heap from an
+anonymous `mmap`, so the arena sits wherever the kernel puts it and is not
+contiguous with anything. Defining *some* `end` symbol would have compiled and
+answered plausibly and been wrong, which is worse than not linking. The shim
+knows the arena exactly, so the fix is a range test — which needs no ordering
+assumption at all and comes out *stronger* than the original, because it also
+refuses to free a stack pointer.
+
+Getting that far turned up three defects in code csh merely reached first. The
+signal header had never been imported, so it was still 1985's, and two of its
+three macros truncated a function pointer through an `int` — the third read only
+bit 0 and was accidentally correct, which is the same distinction that made `~x`
+safe in an earlier sweep. `getpgrp` was missing while `setpgrp` was present.
+And `wait3` handed the kernel the wrong struct: V8's third argument is a
+40-byte `struct vtimes`, Darwin's `wait4` writes a 144-byte `struct rusage`, so
+it wrote 104 bytes past a stack variable and over the return address. csh ran a
+command, printed the output correctly, and jumped to address zero.
+
+With those fixed, csh links with nothing from the host and runs the entire
+language — `@` arithmetic, `foreach`, `while`, `switch`, globbing, file tests.
+And it hangs on every external command. The output is right and arrives first;
+only the exit never comes.
+
+**It is not installed, and that is the deliberate part.** A shell that prints
+the correct answer and then waits forever is worse in the world than no shell at
+all, which is the same rule that kept `struct` out until it worked.
+
+What I can hand over is a hang narrowed to one function rather than a mystery. A
+stack sample names the path exactly — `pjwait` waiting on a `SIGCHLD` that never
+wakes it — and two plausible causes have been measured and eliminated: a race
+between unblocking and suspending (real bug, fixed, but the hang is
+deterministic twelve times out of twelve), and an invalid argument to the mask
+query (also a real bug, also fixed, also not it). The intermittency that first
+suggested a race was my own test harness using an eight-second deadline in one
+run and six in the next — which is the instrument-is-a-suspect rule arriving in
+the timing rather than in the output.
+
 ## What is left
 
 Phases 0 through 4 are done, Phase 6 is done, and **Phase 5, the Blit terminal,

@@ -2086,8 +2086,64 @@ v8s_times(struct v8_tbuffer *tb)
 int v8s_wait(int *status)
 { RET(rawsys4(SYS_wait4, -1, (long)status, 0, 0)); }
 
-int v8s_wait3(int *status, int options, void *rusage)
-{ RET(rawsys4(SYS_wait4, -1, (long)status, options, (long)rusage)); }
+/*
+ * wait3's THIRD ARGUMENT IS NOT A struct rusage HERE, and handing it to the
+ * kernel as one smashes the caller's stack.
+ *
+ * V8's wait3(status, options, vt) takes a `struct vtimes *' -- ten ints, 40
+ * bytes, <sys/vtimes.h>.  Darwin's wait4 takes a `struct rusage *', which is
+ * 144.  So the kernel wrote 104 bytes past the end of a 40-byte automatic and
+ * over the return address.  Measured on csh, which is the only caller: it ran
+ * an external command correctly, printed its output, and then jumped to
+ * address 0 -- `stop reason = EXC_BAD_ACCESS (address=0x0), frame #0: 0x0'.
+ * The output arriving FIRST is what makes this read as a bug in the exit path
+ * rather than in wait3.
+ *
+ * Third instance of the struct-at-the-seam class, after sigaction (where the
+ * kernel form is 24 bytes and libc's is 16) and stat.  Same rule each time:
+ * THE STRUCT A SYSCALL TAKES IS NOT ALWAYS THE STRUCT THE PROGRAM TAKES, and
+ * the shim is where the two are reconciled.
+ *
+ * The translation is deliberately partial and the reason is upstream's: csh
+ * reads vt only for `time', and V8's own vtimes fields have no Darwin
+ * counterpart past the first four -- ru_isrss and the integral-rss figures are
+ * accounting a VAX kept and XNU does not.  Those are zeroed rather than
+ * guessed at.  Times are in 60ths, which is what the header says and what
+ * sh.time.c divides by.
+ */
+struct v8_vtimes {			/* sys/vtimes.h, 40 bytes */
+	int vm_utime, vm_stime;
+	unsigned vm_idsrss, vm_ixrss;
+	int vm_maxrss, vm_majflt, vm_minflt, vm_nswap, vm_inblk, vm_oublk;
+};
+
+int v8s_wait3(int *status, int options, struct v8_vtimes *vt)
+{
+	long ru[18];			/* struct rusage is 144 bytes */
+	long r;
+	struct { long sec; int usec; } *tv;
+
+	if (vt == 0)
+		RET(rawsys4(SYS_wait4, -1, (long)status, options, 0));
+
+	for (r = 0; r < 18; r++) ru[r] = 0;
+	r = rawsys4(SYS_wait4, -1, (long)status, options, (long)ru);
+	if (r < 0) { v8_errno = v8sys_errno(RAWERR(r)); return (-1); }
+
+	tv = (void *)&ru[0];		/* ru_utime */
+	vt->vm_utime = (int)(tv->sec * 60 + tv->usec / 16667);
+	tv = (void *)&ru[2];		/* ru_stime */
+	vt->vm_stime = (int)(tv->sec * 60 + tv->usec / 16667);
+	vt->vm_maxrss = (int)ru[4];
+	vt->vm_ixrss  = 0;
+	vt->vm_idsrss = 0;
+	vt->vm_minflt = (int)ru[8];
+	vt->vm_majflt = (int)ru[9];
+	vt->vm_nswap  = (int)ru[10];
+	vt->vm_inblk  = (int)ru[11];
+	vt->vm_oublk  = (int)ru[12];
+	return ((int)r);
+}
 
 int
 v8s_utime(char *p, long *tv)

@@ -213,6 +213,192 @@ v8s_signal(int v8sig, v8handler h)
 	return ((v8handler)old.sa_handler);
 }
 
+/*
+ * sigsys(n, action) -- 4.1BSD call 48, and libjobs' single primitive.  Every
+ * one of sigset/sighold/sigpause/sigrelse/sigignore in libjobs' sigset.c is
+ * written on it, so csh reaches this 88 times.
+ *
+ * The contract is in signal.s' own header:
+ *
+ *	sigsys(n, SIG_DFL)		default action
+ *	sigsys(n, SIG_HOLD)		block the signal, leave the action
+ *	sigsys(n, SIG_IGN)		ignore
+ *	sigsys(n, label)		handler
+ *	sigsys(n, DEFERSIG(label))	handler, entered with the signal held
+ *	returns the old label
+ *
+ * THE THREE MAGIC VALUES MUST BE TESTED BEFORE THE DEFER BIT, because SIG_IGN
+ * IS 1 -- its low bit is set, so decoding first would read it as a deferred
+ * handler at address 0.  sigset.c makes the same test in the same order at
+ * :38 and :75, which is where the ordering was read from rather than guessed.
+ *
+ * DEFERRAL IS IMPLEMENTED HERE AND IS NOT IN v8s_signal ABOVE, and the reason
+ * is a property of the CALLER rather than a change of mind.  That function's
+ * comment declines it because a handler which longjmps out never reaches
+ * sigreturn, so a masked signal would stay masked forever -- true of V8's
+ * sleep(3) and of sh.  csh does not rely on sigreturn: pintr1 (sh.c:587)
+ * calls sigrelse(SIGINT) as its FIRST statement and only then longjmps, which
+ * is precisely the discipline System V reliable signals ask for.  So the
+ * hazard is real, csh is written around it, and the mask is dropped through
+ * an explicit sigprocmask rather than by returning.
+ *
+ * The defer bit also separates the two protocols sigset.c implements on one
+ * primitive: its signal() passes a bare handler (V7 semantics, reset on
+ * delivery) and its sigset() always passes DEFERSIG (persistent).  So
+ * undeferred gets SA_RESETHAND|SA_NODEFER exactly as v8s_signal does, and
+ * deferred gets neither.
+ *
+ * SIGDOPAUSE is honoured rather than stripped -- sigpause() is `set the action
+ * and wait for it', and stripping the bit would turn it into a busy return.
+ * SIGDORTI is not: it asks the VAX to resume an interrupted frame, and there
+ * is no XNU equivalent.  Nothing in libjobs sends it.
+ */
+#define V8_SIG_HOLD	3		/* signal.h: (int (*)())3 */
+#define V8_SIGDOPAUSE	0400		/* signal.h: pause after setting */
+#define SIG_BLOCK_	1		/* <sys/signal.h> */
+#define SIG_UNBLOCK_	2
+
+/*
+ * Wait for one delivery of the signals in `mask'.  sigsuspend(2) takes the
+ * mask to install WHILE waiting, so the signal being waited for must be
+ * CLEAR in it -- passing the mask itself would block the very thing that is
+ * supposed to wake us and hang forever.
+ */
+static void
+v8s_sigpause_wait(long mask)
+{
+	unsigned int cur = 0;
+
+	/*
+	 * THE TWO SYSCALLS DISAGREE ABOUT POINTER VERSUS VALUE, which is not a
+	 * symmetry anyone would guess: XNU's sigprocmask takes `int how,
+	 * sigset_t *set, sigset_t *oset' and its sigsuspend takes the mask BY
+	 * VALUE.  Passing &cur to sigsuspend blocks on whatever the address
+	 * looked like as a mask and never wakes -- measured as csh producing
+	 * correct output and then hanging, which reads as a wait-for-child bug
+	 * rather than a wrong argument.
+	 */
+	rawsys3(SYS_sigprocmask, SIG_BLOCK_ /* a null set makes this a QUERY */,
+	    0, (long)&cur);
+	cur &= ~(unsigned int)mask;
+	rawsys1(SYS_sigsuspend, (long)cur);
+}
+
+char *
+v8s_sigsys(int v8sig, char *action)
+{
+	struct __sigaction sa;
+	struct sigaction old;
+	long mask;
+	int hs, dopause, defer;
+	v8handler h;
+
+	dopause = (v8sig & V8_SIGDOPAUSE) != 0;
+	hs = v8sys_signo_to_host(v8sig);	/* masks with SIGNUMMASK */
+	if (hs < 0) { v8_errno = V8_EINVAL; return ((v8handler)-1); }
+	mask = 1L << (hs - 1);
+
+	/* SIG_HOLD blocks and leaves the action alone, so it needs a query. */
+	if (action == (v8handler)V8_SIG_HOLD) {
+		if (rawsys3(SYS_sigaction, hs, 0, (long)&old) < 0) {
+			v8_errno = V8_EINVAL;
+			return ((v8handler)-1);
+		}
+		if (rawsys3(SYS_sigprocmask, SIG_BLOCK_, (long)&mask, 0) < 0) {
+			v8_errno = V8_EINVAL;
+			return ((v8handler)-1);
+		}
+		if (dopause) v8s_sigpause_wait(mask);
+		return ((v8handler)old.sa_handler);
+	}
+
+	defer = 0;
+	h = action;
+	if (action != (v8handler)0 && action != (v8handler)1) {
+		defer = ((long)action & 1) != 0;
+		h = (v8handler)((long)action & ~1L);
+	}
+
+	sa.sa_handler = (void (*)(int))h;
+	sa.sa_tramp = (void (*)(void *, int, int, siginfo_t *, void *))
+	    v8sys_sigtramp;
+	sa.sa_mask = defer ? mask : 0;
+	sa.sa_flags = defer ? 0 : (SA_RESETHAND | SA_NODEFER);
+	if (h == (v8handler)SIG_IGN || h == (v8handler)SIG_DFL) {
+		sa.sa_mask = 0;
+		sa.sa_flags = 0;
+	}
+
+	if (rawsys3(SYS_sigaction, hs, (long)&sa, (long)&old) < 0) {
+		v8_errno = V8_EINVAL;
+		return ((v8handler)-1);
+	}
+
+	/*
+	 * Installing an action RELEASES the signal.  That is what makes
+	 * sigrelse() work: sigset.c spells it as sigsys(n, DEFERSIG(catcher)),
+	 * i.e. re-install, and on the VAX re-installing implied not-held.
+	 *
+	 * BUT NOT WHEN PAUSING, and that is a RACE rather than a tidiness.
+	 * sigset.c spells sigpause as ONE call -- sigsys(n|SIGDOPAUSE, act) --
+	 * because the VAX set the action and slept atomically.  Unblocking here
+	 * and then suspending leaves a window in which the signal arrives, is
+	 * delivered, and is gone before the sleep begins; the sleep then waits
+	 * for something that already happened.  sigsuspend(2) installs its mask
+	 * and waits as one operation, so it is what must do the unblocking.
+	 *
+	 * Measured, and the shape is worth recording: csh produced CORRECT
+	 * OUTPUT and then hung, intermittently -- the same binary and the same
+	 * script passing and hanging minutes apart.  That intermittency is the
+	 * evidence, because a wrong mask or a wrong argument would fail every
+	 * time.  It was nearly filed against the terminal and against a missing
+	 * /dev, both of which were measured innocent first.
+	 */
+	if (!dopause) {
+		if (rawsys3(SYS_sigprocmask, SIG_UNBLOCK_, (long)&mask, 0) < 0) {
+			v8_errno = V8_EINVAL;
+			return ((v8handler)-1);
+		}
+	} else {
+		v8s_sigpause_wait(mask);
+	}
+	return ((v8handler)old.sa_handler);
+}
+
+/*
+ * sigpeel(n, action) -- libjobs' other assembly routine, and here it RETURNS,
+ * which upstream marks NOTREACHED.
+ *
+ * signal.s describes its job as "peel back frames to the last one, then call
+ * the system to reenable the signal with newact, arranging to clean the stack
+ * before the signal can happen again".  That is three things, and on this
+ * target the kernel already does all three:
+ *
+ *	peel the frames	 sigreturn(2), which v8sys_sigcall calls on the way
+ *			 out of every handler -- see the trampoline above
+ *	reenable	 sigaction installs a PERSISTENT handler when the
+ *			 action was deferred (v8s_sigsys sets no
+ *			 SA_RESETHAND in that arm), so it is still armed
+ *	unblock		 sigreturn restores the mask the kernel saved
+ *
+ * So the honest implementation is to do nothing and let _sigcatch fall off its
+ * own end.  It is NOT a stub standing in for unwritten work: the VAX needed an
+ * explicit unwind because its signal frames were the program's to clean, and
+ * XNU's are not.  Writing anything here would be inventing a difference the
+ * kernel does not have, which is the /dev/fd rule.
+ *
+ * The one thing that would break if this were wrong is invisible at the call:
+ * _sigcatch would return into a frame that had already been peeled.  It is
+ * exercised by tests/wavea driving csh through a caught SIGINT, which is the
+ * only way to reach it at all.
+ */
+/* ARGSUSED */
+int
+v8s_sigpeel(int v8sig, char *action)
+{
+	return (0);
+}
+
 /* libjobs' additions.  killpg and setpgrp map directly. */
 int v8s_killpg(int pgrp, int sig)
 {
@@ -220,6 +406,23 @@ int v8s_killpg(int pgrp, int sig)
 	if (h < 0) { v8_errno = V8_EINVAL; return (-1); }
 	if (rawsys3(SYS_kill, -pgrp, h, 0) < 0) { v8_errno = V8_EPERM; return (-1); }
 	return (0);
+}
+
+/*
+ * getpgrp(pid) TAKES AN ARGUMENT, which is the half of the pair that has since
+ * been dropped -- V8 files it under deprecated(2), and POSIX kept only the
+ * no-argument form.  csh calls getpgrp(0), meaning its own group, so the host
+ * call is getpgid(2) with the pid passed straight through.
+ *
+ * Added with sigsys rather than with setpgrp above because nothing needed it
+ * until csh: setpgrp had a caller and its partner did not, which is how one
+ * half of a pair sits missing without anything saying so.
+ */
+int v8s_getpgrp(int pid)
+{
+	long r = rawsys1(SYS_getpgid, pid);
+	if (r < 0) { v8_errno = V8_EPERM; return (-1); }
+	return ((int)r);
 }
 
 int v8s_setpgrp(int pid, int pgrp)

@@ -4,9 +4,77 @@ Task #93.  Bill Joy's C shell, 4.1BSD vintage: 31 files, 12524 lines.
 Upstream `v8/usr/src/cmd/csh`, installs to `/bin` (`Admin/binfiles:10`, and
 the shipped tree has `/bin/csh`).
 
-**IMPORTED AND DELIBERATELY NOT BUILT.**  It is not in the Makefile and
-`tests/wavea` exempts it by name, with the reason quoted there.  What follows
-is exactly how far it got and what the two remaining symbols are.
+**BUILT AND DELIBERATELY NOT INSTALLED.**  The Makefile has its rules and
+they run; `$(CSH_BUILT)` is deliberately absent from `$(V8DIRBIN_BUILT)`, and
+`tests/wavea` exempts it by name.
+
+It links with an **empty `nm -u`** and runs the whole language:
+
+| | |
+|---|---|
+| `@` arithmetic | `set x = 6; @ y = $x * 7` → **42** |
+| `foreach` | `foreach i (p q r)` → **pqr** |
+| `while` | counts **321** |
+| `switch`/`case` | **matched** |
+| globbing | `gt/*.txt` expands; `[nosuch]` is correctly an error |
+| `if ( -e /bin/sh )` | **present** |
+
+**And it hangs on every external command**, which is why it is not installed.
+A shell that prints the right answer and then waits forever is worse in the
+world than no `csh` at all — the same rule that kept `struct` out until it
+worked.
+
+The output is CORRECT and arrives first; only the exit never comes.  Sampled,
+the stack names one function and no guessing is required:
+
+```
+process -> execute -> pwait -> pjwait -> sigpause -> sigsys
+        -> v8s_sigsys -> v8s_sigpause_wait -> sigsuspend
+```
+
+so `pjwait` blocks for a `SIGCHLD` that never wakes it.  **Two candidate
+causes were measured and are not it**, which is worth recording because both
+were plausible:
+
+- **An unblock/suspend race.**  `sigset.c` spells sigpause as ONE call
+  (`sigsys(n|SIGDOPAUSE, act)`) because the VAX set the action and slept
+  atomically, so unblocking and then suspending would lose a signal arriving
+  in between.  Real, fixed (`sigsuspend` does the unblocking now) — and **not
+  the cause**: the hang is deterministic, 12 runs of 12.  The intermittency
+  that suggested a race was my own harness, an 8-second deadline in one run
+  and 6 in the next.
+- **An invalid `sigprocmask` `how` of 0.**  A genuine bug — SIG_BLOCK is 1, so
+  the mask query silently failed and returned an empty mask.  Fixed.  No
+  change to the hang.
+
+Also ruled out by measurement rather than argument: the shape of stdin (file,
+pipe and detached all hang identically), and a missing `/dev` from
+`tests/kmemu`'s delete-and-restore (`/dev` is intact and a rebuild changes
+nothing).
+
+## What was fixed getting here, and all of it is independently right
+
+Four of these are defects in code csh merely *reached* first:
+
+- **`signal.h`'s `DEFERSIG` and `SIGUNDEFER` truncate a function pointer**
+  through `int`.  The header had never been imported, so it was still 1985's —
+  the `sys/fblk.h` shape.  `SIGISDEFER` is the third of the trio and was
+  **accidentally correct**, because it reads bit 0 and bit 0 survives a
+  truncation; changed anyway rather than left as the odd one out.
+- **`v8s_wait3` handed the kernel the wrong struct.**  V8's third argument is
+  `struct vtimes *` (10 ints, 40 bytes); Darwin's `wait4` writes `struct
+  rusage` (144).  So it wrote 104 bytes past a stack automatic and over the
+  return address, and csh ran a command, printed its output, and jumped to
+  address 0.  Third instance of the struct-at-the-seam class after `sigaction`
+  and `stat`.
+- **`v8sys_isheap`**, and `sh.set.c`'s two users of `extern char end[]` — the
+  memory-model finding described below.
+- **`getpgrp` was missing while `setpgrp` was present**, which is how one half
+  of a pair sits absent with nothing to say so.
+
+New and awaiting their consumer: `v8s_sigsys` and `v8s_sigpeel`.  They are
+syscall-table entries rather than library code, which is why they are in the
+shim beside `killpg` and `setpgrp`.
 
 ## Four apparent blockers, none of them real
 

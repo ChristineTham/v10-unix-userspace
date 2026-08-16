@@ -514,6 +514,7 @@ dep 'beautify install'          $B/bin/beautify                 rootfs/usr/lib/s
 # The COMMAND is the shell script, and it is a real prerequisite of the
 # installed file -- the same shape as diff3.sh.
 dep 'struct.sh -> command'      src/cmd/struct/struct.sh        rootfs/usr/bin/struct
+
 # libl -- the SECOND library import after libtermlib, and pp is its only
 # consumer.  The chain that matters is source -> archive -> program: a lex
 # program with no yywrap() of its own does not link without it, and the failure

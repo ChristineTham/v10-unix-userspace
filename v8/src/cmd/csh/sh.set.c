@@ -245,20 +245,48 @@ operate(op, vp, p)
 	return (putn(i));
 }
 
+/*
+ * PORT: both were `extern char end[]' plus a comparison, and the change is
+ * forced by the TARGET MEMORY MODEL rather than by a missing symbol.
+ *
+ * A VAX laid text, data, bss, heap and stack out in that order, so `cp < end'
+ * -- end being the linker symbol after bss -- separated static storage from
+ * allocated, and `cp >= end && cp < &cp' bracketed the heap between bss and
+ * the stack.  THERE IS NO SUCH ORDERING HERE: shim/v8sys/mem.c takes its heap
+ * from mmap(0, 1GB, ...), so the arena sits wherever the kernel put it and is
+ * not contiguous with __DATA.  Defining some `end' symbol would compile and
+ * answer plausibly and be wrong, which is worse than not linking.
+ *
+ * Both functions ask ONE question -- is this pointer heap-allocated -- and the
+ * shim can answer it exactly, because it owns the arena.  v8sys_isheap() is a
+ * range test, so it needs no ordering assumption and excludes the stack for
+ * free.  That makes it STRONGER than upstream, which would cfree() a stack
+ * pointer on any machine where the stack grew up.
+ *
+ * FIRST CALL FROM AUTHENTIC V8 SOURCE INTO THE SHIM BY NAME.  Nothing in
+ * src/ did that before; the shim is normally reached through a syscall stub.
+ * It is spelled out here rather than hidden behind a fake `end' precisely so
+ * that the departure is visible at the call site.
+ *
+ * The two callers bound the risk in opposite directions, which is why this is
+ * safe to get slightly wrong and was still measured: onlyread() has ONE caller
+ * (`:413', onlyread(value) ? savestr(value) : value) where answering yes only
+ * copies, and xfree() has 87, where freeing a non-heap pointer is the crash.
+ */
 onlyread(cp)
 	char *cp;
 {
-	extern char end[];
+	extern int v8sys_isheap();
 
-	return (cp < end);
+	return (!v8sys_isheap(cp));
 }
 
 xfree(cp)
 	char *cp;
 {
-	extern char end[];
+	extern int v8sys_isheap();
 
-	if (cp >= end && cp < (char *) &cp)
+	if (v8sys_isheap(cp))
 		cfree(cp);
 }
 

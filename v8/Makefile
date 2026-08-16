@@ -2397,6 +2397,71 @@ STRUCT_BUILT   = $(BINDIR)/structure $(BINDIR)/beautify
 STRUCT_INSTALL = $(ROOTFS)/usr/lib/struct/structure \
                  $(ROOTFS)/usr/lib/struct/beautify $(ROOTFS)/usr/bin/struct
 
+# ---------------------------------------------------------------------------
+# csh(1) -- Bill Joy's C shell, 4.1BSD, and libjobs under it.  /bin per
+# Admin/binfiles:10, confirmed by the shipped tree.
+#
+# libjobs is the FOURTH library import and the smallest: seven upstream files,
+# and only sigset.c is built.  Four of the other six are VAX .s whose contents
+# this port already has -- killpg, setpgrp and wait3 in shim/v8sys, getwd.c in
+# src/libc/gen -- and the fifth, signal.s, supplies sigsys and sigpeel, which
+# are now v8s_ entry points because they are kernel interfaces rather than
+# library code.  src/cmd/csh/PORTING.md has the whole account.
+LIBJOBSSRC = $(SRC)/lib/libjobs
+$(BUILD)/libjobs/sigset.o: $(LIBJOBSSRC)/sigset.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BUILD)/libjobs/libjobs.a: $(BUILD)/libjobs/sigset.o
+	@rm -f $@ && ar rcs $@ $(BUILD)/libjobs/sigset.o
+$(ROOTFS)/usr/lib/libjobs.a: $(BUILD)/libjobs/libjobs.a
+	@mkdir -p $(@D) && cp $< $@
+
+# UPSTREAM'S OWN CFLAGS, less nothing: -DTELL -DVMUNIX -Ddebug -DVFORK.
+# VMUNIX is the one that matters -- it selects the wait3-with-vtimes arm of
+# pchild, which is what found the struct-at-the-seam bug in v8s_wait3.
+#
+# THE OBJECT LIST IS NOT upstream's OBJS.  Three of its members cannot be
+# built here and each is a different reason:
+#   strings.o  produced by xstr, whose point is `cc -c -R' putting the shared
+#              string table in read-only TEXT.  -R is the arm64 shared-text
+#              stop that already blocks rung 5 for cpp and sh.
+#   doprnt.o   IS NOT C.  It is VAX assembly wrapped in cpp macros (.globl
+#              __doprnt, #define flags r10), which is why upstream's rule for
+#              it is `cc -E | as' rather than a compile.
+#   printf.o   two lines calling that _doprnt.  With it gone, libv8c's printf
+#              is what csh gets -- and libv8c's is this port's fixed one.
+CSHSRC = $(SRC)/cmd/csh
+CSHFLAGS = -DTELL -DVMUNIX -Ddebug -DVFORK
+CSH_NAMES = sh sh.dol sh.err sh.exec sh.exp sh.func sh.glob sh.hist sh.lex \
+            sh.misc sh.parse sh.print sh.sem sh.set sh.proc sh.dir sh.time \
+            alloc sh.init
+CSH_OBJ = $(patsubst %,$(BUILD)/csh/%.o,$(CSH_NAMES))
+
+$(BUILD)/csh/%.o: $(CSHSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) $(CSHFLAGS) -I$(CSHSRC) -c -o $@ $<
+
+# Upstream's `csh: ${OBJS} sh.local.h' plus the two headers its own makefile
+# does not name.  sh.h reaches every object and sh.dir.h/sh.proc.h reach the
+# two that include them; a stale sh.h here is a struct-layout skew across
+# nineteen objects.
+$(CSH_OBJ): $(CSHSRC)/sh.h $(CSHSRC)/sh.local.h
+$(BUILD)/csh/sh.dir.o $(BUILD)/csh/sh.func.o: $(CSHSRC)/sh.dir.h
+$(BUILD)/csh/sh.proc.o $(BUILD)/csh/sh.sem.o: $(CSHSRC)/sh.proc.h
+
+$(BINDIR)/csh: $(CSH_OBJ) $(BUILD)/libjobs/libjobs.a $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(CSH_OBJ) \
+	    $(BUILD)/libjobs/libjobs.a $(V8LIBS)
+# NOT WIRED INTO $(V8DIRBIN_BUILT) OR _INSTALL.  The rules above are correct
+# and csh links with an empty nm -u, and it HANGS on every external command --
+# see src/cmd/csh/PORTING.md.  A shell that prints the right answer and then
+# waits forever is worse in the world than no csh at all, which is the same
+# rule that kept struct out until it worked.  Building it here on purpose so
+# the rules do not rot; installing it would be the lie.
+CSH_BUILT   = $(BINDIR)/csh
+CSH_INSTALL = $(call v8install,csh) $(ROOTFS)/usr/lib/libjobs.a
+
 # B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
 # also what the $(ROOTFS)/etc/% generator further down has to iterate over --
 # showq and dmesg land in /etc and the generator's own comment promises "the

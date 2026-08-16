@@ -690,37 +690,24 @@ for d in "$ROOT"/src/cmd/*/; do
 	case "$name" in
 	# built into the toolchain rather than installed under their own name
 	ccom|cc) continue ;;
-	# struct's exemption is GONE, not edited: it is built and installed now,
-	# so the guard verifies it like anything else.  A skip left behind after
-	# the reason for it expires is a hole, and this list is a set of claims.
+	# struct's exemption is GONE: it is built and installed now, so the
+	# guard verifies it like anything else.  A skip left behind after its
+	# reason expires is a hole, and this list is a set of claims.
 	#
-	# csh is IMPORTED AND DELIBERATELY NOT BUILT, and the reason is precise
-	# rather than open-ended.  All 19 C objects compile, and the link leaves
-	# EXACTLY TWO undefined symbols:
+	# csh IS BUILT AND DELIBERATELY NOT INSTALLED, which is a narrower
+	# claim than the one that stood here before.  It compiles (19 objects),
+	# links with an EMPTY nm -u, and runs the whole language -- @ arithmetic,
+	# foreach, while, switch, globbing, if -e.  What it cannot do is finish
+	# an external command: the output is correct and then it waits forever.
+	# Sampled, the stack is exact and names one function:
 	#
-	#   _sigsys  libjobs' raw signal syscall (4.1BSD call 48).  Its source is
-	#            VAX assembly, and sigset.c -- the 185 lines of C that give
-	#            csh sigset/sighold/sigpause/sigrelse/sigignore, called 88
-	#            times -- is written entirely on top of it.
-	#   _end     sh.set.c's `extern char end[]', used by onlyread() and
-	#            xfree() to ask "is this pointer heap or static".  This
-	#            target HAS NO SUCH SYMBOL and could not answer with one:
-	#            shim/v8sys/mem.c gets its heap from mmap(0,...), so the
-	#            arena is at a kernel-chosen address rather than contiguous
-	#            with __DATA, and the text/data/heap/stack ordering the
-	#            heuristic assumes does not exist here.
+	#   process -> execute -> pwait -> pjwait -> sigpause -> sigsys
+	#           -> v8s_sigsys -> v8s_sigpause_wait -> sigsuspend
 	#
-	# THE SECOND IS THE INTERESTING ONE and it is not a missing symbol, it is
-	# a missing memory model -- so the fix is a shim predicate (the arena
-	# range is known exactly) rather than a constant.  Both call sites reduce
-	# to one question and both have a safe direction: onlyread has ONE caller
-	# where answering "yes" merely copies, xfree has 87 where freeing a
-	# non-heap pointer is the crash.
-	#
-	# Until sigsys is written, linking csh would resolve sigset/sighold/
-	# sigrelse from -lSystem -- MEASURED, macOS has System V versions, which
-	# is why only sigsys errored -- and that is the silent host leak
-	# tests/kmemu exists to catch.  src/cmd/csh/PORTING.md, task #93.
+	# so pjwait blocks for a SIGCHLD that never wakes it.  Two candidate
+	# causes were measured and are NOT it -- an unblock/suspend race (the
+	# hang is deterministic, 12 of 12) and an invalid sigprocmask `how' of 0
+	# (a real bug, fixed, no change).  src/cmd/csh/PORTING.md, task #93.
 	csh) continue ;;
 	# src/cmd/plot builds `tek' and `hpplot', never a program called `plot'.
 	# The COMMAND of that name is a 16-line shell dispatcher V8 ships with no
@@ -2256,6 +2243,7 @@ check 'struct: binaries live in /usr/lib/struct' 'beautify structure' \
 check 'struct: and the command is the shell script' 'yes' \
     "$(head -1 "$V8ROOT/usr/bin/struct" 2>/dev/null | grep -q 'trap' && echo yes)"
 cd "$TMP" || exit 1
+
 
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

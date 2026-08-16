@@ -105,15 +105,47 @@ v8s_brk(char *addr)
 }
 
 /*
- * `end` is where V8's sbrk stub said the break started -- the symbol the linker
+ * `end' is where V8's sbrk stub said the break started -- the symbol the linker
  * places after bss.  V8's malloc reads it to find the bottom of the arena.
  * Ours is the base of the reservation instead.
+ *
+ * FIRST CONSUMER IS csh, and it wanted the OTHER function below.  This one had
+ * none at all until then, which made it an unconsumed component; it is kept
+ * because v8sys_isheap() is written in terms of it and it names the boundary
+ * that the comment above is about.
  */
 char *
 v8sys_end(void)
 {
 	arena_init();
 	return (arena_base);
+}
+
+/*
+ * Is `p' a pointer into the heap this shim hands out?
+ *
+ * V8 programs ask this with `p >= end', because a VAX laid text, data, bss,
+ * heap and stack out in that order and one comparison against the end of bss
+ * therefore separated static storage from allocated.  THIS TARGET HAS NO SUCH
+ * ORDERING: the arena comes from mmap(0, ...), so the kernel chooses where it
+ * goes and it is not contiguous with __DATA.
+ *
+ * Measured on this host -- static 0x1020ee000, arena 0x125e04000, stack
+ * 0x16dd29bf4 -- the VAX ordering happens to hold, and a single comparison
+ * against v8sys_end() would work today.  It is not written that way, because
+ * that is mmap's choice rather than a guarantee and this tree has a rule about
+ * claims that are true only by luck.  A RANGE test needs no ordering at all,
+ * and it excludes the stack for free, which the two-sided VAX idiom needed a
+ * second comparison for.
+ *
+ * `arena_brk' rather than `arena_end': a pointer above the current break is in
+ * the reservation but was never handed out, so it is not heap.
+ */
+int
+v8sys_isheap(char *p)
+{
+	if (arena_init() < 0) return (0);
+	return (p >= arena_base && p < arena_brk);
 }
 
 
