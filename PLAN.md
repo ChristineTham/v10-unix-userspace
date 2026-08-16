@@ -3277,9 +3277,22 @@ fifteen files byte-identical, and one defect with five faces.
   - Clean on every other class: `sbrk' is declared (`vars.h:185'), the option
     loop is `argc > 1' guarded, `blkio.c:88' casts its seek correctly.
     `src/cmd/qed/PORTING.md`.
-  - Remaining in 2e: `lint' (costing first -- it consumes ccom pass-1 output),
-    `struct' (decide whether it belongs in batch 3), `csh' (decide whether the
-    world wants two shells).
+  - **AND KERNIGHAN AND PIKE'S OWN hoc TESTS WERE IN THE TREE, UNCOMMITTED.**
+    `hoc/tests.a' is an ar bundle of ten programs that came in with the import
+    and was deleted by `.gitignore''s `*.a'.  Three siblings went the same way:
+    eqn 37 cases, tbl 54, pic 36 -- 137 acceptance tests written by the
+    programs' authors, never run.  hoc passes its ten, including Ackermann
+    A(3,3)=61 in 2432 recursive calls, which is a harder exercise of the
+    argument stack than anything written here.
+    `ack1' is deliberately NOT run: hoc's read() is `fscanf(fin,...)' where fin
+    is the PROGRAM stream, so it competes with the parser and stdio buffering
+    means the parser wins.  Measured three ways, all failing at the program's
+    LAST line.  Interactive-only, like ex's visual mode.
+  - Remaining in 2e: `struct' (5695 lines, self-contained, spell shape) and
+    `csh' (12524 lines, in Admin/binfiles so V8 shipped it in /bin).  `lint'
+    MOVED TO S7d/batch 3 on a measurement -- it is 2122 lines plus 6786 from
+    `../pcc1/mip', a DIFFERENT vintage of pcc from the one this port already
+    has (trees.c differs by 2131 lines), so it is a second compiler port.
 
 **7c. What is left, in order of unlock:**
 

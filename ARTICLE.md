@@ -3269,6 +3269,33 @@ it is not reproducible from a clone. A repository that cannot reproduce its own
 evidence is a weaker artefact than one that can, and that is now written down as
 work rather than as a footnote.
 
+**And the four rules were hiding something better than shipped binaries.**
+Dropping them made 346 files trackable, and four of those are already in `src/`,
+imported alongside their programs and silently discarded ever since:
+`eqn/eqntest.a`, `tbl/samples.a`, `pic/pictest.a`, `hoc/tests.a`. They are `ar`
+bundles of **137 test cases written by the programs' own authors** — 37 for eqn,
+54 for tbl, 36 for pic, 10 for hoc — sitting in the tree, uncommitted and unrun,
+while this port tested those four programs against cases it had written itself.
+
+`hoc`'s ten went straight into the suite and it passes them, which is a better
+result than the ones I wrote because they are adversarial in a way an author's
+own cases are not. `ack` is Ackermann's function: `A(3,3)` is 61, reached in
+2432 recursive calls, and it exercises the interpreter's argument stack far
+harder than anything I would have thought to write. `fac1` checks 0!, 7! and
+10!; `fib2` runs to 14930352.
+
+One of the ten is **not** run, and finding out why was worth the time. `ack1` is
+`while (read(x)) { read(y); print ack(x,y) }`, and hoc's `read` is
+`fscanf(fin, ...)` where `fin` is the *program* stream rather than standard
+input. So `read()` competes with the parser for the same bytes, and stdio's
+block buffering means the parser has already swallowed the data by the time
+`read` executes. Three invocations were tried — data piped after the program,
+data as a second file argument, program as a file with data on stdin — and all
+three give the same error at *the program's last line*, which is the tell. It
+needs a terminal, like `ex`'s visual mode. Upstream's design, not a port defect,
+and the sort of thing that would have been recorded as a bug if I had stopped at
+the first failure.
+
 The preventive half is three lines in the import tool, which for its whole life
 had never asked git anything: it copies the file, records the hash, prints a
 success line, and stops. It now runs `git check-ignore` on the destination and

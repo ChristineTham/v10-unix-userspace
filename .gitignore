@@ -2,22 +2,43 @@
 # own world, and two of them cannot share a rootfs.
 build/
 rootfs/
-*.o
-*.a
-*.i
-*.out
 
-# ...EXCEPT THE `.c.a' SOURCE BUNDLES, WHICH ARE SOURCE AND NOT OUTPUT.
-# usr/src/libplot stores each library's C files INSIDE an ar archive and the
-# makefile runs `ar x' to get at them, so tek.c.a and plot.c.a are the only
-# copy of 937 lines of Bell Labs source in this tree -- and `*.a' above, which
-# exists for BUILD outputs, swallowed both.
+# THE EXTENSION RULES ARE GONE, AND THEY WERE DELETING BELL LABS' SOURCE.
 #
-# It failed on CI and could not have failed anywhere else: the files were
-# present locally, so every build, every suite and the crash probe passed here
-# while a fresh checkout had no source to compile.  Same shape as the /etc/utmp
-# case tests/jail records -- a runner is the only machine with no history.
-!*.c.a
+# This list used to carry `*.o', `*.a', `*.i' and `*.out' for build outputs.
+# They match by extension ANYWHERE, including inside third_party/, which is
+# supposed to be the pristine vendored archive the whole fidelity claim rests
+# on -- and every build output this project makes already lands under build/
+# or rootfs/, both ignored wholesale above.  Measured: dropping all four makes
+# 346 files trackable and NOT ONE of them is a build product.
+#
+# What they had been deleting:
+#
+#   * TEN `.c.a' SOURCE BUNDLES.  usr/src/libplot stores each library's C
+#     files inside an ar archive and the makefile runs `ar x' to get at them,
+#     so these are the only copy of that source.  `git log --all -- *.c.a' was
+#     empty: never tracked once.  On a fresh clone tools/import.sh could not
+#     have imported any plot library at all.
+#
+#   * FOUR TEST SUITES WRITTEN BY THE PROGRAMS' OWN AUTHORS, already imported
+#     into src/ and silently dropped -- eqn/eqntest.a (37 cases), tbl/samples.a
+#     (54), pic/pictest.a (36), hoc/tests.a (10).  137 acceptance tests, in the
+#     tree, uncommitted and unrun, while this port tested those programs
+#     against cases it wrote itself.
+#
+#   * The shipped libraries and font tables in third_party/, which several
+#     recorded measurements cite -- "V8's libm.a is 216 bytes, one member whose
+#     whole symbol table is a row of underscores" is not reproducible from a
+#     clone without them.
+#
+# It could only ever fail on CI: the files are present locally, so the build,
+# all seventeen suites and a 7579-invocation crash probe passed here against
+# source that did not exist in the repository.  A runner is the only machine
+# with no history -- the same reason the /etc/utmp case in tests/jail could
+# only fail there.
+#
+# tools/import.sh now runs `git check-ignore --no-index' on every destination
+# and warns, so the next one speaks at the point of the mistake.
 
 # Scratch at the REPO ROOT, which is where debugging lands when a reproduction
 # is quicker to write than to place.  313 KB of it got committed -- fourteen

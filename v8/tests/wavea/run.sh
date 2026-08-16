@@ -1763,6 +1763,42 @@ check 'hoc defines a function'   '49'        "$(hoc 'func sq() { return $1*$1 }
 sq(7)')"
 check 'hoc loops'                '1 2 3'     "$(printf 'for (i=1; i<4; i=i+1) print i\n' | "$hocbin" 2>&1 | sed 's/ *$//')"
 
+# ...AND THEN KERNIGHAN AND PIKE'S OWN TESTS, which were in the tree the whole
+# time and had never been run.  hoc/tests.a is an `ar' bundle of ten programs
+# that came in with the import and was DELETED BY .gitignore -- `*.a', a rule
+# for build outputs, matching a source bundle.  Three sibling suites went the
+# same way: eqn 37 cases, tbl 54, pic 36.  See the note in .gitignore.
+#
+# These are worth more than the cases above them because they are ADVERSARIAL
+# in a way a port author's own cases are not: ack is Ackermann's function,
+# which is 2432 recursive calls deep for A(3,3) and exercises the interpreter's
+# argument stack far harder than anything written here would.
+mkdir -p hoct && ( cd hoct && ar x "$ROOT/src/cmd/hoc/tests.a" 2>/dev/null )
+hoct() { perl -e 'alarm 30; exec @ARGV' "$hocbin" 2>&1 < "hoct/$1"; }
+check 'hoc: their ack (Ackermann 3,3)'  '61|2432 calls' \
+    "$(hoct ack | tr -d '\t' | tr '\n' '|' | sed 's/|$//')"
+check 'hoc: their fac1 (0!, 7!, 10!)'   '1|5040|3628800' \
+    "$(hoct fac1 | tr -d '\t' | tr '\n' '|' | sed 's/|$//')"
+check 'hoc: their fac2 prints a table'  'factorial of 6 is 720' \
+    "$(hoct fac2 | grep '^factorial of 6 ' | sed 's/ *$//')"
+check 'hoc: their fib2 reaches 14930352' '14930352' \
+    "$(hoct fib2 | tr ' ' '\n' | grep -x 14930352)"
+check 'hoc: their double doubles'        '1024' \
+    "$(hoct double | tr ' ' '\n' | grep -x 1024)"
+# fac and fib define functions and print nothing, which is why fac1/fib2 exist
+# to call them; asserting the SILENCE keeps a future change that makes them
+# chatter visible.
+check 'hoc: their fac is definitions only' '0' "$(hoct fac | wc -c | tr -d ' ')"
+# ack1 IS NOT RUN, and the reason is upstream's design rather than a gap.  It is
+# `while (read(x)) { read(y); print ack(x,y) }', and varread() at code.c:564 is
+# `fscanf(fin, "%lf", ...)' -- fin is the PROGRAM stream, not stdin.  So read()
+# competes with the parser for the same bytes, and stdio's block buffering means
+# the parser has already consumed the data by the time read() runs.  Measured
+# three ways -- data piped after the program, data in a second file argument,
+# program as a file with data on stdin -- and all three give "non-number read
+# into x near line 12", where 12 is the program's LAST line, which is the tell.
+# It needs a terminal, like ex's visual mode.
+
 # p: the pager, and the case that earns its keep is the MISSPELLING, because
 # that is the only path reaching spname() -- the third copy of that function in
 # the tree, and the one whose newname[] had no bound at all.  See
