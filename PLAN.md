@@ -3133,7 +3133,7 @@ puns in a single file.
     reads as a pass. Four millisecond-cost cases in `tests/wavea` check the floor
     file parses, names only installed programs, and has exactly one tolerated
     entry, because a 13-minute job is a slow way to discover a malformed
-    expectation. `wavea` 145 → 169.
+    expectation. `wavea` 145 → 172.
 
     **And the FIRST CI run found a crash no local run has shown**, which is the
     argument for the whole exercise and also broke the design: `tar -u`
@@ -3142,13 +3142,36 @@ puns in a single file.
     present it fails wherever it does not fire, absent it fails wherever it does
     — so there is a third category, a `?` prefix removed from both sides. It is
     kept small and loud (count printed, entries named, `tests/wavea` asserting
-    the set is exactly one) because that arm is the only one that can pass with
-    a crash present. **The first diagnosis was wrong within the hour**: recorded
-    as *host-dependent* on one observation, then the next CI run exercised it
-    three more times on a runner and saw it in none, so it is **intermittent**
-    and belongs with #50/#61/#69. Recorded as an **observation**, not a
-    mechanism — seen once in four runner runs, not reproduced in ~40 local
-    invocations — so **task #77** carries what is known and no theory. And
+    the set is exactly **empty**) because that arm is the only one that can pass
+    with a crash present.
+
+    **I diagnosed that crash wrong TWICE before measuring the right thing** —
+    first *host-dependent* (on one observation in each direction, which is not
+    a reproduction; the next CI run cleared it three times), then *unreproduced
+    intermittent*, which is the more comfortable error because it asks nothing
+    further of you. **The cause was containment, and it was in the TEST**:
+    `tar -c` with no `-f` falls back to `usefile = "/dev/rmt1"`, the open fails,
+    `cflag` is set so it **creats** it — and creat keys on the parent, which in
+    the jail is `$V8ROOT/dev`, a directory that exists. So it writes a
+    10240-byte tape *into the rootfs*, and every later tar finds a tape that
+    opens and takes a different path (`tar -u` measured at exit 1 without it and
+    0 with it). Iteration-order dependence — the probe's own hermeticity rule,
+    reached through an **absolute path in the jail** rather than the shared cwd
+    the earlier fix addressed. `tar` was simply missing from `MUTATES` while
+    `dump` and `restor`, the same shape, were already there. **So the probe
+    checks its own containment now**, every run: the rootfs's file LIST before
+    and after, a *new path* being a program that escaped — mutation-verified by
+    putting tar back in the safe set, where it names `/dev/rmt1`. The list
+    rather than a content hash because libkmemu manufactures `/unix`,
+    `/dev/kmem`, `/etc/utmp` and `/etc/mtab` on first read with live data; and
+    those four are exempt **by name with the exemptions printed**, because
+    measuring beat assuming again — a first draft claimed they always exist,
+    and deleting all five showed `make` restores only `/etc/fstab`, so on a
+    clean CI checkout the guard would have fired on our own shim. Two red CI runs, both my sweep. tar
+    is out of the wavea sweep (a clone per invocation is not a price `make test`
+    should pay) and swept in CI under `PROBE=mutating`. The `?` mechanism was
+    built for that one entry and diagnosing it made the entry unnecessary, which
+    is the argument for not reaching for an escape hatch early. And
     `tests/wavea` now derives its expected list from the floor file rather than
     spelling it twice — two hand-written copies of one list agree about a wrong
     set, which this port has measured once already in the errno tables.

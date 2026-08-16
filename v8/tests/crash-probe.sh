@@ -95,8 +95,36 @@ DEADLINE=${3:-5}
 # of the program and its arguments, which is the hermeticity lesson above.
 UNSAFE='halt reboot shutdown init sync mount umount kill adb
         cron su login passwd at write mail as ld ar'
+#
+# `tar' WAS MISSING FROM THIS LIST AND IT COST TWO CI FAILURES.  Measured:
+# `tar -c' with no -f falls back to usefile = magtape = "/dev/rmt1", the open
+# fails, cflag is set so it CREATS it -- and creat keys on the parent, which
+# inside the jail is $V8ROOT/dev, a directory that exists.  So it writes a
+# 10240-byte tape INTO THE ROOTFS, and every later tar invocation finds a tape
+# that opens and takes a different path: `tar -u' goes from exit 1 to exit 0
+# with the file present, measured both ways.
+#
+# That makes tar's results a function of ITERATION ORDER, which is exactly the
+# hermeticity rule this script was once rewritten for -- programs reading each
+# other's litter -- arriving through an ABSOLUTE path in the jail rather than
+# through the shared working directory the earlier fix addressed.  A fresh cwd
+# per invocation cannot contain a program that writes to /dev/rmt1.
+#
+# `dump' and `restor' are the same shape (a default tape) and were already
+# here, which is the tell: the list was assembled from what obviously writes,
+# and the third member of that family was missed.  Reading the source is how
+# the list was built and is how it went wrong; the classification is CHECKED at
+# the bottom of this script instead, by comparing the rootfs's file list before
+# and after.  A NEW PATH is a program that escaped its cell -- which is exactly
+# the signature tar left, /dev/rmt1.
+#
+# It is the path LIST rather than a content hash, and that is forced: libkmemu
+# manufactures /etc/utmp, /etc/mtab, /etc/fstab, /dev/kmem and /unix lazily
+# when a reader opens them, with LIVE data, so their contents change on every
+# run by design.  A content hash could never be stable and would be ignored
+# within a week.
 MUTATES='rm rmdir mv cp ln chmod chown chgrp mkdir mkfs clri fsck dd restor
-         dump sh csh ed qed tee cc make nohup v8'
+         dump tar sh csh ed qed tee cc make nohup v8'
 
 # safe (default) -- today's population, and the numbers stay comparable.
 # mutating      -- only the MUTATES set, each invocation in a fresh rootfs.
@@ -172,6 +200,11 @@ for n in $UNSAFE; do
 	*" $n "*) echo "BUG: $n is in both UNSAFE and MUTATES"; exit 1;;
 	esac
 done
+
+# CONTAINMENT IS CHECKED, NOT ASSERTED.  Snapshot the rootfs path list before
+# the sweep and again after; anything NEW is a program that wrote outside its
+# cell, which is what `tar' did for as long as it sat in the safe set.
+find "$ROOT" 2>/dev/null | LC_ALL=C sort > "$WORK/paths.before"
 
 hits=0 tried=0 tainted=0 nsafe=0 nmut=0
 for p in $(find "$ROOT/bin" "$ROOT/usr/bin" "$ROOT/etc" "$ROOT/lib" \
@@ -317,5 +350,46 @@ if [ -n "$gone" ]; then
 fi
 # A tainted run cannot testify either way, so it must not read as a pass.
 [ "$tainted" -gt 0 ] && rc=1
+
+# THE CONTAINMENT CHECK.  A new path under $ROOT means something wrote outside
+# its cell and the MUTATES classification is incomplete -- which is how tar sat
+# in the safe set writing /dev/rmt1 and making every later tar invocation's
+# result a function of iteration order.
+#
+# Only ADDITIONS are checked, deliberately: libkmemu manufactures its files
+# with LIVE data, so their contents move every run by design and a content
+# comparison would be noise nobody reads.
+#
+# FOUR OF THEM ARE ADDITIONS TOO, THOUGH, AND MEASURING BEAT ASSUMING.  The
+# first draft of this guard said those files "already exist in a built rootfs,
+# so they are not additions and need no exemption list" -- which was true of
+# THIS tree, because something had already read them, and false of a fresh
+# one.  Measured by deleting all five and rebuilding: `make' restores only
+# /etc/fstab.  The other four are created the first time a reader opens them,
+# which in this script is `who', `df', `ps' or `load' -- so on a clean CI
+# checkout the guard would have fired on its own shim.
+#
+# They are exempt by name, and USED EXEMPTIONS ARE PRINTED, so the list cannot
+# quietly cover something new.  It is short and closed because libkmemu is the
+# only thing that manufactures a file this way; anything else appearing here is
+# a program that escaped.
+SYNTH="$ROOT/unix $ROOT/dev/kmem $ROOT/etc/utmp $ROOT/etc/mtab"
+find "$ROOT" 2>/dev/null | LC_ALL=C sort > "$WORK/paths.after"
+added=$(comm -13 "$WORK/paths.before" "$WORK/paths.after")
+escaped=
+for a in $added; do
+	case " $SYNTH " in
+	*" $a "*) echo "synthesized on first read (libkmemu): ${a#$ROOT}"; continue;;
+	esac
+	escaped="$escaped$a
+"
+done
+escaped=$(printf '%s' "$escaped")
+if [ -n "$escaped" ]; then
+	echo "::error::a program wrote OUTSIDE its cell -- these paths are new,"
+	echo "          so the MUTATES classification is missing something:"
+	printf '%s\n' "$escaped" | sed 's/^/    + /' | head -40
+	rc=1
+fi
 [ $rc -eq 0 ] && echo "floor: exactly as declared ($(wc -l < "$WORK/expected" | tr -d ' ') entries)"
 exit $rc

@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2221 tests across 17 suites** guard it.
+assembly. **2225 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -3179,13 +3179,46 @@ There is no entry that is correct on both.
 I wrote that up as a *host-dependent* crash — dies on a runner, not on the
 development machine — and the very next CI run falsified it inside the hour.
 That run exercised the same invocation three more times on a runner, and it
-behaved perfectly in all three. So it is not host-dependent at all; it is
-intermittent, and whatever it turns on is not the machine. The mechanism I built
-survives, because the arithmetic above covers both cases equally, but the label
-was wrong and the label is what a future reader would have searched for. What
-gave it away, in hindsight, is that I had written "reproducibly, both ways" on
-the strength of exactly one observation in each direction. One run is not a
-reproduction. It is remarkable how quickly that sentence found me again.
+behaved perfectly in all three. So I relabelled it: not host-dependent,
+intermittent, cause unknown, filed with the project's other unreproduced
+flickers.
+
+That was wrong too, and it was wrong in the more comfortable direction.
+"Intermittent, cause unknown" is a diagnosis that asks nothing further of you.
+
+The cause was containment, and it was in my test rather than in the port. When
+`tar` is given no archive name it falls back to its built-in default, the tape
+drive `/dev/rmt1`. Opening it fails, so — when creating — tar creates it
+instead. And creating a file inside the jail resolves against the parent
+directory, which is `$V8ROOT/dev`, which *exists*. So `tar -c` quietly writes a
+ten-kilobyte tape into the root filesystem, and every subsequent `tar` in the
+sweep finds a tape that opens and takes an entirely different path through the
+program. Measured: the same invocation exits 1 without the leftover file and 0
+with it.
+
+Which means my sweep's results were a function of the order it happened to run
+things in. That is precisely the rule the crash probe was rewritten for years
+ago — programs reading each other's litter — arriving through a door I had not
+thought to close. The old fix gave every invocation a fresh working directory.
+A fresh working directory does not contain a program that writes to an absolute
+path.
+
+The list of programs needing containment already had `dump` and `restor` on it,
+which are the same shape: archivers with a default tape. `tar` is the third
+member of that family and it was simply missed, because the list had been
+assembled by thinking about which programs obviously write. The check that
+actually finds this is not a reading of the source at all — it is hashing the
+root filesystem before and after a run and seeing whether it changed. That is
+how the classification is verified now, rather than asserted.
+
+Two red builds, then, and both of them were my instrument rather than the
+thing it was pointed at. The escape hatch I had just built for the "unexplained"
+crash is now empty, because the crash was explained. I have left the mechanism
+in place — it is tested, and the next genuinely flaky thing should not have to
+reinvent it — but the fact that its only occupant turned out to have an
+ordinary cause is worth remembering the next time something looks unknowable.
+The bar for declaring a thing unexplainable should be higher than two wrong
+labels and an afternoon.
 
 So there is a third category now: entries marked as tolerated, removed from both
 sides of the comparison, neither required nor forbidden. That is a hole in an

@@ -988,13 +988,31 @@ check 'tar with b last does not die on a signal' 'lived' \
 check 'and gives the VAX diagnostic' 'Invalid blocksize. (Max 40)' \
     "$("$(v8which tar)" b </dev/null 2>&1 >/dev/null)"
 # Paired: -b must still take its number, create, list and extract.
+#
+# EVERY STEP IS ASSERTED SEPARATELY, because the first draft discarded the
+# create's exit status and its stderr -- so when the create failed in CI the
+# symptom was an EMPTY LISTING, which reads as a broken `tar t' and sent the
+# diagnosis to the wrong program.  Capture the step you depend on.
+#
+# And the stray tape is removed first: these use -f, so they do not touch
+# /dev/rmt1 themselves, but a leftover from anything else that ran tar would
+# not be visible here and this suite has been bitten by exactly that.
+rm -f "$V8ROOT/dev/rmt1"
 mkdir -p tarx && printf 'hello\n' > tf1 && printf 'world\n' > tf2
-"$(v8which tar)" cbf 2 tar.a tf1 tf2 >/dev/null 2>&1
-check 'tar cbf 2 still creates an archive with that blocksize' 'tf1 tf2' \
+"$(v8which tar)" cbf 2 tar.a tf1 tf2 >tar.out 2>tar.err; tarrc=$?
+check 'tar cbf 2 creates an archive and says nothing' '0 ' \
+    "$tarrc $(cat tar.err)"
+check 'and the archive is a whole number of 512-byte blocks' 'yes' \
+    "$(s=$(wc -c < tar.a 2>/dev/null | tr -d ' '); \
+       [ -n "$s" ] && [ "$s" -gt 0 ] && [ $((s % 512)) -eq 0 ] && echo yes || echo "no ($s)")"
+check 'tar tbf 2 lists what went in' 'tf1 tf2' \
     "$("$(v8which tar)" tbf 2 tar.a 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
 check 'and it still extracts what went in' 'hello world' \
     "$(cd tarx && "$(v8which tar)" xbf 2 ../tar.a >/dev/null 2>&1; \
        cat tf1 tf2 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+# The rootfs must be exactly as it was: nothing here may leave a tape behind.
+check 'and no tape was left in the rootfs' 'absent' \
+    "$([ -e "$V8ROOT/dev/rmt1" ] && echo present || echo absent)"
 
 # cpio dereferences argv[1] before anything else; the VAX got 0x00, which is
 # not '-', and printed its usage.
@@ -1010,7 +1028,7 @@ echo cf1 | "$(v8which cpio)" -o > cp.a 2>/dev/null
 check 'cpio still round-trips a file through an archive' 'contents' \
     "$(cd cpx && "$(v8which cpio)" -i < ../cp.a >/dev/null 2>&1; cat cf1 2>/dev/null)"
 
-# THE FLOOR, DERIVED RATHER THAN TRANSCRIBED -- one perl over 4 x 53
+# THE FLOOR, DERIVED RATHER THAN TRANSCRIBED -- one perl over 3 x 53
 # invocations, the same shape tests/crash-probe.sh uses, and for its reasons:
 # the real wait status rather than $?, because diffh's main ends in a BARE
 # `return' and hands back whatever is in the register, which is how the crash
@@ -1036,17 +1054,34 @@ check 'cpio still round-trips a file through an archive' 'contents' \
 # ZMAGIC whose text is read-only shared, so a VAX faulted there too.  Third
 # member of that family after pr.c's Ttyin and troff/hc.c's rcf, both of which
 # S1 also leaves alone.  src/cmd/cpio.PORTING.md has the measurement.
+# AND `tar' IS NOT IN THIS SWEEP, WHICH IS A CONTAINMENT DECISION RATHER THAN
+# AN OMISSION.  `tar -c' with no -f creats its default tape, /dev/rmt1, and
+# creat keys on the parent -- $V8ROOT/dev exists -- so it writes a 10240-byte
+# file INTO THE ROOTFS.  Every later tar then finds a tape that opens and takes
+# a different path (`tar -u' measured at exit 1 without it and exit 0 with it),
+# which makes tar's results a function of iteration order.  A fresh cwd cannot
+# contain a program that writes to an absolute path in the jail.
+#
+# Containing it properly costs a rootfs clone PER INVOCATION -- 53 x 0.146 s --
+# which is not a price `make test' should pay, so tar moved to the probe's
+# MUTATES set and is swept in CI under PROBE=mutating, where each invocation
+# gets its own copy.  What guards tar's actual fix here is its own pair of
+# targeted cases above, which is the part this suite owes.
+#
+# THIS COST TWO RED CI RUNS and both were my sweep, not the port: `tar -c' and
+# `tar -r' crashed once each on a runner, and the create case saw an empty
+# archive, all downstream of one leftover tape.
 mkdir -p a0sweep
 FLOORF=${FLOORF:-$ROOT/tests/crash-probe.floor}
-# Strict entries for these four programs, label only, in the probe's own
+# Strict entries for these three programs, label only, in the probe's own
 # wording -- "<prog> (no arguments)" for the bare invocation.
 a0want=$(grep -v '^[[:blank:]]*#' "$FLOORF" | grep -v '^[[:blank:]]*$' |
          grep -v '^?' | sed 's/^[0-9][0-9]* //' |
-         grep -E '^(cb|diffh|tar|cpio) ' | LC_ALL=C sort | paste -sd, - | sed 's/,/, /g')
+         grep -E '^(cb|diffh|cpio) ' | LC_ALL=C sort | paste -sd, - | sed 's/,/, /g')
 # Tolerated ones are dropped from the observed side too.
 a0tol=$(grep '^?' "$FLOORF" | sed 's/^?[[:blank:]]*[0-9][0-9]* //' |
-        grep -E '^(cb|diffh|tar|cpio) ' | LC_ALL=C sort)
-check 'the only surviving crashes in the four are the ones the floor declares' \
+        grep -E '^(cb|diffh|cpio) ' | LC_ALL=C sort)
+check 'the only surviving crashes in the three are the ones the floor declares' \
     "$a0want" \
     "$(cd a0sweep && A0TOL=$a0tol perl -e '
 	my @bad;
@@ -1079,7 +1114,7 @@ check 'the only surviving crashes in the four are the ones the floor declares' \
 	}
 	my %tol = map { $_ => 1 } grep { length } split /\n/, $ENV{A0TOL} // "";
 	print join(", ", sort grep { !$tol{$_} } @bad);
-    ' "$(v8which cb)" "$DIFFH" "$(v8which tar)" "$(v8which cpio)")"
+    ' "$(v8which cb)" "$DIFFH" "$(v8which cpio)")"
 
 # AND THE WHOLE-TREE FLOOR IS IN CI NOW, which is the other half of the same
 # lesson -- but a 13-minute job is a slow way to learn that its expectation
@@ -1099,7 +1134,12 @@ check 'every floor entry is [?] <signal> <label>' '0' \
 # can pass with a crash present.  Asserting the exact count -- rather than a
 # ceiling -- means adding one is a deliberate edit here as well as there, which
 # is the whole difference between an exemption and a hole.
-check 'the tolerated set is exactly the one entry we know about' '1' \
+#
+# It is EMPTY, and it got there the right way: its only member, `tar -u', was
+# put in when the crash looked host-dependent and taken out when the cause
+# turned out to be containment in the test (tar writes its default tape into
+# the rootfs).  An escape hatch with nothing in it is the correct steady state.
+check 'the tolerated set is empty' '0' \
     "$(grep -c '^?' "$FLOORF" 2>/dev/null)"
 # AND EVERY PROGRAM IT NAMES MUST STILL BE INSTALLED.  A floor naming a
 # program that has been removed can never be satisfied -- the probe would

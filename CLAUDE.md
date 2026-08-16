@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2221 cases, 2220 on a host whose $TMPDIR
+make test             # all 17 suites (2225 cases, 2224 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -3383,7 +3383,11 @@ not testable until it is installed.
   installed rootfs: **4187 invocations, 54 signal deaths, all SIGSEGV — 53
   `lex` and 1 `bcd`**, and every one of them is already argued somewhere as
   upstream's defect on upstream's hardware (`src/cmd/lex/PORTING.md:175-250`
-  for the 53, PLAN.md:3382 for `bcd`). `lex`'s 53 is *exactly* the number that
+  for the 53, PLAN.md §4j's triage table for `bcd` — a SECTION rather than a
+  line, because that one citation went stale three times in a single session
+  as §7c grew above it, and each correction was itself invalidated by the next
+  edit. When a target sits in a file you are actively editing, cite something
+  that does not move). `lex`'s 53 is *exactly* the number that
   file predicts, and it explains why fixing the first of its three faults moved
   the count by zero: the probe feeds every program `/dev/null`, so all 53
   invocations also reach the empty-spec path and the 40 that used to die in
@@ -3526,25 +3530,54 @@ not testable until it is installed.
     count is printed every run, the entries are named, and `tests/wavea`
     asserts the tolerated set is **exactly one**, so a second needs a
     deliberate edit in two files.
-  - **AND THE FIRST DIAGNOSIS OF IT WAS WRONG WITHIN THE HOUR, WHICH IS THE
-    POINT OF WRITING THEM DOWN CAREFULLY.** It was recorded as
-    *host-dependent* — "dies on a runner, not on the dev machine" — on a single
-    observation. The **next** CI run exercised it three more times on a runner
-    (the wavea sweep twice, the full probe once) and saw it in **none**: 55
-    deaths, exactly the local number. So it is **intermittent**, and whatever
-    it depends on is not the machine. The `?` mechanism survives unchanged
-    because the arithmetic above covers both cases, but the classification
-    moves: this belongs with the port's unreproduced intermittents (#50, #61,
-    #69) rather than with its host-property findings. *One observation is not
-    a pattern, and the tell was that I had written "reproducibly, both ways"
-    on the strength of a single run in each direction.*
-  - **IT IS RECORDED AS AN OBSERVATION, NOT A MECHANISM.** Seen once in four
-    runner runs; not reproduced in ~40 local invocations under the probe's own
-    conditions, nor by forcing `mktemp` collisions — so task #77 carries what
-    is *known* (`case '-'` is a no-op so `-u` reaches the temp-file arm; the
-    `fopen` there **is** null-checked; `/tmp` is not in the mount table) and no
-    theory. Writing a mechanism down without reproducing it is how the ex
-    phantom got into four documents.
+  - **AND I DIAGNOSED IT WRONG TWICE BEFORE MEASURING THE RIGHT THING.** First
+    as *host-dependent* — "dies on a runner, not here" — on a **single**
+    observation in each direction, which is not a reproduction; the next CI run
+    cleared it three times. Then as an **unreproduced intermittent**, filed
+    beside #50/#61/#69. Both wrong, and the second was wrong in the more
+    comfortable direction: "intermittent, cause unknown" is a diagnosis that
+    asks nothing further of you.
+  - **THE CAUSE WAS CONTAINMENT, AND IT WAS IN THE TEST RATHER THAN THE PORT.**
+    `tar -c` with no `-f` falls back to `usefile = magtape = "/dev/rmt1"`, the
+    open fails, `cflag` is set so it **creats** it — and creat keys on the
+    parent, which inside the jail is `$V8ROOT/dev`, **a directory that
+    exists**. So it writes a 10240-byte tape *into the rootfs*, and every later
+    `tar` finds a tape that opens and takes a different path. Measured both
+    ways: `tar -u` exits **1** without the leftover and **0** with it. So
+    tar's results are a function of ITERATION ORDER, which is this script's own
+    most-documented rule — programs reading each other's litter — arriving
+    through an **absolute path in the jail** rather than through the shared
+    working directory the earlier fix addressed. A fresh cwd per invocation
+    cannot contain a program that writes to `/dev/rmt1`.
+  - **`tar` WAS SIMPLY MISSING FROM `MUTATES`, and `dump` and `restor` — the
+    same shape, a default tape — were already in it.** That is the tell: the
+    list was assembled from what obviously writes, and the third member of the
+    family was missed. **So the probe checks its own containment now**, every
+    run: the rootfs's file LIST before and after, where a **new path** is a
+    program that escaped its cell. Mutation-verified — put `tar` back in the
+    safe set and it names `/dev/rmt1`.
+  - **IT IS THE PATH LIST RATHER THAN A CONTENT HASH, AND THAT IS FORCED.**
+    libkmemu manufactures `/unix`, `/dev/kmem`, `/etc/utmp` and `/etc/mtab` on
+    first read with **live** data, so their contents move every run by design
+    and a content comparison would be noise nobody reads. **And measuring beat
+    assuming a second time**: the first draft said those files "already exist
+    in a built rootfs, so they are not additions and need no exemption" —
+    true of a tree something had already used, false of a fresh one. Deleted
+    all five and rebuilt: `make` restores only `/etc/fstab`. So the other four
+    ARE additions on a clean CI checkout, and the guard would have fired on our
+    own shim. They are exempt by name and **used exemptions are printed**, so
+    the list cannot quietly cover something new.
+  - **AND IT COST TWO RED CI RUNS, BOTH OF THEM MY SWEEP.** `tar -c` and
+    `tar -r` each crashed once on a runner and a create case saw an empty
+    archive — all downstream of one leftover tape. `tar` is out of the wavea
+    sweep now (containing it properly costs a clone per invocation, 53 ×
+    0.146 s, which `make test` should not pay) and swept in CI under
+    `PROBE=mutating`; its own fix keeps its own targeted cases.
+  - **THE `?` MECHANISM WAS BUILT FOR ONE ENTRY AND DIAGNOSING THAT ENTRY MADE
+    IT UNNECESSARY**, which is the argument for not reaching for an escape
+    hatch early. It stays, verified and **empty**, with `tests/wavea` asserting
+    the set is exactly 0 — the bar for adding a member is now visibly high,
+    because the only candidate so far had a real cause sitting behind it.
   - **AND `tests/wavea` DERIVES ITS EXPECTATION FROM THE FLOOR FILE NOW**,
     rather than spelling the list a second time. Two hand-written copies of one
     list agree with each other about a set that is wrong — measured here once
