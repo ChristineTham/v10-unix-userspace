@@ -669,6 +669,20 @@ for d in "$ROOT"/src/cmd/*/; do
 	case "$name" in
 	# built into the toolchain rather than installed under their own name
 	ccom|cc) continue ;;
+	# struct is IMPORTED AND DELIBERATELY NOT BUILT.  It compiles (37 objects,
+	# zero failures) and both binaries link with an empty nm -u, and then
+	# structure(1) SIGSEGVs on its first line of Fortran: the file is written
+	# in `int' where it means pointer.  One defect is fixed here -- the five
+	# allocators in 0.alloc.c returned pointers through an implicit int, so
+	# `hashtab = challoc(...)' truncated a heap address and hash_init wrote
+	# through it -- and fixing it MOVED the crash to fixvalue, whose parameter
+	# is declared `int ptr'.  An unknown number remain.
+	#
+	# Shipping a program that dies on its own primary input would be worse
+	# than not shipping it, so it is not in the Makefile.  The import and the
+	# allocator fix stay because both are correct and both are the expensive
+	# half of the next step.  See the task and src/cmd/struct/PORTING.md.
+	struct) continue ;;
 	# src/cmd/plot builds `tek' and `hpplot', never a program called `plot'.
 	# The COMMAND of that name is a 16-line shell dispatcher V8 ships with no
 	# source at all -- usr/src/cmd/plot's makefile does not install it -- so

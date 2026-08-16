@@ -3873,6 +3873,35 @@ What remains is breadth, and it is now the main line rather than a coda. The
 port installs **161** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
+### struct, imported and deliberately not built
+
+The last of the batch went the other way, and the decision is the interesting
+part. `struct` is Brenda Baker's Fortran-to-Ratfor restructurer — 40 sources,
+5695 lines. It compiles: 37 objects, no failures. Both its binaries link with an
+empty undefined-symbol list. And then it dies on its first line of Fortran.
+
+The reason is the class this whole port opens with. Its five allocators return
+pointers through an implicit `int`, and `challoc` stacks two truncations in four
+lines: `int i; i = malloc(n); return(i);` — one into the local, one by returning
+from a function nobody declared. It fires at the program's first real work,
+`hashtab = challoc(...)` followed by a write through `hashtab`. Declaring what
+the allocators return fixes it without touching a statement, and the header to
+put them in is the one upstream's own makefile already names as every object's
+dependency.
+
+Fixing it **moved** the crash rather than removing it — to a function whose
+pointer parameter is declared `int`, in a file that uses `int` for pointers as a
+matter of style. That is not one more line; it is a pass over the module, and
+possibly over the other 39.
+
+So `struct` sits in `src/` with the allocator fix, out of the Makefile, exempted
+by name in the suite that would otherwise notice, and with a `PORTING.md` saying
+where the next person should start. A program installed into the world that dies
+on its own primary input is worse than one that is not there: the crash probe
+would gain a floor entry, the imported-equals-installed guard would go green on a
+lie, and the world would grow a command nobody can use. Stopping at a measured
+boundary is a result; shipping past one is not.
+
 ### qed, and a signal handler that lost half its address
 
 Thompson's editor — `ed`'s ancestor, fourteen sources — went in next, and twelve

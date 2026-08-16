@@ -1,0 +1,60 @@
+# Provenance for v8/src/cmd/struct
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+6722a535b4298fe815810217aeeb212a6363fa85  v8/usr/src/cmd/struct/3.def.h
+f879efe50f38955ed6101d86fa9c3a1ac55724e9  v8/usr/src/cmd/struct/0.graph.c
+99e6a42264e4d4d6e707e398a1cb5ca359ba0e7d  v8/usr/src/cmd/struct/3.reach.c
+47db4a70038895957981d94b6a135bbd4f97a362  v8/usr/src/cmd/struct/m.2
+6b056bf4534ae51b6d6df0e3108bb1ab56b74380  v8/usr/src/cmd/struct/3.then.c
+58870f80672abb794976f8ef152f31c2915b3236  v8/usr/src/cmd/struct/1.node.c
+b389e4c1425601c06c9803daabd6b5fadae9dfee  v8/usr/src/cmd/struct/3.test.c
+54f552b3b3f47436d4097a54b47fa6a2d3ee5e74  v8/usr/src/cmd/struct/1.recog.c
+dc9f060f4dbfda263526c365046734717b7eeb94  v8/usr/src/cmd/struct/2.inarc.c
+24b7509c9bdc6e17668ab48e5f99d410701dac6a  v8/usr/src/cmd/struct/b.h
+e0a9f852a0693f99a25e0406b38eeb54aac07ca2  v8/usr/src/cmd/struct/2.dom.c
+88aa3d200cd0cc7a30ba397850f0dde0e0e23ca5  v8/usr/src/cmd/struct/bdef.c
+ab61f6fea0d7b89f42492e69050fc1c73e33548c  v8/usr/src/cmd/struct/makefile
+6842baf7eb0b0c8a272bb88d9cf1ba51179e5890  v8/usr/src/cmd/struct/lextab.l
+40e78488afbbfbd65d7309fdfda928eace0399fa  v8/usr/src/cmd/struct/1.main.c
+7f6795ebf689a4e651f86732efcbb7b2535d3a36  v8/usr/src/cmd/struct/2.def.h
+8df41c7c51f15ec6a088c61279f8d55d09f64714  v8/usr/src/cmd/struct/0.args.c
+2ca2bbd5d6fd88b4f963c691b3e2a24216e7f96b  v8/usr/src/cmd/struct/0.list.c
+36eeb1b468c9bbb36233e4efcc62bed12ee8245e  v8/usr/src/cmd/struct/2.dfs.c
+1ff82a98409f3b76932c9c963a12c6c23680e861  v8/usr/src/cmd/struct/1.incl.h
+14045fde0f8ae22831502c8006ca69e715b2eca5  v8/usr/src/cmd/struct/1.finish.c
+69d2383943ce5e36b8174718578b3a7f6377f71b  v8/usr/src/cmd/struct/struct.sh
+cf0e3edf840ec5f523bed83bb3c82c164abbb9ef  v8/usr/src/cmd/struct/1.form.c
+fb4dd5934c6ce654390702747fe9aefc59f0e52e  v8/usr/src/cmd/struct/3.main.c
+a5530d134dbe0658bf78ed4852e723d954eac980  v8/usr/src/cmd/struct/4.def.h
+08b715ecfb1ed04ef02947c77f6e605740435918  v8/usr/src/cmd/struct/0.alloc.c
+f8a33e3e559af181903a8c891e356a7fc542a25a  v8/usr/src/cmd/struct/2.tree.c
+0b71804016f099e65aa5f76f940affecc8ccd193  v8/usr/src/cmd/struct/4.out.c
+7cc98e95e2f891e459ce576aaf8a690448ecc612  v8/usr/src/cmd/struct/1.line.c
+c85ec44f375828e644992faccb47cdc887222519  v8/usr/src/cmd/struct/4.form.c
+5f907e3a67249d32990889f6fc8d3d32948063de  v8/usr/src/cmd/struct/1.init.c
+1b20507c60d6020d5d93a7b5913b2fc670173f09  v8/usr/src/cmd/struct/1.fort.c
+bbcc16e4af2830b084dfacf52c54bda7abd05033  v8/usr/src/cmd/struct/m.1
+8a8b5a12c7d9c8ebcbe7c2f91bccbb0cc75919e2  v8/usr/src/cmd/struct/main.c
+1d14d780f0362d7dac9baf41b13a584c3834cf88  v8/usr/src/cmd/struct/4.brace.c
+994ec421f6eaf6a2ca51715417006cb9c6c8aea9  v8/usr/src/cmd/struct/0.string.c
+db0847ea28297cbdc3eb0597e408ba4f48d56bc2  v8/usr/src/cmd/struct/1.hash.c
+5e06c6e80dff9a4303eb9bf3fa15965534dc63c3  v8/usr/src/cmd/struct/beauty.c
+a558e2393fb183d54307d2aa5d26beac4123cdcf  v8/usr/src/cmd/struct/0.extr.c
+3002a1fb8bb2f29462739ba61c0bf65d617eab0c  v8/usr/src/cmd/struct/4.main.c
+ca8202f31c4c9b3aab48c0d7811403310b487e6a  v8/usr/src/cmd/struct/beauty.y
+7ce2bf470fa37393d50fb0f56f3413ce0a02e9db  v8/usr/src/cmd/struct/2.test.c
+d0ab63fbb5cb2e1e27df4bf329930f54a5ee8aae  v8/usr/src/cmd/struct/1.defs.h
+3f940cde42f395a9b468132551573d915ec1d21b  v8/usr/src/cmd/struct/y.tab.h
+47d86c711fb8c5a5f71ed46b7face1e64f6941a0  v8/usr/src/cmd/struct/def.h
+7f3fad473dc987aba5773927d50ebdb8c9a5fffe  v8/usr/src/cmd/struct/3.flow.c
+6d5ef5cdb74d3d5213aa35538a15cc6d88cf7019  v8/usr/src/cmd/struct/3.loop.c
+4c4b32d5a8f1b5f048feaa9dee021062cc77be34  v8/usr/src/cmd/struct/0.def.c
+4e0bf65ff75958fb5158d7fb16a535f7b69c311a  v8/usr/src/cmd/struct/2.main.c
+490456eb4e3157fdf04d90503a4511e7118f7aac  v8/usr/src/cmd/struct/1.tables.c
+58768e4be5c1cb4dc21d2bcd5d8a1784f6401923  v8/usr/src/cmd/struct/3.branch.c
+f538bce86c818e82878ae45d3aa484f77f3b42d3  v8/usr/src/cmd/struct/2.head.c
+1956325defa5ddb56ba09b47c8ad6db89fd599ce  v8/usr/src/cmd/struct/tree.c
+e9241719aa25f14f04f93ccb17c279530bc70b8a  v8/usr/src/cmd/struct/0.parts.c
