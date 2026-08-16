@@ -500,7 +500,28 @@ mkdest() {	# mkdest <directory> <program> -- where its OWN makefile puts it
 	    END {
 		for (i = 1; i <= NR; i++) {
 			s = line[i]
+			# BOTH SPELLINGS.  DESTDIR is an install prefix passed
+			# on the command line, so it is never one of the
+			# variables defined in the file and the generic
+			# expansion below cannot reach it -- it needs this
+			# explicit strip, and until csh arrived the strip knew
+			# only the paren form.  csh installs with a brace
+			# DESTDIR, which read literally looks like a program
+			# going to a directory named after the variable, and
+			# it was reported as a ninth disagreement.  Same shape
+			# as the tsort case (B = /usr/bin taken literally): a
+			# false positive in the one sweep whose whole job is
+			# finding real ones.
+			#
+			# NOTE THE QUOTING.  The note further down says no
+			# apostrophes in here; what it does not say is that
+			# the backquote-plus-apostrophe idiom used everywhere
+			# ELSE in this file supplies one.  Those comments are
+			# fine because they sit OUTSIDE this awk program.
+			# Writing the idiom here, in a comment about this very
+			# sweep, is how that was rediscovered -- twice.
 			gsub(/\$\(DESTDIR\)/, "", s)
+			gsub(/\$\{DESTDIR\}/, "", s)
 			for (n in var) {
 				gsub("\\$\\(" n "\\)", var[n], s)
 				gsub("\\$\\{" n "\\}", var[n], s)
@@ -669,20 +690,38 @@ for d in "$ROOT"/src/cmd/*/; do
 	case "$name" in
 	# built into the toolchain rather than installed under their own name
 	ccom|cc) continue ;;
-	# struct is IMPORTED AND DELIBERATELY NOT BUILT.  It compiles (37 objects,
-	# zero failures) and both binaries link with an empty nm -u, and then
-	# structure(1) SIGSEGVs on its first line of Fortran: the file is written
-	# in `int' where it means pointer.  One defect is fixed here -- the five
-	# allocators in 0.alloc.c returned pointers through an implicit int, so
-	# `hashtab = challoc(...)' truncated a heap address and hash_init wrote
-	# through it -- and fixing it MOVED the crash to fixvalue, whose parameter
-	# is declared `int ptr'.  An unknown number remain.
+	# struct's exemption is GONE, not edited: it is built and installed now,
+	# so the guard verifies it like anything else.  A skip left behind after
+	# the reason for it expires is a hole, and this list is a set of claims.
 	#
-	# Shipping a program that dies on its own primary input would be worse
-	# than not shipping it, so it is not in the Makefile.  The import and the
-	# allocator fix stay because both are correct and both are the expensive
-	# half of the next step.  See the task and src/cmd/struct/PORTING.md.
-	struct) continue ;;
+	# csh is IMPORTED AND DELIBERATELY NOT BUILT, and the reason is precise
+	# rather than open-ended.  All 19 C objects compile, and the link leaves
+	# EXACTLY TWO undefined symbols:
+	#
+	#   _sigsys  libjobs' raw signal syscall (4.1BSD call 48).  Its source is
+	#            VAX assembly, and sigset.c -- the 185 lines of C that give
+	#            csh sigset/sighold/sigpause/sigrelse/sigignore, called 88
+	#            times -- is written entirely on top of it.
+	#   _end     sh.set.c's `extern char end[]', used by onlyread() and
+	#            xfree() to ask "is this pointer heap or static".  This
+	#            target HAS NO SUCH SYMBOL and could not answer with one:
+	#            shim/v8sys/mem.c gets its heap from mmap(0,...), so the
+	#            arena is at a kernel-chosen address rather than contiguous
+	#            with __DATA, and the text/data/heap/stack ordering the
+	#            heuristic assumes does not exist here.
+	#
+	# THE SECOND IS THE INTERESTING ONE and it is not a missing symbol, it is
+	# a missing memory model -- so the fix is a shim predicate (the arena
+	# range is known exactly) rather than a constant.  Both call sites reduce
+	# to one question and both have a safe direction: onlyread has ONE caller
+	# where answering "yes" merely copies, xfree has 87 where freeing a
+	# non-heap pointer is the crash.
+	#
+	# Until sigsys is written, linking csh would resolve sigset/sighold/
+	# sigrelse from -lSystem -- MEASURED, macOS has System V versions, which
+	# is why only sigsys errored -- and that is the silent host leak
+	# tests/kmemu exists to catch.  src/cmd/csh/PORTING.md, task #93.
+	csh) continue ;;
 	# src/cmd/plot builds `tek' and `hpplot', never a program called `plot'.
 	# The COMMAND of that name is a 16-line shell dispatcher V8 ships with no
 	# source at all -- usr/src/cmd/plot's makefile does not install it -- so

@@ -1,0 +1,13 @@
+# Provenance for v8/src/lib/libjobs
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+15faefabcb2d40852a45abc2a1f934fcfff60c12  v8/usr/src/lib/libjobs/sigset.c
+705dfc52613629f651566ecfbb10d6ca4b452574  v8/usr/src/lib/libjobs/makefile
+002511bbc8e736f3e071a37bc73874ddf1bbba7e  v8/usr/src/lib/libjobs/killpg.s
+ac59eaf836d8be75b4e3a9d795ac09107b5c8d2c  v8/usr/src/lib/libjobs/signal.s
+5f9a06786122d6f92bac5e88db7e429e5d46262f  v8/usr/src/lib/libjobs/getwd.c
+9f62ffc67b837b232fb3b02abdeb82d2a4b27f80  v8/usr/src/lib/libjobs/setpgrp.s
+5505fd7686efbc4023d3d805574e7d854a87cf77  v8/usr/src/lib/libjobs/wait3.s

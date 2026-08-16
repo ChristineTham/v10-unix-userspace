@@ -1,0 +1,39 @@
+# Provenance for v8/src/cmd/csh
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+b1ff0a7f30fd317b2ef5026ed0f413ea493602da  v8/usr/src/cmd/csh/sh.glob.c
+5ff9fe7e6eaf01ed0cbc86b2d41d3c33a99011d6  v8/usr/src/cmd/csh/printf.c
+838947047b74aadc3bab97856de06086bd0f15a3  v8/usr/src/cmd/csh/sh.dir.c
+502d77b80c1f9e0bd0340607540f1197bf2eb246  v8/usr/src/cmd/csh/doprnt.c
+9228f545872f79e57846346c1cfba8ddb4bb4bf7  v8/usr/src/cmd/csh/sh.set.c
+aef4dc1baab59077603fa37b7dca5b9a5118ff6b  v8/usr/src/cmd/csh/sh.func.c
+b940c58f2e760bc36cb0e21601a6c0faff1a0a26  v8/usr/src/cmd/csh/sh.exp.c
+5bb42373cd0b0176bf4fa82d21ef14b24bebc3b2  v8/usr/src/cmd/csh/sh.h
+fbb237302d2ac0cfa39298b7fcb1c371fa1137aa  v8/usr/src/cmd/csh/sh.init.c
+c298448abab07bc8c1b6086896d0f4ab65d431b6  v8/usr/src/cmd/csh/sh.print.c
+70f17e53b0177dba8c99353384a0ae505ecf55fb  v8/usr/src/cmd/csh/sh.lex.c
+aa34fc456d718ecaed50e632327f0b93364c2d90  v8/usr/src/cmd/csh/makefile
+80b2eaf48b68090ac848bfd61ec3e1e20b8fe4a4  v8/usr/src/cmd/csh/sh.proc.h
+9a7925174dd4a10cb6d7e7cbf36c60dfc52b2580  v8/usr/src/cmd/csh/sh.exec.c
+4081556c0e9d6ae6395ed35f931f2f34609aca28  v8/usr/src/cmd/csh/nfunc.c
+ac3ca8acb443f3cc769406d0f7ad31bbe2f14b54  v8/usr/src/cmd/csh/alloc.c
+fd231dcabe82a73ee93a76c72d05d88c5365ec8e  v8/usr/src/cmd/csh/sh.dol.c
+e69de29bb2d1d6434b8b29ae775ad8c2e48c5391  v8/usr/src/cmd/csh/tags
+680826467eef8e9474fa866502c98e2ea6dbda10  v8/usr/src/cmd/csh/errlst.c
+e1ab2f806ec6180542d4e31c3eebb5b9cb653865  v8/usr/src/cmd/csh/sh.dir.h
+5ce14e3a57c4cf60d78fd8ea06475e6bcb379bea  v8/usr/src/cmd/csh/getpwuid.c
+5d26e4b43efe667d0bf2c39cb0d861fb53dd406c  v8/usr/src/cmd/csh/sh.misc.c
+999e758f2e6fe1ecf8b6c77d2752c022b54a30aa  v8/usr/src/cmd/csh/sh.c
+b68755275ae5a110899035cc18c04dc5ec8f5658  v8/usr/src/cmd/csh/getpwnam.c
+9832a28b9b0bdac3f8042c783abc1e651800dbaa  v8/usr/src/cmd/csh/malloc.c
+407a39cc2e5704b2f98354b65aa2faae09755569  v8/usr/src/cmd/csh/sh.proc.c
+bd7bb14e78469c64d984902d85b36026c1ae9a7e  v8/usr/src/cmd/csh/sh.local.h
+3dc06261e91ac9c6ab40812fc6fb358962be3102  v8/usr/src/cmd/csh/sh.parse.c
+66adb1b453e8bca7d9181da2649ac90cbc260165  v8/usr/src/cmd/csh/getpwent.c
+d72a51882eef9e8d60ed4a6858902a1ae65594eb  v8/usr/src/cmd/csh/sh.err.c
+5f8fda51911d68eb86d8343591d05cdac46263a4  v8/usr/src/cmd/csh/sh.time.c
+4fa1ac4fe31e17feffa6d09324aed4e0f5718de6  v8/usr/src/cmd/csh/sh.sem.c
+eed9d9049a8dcef10207c6e08d919ab634907eb9  v8/usr/src/cmd/csh/sh.hist.c
