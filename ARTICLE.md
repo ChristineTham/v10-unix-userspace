@@ -3784,7 +3784,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **157** of the 286 V8 shipped, and the ones still missing mostly
+port installs **160** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### Seven more, and the two most useful things were not in any of them
@@ -3815,18 +3815,43 @@ a wrong one**, because the wrong one fails visibly the moment its premise moves.
 The two findings outside the programs:
 
 **`usr/src/libplot` exists, and nothing had ever looked at it.** Three of the
-original ten — `graph`, `plot`, `prof` — share one blocker, and it is a tree of
-seven plot libraries sitting a directory over from the one every previous survey
-swept. That is `vi` all over again: something recorded as missing that was in the
-tree, unread. The measurement that makes it worth writing down is what the
-libraries contain. `graph`'s makefile links `-lplot`, and the shipped
-`libplot.a` is 1008 bytes holding two objects, neither of which defines a single
-one of the six plotting primitives `graph` calls. There is no plot(5)-writing
-implementation anywhere in the archive: every `openpl()` is device-specific, one
-emitting Tektronix escapes, one calling `initscr()`, one opening `/dev/hp7580`.
-So `-lplot` would not have linked on a VAX either — the same shape as the 216-byte
-`libm.a` this port found before, a `-l` flag naming an archive that does not
-define what the program needs.
+original ten — `graph`, `plot`, `prof` — appeared to share one blocker, and it
+is a tree of seven plot libraries sitting a directory over from the one every
+previous survey swept. That is `vi` all over again: something recorded as
+missing that was in the tree, unread.
+
+What I then concluded about those libraries was **wrong**, and the correction is
+the more useful half. I measured what `libplot.a` defines — `subr.o` and
+`whoami.o`, 1008 bytes — grepped `graph.c` for the six primitives it calls,
+found none of them defined, and wrote down that `-lplot` would not have linked
+on a VAX either. Every step of that is accurate and the conclusion is false.
+
+`graph.c`'s fourth line is `#include <iplot.h>`, and `iplot.h` is a file of
+**macros**: `#define erase() printf("e\n")`, `#define line(a,b,c,d) printf("li
+%g %g %g %g\n", …)`. The plot interface is a header, not a library. A program
+that includes it emits `plot(1)`'s textual command language and calls nothing at
+all — measured, `graph.o`'s undefined symbols are `atof`, `ceil`, `fabs`,
+`floor`, `log10`, `malloc`, `printf`, `realloc`, `scanf`, `sprintf`, `strcat`,
+`strcpy`, `strlen`, `ungetc`, and not one plot function. So `libplot.a` is
+*complete* at two members: `putnum()` is the one thing the macros cannot express
+inline, because the spline and fill macros pass arrays, and `whoami()` names the
+device. `whoami` is in fact what reveals the design — it returns `"general"` in
+`libplot`, `"tek"` in `lib4014`, `"hp"` in `lib2621`. Seven interchangeable
+devices, one per terminal.
+
+**A grep cannot tell a macro invocation from a call**, and that is the whole of
+the error. `line(` matches both. The same shape had already cost this port a
+crash: `awk`'s `execute` is a macro that dereferences its argument in front of
+the null check one call deeper, so reading `real_execute` proved nothing about
+what `execute` does.
+
+`graph` and `prof` were therefore never blocked and needed no source change at
+all. What genuinely needs a device library is `plot(1)` itself: `driver.c`
+parses the language and dispatches through a table of function pointers, so it
+references 28 primitives for real, and `lib4014` defines all 28. That makes the
+Tektronix renderer buildable on upstream's own link line, and `graph | tek` now
+produces real 4014 escape sequences. `hpplot`, its sibling, wants `libcurses` —
+43 unported files — and is the honest remainder.
 
 **And `nlist(3)` had a null dereference that no previous consumer could reach.**
 `dmesg` and `showq` are grovelers: they look a symbol up in a kernel's name list
@@ -3860,11 +3885,12 @@ break `load`, which reads a symbol that *is* there.
   `struct`. `awk` is in, and it turned out to be the interesting one: the
   build now runs the ported `yacc` and `lex` per program, and in awk's case a
   third generator that the build has to compile before it can run.
-- **The plot libraries.** Seven of them, in a tree nobody had swept, and the
-  three programs above wait on a decision rather than on work: V8's "generic"
-  plot library defines none of the primitives, so porting `graph` means
-  choosing a *device* — Tektronix is the natural one, being escape sequences
-  and nothing else.
+- **The rest of the plot family.** `hpplot` — `plot -Thp` — wants `lib2621`
+  and `libcurses`, which is 43 unported files; the pen plotter, the troff
+  renderer and the two Blit back ends are the remaining four device libraries.
+  And `/usr/bin/plot`, the dispatcher that picks a renderer from `-T`, is a
+  16-line shell script V8 ships with **no source**, so installing it would make
+  it the first program in this world the port did not build.
 - **The language systems**: Fortran with its two runtime libraries, both
   present upstream and unimported, plus `efl`, `ratfor`, the C++ front end and
   `lcomp`. These are the largest ports left and the most interesting,

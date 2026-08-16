@@ -1,0 +1,11 @@
+# Provenance for v8/src/libplot/libplot
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+3615ec5b62bf352abe9b9b5241c6fdffc3876986  v8/usr/src/libplot/libplot/plot.h
+9f384b374c83a03294162189acb4c685fc1588b0  v8/usr/src/libplot/libplot/plot.c.a
+e74bde21fbd93bc13c7c8ce7ed0f69d98d5b5d85  v8/usr/src/libplot/libplot/makefile
+d9499e7b70ec659ba6b113c7e1d1fca3a642fdf0  v8/usr/src/libplot/libplot/iplot.h
+a8ae2cf7f8c0c595500a7b433b2b4d73dd9b4893  v8/usr/src/libplot/libplot/pplot.h

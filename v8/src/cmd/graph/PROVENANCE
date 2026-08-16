@@ -1,0 +1,8 @@
+# Provenance for v8/src/cmd/graph
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+1f592c37553ba329e7c29e489e90d88b41f5dd23  v8/usr/src/cmd/graph/Makefile
+7e294b74c22a7b30fc79dae8c84e1ceb626c8519  v8/usr/src/cmd/graph/graph.c

@@ -3052,7 +3052,7 @@ restores the host PATH and execs. Bare `/usr/` joined the mount table so a home
 directory exists inside the world; it is a union, so `/usr/include` still falls
 through. Exercised end to end, not asserted.
 
-**7b. Wave A2 — IN PROGRESS, 91 → 157.** Batch 1: 37 single-file commands, all
+**7b. Wave A2 — IN PROGRESS, 91 → 160.** Batch 1: 37 single-file commands, all
 compiling with zero failures. Batch 2: `diff` (two programs and three derived
 `-D` install paths), `cb`, `su`, `compress`, plus `crypt`, `getpwnam`,
 `getgrgid` and `getpass` into libc. The suites did the triage and caught three
@@ -3145,21 +3145,19 @@ one blocker that nobody had measured. 13 of the 16 imported source files are
 **byte-identical to upstream**; the two findings that mattered were not in any
 of the programs.
 
-  - **`usr/src/libplot` EXISTS AND NO SURVEY HAD LOOKED AT IT.** `graph`, `plot`
-    and `prof` are all blocked on it and it is a tree of **seven** libraries —
-    `libplot lib4014 lib2621 lib5620 libblit libpen libtr` — sitting a directory
-    over from `usr/src/lib`, which every previous sweep read. The `vi`-under-`ex`
-    shape again: something recorded as absent that was in the tree, unread.
-    What makes it worth a task of its own (§8b) rather than a line here is the
-    measurement: **`-lplot` would not have linked on a VAX either.** The shipped
-    `libplot.a` is 1008 bytes holding `subr.o` and `whoami.o`, its source bundle
-    agrees exactly, and `graph` calls six primitives it defines none of. There
-    is **no plot(5)-writing implementation anywhere in the archive** — every
-    `openpl()` is device-specific (tek escapes, `initscr()`, jerq ioctls,
-    `/dev/hp7580`, troff) — so V8's `graph` was linked against a *device*
-    library. The 216-byte `libm.a` finding, a second time.
-    It also brings a build idiom nothing here has met: the sources live inside
-    an `ar` archive and the makefile runs `ar x` to get at them.
+  - **`usr/src/libplot` EXISTS AND NO SURVEY HAD LOOKED AT IT** — a tree of
+    **seven** libraries (`libplot lib4014 lib2621 lib5620 libblit libpen
+    libtr`), a SIBLING of `usr/src/lib` rather than a child, which is where
+    every previous sweep read. The `vi`-under-`ex` shape: something recorded as
+    absent that was in the tree, unread.
+
+    **AND THE CONCLUSION DRAWN FROM IT WAS WRONG — see §7b-plot, which
+    supersedes it.** This entry said `graph`, `plot` and `prof` were all blocked
+    and that `-lplot` would not have linked on a VAX. `graph` and `prof` were
+    never blocked: `<iplot.h>` is a file of MACROS, so their plot calls are
+    `printf`s and neither references a plot function at all. Only `plot(1)`'s
+    own `driver.c` does. Left standing because the error is instructive: a grep
+    for `line(` cannot tell a macro invocation from a call.
   - **`nlist(3)` had an address-0 dereference and it is the first in libc.**
     `dmesg` SIGSEGV'd; the file is byte-identical to upstream. The loop that
     matches a symbol against the caller's list walks to the `{ 0 }` terminator
@@ -3213,6 +3211,47 @@ of the programs.
     And `pp.c:11`'s `BMASK redefined` is upstream's too — upstream's
     `sys/types.h:35` includes upstream's `sys/param.h`, which defines `BMASK`.
     Both diagnostics fired on a VAX.
+
+**7b-plot. libplot, and the finding that superseded my own.** 157 → 160:
+`graph`, `prof` and `tek`, plus two libraries. All of it **byte-identical to
+upstream**; not one source change in any of the five components.
+
+  - **THE DEFERRAL WAS WRONG AND THE REASON IS THE USEFUL PART.** Batch 2d
+    deferred `graph`, `plot` and `prof` on a measured argument: `libplot.a` has
+    two members, `graph.c` calls six primitives it defines none of, so `-lplot`
+    cannot be satisfied. Every step true, conclusion false. `graph.c:4` is
+    `#include <iplot.h>` and that header is nothing but MACROS —
+    `#define erase() printf("e\n")` — so the plot interface is a **header**, a
+    program including it emits `plot(1)`'s textual command language, and it
+    calls nothing. **A grep for `line(` cannot tell a macro invocation from a
+    call.** The instrument that settles it is `nm -u` on the object: `graph.o`
+    undefines `atof ceil fabs floor log10 malloc printf realloc scanf sprintf
+    strcat strcpy strlen ungetc` and no plot function; `prof.o` with upstream's
+    own `-Dplot` likewise. Second instance of the macro-hides-the-truth shape
+    in two batches, after `awk`'s `execute`.
+  - **So `libplot.a` is COMPLETE at two members.** `subr.c`'s `putnum()` is the
+    one thing the macros cannot express inline — the spline and fill macros
+    pass arrays — and `whoami.c` names the device. `whoami` is what reveals the
+    design: `"general"` in libplot, `"tek"` in lib4014, `"hp"` in lib2621.
+    Seven interchangeable back ends, one per terminal.
+  - **`plot(1)` IS the program that needs a device library**, and it is the one
+    I had not checked. `driver.c` parses the language and dispatches through
+    `struct pcall { void (*plot)(); }`, so it references 28 primitives for
+    real; `lib4014` defines all 28 of 38. `tek` builds on upstream's own link
+    line and `graph | tek` emits genuine 4014 escapes — GS addressing and
+    ESC FF erase, asserted in `tests/wavea`.
+  - **`prof` is NOT a fifth rung-5 exclusion**, which was the open question the
+    wrong note left. Its makefile's `-Dplot` costs nothing with a macro header,
+    so Bell Labs' description produces the same program.
+  - **The `ar`-as-source-bundle idiom** is new here: 31 sources live inside
+    `tek.c.a` and the makefile runs `ar x`. Reproduced as one rule per archive,
+    because `$(wildcard)` expands when make reads the rule and the members do
+    not exist until the extraction has run. PROVENANCE covers the bundle, which
+    is the file upstream ships. `src/libplot/PORTING.md`.
+  - Left: `hpplot` (`lib2621` + `libcurses`, 43 files), the pen/troff/Blit
+    devices, and `/usr/bin/plot` — a 16-line dispatcher V8 ships with **no
+    source**, so installing it would make it the first program in this world
+    the port did not build.
 
 **7c. What is left, in order of unlock:**
 

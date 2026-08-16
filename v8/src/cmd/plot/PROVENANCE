@@ -1,0 +1,9 @@
+# Provenance for v8/src/cmd/plot
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+28efcc77361a5749f10a0256a93485793ebfe5ba  v8/usr/src/cmd/plot/makefile
+03d01880628aa0581881079d6a7bfd28e31d5687  v8/usr/src/cmd/plot/pltprnt.c
+b100406a4902ab47986c71d6346e5a42bed1ca14  v8/usr/src/cmd/plot/driver.c

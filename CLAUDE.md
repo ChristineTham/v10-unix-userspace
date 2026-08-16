@@ -1743,19 +1743,52 @@ TREE HAD NEVER BEEN SWEPT.** `hoc p pp calendar newgrp showq dmesg` plus
 were in neither the programs nor their build:
 
 - **`usr/src/libplot` IS A SIBLING OF `usr/src/lib`, NOT A CHILD, and every
-  survey read the child.** Seven libraries. `graph`, `plot` and `prof` all
-  block on it. `vi`-under-`ex` again: *described as missing, sitting in the
-  tree, unread* — and the remedy this file already prescribes, grep the WHOLE
-  archive rather than the release subtree, applied to a directory rather than
-  to a file. **The measurement is the interesting half: `-lplot` WOULD NOT HAVE
-  LINKED ON A VAX EITHER.** The shipped `libplot.a` is 1008 bytes holding
-  `subr.o` (a `%g` printer) and `whoami.o` (`return("general")`); its source
-  bundle agrees exactly; `graph` calls six primitives it defines none of; and
-  **no plot(5)-writing implementation exists anywhere in the archive** — every
-  `openpl()` is device-specific. Second instance of the 216-byte `libm.a`
-  shape: a `-l` flag naming an archive that does not define what the caller
-  needs. It also brings an idiom nothing here has met — the sources live inside
-  an `ar` archive and the makefile runs `ar x` to get them.
+  survey read the child.** Seven libraries, one per terminal — `whoami()` is
+  what says so, returning `"general"`, `"tek"`, `"hp"`. `vi`-under-`ex` again:
+  *described as missing, sitting in the tree, unread* — and the remedy this
+  file already prescribes, grep the WHOLE archive rather than the release
+  subtree, applied to a directory rather than to a file.
+
+  **AND THE CONCLUSION I DREW FROM IT WAS WRONG, WHICH IS THE ENTRY BELOW.**
+  This said `-lplot` would not have linked on a VAX. It links fine and it links
+  nothing, because the plot interface is a HEADER.
+
+**AND A GREP CANNOT TELL A MACRO INVOCATION FROM A CALL, WHICH IS HOW I
+DEFERRED TWO PROGRAMS THAT WERE NEVER BLOCKED.** The reasoning was: `libplot.a`
+defines `subr.o` and `whoami.o` and nothing else; `graph.c` calls `openpl`,
+`closepl`, `erase`, `line`, `move`, `point`; therefore `-lplot` cannot satisfy
+it. Every step measured, every step true, conclusion false. `graph.c:4` is
+`#include <iplot.h>` and that header is nothing but macros —
+`#define erase() printf("e\n")`, `#define line(a,b,c,d) printf("li %g %g %g
+%g\n",...)` — so the plot interface **is a header**, a program including it
+emits `plot(1)`'s textual command language, and it calls nothing. `libplot.a`
+is COMPLETE at two members: `putnum()` is the one thing the macros cannot do
+inline (the spline and fill macros pass arrays) and `whoami()` names the
+device.
+
+- **THE INSTRUMENT THAT SETTLES IT IS `nm -u` ON THE OBJECT, NOT A GREP ON THE
+  SOURCE.** Measured: `graph.o` undefines `atof ceil fabs floor log10 malloc
+  printf realloc scanf sprintf strcat strcpy strlen ungetc` and **not one plot
+  function**; `prof.o` built with upstream's own `-Dplot` likewise. Compile it
+  and ask the object, which is the same discipline this file already prescribes
+  for the truncation sweep — *prefer measuring the artefact over grepping the
+  source when the property is not textual.*
+- **AND THE SAME SHAPE HAD ALREADY COST A CRASH IN THIS TREE**, one batch
+  earlier: `awk`'s `execute` is a MACRO that reads `(p)->ntype` in front of the
+  null guard `real_execute()` opens with, so reading the function proved
+  nothing about the call. There the macro hid a dereference; here it hid the
+  absence of one. **When a name resolves to a macro, every conclusion drawn
+  from its call sites is about the macro, not the function.**
+- **WHAT WAS GENUINELY BLOCKED IS THE ONE PROGRAM I HAD NOT CHECKED.**
+  `plot(1)`'s `driver.c` parses the language and dispatches through
+  `struct pcall { void (*plot)(); }`, so it references the primitives for real
+  — 28 undefined, and `lib4014` defines all 28 of them (38 in total). `tek`
+  builds on upstream's own line, `graph | tek` emits real 4014 escapes, and
+  `hpplot` is the honest remainder at `-l2621 -lcurses`.
+- **AND `prof` IS NOT A FIFTH RUNG-5 EXCLUSION**, which was the open question
+  the wrong note left behind. Its makefile carries `-Dplot`; with a macro
+  header that costs nothing, so Bell Labs' build description produces the same
+  program ours does.
 - **`nlist(3)` DEREFERENCED THE LIST TERMINATOR, AND THE GUARD IS AT THE TOP OF
   THE SAME FUNCTION.** The address-0 class, tenth instance and the **first in libc**;
   `nlist.c` is byte-identical to upstream. The counting loop is

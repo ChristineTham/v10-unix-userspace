@@ -529,6 +529,34 @@ dep 'sys/param.h -> showq.o'   src/include/sys/param.h         $B/showq/showq.o
 # $(V8CC_DEPS), so it says nothing about showq in particular.  param.h alone
 # carries the claim, and it is the only one of the four this port modifies.
 
+# --- libplot: the ar-as-source-bundle idiom -------------------------------
+# The sources live INSIDE tek.c.a and plot.c.a, so the bundle is the only
+# prerequisite there is -- there are no per-member edges to assert, because
+# there are no per-member files.  One rule per archive, which is upstream's own
+# granularity; src/libplot/PORTING.md says why a stamp-and-wildcard scheme
+# cannot work here ($(wildcard) is expanded when make READS the rule, and the
+# members do not exist until the extraction has run).
+dep 'plot bundle -> libplot.a'  src/libplot/libplot/plot.c.a  $B/libplot/libplot.a
+dep 'tek bundle -> lib4014.a'   src/libplot/lib4014/tek.c.a   $B/lib4014/lib4014.a
+dep 'libplot.a installs'        $B/libplot/libplot.a          rootfs/usr/lib/libplot.a
+dep 'lib4014.a installs'        $B/lib4014/lib4014.a          rootfs/usr/lib/lib4014.a
+# The two bundles are independent -- they are different devices, not layers.
+nodep 'tek bundle is not libplot.a' src/libplot/lib4014/tek.c.a $B/libplot/libplot.a
+# graph and prof name -lplot on their link lines and need NOTHING from it (see
+# PORTING.md: their plot calls are macros in <iplot.h>).  The edge is asserted
+# anyway, because what the archive is there for is to stop `-lplot' escaping to
+# the host SDK -- libpath() resolves -lNAME against $V8ROOT/usr/lib first, so a
+# missing archive is a silent escape rather than a link error.
+dep 'libplot.a -> graph'        $B/libplot/libplot.a          $B/bin/graph
+dep 'graph source -> graph'     src/cmd/graph/graph.c         $B/graph/graph.o
+dep 'prof source -> prof'       src/cmd/prof/prof.c           $B/prof/prof.o
+# tek is the ONE consumer that genuinely needs the device library: driver.c
+# dispatches through a table of 28 real function pointers.  Drop lib4014 from
+# its link and it fails to link, which is what this edge stands for.
+dep 'lib4014.a -> tek'          $B/lib4014/lib4014.a          $B/bin/tek
+dep 'driver source -> tek'      src/cmd/plot/driver.c         $B/plot/driver.o
+nodep 'lib4014 is not a graph edge' src/libplot/lib4014/tek.c.a $B/graph/graph.o
+
 # --- Phase 4: libkmemu, and the edges that keep it out of everything else ---
 dep 'kmemu source -> archive'  shim/libkmemu/utmp.c            $B/kmemu/libkmemu.a
 dep 'kmemu header -> archive'  shim/libkmemu/kmemu.h           $B/kmemu/libkmemu.a

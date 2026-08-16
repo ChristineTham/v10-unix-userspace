@@ -1,0 +1,9 @@
+# Provenance for v8/src/libplot/lib4014
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+2afb4bc9000ce08d3c32f95e2f4ad3d3bfa26aac  v8/usr/src/libplot/lib4014/makefile
+b39073cc08aef8409f533512f2cad6b63dc96286  v8/usr/src/libplot/lib4014/tek.h
+894e5d9132a405c5ed09c25919a6664a9ac81c55  v8/usr/src/libplot/lib4014/tek.c.a

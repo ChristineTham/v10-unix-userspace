@@ -669,6 +669,13 @@ for d in "$ROOT"/src/cmd/*/; do
 	case "$name" in
 	# built into the toolchain rather than installed under their own name
 	ccom|cc) continue ;;
+	# src/cmd/plot builds `tek' and `hpplot', never a program called `plot'.
+	# The COMMAND of that name is a 16-line shell dispatcher V8 ships with no
+	# source at all -- usr/src/cmd/plot's makefile does not install it -- so
+	# this directory can never satisfy the rule by its own name.  Asserted the
+	# other way round below: tek must be installed, and hpplot must not,
+	# because libcurses is unported.  src/libplot/PORTING.md.
+	plot) continue ;;
 	esac
 	find "$V8ROOT" -name "$name" -type f -perm -u+x 2>/dev/null | grep -q . ||
 		dmissing="$dmissing $name"
@@ -1930,6 +1937,82 @@ check 'libl.a defines yywrap' '1' \
 # checks is the premise: the member is really there to collide.
 check 'libl.a carries main.o for lex programs without one' '1' \
     "$(ar t "$V8ROOT/usr/lib/libl.a" 2>/dev/null | grep -c '^main\.o$')"
+
+# ---------------------------------------------------------------------------
+# libplot: graph, prof, tek -- the three batch 2d deferred, and the finding
+# that deferring them was a mistake.
+#
+# The recorded reason was that `-lplot' could not be satisfied: libplot.a has
+# two members and graph calls six primitives it defines none of.  All measured,
+# all true, conclusion false -- <iplot.h> is a file of MACROS, so graph's plot
+# calls are printf()s and it references no plot function at all.  A grep for
+# `line(' cannot tell a macro invocation from a call.  src/libplot/PORTING.md.
+
+# THE CASE THAT DISCRIMINATES IS ON THE OBJECT, NOT THE OUTPUT, because that is
+# the instrument that would have prevented the error.  If graph ever stops
+# using the macro header its object grows plot symbols, and this goes red
+# before anything else notices.
+check 'graph.o references no plot function' '0' \
+    "$(nm -u "$ROOT/build/stage0/graph/graph.o" 2>/dev/null |
+       grep -cE '^_(openpl|closepl|erase|line|move|point|arc|box|circle)$')"
+check 'and neither does prof.o, built with upstream -Dplot' '0' \
+    "$(nm -u "$ROOT/build/stage0/prof/prof.o" 2>/dev/null |
+       grep -cE '^_(openpl|closepl|erase|line|move|point|text|range)$')"
+# ...and the CONTROL, which is what says the two above are a real property and
+# not an accident of how the sweep is spelled.  driver.c dispatches through a
+# table of function pointers, so it references them for real.
+check 'plot(1) driver.o DOES reference them' '9' \
+    "$(nm -u "$ROOT/build/stage0/plot/driver.o" 2>/dev/null |
+       grep -cE '^_(openpl|closepl|erase|line|move|point|arc|box|circle)$')"
+
+# graph emits plot(1)'s textual command language.  Asserted as a SHAPE rather
+# than byte-for-byte: the coordinates depend on the data and the scaling, and
+# freezing them would make the case a transcript rather than a guard.
+gplot=$(printf '0 0\n1 1\n2 4\n3 9\n4 16\n' | "$(v8which graph)" 2>/dev/null)
+check 'graph opens, ranges and erases' 'o|ra|e' \
+    "$(printf '%s\n' "$gplot" | sed -n '1,3p' | awk '{print $1}' | tr '\n' '|' | sed 's/|$//')"
+check 'graph draws lines and vectors' 'yes' \
+    "$(printf '%s\n' "$gplot" | grep -q '^li ' && printf '%s\n' "$gplot" | grep -q '^v ' && echo yes)"
+
+# graph | tek -- the whole pipeline, and the one place a DEVICE library is
+# genuinely required.  Tektronix 4014 addressing is GS (035) followed by
+# coordinate bytes, and erase is ESC FF; asserting those two says the escapes
+# are real rather than that some bytes came out.
+tekout=$(printf '0 0\n1 1\n2 4\n3 9\n4 16\n' | "$(v8which graph)" 2>/dev/null |
+         "$(v8which tek)" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+check 'graph | tek emits the 4014 GS address escape' '1' \
+    "$(printf '%s' "$tekout" | grep -c '1d')"
+check 'graph | tek emits the 4014 ESC FF erase' '1' \
+    "$(printf '%s' "$tekout" | grep -c '1b0c')"
+
+# The archives, and what they are for.  libplot.a links NOTHING that graph
+# needs -- naming it keeps libpath() from letting -lplot escape to the host
+# SDK, which is exactly why shim/libm/dummy.c reproduces V8's empty libm.a.
+check 'libplot.a is installed, at V8 two members' '2' \
+    "$(ar t "$V8ROOT/usr/lib/libplot.a" 2>/dev/null | grep -c '[.]o$')"
+check 'and it defines putnum and whoami, which the macros cannot' '2' \
+    "$(nm "$V8ROOT/usr/lib/libplot.a" 2>/dev/null | grep -cE ' T _(putnum|whoami)$')"
+# EVERY primitive driver.o wants, derived from driver.o rather than listed:
+# the undefined set minus what libc supplies must be a subset of lib4014's
+# text symbols.  A hand-written list of 28 names is the two-copies-of-one-list
+# trap this suite has already been bitten by.
+nm -u "$ROOT/build/stage0/plot/driver.o" 2>/dev/null | sed 's/^_//' | sort > tekneed.txt
+nm "$V8ROOT/usr/lib/lib4014.a" 2>/dev/null |
+    awk '$2=="T"{sub(/^_/,"",$3); print $3}' | sort -u > tekhave.txt
+# Everything ELSE on tek's link line, not just libv8c: crt0 and the syscall
+# stubs supply exit(), and _iob and _ctype are DATA rather than text, so a
+# filter on T alone reported three false shortfalls.  Take D and C too.
+nm "$ROOT/build/stage0/libc/libv8c.a" "$ROOT/build/stage0/v8sys/libv8stubs.a" \
+   "$ROOT/build/stage0/v8sys/libv8sys.a" "$ROOT/build/stage0/crt0.o" 2>/dev/null |
+    awk '$2=="T"||$2=="D"||$2=="C"||$2=="S"{sub(/^_/,"",$3); print $3}' |
+    sort -u > libchave.txt
+check 'lib4014 plus libc covers every symbol driver.o needs' '' \
+    "$(comm -23 tekneed.txt tekhave.txt | comm -23 - libchave.txt |
+       grep -v '^__' | tr '\n' ' ' | sed 's/ $//')"
+# ...and the control: lib4014 really is where the plot half comes from, so
+# removing it from consideration must leave a non-empty shortfall.
+check 'and libc ALONE does not, which is why the device library is needed' 'short' \
+    "$([ -n "$(comm -23 tekneed.txt libchave.txt | grep -v '^__')" ] && echo short || echo no)"
 
 # ---------------------------------------------------------------------------
 # THE ARTICLE IS THE ONLY ARTEFACT HERE WITH NO GUARD, AND IT ROTTED.

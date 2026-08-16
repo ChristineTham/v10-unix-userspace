@@ -2155,6 +2155,123 @@ $(BINDIR)/dmesg: $(BUILD)/dmesg/dmesg.o $(V8DEPS)
 	@mkdir -p $(@D)
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $< $(V8LIBS)
 
+# ---------------------------------------------------------------------------
+# libplot -- the THIRD library import, and the one whose shape was recorded
+# wrong before it was measured.
+#
+# usr/src/libplot is a SIBLING of usr/src/lib, which is why no survey had read
+# it: seven device libraries, one per terminal.  whoami() is what says so --
+# libplot returns "general", lib4014 returns "tek", lib2621 returns "hp".
+#
+# THE PLOT INTERFACE IS A HEADER, NOT A LIBRARY, WHICH IS THE WHOLE POINT AND
+# WAS MISSED FIRST TIME.  <iplot.h> and <plot.h> are files of MACROS --
+# `#define erase() printf("e\n")', `#define line(a,b,c,d) printf("li %g %g %g
+# %g\n",...)' -- so a program that includes one emits plot(1)'s textual command
+# language and calls NOTHING.  Measured: graph.o's undefined symbols are atof,
+# ceil, fabs, floor, log10, malloc, printf, realloc, scanf, sprintf, strcat,
+# strcpy, strlen, ungetc, and not one plot function.  Same for prof.o built
+# with upstream's own -Dplot.
+#
+# So libplot.a is COMPLETE at two members.  subr.c's putnum() is the one thing
+# the macros cannot express inline (the spline and fill macros pass arrays),
+# and whoami.c names the device.  An earlier note in this tree said "-lplot
+# would not have linked on a VAX either"; that was wrong, and it was wrong
+# because a grep for `line(' cannot tell a macro invocation from a call.
+#
+# WHAT DOES NEED A DEVICE LIBRARY IS plot(1) ITSELF.  driver.c parses the
+# language and dispatches through `struct pcall { void (*plot)(); }', so it
+# references the functions for real: 28 of them undefined, measured, and
+# lib4014 defines all 28 (38 in total).  That is what makes `tek' buildable
+# and it is upstream's own link line, unchanged.
+#
+# THE BUILD IDIOM IS NEW HERE: the sources live inside an `ar' archive and the
+# makefile extracts them before compiling.  Upstream:
+#	lib4014.a: tek.c.a
+#		mkdir xplot; cd xplot; ar x ../tek.c.a; cc -c -O *.c
+#		cd xplot; ar rc ../lib4014.a *.o; rm -r xplot
+# Reproduced as ONE rule per archive rather than per object, deliberately:
+# the member list does not exist until the extraction has run, and $(wildcard)
+# is expanded when make READS the rule, so a stamp-and-wildcard scheme would
+# compile nothing on a clean tree and everything on the next run.  One rule is
+# also upstream's own granularity.  31 files, under a second.
+#
+# PROVENANCE covers the BUNDLE, which is the honest unit: tools/import.sh
+# records the blob hash of the one file upstream ships.  Nothing inside needed
+# patching -- the LP64 and address-0 sweeps came back clean over all 937 lines
+# -- so the question of how to record a patched member has not arisen.  When it
+# does, the answer is to extract that member into src/ beside the bundle and
+# record it separately; do not rewrite the archive.
+LIBPLOTSRC = $(SRC)/libplot
+
+$(BUILD)/libplot/libplot.a: $(LIBPLOTSRC)/libplot/plot.c.a $(V8CC_DEPS)
+	@rm -rf $(BUILD)/libplot && mkdir -p $(BUILD)/libplot
+	@cd $(BUILD)/libplot && ar x $(LIBPLOTSRC)/libplot/plot.c.a && \
+	    for c in *.c; do $(V8CCRUN) -I$(LIBPLOTSRC)/libplot -c $$c || exit 1; done && \
+	    rm -f libplot.a && ar rcs libplot.a *.o
+	@echo "built $@"
+
+$(BUILD)/lib4014/lib4014.a: $(LIBPLOTSRC)/lib4014/tek.c.a $(V8CC_DEPS)
+	@rm -rf $(BUILD)/lib4014 && mkdir -p $(BUILD)/lib4014
+	@cd $(BUILD)/lib4014 && ar x $(LIBPLOTSRC)/lib4014/tek.c.a && \
+	    for c in *.c; do $(V8CCRUN) -I. -c $$c || exit 1; done && \
+	    rm -f lib4014.a && ar rcs lib4014.a *.o
+	@echo "built $@"
+
+$(ROOTFS)/usr/lib/libplot.a: $(BUILD)/libplot/libplot.a
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/lib/lib4014.a: $(BUILD)/lib4014/lib4014.a
+	@mkdir -p $(@D) && cp $< $@
+
+# graph: upstream's link line is `cc -O graph.c -o graph -lplot -lm', and BOTH
+# flags now resolve inside the jail and link nothing that graph needs -- libm.a
+# is the 216-byte stub V8 shipped and libplot.a is the two-member general
+# device.  That is not a defect in either: graph's plot calls are macros.
+# Naming them on the link line is what keeps `libpath()' from letting -lplot
+# escape to the host SDK, which is the whole reason src/cmd/cc.c resolves
+# -lNAME against $V8ROOT/usr/lib first.
+GRAPHSRC = $(SRC)/cmd/graph
+$(BUILD)/graph/graph.o: $(GRAPHSRC)/graph.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BINDIR)/graph: $(BUILD)/graph/graph.o $(BUILD)/libplot/libplot.a $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/graph/graph.o \
+	    $(BUILD)/libplot/libplot.a $(V8LIBS)
+
+# prof: upstream's CFLAGS carry -Dplot with a comment saying to take it out if
+# you do not want plotting.  It is KEPT, because with the macro header there is
+# nothing to pay for it -- prof.o built with -Dplot has no plot symbols either,
+# so Bell Labs' own build description produces the same program ours does and
+# prof is NOT a fifth rung-5 exclusion.  That was the open question in the note
+# this block replaces.
+PROFSRC = $(SRC)/cmd/prof
+$(BUILD)/prof/prof.o: $(PROFSRC)/prof.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -Dplot -c -o $@ $<
+$(BINDIR)/prof: $(BUILD)/prof/prof.o $(BUILD)/libplot/libplot.a $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/prof/prof.o \
+	    $(BUILD)/libplot/libplot.a $(V8LIBS)
+
+# tek: plot(1)'s Tektronix renderer, and the ONE program here that genuinely
+# needs a device library -- driver.c dispatches through a table of 28 real
+# function pointers.  Upstream: `cc -s -o tek driver.o -l4014'.  hpplot is its
+# sibling and is NOT built: `-l2621 -lcurses -ltermlib', and libcurses is 43
+# unported files.
+PLOTSRC = $(SRC)/cmd/plot
+$(BUILD)/plot/driver.o: $(PLOTSRC)/driver.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BINDIR)/tek: $(BUILD)/plot/driver.o $(BUILD)/lib4014/lib4014.a $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/plot/driver.o \
+	    $(BUILD)/lib4014/lib4014.a $(V8LIBS)
+
+PLOT_NAMES   = graph prof tek
+PLOT_BUILT   = $(patsubst %,$(BINDIR)/%,$(PLOT_NAMES))
+PLOT_INSTALL = $(call v8install,$(PLOT_NAMES)) \
+               $(ROOTFS)/usr/lib/libplot.a $(ROOTFS)/usr/lib/lib4014.a
+
 # B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
 # also what the $(ROOTFS)/etc/% generator further down has to iterate over --
 # showq and dmesg land in /etc and the generator's own comment promises "the
@@ -2169,10 +2286,10 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
 
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
-                   $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT)
+                   $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr m4) \
-                   $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL)
+                   $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) $(PLOT_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
