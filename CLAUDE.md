@@ -1658,6 +1658,101 @@ program that SIGSEGVs produces no output either, and `check <name> ''
 re-mutating fires all four. **A case whose expected output is empty is vacuous
 against a crash unless it also asserts the status.**
 
+**AND `struct(1)` IS IN -- 40 FILES, EIGHT DEFECTS, AND THE FIRST ONE IS A
+SINGLE `#define`.** Brenda Baker's Fortran-to-Ratfor restructurer, which turns
+a backward `GOTO` into `REPEAT/UNTIL`, a `GOTO` out of a `DO` into `break`, a
+three-way branch into `IF/ELSE IF/ELSE` and a computed `GOTO` into a `SWITCH`.
+`src/cmd/struct/PORTING.md` has all eight. Six things generalise, and the
+first is a cost estimate that was too LARGE, which is rare here:
+
+- **`#define VERT int` -> `long` WAS THE WHOLE FIX**, and the previous note
+  costed it as "a pass over the module, and an unknown number of the other 39
+  files may do the same". What `1.hash.c` does is not a style of writing `int`
+  for pointer: while a label is unresolved it threads a **fixup chain through
+  the graph's own cells**, so a cell means *a vertex number or a pointer*, and
+  the only thing that must change is that the cell be pointer-sized. **When a
+  type is punned, widen the TYPE, not the uses.**
+- **THE CASCADE WAS TWO DECLARATIONS AND BOTH WERE UPSTREAM'S OWN LATENT
+  CONTRADICTIONS.** `after` was declared `VERT *` in one header and `int *` in
+  another while *defined* `VERT *` in a third file -- identical spellings while
+  `VERT` was `int`, so no compiler in forty years had cause to speak. And
+  `arcsper[]` had to share a width with a graph cell because `ARCNUM` is a
+  ternary yielding either one. Same shape as `sys/fblk.h` measuring 716 by
+  coincidence: **right by an accident of two types coinciding, and invisible
+  until one of them moves.**
+- **THE LINE BESIDE IT, IN ITS MOST LITERAL FORM YET.** `def.h` declares
+  `arc()` and `lchild()` as `VERT *`; **the very next line** declared
+  `vxpart()` and five siblings `int *`. All eight return `&graph[v][...]`. The
+  consequence is not a warning but silent half-width access, and it was found
+  by *reading two adjacent declarations* after both instruments came back
+  clean.
+- **AND THOSE TWO INSTRUMENTS ARE BLIND IN THE SAME DIRECTION, WHICH IS WORTH
+  KNOWING BEFORE TRUSTING EITHER.** v8cc warns on a pointer mismatch in an
+  ASSIGNMENT and **not in a `return`**, so six functions returning the wrong
+  pointer type were silent -- a whole-module warning diff named exactly one new
+  site, a different bug. And `tests/trunc-sweep.awk` reads **call sites**, so a
+  callee narrowing its own result leaves nothing to match; it reported zero
+  over the binary throughout, correctly, validated against `rootfs/bin/ls`
+  which gives 4. Between them they cover the assignment direction twice and the
+  return direction not at all.
+- **A GENERIC SWAP IS A MACHINE-WORD SWAP, AND THE WORD GREW.** `exchange(p1,p2)`
+  declared `int *` is called with `VERT *` *and* `VERT **` -- four callers,
+  three different things, all four bytes on a VAX. It exchanged only the low 32
+  bits and left both high halves, so `negate()` swapping THEN=-1 with ELSE=8
+  produced cells each holding its own correct low word and the other's high
+  word, and `DEFINED()` (`v >= 0`) read the undefined child as +4294967295.
+  Declared `long` rather than `VERT` **because two callers pass pointers**:
+  what upstream means is *one machine word*, and no V8 type spells that.
+- **AND IT WAS IN MY OWN SWEEP OUTPUT, MISREAD.** The `int *` sweep printed
+  `2.dfs.c:148:int *p1,*p2;` under a heading written as "int\* **locals**", and
+  I scanned past it looking for locals. It is a **K&R parameter list** -- the
+  one context where a declaration alone on a line is not a local. Two further
+  rounds of instrumentation re-derived what that line already said. **Read a
+  sweep's hits against what they ARE, not against the heading you gave them.**
+- **BISECT BY PHASE BEFORE REASONING ABOUT MECHANISM.** Three `fprintf`s in the
+  phase driver (`BEFORE getreach / AFTER getreach / AFTER getflow`) found it in
+  one run, after two rounds of reading declarations and one full row dump had
+  not -- and refuted the entire "wrong stride during graph construction" line
+  by showing the cells clean going into the last phase. Relatedly: **do not
+  reach for lldb**, v8cc emits no unwind info so a backtrace stops at frame #0
+  every time; and **instrument a brace-less loop WITH BRACES** -- upstream's
+  `for (i = 0; ...) LCHILD(v,i) = UNDEFINED;` has none, so a `fprintf` after the
+  body lands outside the loop where `i == CHILDNUM(v)` and the callee's own
+  assertion fires, which reads as a finding and is the instrument.
+- **A ROW DUMP CORRECTS YOU ABOUT WHAT IS AND IS NOT CORRUPT, and ASLR is the
+  discriminator.** One cell read `4425033912` and looked like garbage; it is a
+  string pointer, and the tell that it is **right** is that it *changes between
+  runs*. A constant-looking wrong value that moves under ASLR is a real
+  pointer; one that does not is a truncation.
+
+**AND THE SECOND PROGRAM IN THAT DIRECTORY HAD TWO MORE, ONE OF WHICH NO
+SOURCE FIX COULD REACH.** `structure` working is not `struct(1)` working: the
+command is a shell script piping it into `beautify`, which SIGSEGV'd on the
+first real input and exited 0 on empty stdin, because an empty file never
+reaches the lexer.
+
+- **THE awk yylval SWEEP CAUGHT ITS SECOND INSTANCE, ON ITS OWN.**
+  `lextab.l:8` was `extern int yylval` against this port's
+  `#define YYSTYPE long`, with `malloc` undeclared beside it -- two
+  truncations on one line. First time one of this file's documented sweeps has
+  found a second instance without being aimed.
+- **A CHECKED-IN PARSER CARRIES 1985's DEFAULTS, AND `#ifndef` IS THE WAY
+  IN.** `beauty.c` is the generated parser shipped as C, so it holds
+  `#ifndef YYSTYPE / #define YYSTYPE int` and its whole value stack was 32-bit
+  -- every `$1` a truncated string pointer. The guard is upstream's own escape
+  hatch, so **`-DYYSTYPE=long` on that one object and no source edit at all**;
+  the 1985 parser stays byte-identical. `nm -S` is the only instrument that can
+  confirm it (`_yylval` 4 -> 8, `_yyv` 600 -> 1200), because no source changed
+  and therefore no diff says anything.
+- **AND THE FIRST ATTEMPT SILENTLY DID NOTHING: MAKE DOES NOT TRACK A RECIPE
+  FLAG.** Adding the `-D` left every object current, so the program relinked
+  from the stale object and crashed identically. That is the `V8ROOT_DEFAULT`
+  note arriving in a `-D`, and it is now a second instance rather than a
+  one-off. The control that caught it was compiling the same three-line
+  `#ifndef` fragment standalone: the flag worked there and not in the build,
+  which points at make rather than at cpp. **`touch` the source after changing
+  a recipe.**
+
 **AND THE SINGLE-FILE SET WAS RECORDED AS EXHAUSTED AND WAS NOT: 36 OF THE 156
 MISSING PROGRAMS STILL HAD A BARE `.c` IN `cmd/`.** Wave A2 batch 1's note said
 it had imported "all 37 single-file commands" and that batch 2 was the
