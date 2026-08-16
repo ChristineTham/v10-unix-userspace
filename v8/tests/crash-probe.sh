@@ -206,6 +206,23 @@ done
 # cell, which is what `tar' did for as long as it sat in the safe set.
 find "$ROOT" 2>/dev/null | LC_ALL=C sort > "$WORK/paths.before"
 
+# ...AND /dev/null's SIZE SEPARATELY, BECAUSE FIXING THE LAST ESCAPE BLINDED
+# THE CHECK THAT FOUND IT.  The path list can only report a name that is NEW.
+# /dev/null was new -- a jailed creat made it, since creat keys on the parent
+# and $V8ROOT/dev exists -- and the fix put it in the build, because V8 shipped
+# one (proto-dev:25).  From that moment the name is always present, so a
+# program writing into it adds no path and this guard would say nothing.
+#
+# The shim now claims the name for a type of its own, so writes reach the
+# host's device and the node stays empty.  This is the widest instrument in the
+# tree for whether that holds -- every installed program against every
+# single-letter option -- and it costs one stat.  A DIFFERENCE rather than a
+# value, for the reason the path list is also a difference: a checkout that ran
+# the old code has bytes in the node, and that is its history rather than a
+# finding of this run.
+nullsz_before=$(wc -c < "$ROOT/dev/null" 2>/dev/null | tr -d ' ')
+: "${nullsz_before:=absent}"
+
 hits=0 tried=0 tainted=0 nsafe=0 nmut=0
 for p in $(find "$ROOT/bin" "$ROOT/usr/bin" "$ROOT/etc" "$ROOT/lib" \
                 "$ROOT/usr/lib" -type f -perm -100 2>/dev/null | sort); do
@@ -389,6 +406,17 @@ if [ -n "$escaped" ]; then
 	echo "::error::a program wrote OUTSIDE its cell -- these paths are new,"
 	echo "          so the MUTATES classification is missing something:"
 	printf '%s\n' "$escaped" | sed 's/^/    + /' | head -40
+	rc=1
+fi
+
+# The half the path list cannot see -- see nullsz_before above.
+nullsz_after=$(wc -c < "$ROOT/dev/null" 2>/dev/null | tr -d ' ')
+: "${nullsz_after:=absent}"
+if [ "$nullsz_after" != "$nullsz_before" ]; then
+	echo "::error::/dev/null GREW during the sweep: $nullsz_before -> $nullsz_after"
+	echo "          bytes.  A write to it must be discarded by the host's"
+	echo "          device; reaching the rootfs node means the shim's"
+	echo "          /dev/null row is not claiming the path."
 	rc=1
 fi
 [ $rc -eq 0 ] && echo "floor: exactly as declared ($(wc -l < "$WORK/expected" | tr -d ' ') entries)"

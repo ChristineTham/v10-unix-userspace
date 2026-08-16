@@ -108,11 +108,44 @@ static struct v8mount {
 	{ "/dev/stdout", 1, &v8fs_fdfs },
 	{ "/dev/stderr", 1, &v8fs_fdfs },
 	/*
-	 * /dev/ is here for the grovelers: load(1) opens /dev/kmem, which
-	 * libkmemu manufactures.  It does NOT capture /dev/null, which has no
-	 * rootfs copy and therefore falls through to the host's.
+	 * /dev/null -- THE FIFTH TYPE, and the row is here for the reason the
+	 * four above it are: an exact row before the prefix row, so that the
+	 * NAME can be real in the rootfs while the OBJECT is never the rootfs's.
 	 *
-	 * IT USED TO SAY THAT ABOUT /dev/tty TOO, and warned that creating
+	 * THE SENTENCE THIS REPLACES WAS TRUE WHEN WRITTEN AND STOPPED BEING SO
+	 * WHEN A THIRD THING ARRIVED.  It read "/dev/ does NOT capture /dev/null,
+	 * which has no rootfs copy and therefore falls through to the host's" --
+	 * an accurate description of a tree with no rootfs/dev/null, and the
+	 * whole mechanism by which /dev/null worked.  Two things then happened.
+	 * A jailed program did creat("/dev/null"), which keys on the PARENT, and
+	 * $V8ROOT/dev exists -- so the jail MADE one, and from that moment the
+	 * union rule found it and every later open reached a regular file.  Then
+	 * the crash probe's containment check reported the appearance as an
+	 * escape, and the fix put /dev/null in ROOTFS_DEVSTD, because V8 shipped
+	 * one (proto-dev:25) and its absence was a gap.  That made the name
+	 * authentic and the behaviour permanently wrong.
+	 *
+	 * Measured before this row existed, `echo x > /dev/null' inside the jail
+	 * created a 14-byte file; a second write appended; `cat /dev/null' handed
+	 * back the litter; `test -c' was false and `test -f' true.  The read is
+	 * the sharpest of the four -- `prog < /dev/null' is how a program is
+	 * given empty input, and it was being given whatever last wrote.
+	 *
+	 * WHY IT DELEGATES INSTEAD OF IMPLEMENTING.  Bell Labs' null is two arms
+	 * of the mem driver: dev/mem.c:68 is `case 2: return;', which transfers
+	 * nothing and is therefore EOF, and dev/mem.c:156 is `u.u_offset +=
+	 * u.u_count; u.u_count = 0;', which consumes everything and keeps none of
+	 * it.  The host's /dev/null is that, exactly.  Writing a type with read
+	 * and write slots of our own would be inventing a difference the kernel
+	 * does not have -- fd_open's rule, and the reason /dev/fd is three
+	 * operations rather than eleven.
+	 */
+	{ "/dev/null",	 1, &v8fs_null },
+	/*
+	 * /dev/ is here for the grovelers: load(1) opens /dev/kmem, which
+	 * libkmemu manufactures.
+	 *
+	 * IT USED TO SAY THE SAME THING ABOUT /dev/tty, and warned that creating
 	 * rootfs/dev/tty "would stop the V8 world seeing the real terminal".
 	 * The warning was right and the conclusion was backwards: the real
 	 * terminal is not what V8 puts there.  The five rows above are what it
@@ -910,6 +943,96 @@ struct v8fstyp v8fs_fdfs = {
 	fd_open, pt_close,
 	pt_read, pt_write, pt_seek,
 	fd_stat, v8sys_pt_fstat,
+	v8sys_pt_ioctl,
+	pt_access, pt_remove, pt_mkdir,
+	pt_chmod, pt_chown, pt_utime,
+	pt_link
+};
+
+/* -------------------------------------------------------------- /dev/null */
+
+/*
+ * THE FIFTH TYPE, AND THE CHEAPEST ONE HERE -- two operations, where /dev/fd
+ * needed three and passthrough needs all sixteen.  The mount table row has the
+ * history; this is what the row points at.
+ *
+ * t_path IS THE WHOLE FIX.  Returning the name unchanged means the host's
+ * /dev/null is what every inherited operation opens, reads, writes and closes,
+ * and the rootfs node -- which has to exist, so that `ls /dev' lists what V8
+ * listed -- is never the object.  It is fd_path's trick for the opposite
+ * reason: there the answer is a descriptor and no host path could be right,
+ * here the answer is a host path and the JAILED one is the wrong one.
+ *
+ * WHY t_stat IS NOT INHERITED, WHICH IS NOT ABOUT /dev/null AT ALL.  The two
+ * machines agree about this device completely -- proto-dev:25 says `crw-rw-rw-
+ * 1 root man 3, 2 null' and this host's node is mode 0666, major 3, minor 2 --
+ * and the shim still gets it wrong, because they disagree about how a major
+ * and a minor are PACKED.  Darwin's makedev is (major << 24) | minor; V8's is
+ * (major << 8) | minor; and stat_translate narrows with `& 0xffff'
+ * (syscall.c:1858).  A mask cannot preserve a field at bit 24 no matter how
+ * wide the destination is, so the major is not truncated, it is DELETED.
+ *
+ * Measured on host nodes that fall through today: /dev/zero is 3,3 and the
+ * jail reports `0, 3'; /dev/random is 17,0 and the jail reports `0, 0'.  So
+ * an inherited stat would have called /dev/null major 0 -- which is `console'
+ * in conf/devices -- with the minor right by luck, both being under 256.  That
+ * is the shape this tree is most careful about: not a failure, a plausible
+ * wrong answer.
+ *
+ * THE GENERAL DEFECT IS DELIBERATELY NOT FIXED HERE, and the reason is a
+ * measurement rather than a preference.  After this row, every device node V8
+ * ACTUALLY SHIPPED reports V8's numbers: /dev/tty, /dev/std{in,out,err} and
+ * the 128 /dev/fd nodes from fd_stat, /dev/null from here, /dev/kmem and /unix
+ * from libkmemu as ordinary files.  What is left mis-encoded is exactly the set
+ * of host nodes V8 never had -- /dev/zero, /dev/random, the disks -- where there
+ * is no V8 answer to restore and the honest report is the host's, narrowed.
+ * Re-encoding stat_translate would also need a rule for a major above 255,
+ * which is v8_foldid's problem and not this one.  Recorded as its own item.
+ */
+
+/*
+ * t_path.  Identical code to fd_path and deliberately not shared with it: the
+ * two return the argument unchanged for opposite reasons, and a reader who
+ * followed the call would arrive at a comment arguing the other case.
+ */
+static char *
+null_path(char *p, int mode)
+{
+	(void)mode;
+	return (p);
+}
+
+static int
+null_stat(char *rp, struct v8_stat *st, int follow)
+{
+	if (v8sys_pt_stat(rp, st, follow) < 0) return (-1);
+	st->st_rdev = (v8_dev_t)((3 << 8) | 2);	/* proto-dev:25; major 3 is
+						   the mem driver, conf/devices
+						   line 19, and minor 2 is its
+						   null arm */
+	return (0);
+}
+
+/*
+ * INHERITED, AND EACH FOR A REASON THAT IS ALREADY TRUE OF THE HOST'S NODE.
+ * read is EOF because Darwin's null is EOF; write is discarded because
+ * Darwin's discards; unlink and chmod are refused because /dev/null is not
+ * ours to remove or re-mode, which is the same answer V8 gives a non-root
+ * caller and the same reason fd_stat's neighbours inherit theirs.
+ *
+ * t_fstat is v8sys_pt_fstat AND THAT IS NOT AN OVERSIGHT: a descriptor on
+ * /dev/null is a descriptor on the real character device, so fstat reports it
+ * correctly and only the rdev encoding is off -- the same residue named above,
+ * on a path nothing in the tree takes.  /dev/fd draws the stat/fstat line in
+ * the other place, and for a different reason: there the two genuinely
+ * disagree on V8 as well.
+ */
+struct v8fstyp v8fs_null = {
+	"null",
+	null_path,
+	pt_open, pt_close,
+	pt_read, pt_write, pt_seek,
+	null_stat, v8sys_pt_fstat,
 	v8sys_pt_ioctl,
 	pt_access, pt_remove, pt_mkdir,
 	pt_chmod, pt_chown, pt_utime,

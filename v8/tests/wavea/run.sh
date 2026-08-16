@@ -1151,6 +1151,53 @@ check 'every program named in the floor is installed' '' \
        done | sed 's/ *$//')"
 
 # ---------------------------------------------------------------------------
+# /dev/null, THROUGH THE INSTALLED BINARIES.  tests/v8sys asserts the mechanism
+# against the shim directly; this asserts what a person at the prompt sees, and
+# the distinction is one this tree has already paid for once -- tests/freestanding
+# proved the shim imported nothing from libc and never the world built on it.
+# "A guard on a seam is not a guard on what crosses it."
+#
+# The node is emptied first, deliberately.  Every suite here has to be a pure
+# function of the tree, and this one would otherwise inherit whatever an earlier
+# suite's failure left in the file -- which is precisely how the mutation run
+# for these cases produced a false pass.  Whether anything ANYWHERE writes to
+# /dev/null is a different question and has a better instrument: the crash
+# probe, which runs every installed program against every option.
+DEVNULL=$V8ROOT/dev/null
+: > "$DEVNULL" 2>/dev/null
+check 'the /dev/null node exists, so ls /dev is authentic' 'yes' \
+    "$([ -f "$DEVNULL" ] && echo yes || echo no)"
+check '...and ls lists it' 'null' \
+    "$("$V8ROOT/bin/ls" /dev 2>/dev/null | grep '^null$')"
+# `> /dev/null' is the commonest redirection in Unix, and it is what created
+# the file in the first place: creat keys on the PARENT and $V8ROOT/dev exists.
+"$V8ROOT/bin/sh" -c 'echo discarded-by-mem.c-line-156 > /dev/null' 2>/dev/null
+"$V8ROOT/bin/sh" -c 'echo and-this-one-too >> /dev/null' 2>/dev/null
+check 'a shell redirect to /dev/null writes nothing to the node' '0' \
+    "$(wc -c < "$DEVNULL" | tr -d ' ')"
+# The read is the sharper half: `prog < /dev/null' is how a program is given
+# EMPTY input, and before the type it was given whatever last wrote.
+check 'cat /dev/null is empty' '0' \
+    "$("$V8ROOT/bin/cat" /dev/null 2>/dev/null | wc -c | tr -d ' ')"
+# ...and the REDIRECT is a second path to the same place, worth its own case:
+# `cat /dev/null' is the program opening its argument, `sh -c "cat < /dev/null"'
+# is the SHELL opening the name and dup'ing it onto fd 0.  Note the redirect has
+# to be inside the V8 shell -- written bare here it would be the host's shell
+# opening the host's /dev/null, and the case would pass without the jail being
+# involved at all.  (The first draft did exactly that, and named a `wc' in /bin
+# that is in /usr/bin, which is the only reason it was noticed.)
+check 'sh redirecting < /dev/null gives the program EOF' '0' \
+    "$("$V8ROOT/bin/sh" -c 'cat < /dev/null' 2>/dev/null | wc -c | tr -d ' ')"
+# proto-dev:25 is `crw-rw-rw- 1 root man 3, 2 ... null'.  The mode is what
+# test(1) branches on and the numbers are what a masked passthrough loses --
+# Darwin packs the major at bit 24 and V8 at bit 8, so an inherited stat
+# reports major 0, which is `console'.
+"$V8ROOT/bin/test" -c /dev/null; check 'test -c /dev/null is true'  '0' "$?"
+"$V8ROOT/bin/test" -f /dev/null; check 'test -f /dev/null is false' '1' "$?"
+check 'ls -l /dev/null reports V8 numbers' 'crw-rw-rw- 3, 2' \
+    "$("$V8ROOT/bin/ls" -l /dev/null 2>/dev/null | awk '{print $1, $5, $6}')"
+
+# ---------------------------------------------------------------------------
 # libtermlib and ul -- the first library imported out of usr/src/lib, and the
 # first program here that reads a DATABASE rather than only its arguments.
 #

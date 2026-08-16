@@ -155,7 +155,7 @@ the loudest half of the problem into the quietest half of the problem.
 
 ### And the second reason is independent of all of it
 
-`shim/v8sys/vfs.c:401` already said it, before any of this was measured: the
+`shim/v8sys/vfs.c:450` already said it, before any of this was measured: the
 descriptor-type table "does not survive a program replacing itself". A v8fs
 descriptor is an inode pointer and an offset in process memory, so after `exec`
 the integer means nothing — and `cat /mnt/a > /mnt/b` needs `sh` to open the

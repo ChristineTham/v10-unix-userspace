@@ -234,6 +234,17 @@ extern struct v8fstyp v8fs_pass;
 extern struct v8fstyp v8fs_fdfs;
 
 /*
+ * /dev/null -- the FIFTH type, two operations, and the one that exists because
+ * making a NAME authentic made an OBJECT wrong.  V8 shipped /dev/null
+ * (proto-dev:25) so the rootfs has to have the node; the jail's union rule then
+ * opened that node, and a write to /dev/null accumulated in it while a read
+ * handed the accumulation back.  t_path returns the name unresolved so every
+ * inherited operation reaches the HOST's device, whose two behaviours are
+ * Bell Labs' own (dev/mem.c:68 and :156).  vfs.c has the measurement.
+ */
+extern struct v8fstyp v8fs_null;
+
+/*
  * v8fs -- the FOURTH type, and the first that is not in this process.  V8's own
  * namei/iget/bmap/readi answer it, over a 9P socket, in shim/v8fsd.  p9cl.c has
  * the design; the three things a caller here needs to know are:

@@ -3233,7 +3233,9 @@ forever and was invisible here, because my working tree had had such a file for
 so long that it was no longer *new*. Only a machine that had never run the
 system could see it — and the fix turned out to be that Bell Labs shipped a
 `/dev/null` and we had simply never made one. The build creates it now, beside
-the four sibling device names it was already creating.
+the four sibling device names it was already creating. That fix was right about
+the name and wrong about everything else, which took another sitting to find;
+it has a section of its own further down.
 
 So a containment check turns out to double as a completeness check on the
 world: two of the things it caught were not programs misbehaving but nodes
@@ -3258,6 +3260,90 @@ last time I wrote a mechanism down for something I had not reproduced: it went
 into four documents and a test exclusion, and there was no bug. An honest "here
 is what happens, here is what I checked, I do not know why" is worth more than a
 plausible story, and it is much easier to correct later.
+
+### Making the name authentic made the object wrong
+
+The `/dev/null` fix above was: V8 shipped one, we had not, so build one. That is
+correct about the name and it broke the device.
+
+Before it, the jail had no `/dev/null` of its own, so the path fell through to
+the Mac's — reads returned end-of-file, writes vanished, everything worked. What
+the containment check had actually caught was a program *creating* the file and
+poisoning that fall-through from then on. Materialising it as a build product
+did not prevent that; it did it once and for all, at build time. The breakage
+moved from "after the first write" to "always", and the guard that had found it
+went blind, because a path already in the list can never be reported as new.
+
+Four things were wrong, measured at the prompt:
+
+```
+$ echo hello > /dev/null        # 14 bytes appear in the file
+$ echo more >> /dev/null        # 21 bytes now
+$ cat /dev/null                 # prints hello / more
+$ test -c /dev/null; echo $?    # 1 — it is not a character device
+$ ls -l /dev/null               # -rw-r--r--  1 christie 20  21
+```
+
+The accumulation is the one the task description named, and it is the least
+interesting of the four. The sharp one is the read. `prog < /dev/null` is how
+every Unix programmer hands a program empty input, and here it was handing it
+whatever last wrote — which is the crash probe's own founding lesson, programs
+reading each other's litter, arriving *inside the device whose entire job is to
+have nothing in it*.
+
+The fix is the fifth filesystem type and it is two functions. One returns the
+path unresolved, so every other operation reaches the Mac's device instead of
+our node; everything else is inherited. That is not laziness, it is the rule the
+`/dev/fd` type established — Bell Labs' null is two arms of the memory driver,
+`case 2: return;` for read and "consume the count, keep none of it" for write,
+and the host's device is exactly that, so giving it read and write slots of our
+own would invent a difference the kernel does not have. The rootfs node stays,
+because `ls /dev` has to list what V8 listed. It is simply never the object any
+more.
+
+The second function is one line, and it is there for a reason that is not about
+`/dev/null` at all. The two machines agree about this device completely: Bell
+Labs' device table says major 3, minor 2, and so does macOS. They disagree about
+how a major and a minor are *packed* — Darwin puts the major at bit 24, V8 puts
+it at bit 8 — and the shim narrows to V8's sixteen bits with a mask. A mask
+cannot preserve a field at bit 24 no matter how wide the destination is, so the
+major is not truncated, it is deleted. Every device node the jail reports has
+been wrong this way for the life of the port: `/dev/zero` is 3,3 and the jail
+says `0, 3`; `/dev/random` is 17,0 and the jail says `0, 0`. For `/dev/null`
+that would have meant major 0, which is the *console*. Not a failure — a
+plausible wrong answer, which is the kind this project is most afraid of.
+
+I did not fix that generally, and the reason is a measurement rather than a
+preference. Once this row exists, every device node V8 actually shipped reports
+V8's numbers, from one synthesizer or another. What is left mis-encoded is
+exactly the set of nodes V8 never had, where there is no 1985 answer to restore
+and the host's own numbers are the honest report. Fixing it properly needs a
+rule for a major above 255, which is a different problem with a different
+answer. It is written down as its own item rather than folded in here.
+
+Then the tests found something in the tests. Four mutations, and the second one
+— make the path resolve through the jail again, i.e. reintroduce the bug — fired
+two cases but *not* the one written for it, the case asserting that bytes
+written through the jail never reach the node. A mutation that does not fire is
+a finding, so I measured instead of theorising, and the node held three bytes
+when the run finished: the write had escaped exactly as intended and the case
+had passed anyway. The first mutation's run had left its own bytes in the file,
+so the second run's "before" reading was already three, and its truncating
+`creat` landed back on precisely three.
+
+That is the litter shape again, one level further out than I had ever seen it:
+not between programs sharing a directory, nor between test cases sharing a
+stream, nor between suite sections sharing a disk image, but **between two runs
+of a single case, through the artefact the case is about**. Writing the
+assertion as a relation rather than a value — which is this project's standing
+rule, and normally the right one — was not enough, because the run that fails is
+the run that contaminates the next one's baseline. The case establishes its
+baseline now instead of observing it.
+
+And because materialising the node blinded the containment check for that one
+path, the probe measures its size before and after the whole sweep. Six thousand
+invocations of every installed program against every option is the widest net
+in the tree for "does anything write here", and it costs one `stat`.
 
 ## What is left
 

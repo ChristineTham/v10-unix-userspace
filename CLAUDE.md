@@ -613,7 +613,7 @@ because there is nothing to inherit.
   the clunk "politeness". The bug was inside the sentence explaining why it was
   unnecessary.
 - **A DESCRIPTOR TABLE IN PROCESS MEMORY BECAME A CACHE, AND NULL NOW MEANS
-  *UNEXAMINED*.** `vfs.c:401` had recorded for a year that the table dies when
+  *UNEXAMINED*.** `vfs.c:450` had recorded for a year that the table dies when
   a program replaces itself and that this "is fine today and will not be
   later"; later arrived. A server-backed descriptor reading as passthrough gets
   a raw `read(2)` on a 9P socket, which **hangs** — the server sends nothing
@@ -659,7 +659,7 @@ because there is nothing to inherit.
   reads it, **`chdir("..")`s**, repeats, and chdirs back — every level is
   another chdir to intercept, and its loop matches `d_ino` against `stat(".")`,
   which puts the folded-inode machinery on the same comparison. Plus the cwd
-  must survive `exec`, which is `vfs.c:401`'s lesson: it has to live in the
+  must survive `exec`, which is `vfs.c:450`'s lesson: it has to live in the
   ENVIRONMENT like `V8MOUNT`, and then two things there have to agree.
 
   **§8a step 5f TURNED FOUR OF THEM INTO SLOTS AND THE COUNT WAS NEVER ELEVEN.**
@@ -1169,6 +1169,23 @@ lie told somewhere else, the fix is usually to stop telling the lie.**
   `goto` label — live code, invisible to the sweep. Measure the line every
   time. The sweep catches a *subset* of drift and none of invention.
 
+  **AND THE DISCIPLINE ABOVE FOUND A STALENESS THAT PREDATED THE EDIT, WHICH IS
+  A USE NOBODY HAD CLAIMED FOR IT.** Adding the `/dev/null` row pushed 33 lines
+  into `vfs.c`, so the rule fired: grep for citations INTO it. **Seven files
+  cite `vfs.c:401`** — CLAUDE.md twice, `p9.h` twice, `kmemu/run.sh`,
+  `kern/NOTES.md`, `v8fsd.c` — all for the note that a descriptor table dies
+  when a program replaces its image. Measured at HEAD, *before* this step: line
+  401 was a comment about mount-table prefix matching, and the note was at
+  **418**. It had been wrong for an unknown length of time, through a green
+  sweep every run, because it had drifted onto plausible prose — the blind spot
+  the entry above documents, caught here by the habit rather than the
+  instrument. Two rules sharpen. **A citation repeated in seven files is one
+  claim with seven copies**, so it goes stale seven times at once and is worth
+  grepping for whole rather than fixing where you happen to see it. And **the
+  re-measure step is not only about damage you just did** — run it before the
+  edit as well as after, because the two answers can differ for reasons that
+  are not yours.
+
 **AND THE MUTATION RULES GAINED TWO, BOTH FROM THE HARNESS RATHER THAN THE
 CODE.** The existing entries cover the restore side; these are new:
 
@@ -1609,14 +1626,18 @@ the reasoning.
 
 **2. New code (`compiler/`, `shim/`)** — written for this port, modern C.
 `shim/v8sys/vfs.c` is the **filesystem switch** (PLAN §8a step 2): one mount
-table, **three** types behind it — passthrough, `/proc` in `shim/libkmemu/`,
-and `/dev/fd`. The
+table, **five** types behind it — passthrough, `/proc` in `shim/libkmemu/`,
+`/dev/fd`, the 9P-backed `v8fs` mount (configured at run time from `V8MOUNT`,
+so it is not a row), and `/dev/null`. The
 table is the old `v8dirs[]` with a type column — do not add a second prefix list
 beside it. `struct v8fstyp` answers to V8's own `struct fstypsw`; where it
 departs (descriptors, not inodes) the header says why.
 
-**`/dev/fd` is the cheap type and the instructive one: it implements THREE
-operations and inherits the rest.** `t_path` is the identity (there is no host
+**`/dev/fd` is the instructive type: it implements THREE operations and inherits
+the rest.** (It was "the cheap type" until `/dev/null` arrived at **two**, which
+is worth the correction only because the ranking is the argument — the fewer
+operations a type needs, the more of the host's behaviour was already V8's, and
+that is the thing being claimed.) `t_path` is the identity (there is no host
 path), `t_open` is `dup(minor)`, `t_stat` synthesizes a character device
 `makedev(40, minor)` — and everything after open is passthrough's *unchanged*,
 because a dup'd descriptor **is** an ordinary host descriptor. Giving it a type
@@ -1633,6 +1654,17 @@ path resolution without dispatch, so **no second type could ever see a creat**;
 descriptor's type, so `dup()` of an open `/proc` file returned one whose reads
 went to the host. Both are the `v8s_mknod` shape: an unexercised rule cannot be
 seen to be incomplete. Expect a fourth type to find a third.
+
+**AND THE FIFTH DID, IN `stat_translate`, WHICH THE FIRST FOUR COULD NOT HAVE
+REACHED.** `/dev/null` is the first type whose object is a **host device node
+whose numbers matter**: `/dev/fd` synthesizes its `st_rdev` outright, `/proc`
+and `v8fs` have none, and passthrough's callers are files. So nothing had ever
+consulted `syscall.c:1858`'s `& 0xffff` for a node V8 cares about — and it is
+wrong for every one of them, because Darwin packs a major at bit 24 and V8 at
+bit 8, so the mask *deletes* the major rather than narrowing it. The prediction
+holds a second time, and the lesson sharpens: **a new type finds the rule that
+no PREVIOUS type's shape could reach**, so ask what is structurally different
+about it rather than what it has in common.
 
 Dispatch is **by descriptor, not by operation**, and `ioctl` is where that stops
 being a detail: `v8s_ioctl` routes on `v8fs_fdtype(fd)`, so `PIOCGETPR` on an
@@ -3573,11 +3605,82 @@ not testable until it is installed.
     checkout, because this tree had had one for so long that nothing noticed.
     **V8 shipped `/dev/null`** (`proto-dev:25`, `crw-rw-rw- ... 3, 2 null`), so
     its absence from `ROOTFS_DEVSTD` was a *gap* rather than a decision, and
-    the fix is to materialise it beside `tty`/`stdin`/`stdout`/`stderr`. What
-    that does **not** fix is that writes to it accumulate instead of being
-    discarded — nothing writes enough to notice today, which is precisely the
-    "not observable yet" this file keeps getting caught by. Task #78, and the
-    fix is a `vfs.c` slot rather than a file.
+    the fix is to materialise it beside `tty`/`stdin`/`stdout`/`stderr`.
+
+    **AND MATERIALISING IT BROKE IT, WHICH THE SENTENCE THAT USED TO END THIS
+    ENTRY GOT EXACTLY BACKWARDS.** It said the change "does not fix" that
+    writes accumulate, "nothing writes enough to notice today". Both halves
+    wrong. Before the node existed the path **fell through to the host's
+    device** and was correct — reads EOF, writes discarded — and what the
+    containment check had caught was a program *poisoning* that fall-through.
+    Building the node did not prevent that; it did it once and for all at build
+    time, moving the breakage from **after the first write** to **always**, and
+    blinding the guard that found it, since a path already in the list can
+    never be reported as new. Measured, four faults and not one:
+
+    | | jail said | V8 says |
+    |---|---|---|
+    | `echo x > /dev/null` | 14 bytes in the file | discarded |
+    | `echo y >> /dev/null` | 21 bytes | discarded |
+    | `cat /dev/null` | prints the litter | nothing |
+    | `test -c` / `test -f` | false / true | true / false |
+    | `ls -l` | `-rw-r--r--  21` | `crw-rw-rw-  3, 2` |
+
+    **THE READ IS THE SHARP ONE AND THE TASK DESCRIPTION NAMED THE OTHER.**
+    `prog < /dev/null` is how a program is handed EMPTY input, and it was being
+    handed whatever last wrote — the crash probe's own founding lesson,
+    programs reading each other's litter, arriving *inside the device whose
+    entire purpose is to have nothing in it*.
+
+    Fixed as the **fifth type**, and it is TWO functions. `t_path` returns the
+    name unresolved so every inherited operation reaches the host's device;
+    everything else is passthrough's, because Bell Labs' null is two arms of
+    the mem driver — `dev/mem.c:68` is `case 2: return;` (transfers nothing,
+    i.e. EOF) and `dev/mem.c:156` consumes `u_count` and keeps none of it — and
+    the host's device is exactly that. Read and write slots of our own would
+    invent a difference the kernel does not have, which is `fd_open`'s rule.
+  - **AND THE SECOND FUNCTION IS THE 16-BIT CLASS WITH A TWIST: NOT A RANGE
+    PROBLEM, AN ENCODING ONE.** The two machines agree about this device
+    completely — `proto-dev:25` says major 3 minor 2 and so does Darwin — and
+    the shim still gets it wrong, because they disagree about how the pair is
+    **packed**. Darwin's `makedev` is `(major << 24) | minor`, V8's is
+    `(major << 8) | minor`, and `stat_translate` narrows with `& 0xffff`. A
+    mask cannot preserve a field at bit 24 **at any destination width**, so the
+    major is not truncated, it is deleted. Measured on the nodes that still
+    fall through: `/dev/zero` is 3,3 and the jail says `0, 3`; `/dev/random` is
+    17,0 and it says `0, 0`. For `/dev/null` that is major **0**, which is
+    `console` in `conf/devices` — a plausible wrong answer, not a failure.
+
+    **The general fix is DELIBERATELY NOT TAKEN, on a measurement.** After this
+    row, every node V8 ACTUALLY SHIPPED reports V8's numbers (`/dev/tty`,
+    `/dev/std*` and the 128 fd nodes from `fd_stat`, `/dev/null` from here,
+    `/dev/kmem` and `/unix` as ordinary files). What is left mis-encoded is
+    exactly the set of host nodes V8 never had, where there is **no V8 answer
+    to restore** and the host's own numbers narrowed are the honest report.
+    Re-encoding also needs a rule for a major above 255, which is `v8_foldid`'s
+    problem. Its own item, not folded in.
+  - **AND THE MUTATION THAT DID NOT FIRE WAS A FOURTH KIND OF VACUOUS CASE:
+    TWO RUNS OF ONE CASE, SHARING THE ARTEFACT THE CASE IS ABOUT.** Four
+    mutations; the one reintroducing the bug fired two cases and **not** the
+    one written for it — "13 bytes written through the jail did not reach the
+    node". Measured rather than theorised: the node held 3 bytes when the run
+    finished, so the write *had* escaped. The PREVIOUS mutation's run had left
+    its own bytes there, so this run's baseline was already 3 and its
+    truncating `creat` landed back on exactly 3. Neither recorded cause applied
+    — the code was live and the assertion was a relation, which is this file's
+    own standing prescription. **A relation is not enough when the failing run
+    is what contaminates the next one's baseline**: establish the baseline,
+    do not observe it. Litter shape #4, after programs sharing a directory,
+    cases sharing a stream, and suite sections sharing an image.
+  - **AND FIXING AN ESCAPE CAN BLIND THE GUARD THAT FOUND IT.** The
+    containment check reports a path that is **new**; once `/dev/null` is a
+    build product it never is, so a program writing into it adds nothing. The
+    probe measures the node's SIZE across the sweep now — 6300 invocations of
+    every program against every option is the widest net in the tree for
+    "does anything write here", and it costs one stat. As a **difference**,
+    for the reason the path list is one: bytes already in the node are the
+    checkout's history, not this run's finding. Ask of any fix to a
+    containment finding whether it leaves the detector able to see a relapse.
   - **THE SHAPE TO CARRY: A CONTAINMENT CHECK IS ALSO A COMPLETENESS CHECK ON
     THE ROOTFS.** Both findings are the jail's creat fall-through, and both
     were invisible on a tree that had been used. Ask of any such guard whether

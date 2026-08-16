@@ -6,7 +6,7 @@
  * available: linking the kernel archive beside a V8 program is 56 symbol
  * collisions over 29 programs (25 of them silent -- `cat's char buf[4096]
  * becomes an eight-byte pointer and the program still exits 0), and
- * independently vfs.c:401 had already recorded that a descriptor table in
+ * independently vfs.c:450 had already recorded that a descriptor table in
  * process memory cannot survive exec, so `cat /mnt/a > /mnt/b' could never
  * work.  shim/kern/NOTES.md has both measurements.  Either alone forces the
  * kernel into a separate process, and once it is there something has to be
@@ -140,7 +140,7 @@ _Static_assert(sizeof(p9_u64) == 8, "p9_u64 is not eight bytes");
  *	dup(2)	   two descriptors, ONE offset.  Two client rows diverge.
  *	fork(2)	   parent and child share the offset.  A copied table does not.
  *	execve(2)  the offset survives.  A table in process memory does not --
- *		   vfs.c:401 recorded that before there was anything to lose.
+ *		   vfs.c:450 recorded that before there was anything to lose.
  *
  * What all three share is that the offset belongs to the OPEN FILE
  * DESCRIPTION -- the `struct file' -- and not to the descriptor or to the

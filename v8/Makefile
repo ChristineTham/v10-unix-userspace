@@ -101,12 +101,21 @@ ROOTFS_DEVFD   := $(addprefix $(ROOTFS)/dev/fd/,$(shell seq 0 127))
 # up the same way: as a NEW PATH on a fresh CI checkout, where this tree had
 # had one for so long that nothing noticed.
 #
-# Materialising it changes no behaviour -- the file a program would have
-# created is now already there -- but it makes `ls /dev' authentic and stops a
-# containment check reporting our own gap as an escape.  What it does NOT fix
-# is that a write to it accumulates rather than being discarded; nothing in the
-# tree writes enough to notice, and the fix is a shim special case rather than
-# a file.  Task #78.
+# THIS PARAGRAPH USED TO END "materialising it changes no behaviour -- the file
+# a program would have created is now already there".  The observation is true
+# and the inference was wrong, which is this tree's most repeated shape.  On a
+# fresh checkout, BEFORE anything created it, /dev/null had no rootfs copy, the
+# union rule found nothing, and the path fell through to the HOST's device --
+# so reads were EOF and writes were discarded, correctly.  Materialising it did
+# not preserve that; it moved the breakage from "after the first write" to
+# "always", and made the guard that had found it blind, since a path already in
+# the list can never be reported as new.
+#
+# So the file stays -- `ls /dev' has to list what V8 listed -- and it is now
+# NEVER THE OBJECT: shim/v8sys/vfs.c has an exact /dev/null row before the
+# passthrough /dev/ row, whose t_path hands the name back unresolved so the
+# host's character device answers.  Same arrangement as the five rows above,
+# for the same reason, reached one step later.
 ROOTFS_DEVSTD  := $(addprefix $(ROOTFS)/dev/,tty stdin stdout stderr null)
 ROOTFS_DEV     := $(ROOTFS)/dev/dk $(ROOTFS)/dev/pt $(ROOTFS)/dev/drum \
                   $(ROOTFS_DEVFD) $(ROOTFS_DEVSTD)

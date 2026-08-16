@@ -1371,6 +1371,116 @@ main(void)
 	}
 
 	/*
+	 * ---------------------------------------------------------------
+	 * /dev/null -- the FIFTH type, and the one that exists because making a
+	 * NAME authentic made an OBJECT wrong.
+	 *
+	 * V8 shipped /dev/null (proto-dev:25, `crw-rw-rw- 1 root man 3, 2'), so
+	 * the rootfs has to hold the node or `ls /dev' lists a machine that never
+	 * existed.  The jail's union rule then found that node, and four things
+	 * were wrong at once: a write appended to it, a read handed the
+	 * accumulation back, `test -c' was false and `test -f' true.  The read is
+	 * the sharpest -- `prog < /dev/null' is how a program is given EMPTY
+	 * input, and it was being given whatever last wrote.
+	 *
+	 * WHY THE SIZE CASE TRUNCATES THE NODE FIRST, WHICH IT DID NOT AT FIRST
+	 * AND WHICH MUTATION TESTING IS WHAT CAUGHT.  The case began as "the size
+	 * does not change", a relation rather than a value, for the usual reason:
+	 * a checkout that ran the old code has bytes in the node and 0 is a
+	 * property of history rather than of the port.  It was still wrong.  Run
+	 * under a mutation, the suite WRITES into the node and leaves it there --
+	 * so the next mutation's run started from 3 bytes, its truncating creat
+	 * landed back on exactly 3, and the one case written for that mutation
+	 * PASSED while the escape it names was happening.  Measured: the node
+	 * held 3 bytes when the run finished.
+	 *
+	 * That is the litter shape this tree keeps meeting -- between programs
+	 * sharing a directory, between cases sharing a stream, between suite
+	 * sections sharing an image -- arriving between two RUNS of one case.  A
+	 * relation is not enough when the run that fails is what contaminates the
+	 * next one's baseline, so the baseline is now established rather than
+	 * observed.
+	 */
+	{
+		struct v8_stat s2;
+		struct stat hb;
+		char h[1024];
+		long before = -1, after = -1;
+		int a, haveh;
+
+		/*
+		 * Dispatch, IN BOTH MODES.  V8P_MAKE is not decoration: creat is
+		 * what made the file in the first place, because it keys on the
+		 * parent and $V8ROOT/dev exists.  A row that claimed only the
+		 * LOOK path would leave the original escape open.
+		 */
+		ok(v8fs_typefor("/dev/null", V8P_LOOK) == &v8fs_null,
+		    "/dev/null is claimed by its own type");
+		ok(v8fs_typefor("/dev/null", V8P_MAKE) == &v8fs_null,
+		    "...in V8P_MAKE too, which is the mode that created the file");
+		/*
+		 * The row is EXACT, and these two are what says so.  A prefix row
+		 * would swallow both, and the second would then be a name under a
+		 * character device.
+		 */
+		ok(v8fs_typefor("/dev/nullx", V8P_LOOK) == &v8fs_pass,
+		    "...but /dev/nullx is not -- the row is exact");
+		ok(v8fs_typefor("/dev/kmem", V8P_LOOK) == &v8fs_pass,
+		    "...and /dev/kmem is still the groveler's");
+
+		haveh = hostpath(h, (long)sizeof h, "/dev/null");
+		if (haveh) truncate(h, 0);		/* see the note above */
+		if (haveh && stat(h, &hb) == 0) before = (long)hb.st_size;
+		ok(haveh && before == 0,
+		    "the rootfs node exists and is empty, so `ls /dev' is authentic");
+
+		/* The write is ACCEPTED -- dev/mem.c:156 consumes u_count -- ... */
+		a = v8s_open("/dev/null", 1 /*write*/, 0);
+		ok(a >= 0, "/dev/null opens for writing");
+		ok(v8s_write(a, "0123456789", 10) == 10,
+		    "...a write to it is accepted whole (dev/mem.c:156)");
+		v8s_close(a);
+		/* ...and creat is an open, not a truncation of the rootfs node. */
+		a = v8s_creat("/dev/null", 0666);
+		ok(a >= 0, "creat(\"/dev/null\") succeeds");
+		ok(v8s_write(a, "xyz", 3) == 3, "...and it too accepts a write");
+		v8s_close(a);
+
+		/* ...and NONE of those 13 bytes reached the rootfs. */
+		if (haveh && stat(h, &hb) == 0) after = (long)hb.st_size;
+		ok(after == before,
+		    "...but 13 bytes written through the jail did not reach the node");
+
+		/*
+		 * The read is EOF.  dev/mem.c:68 is `case 2: return;' -- it
+		 * transfers nothing, which IS end of file.  Before the type, this
+		 * returned the bytes written above.
+		 */
+		a = v8s_open("/dev/null", 0, 0);
+		ok(a >= 0, "/dev/null opens for reading");
+		ok(v8s_read(a, buf, 64) == 0,
+		    "...and reads EOF, not what was last written (dev/mem.c:68)");
+		v8s_close(a);
+
+		/*
+		 * stat.  The two machines agree about this device completely and
+		 * the shim still got it wrong, because they disagree about how a
+		 * major and a minor are PACKED: Darwin's makedev is
+		 * (major << 24) | minor, V8's is (major << 8) | minor, and
+		 * stat_translate narrows with `& 0xffff'.  A mask cannot preserve
+		 * a field at bit 24, so an inherited stat reports major 0 -- which
+		 * is `console' in conf/devices -- with the minor right by luck.
+		 * Measured on the nodes that still fall through: /dev/zero is 3,3
+		 * and the jail says `0, 3'; /dev/random is 17,0 and it says `0, 0'.
+		 */
+		ok(v8s_stat("/dev/null", &s2) == 0, "stat(/dev/null)");
+		ok((s2.st_mode & V8_S_IFMT) == V8_S_IFCHR,
+		    "...says character device, so `test -c' is true and `-f' false");
+		ok(s2.st_rdev == (v8_dev_t)((3 << 8) | 2),
+		    "...with rdev makedev(3, 2) -- proto-dev:25, not the masked 0,2");
+	}
+
+	/*
 	 * ------------------------------------- the jail's own path resolution
 	 *
 	 * TWO SYSCALLS RESOLVED NOTHING AT ALL, and every other path-taking one

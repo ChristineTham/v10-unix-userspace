@@ -1394,7 +1394,7 @@ fi
 # Two assertions, because there are two separable claims.
 
 # ONE: no V8 binary links libv8kern.  That is the step-5e decision, and the
-# other half of its argument is not about symbols at all -- vfs.c:401 already
+# other half of its argument is not about symbols at all -- vfs.c:450 already
 # said an in-process descriptor table "does not survive a program replacing
 # itself", so `> /mnt/f' could never have worked in the client.  Both roads
 # lead to a server, and this case is what notices if someone re-opens the

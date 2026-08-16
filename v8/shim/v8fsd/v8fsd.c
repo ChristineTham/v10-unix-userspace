@@ -17,7 +17,7 @@
  *   exits 0 with byte-identical output, having written 4088 bytes over the
  *   buffer cache's own pointers.
  *
- *   EXEC.  vfs.c:401 had already recorded it: a v8fs descriptor would be an
+ *   EXEC.  vfs.c:450 had already recorded it: a v8fs descriptor would be an
  *   inode pointer and an offset in process memory, and process memory does not
  *   survive a program replacing itself.  `cat /mnt/a > /mnt/b' could never
  *   work, because the shell opens the file and then execs cat.

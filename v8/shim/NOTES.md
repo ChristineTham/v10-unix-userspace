@@ -451,6 +451,111 @@ it dup2s over a directory descriptor, because the host closes that descriptor
 and `dir.c` would otherwise keep serving records for a file that is now
 something else.
 
+## /dev/null: the fifth type, and why making the name authentic broke the object
+
+V8 shipped `/dev/null` — `proto-dev:25` is `crw-rw-rw- 1 root man 3, 2 ... null`
+— and this port had not, so `ls /dev` listed a machine that never existed. The
+crash probe's containment check found it the way it finds everything: as a path
+that appeared during a sweep, because a jailed `creat("/dev/null")` resolves
+against its **parent** and `$V8ROOT/dev` exists. The obvious fix was to build
+the node, and the obvious fix was half right.
+
+**Before the node existed, `/dev/null` worked.** With nothing in the rootfs the
+union rule found nothing and the path fell through to the host's device: reads
+were EOF, writes were discarded. What the check had actually caught was a
+program *poisoning* that fall-through for everything after it. Building the node
+did not stop that happening — it did it once, at build time — so the breakage
+moved from **after the first write** to **always**, and the detector went blind,
+because a path already in the "before" list can never be reported as new.
+
+Measured at the prompt, four faults:
+
+| | the jail said | V8 says |
+|---|---|---|
+| `echo x > /dev/null` | 14 bytes in the file | discarded |
+| `echo y >> /dev/null` | 21 bytes | discarded |
+| `cat /dev/null` | prints the litter | nothing |
+| `test -c` / `test -f` | false / true | true / false |
+| `ls -l /dev/null` | `-rw-r--r-- … 21` | `crw-rw-rw- … 3, 2` |
+
+The accumulation is the one the task named and the least interesting. **The read
+is the sharp one**: `prog < /dev/null` is how a program is handed empty input,
+and it was being handed whatever last wrote — the crash probe's own founding
+lesson, programs reading each other's litter, inside the one device whose whole
+job is to have nothing in it.
+
+### Two operations, and only one of them is about /dev/null
+
+`t_path` returns the name unresolved, so every inherited operation reaches the
+**host's** device and the rootfs node is never the object. It stays, because the
+name has to be real; it is simply not what anything opens. That is the same
+arrangement the four `/dev/fd` rows already use, reached one step later.
+
+Nothing else is implemented, and that is `fd_open`'s rule rather than economy.
+Bell Labs' null is two arms of the memory driver — `dev/mem.c:68` is
+`case 2: return;`, transferring nothing, which *is* end of file, and
+`dev/mem.c:156` is `u.u_offset += u.u_count; u.u_count = 0;`, consuming
+everything and keeping none of it. Darwin's device is exactly that. Read and
+write slots of our own would invent a difference the kernel does not have.
+
+`t_stat` overrides **one field**, and the reason is not about this device at all.
+The two machines agree completely about what it is — 3,2, mode 0666 — and
+disagree about how a major and a minor are *packed*: Darwin's `makedev` is
+`(major << 24) | minor`, V8's is `(major << 8) | minor`, and `stat_translate`
+narrows with `& 0xffff`. **A mask cannot preserve a field at bit 24 at any
+destination width**, so the major is not truncated, it is deleted. Measured on
+the nodes that still fall through:
+
+| node | truth | the jail reports |
+|---|---|---|
+| `/dev/zero` | 3, 3 | `0, 3` |
+| `/dev/random` | 17, 0 | `0, 0` |
+
+For `/dev/null` that would be major 0, which `conf/devices` gives to `console`.
+Not a failure — a plausible wrong answer.
+
+**The general defect is deliberately not fixed, on a measurement.** With this row
+in place, every node V8 *actually shipped* reports V8's numbers: `/dev/tty`,
+`/dev/std{in,out,err}` and the 128 `/dev/fd` nodes from `fd_stat`, `/dev/null`
+from here, `/dev/kmem` and `/unix` from libkmemu as ordinary files. What is left
+mis-encoded is exactly the set of host nodes V8 never had, where there is no 1985
+answer to restore and the host's numbers narrowed are the honest report — and a
+correct re-encoding would need a rule for a major above 255, which is
+`v8_foldid`'s problem rather than this one.
+
+### The mutation that did not fire, and what it found in the test
+
+Four mutations. The one that reintroduces the bug — `t_path` resolving through
+the union again — fired two cases and **not** the case written for it, "13 bytes
+written through the jail did not reach the node". Neither recorded cause applied:
+the code was live and the assertion was a relation rather than a value, which is
+this project's own standing prescription against host-property cases.
+
+Measured rather than theorised: the node held **3 bytes** when the run finished,
+so the write had escaped exactly as intended. The *previous* mutation's run had
+left its bytes in the file, so this run's baseline was already 3, and its
+truncating `creat` landed back on precisely 3.
+
+That is the litter shape one level further out than it had been seen: not
+between programs sharing a directory, nor cases sharing a stream, nor suite
+sections sharing an image, but **between two runs of one case, through the
+artefact the case is about**. A relation is not enough when the failing run is
+what contaminates the next one's baseline. The case establishes its baseline now
+rather than observing it.
+
+### And the fix blinded the guard that found it
+
+The containment check reports paths that are **new**. Once `/dev/null` is a build
+product it never is, so a program writing into it adds nothing to the list. The
+probe therefore measures the node's size before and after the whole sweep — 6300
+invocations of every installed program against every single-letter option is the
+widest net in the tree for "does anything write here", and it costs one `stat`.
+As a *difference*, for the same reason the path list is one: bytes already in the
+node are the checkout's history rather than this run's finding.
+
+**Ask of any fix to a containment finding whether it leaves the detector able to
+see a relapse.**
+
 ## The jail's existence predicate: access(2) → lstat(2)
 
 `v8sys_rootpath()` decides whether the rootfs has a name, and it asked with
