@@ -59,23 +59,34 @@
 # is exactly how the number in CLAUDE.md rotted.
 #
 # It exists because the FIRST CI run proved a both-directions floor cannot
-# express a host-dependent crash.  `tar -u' dies on a GitHub macos-26 runner
-# and does not on the machine this was developed on, so there is no plain entry
-# that is correct on both: present, it fails locally as "gone"; absent, it
-# fails in CI as "new".
+# express a crash that is not a pure function of the tree.  `tar -u' died on a
+# GitHub macos-26 runner (run 31911962903) and has never died here.
 #
-# UNDIAGNOSED, and deliberately recorded as such rather than explained.  Not
-# reproduced locally in ~40 invocations, with the probe's own conditions (fd 3
-# closed, all three descriptors on /dev/null, fresh cwd), nor by forcing
-# mktemp(3) collisions.  What IS known: `-' is a no-op case, so `-u' reaches
-# the temp-file arm, which mktemp()s /tmp/tar<pid digits>, fopen()s it -- that
-# call IS null-checked -- writes one line, falls through to `r', and then dies
-# at open("/dev/rmt1") with "tar: cannot open", exit 1, here.  /tmp is not in
-# the mount table, so no jail is involved.  Task #77 carries it.
+# THIS NOTE FIRST SAID "host-dependent: dies on a runner, not on the dev
+# machine", AND THE NEXT CI RUN FALSIFIED THAT WITHIN THE HOUR.  Run
+# 31918398362 exercised it three more times on a runner -- the wavea sweep
+# twice and the full probe once -- and saw it in NONE of them: 55 deaths,
+# exactly the local number.  So it is INTERMITTENT, not host-dependent, and
+# whatever it depends on is not the machine.  The `?' mechanism is still the
+# right one, for the same arithmetic (an entry that only sometimes fires can be
+# written neither in nor out of a both-directions check), but the reason is
+# different and the difference matters: this belongs with the port's other
+# unreproduced intermittents rather than with its host-property findings.
+#
+# UNDIAGNOSED, and deliberately recorded as such rather than explained.  Seen
+# ONCE in four runner runs; not reproduced locally in ~40 invocations with the
+# probe's own conditions (fd 3 closed, all three descriptors on /dev/null,
+# fresh cwd), nor by forcing mktemp(3) collisions.  What IS known: `-' is a
+# no-op case, so `-u' reaches the temp-file arm, which mktemp()s
+# /tmp/tar<pid digits>, fopen()s it -- that call IS null-checked -- writes one
+# line, falls through to `r', and then dies at open("/dev/rmt1") with "tar:
+# cannot open", exit 1, everywhere it has been watched.  /tmp is not in the
+# mount table, so no jail is involved.  Task #77 carries it.
 #
 # Writing a mechanism down without reproducing it is how this project once put
 # a phantom memory-corruption bug into four documents; the rule is that a
-# recorded diagnosis is a hypothesis, so this one records the OBSERVATION only.
+# recorded diagnosis is a hypothesis, so this one records the OBSERVATION only
+# -- and the first version of this very note is why the rule keeps earning it.
 ? 11 tar -u
 #
 # ENTRIES

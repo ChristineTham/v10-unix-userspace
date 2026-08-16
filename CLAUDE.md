@@ -3513,27 +3513,38 @@ not testable until it is installed.
     installed** -- a floor naming a deleted program can never be satisfied and
     would report "gone" forever.
 
-  **AND THE FIRST CI RUN FOUND A CRASH THIS MACHINE DOES NOT HAVE, WHICH IS
+  **AND THE FIRST CI RUN FOUND A CRASH NO LOCAL RUN HAS EVER SHOWN, WHICH IS
   THE WHOLE ARGUMENT FOR PUTTING IT THERE — AND IT BROKE THE FLOOR'S DESIGN.**
-  `tar -u` SIGSEGVs on a GitHub macos-26 runner and exits 1 here, every time.
-  So a floor derived on one machine is **a host-property claim**, which is this
-  file's oldest testing rule arriving in the guard written to enforce the rule.
+  `tar -u` SIGSEGV'd on a GitHub macos-26 runner and has never done so here.
 
-  - **A BOTH-DIRECTIONS FLOOR CANNOT EXPRESS A HOST-DEPENDENT CRASH**, and that
-    is arithmetic rather than an oversight: present, the entry fails locally as
-    *gone*; absent, it fails in CI as *new*. There is no value correct on both.
-    So there is a third category — a `?` prefix, removed from **both** sides —
-    and it must stay small and loud or it becomes the allow-list that swallows
-    everything. The count is printed every run, the entries are named, and
-    `tests/wavea` asserts the tolerated set is **exactly one**, so a second
-    needs a deliberate edit in two files.
-  - **IT IS RECORDED AS AN OBSERVATION, NOT A MECHANISM.** Not reproduced in
-    ~40 local invocations under the probe's own conditions, nor by forcing
-    `mktemp` collisions — so task #77 carries what is *known* (`case '-'` is a
-    no-op so `-u` reaches the temp-file arm; the `fopen` there **is**
-    null-checked; `/tmp` is not in the mount table) and no theory. Writing a
-    mechanism down without reproducing it is how the ex phantom got into four
-    documents.
+  - **A BOTH-DIRECTIONS FLOOR CANNOT EXPRESS A CRASH THAT IS NOT A PURE
+    FUNCTION OF THE TREE**, and that is arithmetic rather than an oversight:
+    present, the entry fails wherever it does not fire; absent, it fails
+    wherever it does. No value is correct on both. So there is a third
+    category — a `?` prefix, removed from **both** sides — and it must stay
+    small and loud or it becomes the allow-list that swallows everything. The
+    count is printed every run, the entries are named, and `tests/wavea`
+    asserts the tolerated set is **exactly one**, so a second needs a
+    deliberate edit in two files.
+  - **AND THE FIRST DIAGNOSIS OF IT WAS WRONG WITHIN THE HOUR, WHICH IS THE
+    POINT OF WRITING THEM DOWN CAREFULLY.** It was recorded as
+    *host-dependent* — "dies on a runner, not on the dev machine" — on a single
+    observation. The **next** CI run exercised it three more times on a runner
+    (the wavea sweep twice, the full probe once) and saw it in **none**: 55
+    deaths, exactly the local number. So it is **intermittent**, and whatever
+    it depends on is not the machine. The `?` mechanism survives unchanged
+    because the arithmetic above covers both cases, but the classification
+    moves: this belongs with the port's unreproduced intermittents (#50, #61,
+    #69) rather than with its host-property findings. *One observation is not
+    a pattern, and the tell was that I had written "reproducibly, both ways"
+    on the strength of a single run in each direction.*
+  - **IT IS RECORDED AS AN OBSERVATION, NOT A MECHANISM.** Seen once in four
+    runner runs; not reproduced in ~40 local invocations under the probe's own
+    conditions, nor by forcing `mktemp` collisions — so task #77 carries what
+    is *known* (`case '-'` is a no-op so `-u` reaches the temp-file arm; the
+    `fopen` there **is** null-checked; `/tmp` is not in the mount table) and no
+    theory. Writing a mechanism down without reproducing it is how the ex
+    phantom got into four documents.
   - **AND `tests/wavea` DERIVES ITS EXPECTATION FROM THE FLOOR FILE NOW**,
     rather than spelling the list a second time. Two hand-written copies of one
     list agree with each other about a set that is wrong — measured here once

@@ -3135,16 +3135,20 @@ puns in a single file.
     entry, because a 13-minute job is a slow way to discover a malformed
     expectation. `wavea` 145 → 169.
 
-    **And the FIRST CI run found a crash this machine does not have**, which is
-    the argument for the whole exercise and also broke the design: `tar -u`
-    SIGSEGVs on a GitHub macos-26 runner and exits 1 here. A both-directions
-    floor **cannot** express that — present it fails locally as *gone*, absent
-    it fails in CI as *new* — so there is a third category, a `?` prefix removed
-    from both sides. It is kept small and loud (count printed, entries named,
-    `tests/wavea` asserting the set is exactly one) because that arm is the only
-    one that can pass with a crash present. Recorded as an **observation**, not
-    a mechanism: not reproduced in ~40 local invocations under the probe's own
-    conditions, so **task #77** carries what is known and no theory. And
+    **And the FIRST CI run found a crash no local run has shown**, which is the
+    argument for the whole exercise and also broke the design: `tar -u`
+    SIGSEGV'd on a GitHub macos-26 runner and never has here. A both-directions
+    floor **cannot** express a crash that is not a pure function of the tree —
+    present it fails wherever it does not fire, absent it fails wherever it does
+    — so there is a third category, a `?` prefix removed from both sides. It is
+    kept small and loud (count printed, entries named, `tests/wavea` asserting
+    the set is exactly one) because that arm is the only one that can pass with
+    a crash present. **The first diagnosis was wrong within the hour**: recorded
+    as *host-dependent* on one observation, then the next CI run exercised it
+    three more times on a runner and saw it in none, so it is **intermittent**
+    and belongs with #50/#61/#69. Recorded as an **observation**, not a
+    mechanism — seen once in four runner runs, not reproduced in ~40 local
+    invocations — so **task #77** carries what is known and no theory. And
     `tests/wavea` now derives its expected list from the floor file rather than
     spelling it twice — two hand-written copies of one list agree about a wrong
     set, which this port has measured once already in the errno tables.

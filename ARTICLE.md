@@ -3159,25 +3159,33 @@ resumes mid-token. The run had to be thrown away. There was already a rule here
 about not editing things while tests are running — I had thought of it as being
 about build artifacts. It is also about the interpreter.
 
-### The first CI run found a crash this machine does not have
+### The first CI run found a crash no local run has ever shown
 
 Which is, of course, the entire argument for putting it there — and it promptly
 broke the design I had just finished.
 
-`tar -u` dies of a segmentation fault on the GitHub runner. On this machine it
+`tar -u` died of a segmentation fault on the GitHub runner. On this machine it
 exits cleanly, with a sensible error, every single time. I have run it about
 forty times under exactly the conditions the probe uses, and tried to force the
 temporary-file collision that looked like the obvious candidate. It will not
 reproduce here.
 
 The consequence for the expectation file is not a nuisance, it is arithmetic. I
-had built a floor that is checked in both directions, and a crash that happens
-on one machine and not another cannot be written into such a thing at all:
-include it and it fails locally as a crash that has gone; leave it out and it
-fails in CI as a new one. There is no entry that is correct on both. A floor
-derived on a single machine turns out to be a claim about that machine — which
-is the oldest testing rule in this project, arriving inside the guard I wrote to
-enforce that rule.
+had built a floor that is checked in both directions, and a crash that does not
+happen every time cannot be written into such a thing at all: include it and it
+fails wherever it does not fire; leave it out and it fails wherever it does.
+There is no entry that is correct on both.
+
+I wrote that up as a *host-dependent* crash — dies on a runner, not on the
+development machine — and the very next CI run falsified it inside the hour.
+That run exercised the same invocation three more times on a runner, and it
+behaved perfectly in all three. So it is not host-dependent at all; it is
+intermittent, and whatever it turns on is not the machine. The mechanism I built
+survives, because the arithmetic above covers both cases equally, but the label
+was wrong and the label is what a future reader would have searched for. What
+gave it away, in hindsight, is that I had written "reproducibly, both ways" on
+the strength of exactly one observation in each direction. One run is not a
+reproduction. It is remarkable how quickly that sentence found me again.
 
 So there is a third category now: entries marked as tolerated, removed from both
 sides of the comparison, neither required nor forbidden. That is a hole in an
