@@ -1,8 +1,16 @@
 #!/bin/sh
 # tests/crash-probe.sh -- the EMPIRICAL half of the address-0 sweep (PLAN.md
-# S4i, S4j).  Not a suite, and deliberately not part of `make test': it takes
-# minutes, and what it measures is a number to drive work rather than a
-# property to assert.
+# S4i, S4j).  Deliberately not part of `make test': it takes ~13 minutes, and
+# the everyday command has to stay fast enough to run without thinking.
+#
+# THIS HEADER USED TO SAY "what it measures is a number to drive work rather
+# than a property to assert", and that sentence is why the floor rotted.  A
+# probe whose expected output lives in someone else's prose is checked when
+# somebody remembers to check it: this one read 54 while the truth was 160,
+# because four Wave A2 imports added 106 signal deaths and nothing went red.
+# It asserts now -- against tests/crash-probe.floor, in both directions -- and
+# it runs in CI as its own job.  `make test' still gets the fast half, a
+# 2-second sweep of four programs in tests/wavea.
 #
 #   tests/crash-probe.sh $PWD/rootfs /tmp/probework
 #
@@ -29,8 +37,23 @@
 # ZERO, because the 40 then died a little further along at the second.  When a
 # program crashes on EVERY option including bare, suspect one shared downstream
 # path and re-run it by hand with real input before believing a single cause.
+# RESOLVED BEFORE THE cd BELOW, and that ordering is the whole of a bug this
+# script shipped for exactly one run.  $0 is usually relative
+# (`tests/crash-probe.sh'), so computing this after cd'ing to the workdir makes
+# `dirname $0' resolve against the wrong directory: the subshell failed, $HERE
+# came out empty, and the floor path became `/crash-probe.floor'.  It was caught
+# only because a missing floor file is a FAILURE rather than a skip -- the guard
+# firing on the person who wrote it.
+HERE=$(cd "$(dirname "$0")" && pwd) || exit 1
 ROOT=$1; export V8ROOT=$ROOT
-WORK=$2; mkdir -p "$WORK/run" && cd "$WORK/run" || exit 1
+WORK=$2; mkdir -p "$WORK/run" || exit 1
+# ABSOLUTE, because the next line cd's and run1 appends to $WORK/observed from
+# inside $WORK/cell.  A relative workdir would have written the observations
+# somewhere else and left the floor comparison reading an empty file, which is
+# the direction that reports a pass.
+WORK=$(cd "$WORK" && pwd) || exit 1
+: > "$WORK/observed"
+cd "$WORK/run" || exit 1
 # Optional third argument: the per-invocation deadline in seconds (default 5).
 # A program that has not crashed in a second almost certainly is not going to,
 # and shortening it only produces more SIGALRMs, which are filtered -- so it
@@ -136,6 +159,7 @@ run1() {
 			return
 		fi
 		echo "SIGNAL $sig  $lbl"
+		echo "$sig $lbl" >> "$WORK/observed"
 		hits=$((hits+1))
 		;;
 	esac
@@ -190,3 +214,84 @@ if [ "$tainted" -gt 0 ]; then
 	echo "         almost certainly rebuilt during the run.  Those are not"
 	echo "         findings.  Re-run on a quiet tree."
 fi
+
+# ---------------------------------------------------------------------------
+# THE FLOOR, AND WHY THIS SCRIPT NOW HAS AN EXIT STATUS.
+#
+# For most of its life this printed a number and exited 0.  That is what let
+# the floor rot: the expected output lived in a sentence in CLAUDE.md, a human
+# had to run the script and compare by eye, and when four Wave A2 programs
+# added 106 signal deaths NOTHING WENT RED for weeks.  CLAUDE.md's own entry on
+# the incident ends "a floor belongs in a suite or in CI, not in prose".  This
+# is that, and the script is in CI now.
+#
+# THE EXPECTATION IS A LIST, NOT A COUNT, and that is the whole design.  A
+# count lets two changes cancel: fix one crash, introduce another, and the
+# total is unchanged.  crash-probe.floor names every invocation that is
+# expected to die, so a swap fails on both halves.
+#
+# IT IS CHECKED IN BOTH DIRECTIONS.  A new crash is a regression, obviously.
+# A crash that has GONE is also a failure, because a floor that over-states is
+# a place for the next regression to hide -- exactly how tests/kmemu's allowed
+# list is kept honest.  Fixing something therefore requires updating the floor
+# in the same commit, which is the point: it makes the removal deliberate and
+# reviewable rather than silent.
+#
+# A MISSING FLOOR FILE IS A FAILURE, NOT A SKIP.  tests/cpp once wrapped its
+# most valuable case in `if [ -d "$V8INC" ]` and reported "12 passed" from
+# outside the repo root.  Anchor to $0 and refuse to run without it.
+# ---------------------------------------------------------------------------
+FLOOR=$HERE/crash-probe.floor
+
+# LC_ALL=C ON EVERY sort AND THE comm, because comm requires both inputs in the
+# SAME collating order and a locale's order is a property of the host.  Getting
+# this wrong would not fail cleanly -- comm would pair the wrong lines and
+# report entries as simultaneously new and gone, on some machines and not
+# others.  That is the host-property trap in a guard, which this suite has been
+# bitten by twice; the fix is to make the order ours.  The committed order of
+# the floor file is irrelevant for the same reason: both sides are re-sorted
+# here, by this sort.
+LC_ALL=C; export LC_ALL
+sort -o "$WORK/observed" "$WORK/observed" 2>/dev/null || : > "$WORK/observed"
+
+case $PROBE in
+mutating)
+	# The MUTATES set is expected to be entirely clean: re-measured at 21
+	# programs, 1113 invocations, zero signal deaths, with the real rootfs
+	# byte-identical afterwards.  No floor file, and an empty expectation is
+	# the strongest one there is -- which is also why this arm needs no
+	# maintenance as the population grows.  (The recorded figure was 18 and
+	# 954; three more MUTATES programs have been installed since, so the
+	# COUNT was stale while the expectation was not.  That is the argument
+	# for expressing an expectation as a property rather than a number
+	# wherever you can.)
+	: > "$WORK/expected";;
+*)
+	if [ ! -f "$FLOOR" ]; then
+		echo "::error::no floor file at $FLOOR -- refusing to report a"
+		echo "          pass, because a probe with no expectation is"
+		echo "          the thing this file exists to stop."
+		exit 1
+	fi
+	grep -v '^[[:blank:]]*#' "$FLOOR" | grep -v '^[[:blank:]]*$' |
+		sort > "$WORK/expected";;
+esac
+
+new=$(comm -13 "$WORK/expected" "$WORK/observed")
+gone=$(comm -23 "$WORK/expected" "$WORK/observed")
+rc=0
+if [ -n "$new" ]; then
+	echo "::error::NEW signal deaths not in the floor:"
+	printf '%s\n' "$new" | sed 's/^/    + /' | head -60
+	rc=1
+fi
+if [ -n "$gone" ]; then
+	echo "::error::floor entries that NO LONGER crash -- if you fixed these,"
+	echo "          remove them from tests/crash-probe.floor in the same commit:"
+	printf '%s\n' "$gone" | sed 's/^/    - /' | head -60
+	rc=1
+fi
+# A tainted run cannot testify either way, so it must not read as a pass.
+[ "$tainted" -gt 0 ] && rc=1
+[ $rc -eq 0 ] && echo "floor: exactly as declared ($(wc -l < "$WORK/expected" | tr -d ' ') entries)"
+exit $rc

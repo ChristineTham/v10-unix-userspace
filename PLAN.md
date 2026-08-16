@@ -3112,14 +3112,27 @@ puns in a single file.
     §1 forbids correcting it while requiring the crash be fixed — both on one
     line. `tests/wavea` carries a case asserting that bug is still present.
 
-    And the instrument question is answered: `tests/wavea` runs the four
-    programs' 4 × 53 invocations with **fd 3 explicitly closed** and asserts the
-    surviving crash list is exactly `cpio -i` — a list rather than a count, so
-    two changes cannot cancel out. Six mutations, six fire; the sixth *repairs*
-    `cpio -i` and the floor case notices, which is what says it guards the
-    decision. `wavea` 145 → 165. The full probe remains manual (minutes), so
-    whether it belongs in CI is still open — but its floor no longer lives only
-    in prose.
+    And the instrument question is answered **both ways**. Fast half: `tests/wavea`
+    runs the four programs' 4 × 53 invocations with **fd 3 explicitly closed** and
+    asserts the surviving crash list is exactly `cpio -i` — a list rather than a
+    count, so two changes cannot cancel out. Six mutations, six fire; the sixth
+    *repairs* `cpio -i` and the floor case notices, which is what says it guards
+    the decision.
+
+    Whole-tree half: **the probe is in CI**, as its own job. That required giving
+    it an exit status, which in its whole life it had never had — it printed a
+    number and returned 0, which is exactly how the floor rotted.
+    `tests/crash-probe.floor` names all 55 expected deaths with each group's
+    justification, and the script diffs against it **in both directions**: a new
+    crash is a regression, and a crash that has *gone* is also a failure, because
+    an over-stating floor is where the next one hides. So fixing something means
+    deleting its line in the same commit — deliberate and reviewable rather than
+    silent. A missing floor file is a failure, not a skip (`tests/cpp`'s
+    precedent); `LC_ALL=C` keeps `comm`'s collation ours rather than the runner's;
+    and a **tainted** run (SIGKILL, i.e. something rebuilt mid-run) no longer
+    reads as a pass. Three millisecond-cost cases in `tests/wavea` check the floor
+    file parses and names only installed programs, because a 13-minute job is a
+    slow way to discover a malformed expectation. `wavea` 145 → 168.
   - **`libcurses`** (43 files) now that the library under it exists.
   - **`TERM` in the launcher.** The world has a termcap database and the
     launcher still exports no `TERM`, so a screen program has nothing to ask.

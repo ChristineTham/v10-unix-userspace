@@ -1,0 +1,108 @@
+# tests/crash-probe.floor -- the signal deaths tests/crash-probe.sh EXPECTS.
+#
+# Every line here is a crash this port has decided not to fix, with the reason
+# argued somewhere durable.  The probe fails if the observed set differs from
+# this one IN EITHER DIRECTION: a new crash is a regression, and a crash that
+# has stopped happening means somebody fixed something and left the floor
+# over-stating, which is a place for the next regression to hide.
+#
+# So fixing a crash requires deleting its line here in the same commit.  That
+# is deliberate -- it makes the removal reviewable instead of silent.
+#
+# FORMAT: "<signal> <label>", matching what the probe prints after "SIGNAL ".
+# Blank lines and # comments are ignored.  Generated from a measured run, never
+# transcribed: see the regeneration recipe at the bottom.
+#
+# WHY THIS FILE EXISTS.  The floor used to live in a sentence in CLAUDE.md and
+# it rotted -- it read 54 while the truth was 160, because four Wave A2 imports
+# added 106 deaths and nothing mechanically checked the number.  A number only
+# a human runs is a number that rots.
+#
+# ---------------------------------------------------------------------------
+# THE THREE GROUPS, AND WHY EACH IS PERMANENT
+#
+# lex (53) -- every invocation including bare.  THREE separate faults, not one,
+#   all upstream's on upstream's hardware: see src/cmd/lex/PORTING.md.  The
+#   probe feeds every program /dev/null, so all 53 also reach the empty-spec
+#   path -- which is why fixing the first fault moved this count by ZERO and
+#   the 40 that used to die in warning() now die further along in ctail().
+#
+# bcd (1) -- bare.  `while ((c=getchar())!='\0' && c!='\n')` never tests EOF,
+#   so redirected empty stdin spins and overruns a fixed buffer.  A VAX would
+#   have overrun it too.  PLAN.md's S4j table has the argument.
+#
+# cpio (1) -- `cpio -i`.  The newest member, and the one that took the most
+#   measuring.  chgreel()'s fopen("/dev/tty") is unchecked, and V8's /dev/tty
+#   is a link to /dev/fd/3, so with no descriptor 3 it returns NULL; the fgets
+#   that follows is a getc loop, and getc is `--(p)->_cnt` -- a WRITE to
+#   virtual address 0.  V8 binaries are ZMAGIC, whose text is read-only shared,
+#   so a VAX took a protection fault there as well.  There is no VAX answer to
+#   restore, which is what separates it from the three crashes fixed alongside
+#   it.  Third member of the family after pr.c's Ttyin and troff/hc.c's rcf.
+#   src/cmd/cpio.PORTING.md has the measurement, both with and without fd 3.
+#
+# ---------------------------------------------------------------------------
+# TO REGENERATE after a deliberate change (review the diff -- that is the
+# point of the file):
+#
+#   tests/crash-probe.sh $PWD/rootfs /tmp/pw > /tmp/p.txt
+#   { sed -n '1,/^# ENTRIES$/p' tests/crash-probe.floor
+#     grep '^SIGNAL ' /tmp/p.txt | sed 's/^SIGNAL //; s/  / /' | sort
+#   } > /tmp/floor && mv /tmp/floor tests/crash-probe.floor
+#
+# ENTRIES
+11 bcd (no arguments)
+11 cpio -i
+11 lex (no arguments)
+11 lex -A
+11 lex -B
+11 lex -C
+11 lex -D
+11 lex -E
+11 lex -F
+11 lex -G
+11 lex -H
+11 lex -I
+11 lex -J
+11 lex -K
+11 lex -L
+11 lex -M
+11 lex -N
+11 lex -O
+11 lex -P
+11 lex -Q
+11 lex -R
+11 lex -S
+11 lex -T
+11 lex -U
+11 lex -V
+11 lex -W
+11 lex -X
+11 lex -Y
+11 lex -Z
+11 lex -a
+11 lex -b
+11 lex -c
+11 lex -d
+11 lex -e
+11 lex -f
+11 lex -g
+11 lex -h
+11 lex -i
+11 lex -j
+11 lex -k
+11 lex -l
+11 lex -m
+11 lex -n
+11 lex -o
+11 lex -p
+11 lex -q
+11 lex -r
+11 lex -s
+11 lex -t
+11 lex -u
+11 lex -v
+11 lex -w
+11 lex -x
+11 lex -y
+11 lex -z

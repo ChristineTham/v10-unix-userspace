@@ -1058,6 +1058,31 @@ check 'the only surviving crash in the four is the one we chose to keep' \
 	print join(", ", @bad);
     ' "$(v8which cb)" "$DIFFH" "$(v8which tar)" "$(v8which cpio)")"
 
+# AND THE WHOLE-TREE FLOOR IS IN CI NOW, which is the other half of the same
+# lesson -- but a 13-minute job is a slow way to learn that its expectation
+# file is malformed.  These three cases cost milliseconds and catch the ways
+# tests/crash-probe.floor can be wrong without any program misbehaving.
+FLOORF=$ROOT/tests/crash-probe.floor
+check 'the crash-probe floor file exists' 'yes' \
+    "$([ -f "$FLOORF" ] && echo yes || echo no)"
+# Every entry is "<signal> <program> ...".  A malformed line would be compared
+# literally against the probe's output and could never match, so the failure
+# would be a 13-minute CI run reporting a phantom regression.
+check 'every floor entry is <signal> <label>' '0' \
+    "$(grep -v '^[[:blank:]]*#' "$FLOORF" 2>/dev/null | grep -v '^[[:blank:]]*$' |
+       grep -cvE '^[0-9]+ [a-zA-Z0-9_.-]+( .*)?$')"
+# AND EVERY PROGRAM IT NAMES MUST STILL BE INSTALLED.  A floor naming a
+# program that has been removed can never be satisfied -- the probe would
+# report it "gone" forever -- and that is a stale-allow-list failure, the
+# shape tests/kmemu's import list is kept honest against.
+check 'every program named in the floor is installed' '' \
+    "$(grep -v '^[[:blank:]]*#' "$FLOORF" 2>/dev/null | grep -v '^[[:blank:]]*$' |
+       awk '{print $2}' | sort -u | while read -r p; do
+           find "$V8ROOT/bin" "$V8ROOT/usr/bin" "$V8ROOT/etc" "$V8ROOT/lib" \
+                "$V8ROOT/usr/lib" -type f -name "$p" -perm -100 2>/dev/null |
+               grep -q . || printf '%s ' "$p"
+       done | sed 's/ *$//')"
+
 # ---------------------------------------------------------------------------
 # libtermlib and ul -- the first library imported out of usr/src/lib, and the
 # first program here that reads a DATABASE rather than only its arguments.

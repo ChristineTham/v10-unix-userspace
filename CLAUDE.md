@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2218 cases, 2217 on a host whose $TMPDIR
+make test             # all 17 suites (2221 cases, 2220 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make test-wavec       # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -3295,6 +3295,16 @@ This paragraph said `macos-14` until the workflow was re-read; `macos-14` is
 deprecated (actions/runner-images#13518) and the pin moved without the prose
 following it. The workflow file is the authority, and it says why in a comment.
 
+**There are TWO jobs now**, and the split is about time-to-signal rather than
+tidiness. `build-and-test` is the fast one. `crash-probe` runs
+`tests/crash-probe.sh` — 6360 invocations, ~13 minutes — against
+`tests/crash-probe.floor`, plus the `PROBE=mutating` set whose expectation is
+**empty**. In one job the fast signal would arrive thirteen minutes late on
+every push, and a slow check is one people stop reading. Note the probe must
+be the only thing touching the tree while it runs: a concurrent rebuild
+replacing a Mach-O mid-execution shows up as SIGKILL, which the script counts
+as *tainted* and now refuses to call a pass.
+
 ## Porting a program
 
 The recurring task. Steps 4 and 6 are the ones most often skipped and the two
@@ -3471,6 +3481,48 @@ not testable until it is installed.
   carries a case whose entire purpose is to assert that a bug is **still there**,
   so that repairing it has to be a decision rather than a tidy-up.
 
+  **AND THE PROBE IS IN CI NOW, WHICH REQUIRED IT TO GROW AN EXIT STATUS -- IT
+  HAD NEVER HAD ONE.** For its whole life it printed a number and returned 0, so
+  "the floor" was a human comparing prose to a terminal. `tests/crash-probe.floor`
+  is the expectation, the script diffs against it, and `.github/workflows/ci.yml`
+  runs it as a **separate job** (~13 min, against `make test`'s well under one --
+  same job would triple time-to-signal and people stop reading it). Five things
+  generalise, and three are about the shape of the expectation rather than the
+  plumbing:
+
+  - **THE EXPECTATION IS A LIST, NOT A COUNT, and it is checked BOTH WAYS.** A
+    count lets two changes cancel. And a crash that has *gone* fails too, because
+    a floor that over-states is where the next regression hides -- so fixing
+    something requires deleting its line in the same commit, which makes the
+    removal reviewable instead of silent. Same discipline as `tests/kmemu`'s
+    allowed-import list, which is the only thing that has ever audited one.
+  - **A MISSING FLOOR FILE IS A FAILURE, NOT A SKIP** -- `tests/cpp`'s
+    `if [ -d "$V8INC" ]` reporting `12 passed` is the precedent, and a probe with
+    no expectation is precisely the thing the file exists to stop.
+  - **`comm` NEEDS BOTH SIDES IN ONE COLLATING ORDER, WHICH IS A HOST PROPERTY.**
+    Unset, a runner's locale could pair the wrong lines and report entries as
+    simultaneously new and gone -- on some machines. `LC_ALL=C` makes the order
+    ours. The committed order of the floor file is then irrelevant, because both
+    sides are re-sorted by that same sort.
+  - **A TAINTED RUN MUST NOT READ AS A PASS.** SIGKILL means something rebuilt
+    the tree mid-run; the script already refused to count those as findings, and
+    now refuses to call the run clean either.
+  - **AND A 13-MINUTE JOB IS A SLOW WAY TO LEARN THE EXPECTATION FILE IS
+    MALFORMED**, so three millisecond-cost cases in `tests/wavea` check that it
+    exists, that every line parses, and that **every program it names is still
+    installed** -- a floor naming a deleted program can never be satisfied and
+    would report "gone" forever.
+
+  **AND EDITING A RUNNING SHELL SCRIPT CORRUPTS IT, WHICH IS THE
+  never-edit-while-a-suite-runs RULE WITH A MECHANISM.** `sh` reads a script
+  incrementally rather than slurping it, so inserting lines *below* the
+  currently-executing point shifts the read offset and the shell resumes
+  mid-token. It happened here -- the floor block was edited 8 minutes into a
+  13-minute run -- and the right response is to kill the run, because a garbled
+  one is a measurement you cannot distinguish from a finding. The existing rule
+  was about a suite rebuilding what another suite reads; this is the same rule
+  reaching the interpreter itself.
+
   Validate a prober against a **known crasher and a known-clean program**
   before believing any number from it. And note what survived all four runs
   unchanged: the *set* of programs, which is what the fixes were driven from.
@@ -3495,9 +3547,15 @@ not testable until it is installed.
   pids, `adb` wants ptrace on them, `as`/`ld`/`ar` are the host's by §1.
   `MUTATES` only changes things *inside* the jail, which the jail therefore
   bounds: `PROBE=mutating` gives each invocation its own `cp -ac` clone (0.146 s
-  for 15 MB, measured) and runs the binary out of it. 18 programs, 954
-  invocations, **zero** signal deaths — and containment proved by hashing the
-  real rootfs before and after, not asserted.
+  for 15 MB, measured) and runs the binary out of it. Re-measured putting it in
+  CI: **21 programs, 1113 invocations, zero** signal deaths in 243 s, with the
+  real rootfs byte-identical afterwards — containment proved by hashing before
+  and after, not asserted. (This said 18 and 954; three more MUTATES programs
+  have been installed since. The *count* went stale and the **expectation did
+  not**, because "zero" is a property rather than a number — which is the
+  cheapest available argument for stating an expectation as a property wherever
+  one exists. The safe half cannot do that, which is why it needs a floor
+  FILE.)
 - A guard that has never been seen to fail is not a guard. New test suites are
   verified by mutation (break the thing, watch the test fail, restore). Two
   traps in doing that: **verify the object actually rebuilt** — mtimes compare

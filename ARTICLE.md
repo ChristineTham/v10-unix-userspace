@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2218 tests across 17 suites** guard it.
+assembly. **2221 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -3115,6 +3115,49 @@ both long-standing; the fifty-fifth is `cpio -i`, which is new and permanent.
 Recording it as fifty-four would leave the next person reading the extra one as
 a regression to hunt — which is exactly how the previous number came to be
 wrong. A floor is only useful if it says what it is made of.
+
+### The probe had no exit status
+
+Then I put it in CI, and discovered the thing that had really gone wrong.
+
+In its entire life this script had never returned a failure. It printed its
+findings and exited zero. Every time. So "the floor" was never a check at all —
+it was a person running a command, reading a number off the terminal, and
+comparing it to a sentence in a different file from memory. Of course it rotted.
+The surprise is not that it drifted; it is that anyone thought of it as a guard.
+
+Giving it one turned out to be more interesting than plumbing. The expectation
+is a **list**, not a number — every invocation expected to die, by name — because
+a count lets two changes cancel out: fix one crash, introduce another, total
+unchanged, nothing to see. And it is checked in **both directions**. A new crash
+failing is obvious. A crash that has *stopped happening* also fails, which is
+the part worth arguing for: a floor that claims more than it should is exactly
+where the next regression will hide, unnoticed. So fixing something now requires
+deleting its line from the expectation file in the same commit. That is not
+bureaucracy — it makes the removal a reviewable decision instead of a silent
+one, and this project's whole method is that decisions should leave marks.
+
+Three smaller things, each a rule this repository already had, arriving somewhere
+new. A missing expectation file is a *failure*, not a skip — a test suite here
+once reported "12 passed" from the wrong directory because its best case was
+wrapped in an existence check. The comparison forces a fixed collating order,
+because `comm` needs both sides sorted the same way and a locale belongs to the
+machine, not to the project. And a run that was disturbed — something rebuilt
+the tree underneath it, which shows up as processes killed from outside — no
+longer reads as a pass; it cannot testify either way, so it says so.
+
+It runs as its own job, not appended to the existing one. Thirteen minutes
+against well under one: in a single job every push would wait thirteen minutes
+for its first signal, and a slow check is a check people stop reading. That is
+the same failure as the rotted number, just wearing different clothes.
+
+And I managed to demonstrate one more hazard while building it. I edited the
+script eight minutes into a thirteen-minute run of that very script. `sh` does
+not read a program into memory and then run it; it reads as it goes. Inserting
+lines below the point it has reached shifts everything under its feet and it
+resumes mid-token. The run had to be thrown away. There was already a rule here
+about not editing things while tests are running — I had thought of it as being
+about build artifacts. It is also about the interpreter.
 
 ## What is left
 

@@ -89,3 +89,57 @@ jobs:
           make clean
           make -j8
           make test
+
+  # ---------------------------------------------------------------------------
+  # THE CRASH PROBE, which is a SEPARATE JOB on purpose.
+  #
+  # It runs every installed Mach-O against its bare invocation and each of the
+  # 52 single-letter options -- 6360 invocations -- looking for signal deaths.
+  # That takes ~13 minutes locally, where `make test` takes well under one, so
+  # putting it in the same job would triple the time-to-signal for every push
+  # and people would stop reading the result. Two jobs run concurrently and
+  # each reports on its own.
+  #
+  # WHY IT IS IN CI AT ALL. Its expected output is NOT zero -- a handful of
+  # programs have defects a VAX had too, and PLAN.md S1 says record those
+  # rather than patch them -- so it has a floor, and for most of this project's
+  # life that floor lived in a sentence in CLAUDE.md. It rotted: it read 54
+  # while the truth was 160, because four imports added 106 deaths and nothing
+  # mechanically checked the number. A number only a human runs is a number
+  # that rots. tests/crash-probe.floor is that number now, as a LIST so two
+  # changes cannot cancel, and the script exits nonzero on any difference in
+  # either direction.
+  #
+  # It is deliberately NOT in `make test`: 13 minutes is too slow for the
+  # everyday command, and the everyday command is the one that must stay fast
+  # enough to run without thinking. tests/wavea keeps a 2-second sweep of the
+  # four programs most recently fixed, which is the fast half of the same
+  # guard.
+  # ---------------------------------------------------------------------------
+  crash-probe:
+    runs-on: macos-26
+    # 13 minutes measured locally; a runner is slower and the probe is
+    # dominated by process creation, which is exactly what a shared runner is
+    # worst at. 45 leaves room without letting a genuine hang run for an hour.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: make -j3
+
+      # NOTHING MAY REBUILD DURING THE RUN. The probe treats SIGKILL as
+      # "tainted" precisely because a concurrent rebuild replacing a Mach-O
+      # mid-execution kills it, and a tainted run cannot testify either way --
+      # so the script now fails rather than reporting those as findings.
+      - name: Crash probe (floor asserted)
+        run: v8/tests/crash-probe.sh "$PWD/v8/rootfs" "$RUNNER_TEMP/probework"
+
+      # The MUTATES set: programs that change things inside the jail, each
+      # invocation in its own `cp -ac` clone of the rootfs. Expected to be
+      # entirely clean -- an empty expectation, which is the strongest kind.
+      - name: Crash probe, mutating set
+        env:
+          PROBE: mutating
+        run: v8/tests/crash-probe.sh "$PWD/v8/rootfs" "$RUNNER_TEMP/probemut"
