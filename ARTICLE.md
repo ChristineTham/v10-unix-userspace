@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2222 tests across 17 suites** guard it.
+assembly. **2483 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -2680,7 +2680,7 @@ never been taken became the important one.
 V8 shipped **286** executable commands across `/bin`, `/usr/bin` and `/etc`.
 This port installed **91**.
 
-Of the 215 missing, 43 have no source at all — VAX firmware, data files, and
+Of the 195 missing, 43 have no source at all — VAX firmware, data files, and
 the handful that shipped as binaries only. About another 96 are out of scope
 for reasons already recorded: PDP-11 cross-tools, the deliberate host-toolchain
 exceptions, the `uucp` suite with no network under it, the Blit graphics
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **163** of the 286 V8 shipped, and the ones still missing mostly
+port installs **166** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -4372,6 +4372,61 @@ from `refer`, seen once and never reproduced in fifty runs — the case now
 captures content so the next occurrence diagnoses itself — and `w`'s full form,
 which needs a `/dev/mem` that does not exist and says `No mem` rather than
 guessing.
+
+---
+
+### Three commands that cost nothing, and a number that disagreed with its own command
+
+Re-measuring the breadth figure was meant to be bookkeeping. It produced two
+corrections and three free programs.
+
+The figure said V8 shipped **286** commands. Re-running the command written
+down beside it gave **287**. Neither is wrong: `find … -type f -perm -u+x` is a
+count of *files*, and `/usr/bin/procmount` and `/etc/procmount` are two
+different binaries — different inodes, 9216 bytes against 7168 — sharing one
+name. So 287 files, 286 names. What was actually broken is subtler than a stale
+number: **the recorded command does not produce the recorded number**, and the
+gap is exactly one duplicated name that nobody had tripped over. Re-measuring
+alone would have "corrected" 286 to 287 and silently redefined the quantity;
+trusting the prose alone would have missed the disagreement. Only running both
+and reconciling them finds the fact about V8 that neither number holds.
+
+The same paragraph had a second defect that no guard could see. `tests/wavea`
+checks the article's command count against one derived from the rootfs, and it
+does it by capturing the first number out of *"the port installs **163** of the
+286 V8 shipped"*. Both numbers are in one sentence, four words apart. The regex
+takes the first and walks past the second — so the guarded half stayed exact
+for months while the unguarded half sat wrong in the same line of prose.
+Proximity to a test is not coverage by it.
+
+Then the useful part. Comparing what V8 shipped against what the port installs,
+three names were missing that cost no source, no compile and no decision,
+because Bell Labs' own install arms make them as hard links from binaries
+already in the tree: `cmd/ed/Makefile` does `ln /bin/ed /bin/e`, and
+`cmd/compress/Makefile` does `ln $D/compress $D/uncompress` and then
+`ln $D/uncompress $D/zcat`. Verified the way the `pcat` link was — the shipped
+copies are byte-identical with *different* inodes, because the tarball lost the
+links on extraction.
+
+`e` is the one worth the paragraph, because the Makefile had already reasoned
+about it and reached a **correct conclusion about the wrong program**. Its
+comment says `e` is an `ex` arm that was never run — and that is true:
+`ex/makefile` links `e` under `BINDIR`, `BINDIR` is `/usr/bin`, and there is no
+`/usr/bin/e` in the shipped tree. But `e` *is* shipped, in `/bin`, at 13312
+bytes against `ex`'s 116736. It is `ed`'s link, from a different makefile
+entirely. The project's own rule — when a program is absent from `cmd/`, check
+whether it is a link before calling it sourceless — had been followed, with the
+check aimed at the wrong parent. A correct answer to the wrong question is more
+durable than a wrong one, because nothing about it invites re-checking.
+
+The two link families needed different tests, and the difference is in the
+source: `compress.c` strips the directory from `argv[0]` and compares it
+against `"uncompress"` and `"zcat"`, so those links are load-bearing and an
+inode comparison would not prove the link reached the program — each name gets
+a behavioural case, including that `zcat` leaves the `.Z` in place. `ed` reads
+`argv[0]` nowhere, so `e` is a pure alias and the inode *is* the claim.
+
+163 to 166, with nothing compiled.
 
 ---
 

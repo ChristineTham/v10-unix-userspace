@@ -1981,6 +1981,41 @@ $(ROOTFS)/$(call v8dest,pcat)/pcat: $(ROOTFS)/$(call v8dest,unpack)/unpack
 	@rm -f $@ && ln $< $@
 PACK_INSTALL = $(call v8install,pack unpack) $(ROOTFS)/$(call v8dest,pcat)/pcat
 
+# THREE MORE NAMES BELL LABS' OWN INSTALL ARMS MAKE, from binaries this port
+# ALREADY builds -- so they cost no source, no compile and no decision:
+#
+#	cmd/ed/Makefile:	rm -f /bin/e ; ln /bin/ed /bin/e
+#	cmd/compress/Makefile:	ln $D/compress $D/uncompress
+#				ln $D/uncompress $D/zcat
+#
+# MEASURED the way pcat above was, because an install arm can be one that never
+# ran: shipped bin/e is byte-identical to bin/ed at 13312, and usr/bin/{compress,
+# uncompress,zcat} are byte-identical at 16384, each trio with DIFFERENT inodes
+# because the tarball lost the links on extraction.
+#
+# `e' IS THE ONE WORTH READING THE COMMENT FOR, because this Makefile already
+# reasoned about it and reached a correct conclusion about the wrong program.
+# The $(EX_LINKS) note says `e' is an ex arm that was never run -- and that is
+# TRUE: ex/makefile:150 links it under BINDIR, ex/makefile:22 sets BINDIR to
+# /usr/bin, and there is no usr/bin/e in the shipped tree.  But `e' is shipped,
+# in /bin, and it is 13312 bytes against ex's 116736 -- it is ED's link, made by
+# a different makefile entirely.  So the ex arm never ran AND `e' was a genuine
+# gap, and only the first half had been written down.  That is the vi-is-ex rule
+# (`when a program is absent from cmd/, check whether it is a LINK') with the
+# check aimed at the wrong parent: a correct answer to the wrong question, which
+# is more durable than a wrong one because nothing about it invites re-checking.
+#
+# Destinations are DERIVED per name, not shared: $(call v8install,...) asks
+# $(call v8dest,...) for each, so if Bell Labs' tables ever put two of these in
+# different directories the rule follows rather than silently co-locating them.
+# Today they agree with the shipped tree -- `e' is in Admin/binfiles so it lands
+# in /bin beside ed, and the compress trio fall through to /usr/bin.
+$(call v8install,e): $(call v8install,ed)
+	@rm -f $@ && ln $< $@
+$(call v8install,uncompress zcat): $(call v8install,compress)
+	@rm -f $@ && ln $< $@
+LINKED_INSTALL = $(call v8install,e uncompress zcat)
+
 # ---------------------------------------------------------------------------
 # Wave A2 batch 2d -- seven directory programs and one LIBRARY.  The batch was
 # scoped as "ten, all pure computation"; three of the ten (graph, plot, prof)
@@ -2478,7 +2513,8 @@ V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
-                   $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL)
+                   $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
+                   $(LINKED_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

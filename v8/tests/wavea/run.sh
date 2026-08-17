@@ -1483,9 +1483,23 @@ check 'ex deletes' 'BETA gamma delta' \
 # view,edit} are 116736 bytes each and there is NO usr/bin/e, so the makefile
 # arm that mentions `e' was never the one that ran.  Compared by INODE,
 # because four copies would pass a cmp and would not be a hard link.
-check 'ex vi view edit are one inode' '1' \
+#
+# THAT SENTENCE IS TRUE AND WAS READ AS MORE THAN IT SAYS.  `e' IS shipped --
+# in /bin, at 13312 bytes against ex's 116736 -- because it is ED's link, made
+# by cmd/ed/Makefile, not ex's.  So the ex arm never ran AND `e' was a genuine
+# missing name, and for several batches only the first half was written down.
+# It is installed now and asserted below beside ed.
+# TWO NUMBERS, NOT ONE, and the second is what makes the case non-vacuous.
+# `ls -i a b c 2>/dev/null | sort -u | wc -l' answers 1 when b and c DO NOT
+# EXIST, because a missing name is a missing ROW rather than an error -- so the
+# obvious form passes against a tree where the links were never installed at
+# all.  Measured: mutation B (dropping $(LINKED_INSTALL)) fired the behavioural
+# cases and left every inode case green.  So assert the names SEEN beside the
+# distinct inodes: `4 1' is four names sharing one file, `3 1' is a missing
+# link, `4 4' is four copies.
+check 'ex vi view edit are one inode' '4 1' \
     "$(cd "$V8ROOT/usr/bin" && ls -i ex vi view edit 2>/dev/null |
-       awk '{print $1}' | sort -u | wc -l | tr -d ' ')"
+       awk '{n++; ino[$1]=1} END {d=0; for (k in ino) d++; print n+0, d}')"
 
 # AND THE LINK IS LOAD-BEARING, not decoration: the binary reads argv[0] and
 # becomes a screen editor when called vi.  That is also why this is the case
@@ -1764,9 +1778,49 @@ check 'pcat writes the original to stdout' 'same' \
 # and the shipped tree's two copies are byte-identical at 10240 with the link
 # lost on extraction.  Compared by INODE, because two identical copies pass a
 # cmp and are not what V8 shipped.  Same treatment as ex/vi/view/edit.
-check 'pcat and unpack are one inode' '1' \
+check 'pcat and unpack are one inode' '2 1' \
     "$(cd "$V8ROOT/usr/bin" && ls -i pcat unpack 2>/dev/null |
-       awk '{print $1}' | sort -u | wc -l | tr -d ' ')"
+       awk '{n++; ino[$1]=1} END {d=0; for (k in ino) d++; print n+0, d}')"
+
+# THE OTHER THREE LINKS BELL LABS' INSTALL ARMS MAKE, and the two families need
+# DIFFERENT cases because only one of them reads argv[0].
+#
+# compress/uncompress/zcat is the ex/vi shape: compress.c:385-394 strips the
+# directory from argv[0] and compares it against "uncompress" and "zcat", so
+# the link is LOAD-BEARING and an inode comparison alone would not prove it
+# reached the program -- hence a behavioural case per name.  ed/e is the
+# opposite: ed reads argv[0] nowhere, so `e' is a pure alias and the inode IS
+# the behaviour, with the run case proving only that the link is executable.
+i=0; while [ $i -lt 400 ]; do echo "compressible line $((i % 5))"; i=$((i+1)); done > cz.txt
+cp cz.txt cz.orig
+"$(v8which compress)" cz.txt >/dev/null 2>&1
+check 'compress produces a .Z' 'yes' \
+    "$([ -f cz.txt.Z ] && echo yes || echo no)"
+check 'and it is smaller' 'smaller' \
+    "$([ -f cz.txt.Z ] && [ "$(wc -c < cz.txt.Z)" -lt "$(wc -c < cz.orig)" ] \
+       && echo smaller || echo no)"
+# zcat is the SAME BINARY deciding from its name to write on stdout and leave
+# the file alone -- so this asserts the argv[0] arm, not merely that a file
+# decompresses.  The .Z must still exist afterwards.
+check 'zcat writes the original to stdout' 'same' \
+    "$("$(v8which zcat)" cz.txt.Z 2>/dev/null | cmp -s - cz.orig && echo same || echo differs)"
+check 'and zcat left the .Z in place' 'yes' \
+    "$([ -f cz.txt.Z ] && echo yes || echo no)"
+check 'uncompress round-trips exactly' 'same' \
+    "$("$(v8which uncompress)" cz.txt.Z >/dev/null 2>&1; cmp -s cz.txt cz.orig && echo same || echo differs)"
+check 'compress uncompress zcat are one inode' '3 1' \
+    "$(cd "$V8ROOT/usr/bin" && ls -i compress uncompress zcat 2>/dev/null |
+       awk '{n++; ino[$1]=1} END {d=0; for (k in ino) d++; print n+0, d}')"
+# ed/e -- upstream's install is `rm -f /bin/e; ln /bin/ed /bin/e', and the
+# shipped bin/e and bin/ed are byte-identical at 13312 with the link lost on
+# extraction.  Same INODE treatment as pcat, and it is the whole of the claim
+# here because ed does not branch on its name.
+check 'e and ed are one inode' '2 1' \
+    "$(cd "$V8ROOT/bin" && ls -i e ed 2>/dev/null |
+       awk '{n++; ino[$1]=1} END {d=0; for (k in ino) d++; print n+0, d}')"
+printf 'a\nhello\n.\nw ed.out\nq\n' | "$(v8which e)" >/dev/null 2>&1
+check 'e edits, so the link is executable' 'hello' \
+    "$(cat ed.out 2>/dev/null)"
 
 # ---------------------------------------------------------------------------
 # Wave A2 batch 2d -- seven programs and a library.  The batch was scoped as

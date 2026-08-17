@@ -1303,7 +1303,7 @@ BREADTH requirement, where everything above is depth. Measured against it:
 this port installed **91**. (Count executables, not directory entries: a bare
 listing also counts `/etc/passwd`, `/etc/group` and `/etc/ttys`, which are data,
 and `/etc/utmp`, which libkmemu manufactures at run time so the number depends
-on whether anything has run.) Of the 215 missing, **43 have no source at all** (VAX
+on whether anything has run.) Of the 195 missing, **43 have no source at all** (VAX
 firmware, data files, the BSD-licensed `more`/`pg` that shipped as
 binaries) and 172 do. About 96 are legitimately out of scope -- the 43, eight
 PDP-11 cross-tools, eight host-toolchain exceptions, ~14 uucp, ~10 Blit
@@ -2057,7 +2057,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 163 installed**, stable. (It moves when something is imported,
+**286 shipped, 166 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.  This sentence said 150 for several batches while the
 guard kept ARTICLE.md exact — **a number with a test beside it stays current and
@@ -2065,6 +2065,96 @@ a number in prose does not**, which is the same asymmetry that made the test
 count the one thing in ARTICLE.md that never went stale.  Re-measure it, do not
 increment it:
 `find rootfs/bin rootfs/usr/bin rootfs/etc -maxdepth 1 -type f -perm -u+x | wc -l`.)
+
+**AND THE SHIPPED HALF OF THAT PAIR DISAGREES WITH THE COMMAND WRITTEN BESIDE
+IT, BY EXACTLY ONE DUPLICATED NAME.** The command above is a count of FILES and
+answers **287** for the shipped tree; the prose says **286**. Both are right:
+`procmount` ships TWICE, `/usr/bin/procmount` at 9216 bytes and
+`/etc/procmount` at 7168, different inodes and different programs. So 287 files
+and 286 names, and the number to quote for a breadth claim is the name count.
+Three things generalise:
+
+- **RE-MEASURE WITH THE COMMAND THAT IS WRITTEN DOWN, not with one you compose
+  from the sentence.** Re-running it alone would have "corrected" 286 to 287 and
+  silently redefined the quantity; trusting the prose alone would have missed
+  that the two disagree. Only running both and reconciling them surfaces the
+  fact about V8 that neither number holds. The standing rule *re-measure, do not
+  increment* needs that companion clause.
+- **A GUARD READ ONE NUMBER OUT OF A TWO-NUMBER SENTENCE.** `tests/wavea`
+  captures ARTICLE.md's count with `grep -oE 'installs \*\*[0-9]+\*\* of the'`,
+  against *"port installs 163 of the 286 V8 shipped"* — the two are four words
+  apart, and the regex takes the first and walks past the second. That is this
+  file's most-repeated asymmetry at its smallest resolution yet: every earlier
+  instance had the guarded and unguarded numbers in different FILES.
+  **Proximity to a test is not coverage by it**; what the pattern captures is
+  the whole of what it asserts.
+- **AND THE HISTORICAL PARAGRAPH'S ARITHMETIC WAS UNRECONSTRUCTIBLE.** It says
+  286 shipped, 91 installed, and "215 missing"; 286−91 is 195, and 91+215 is
+  306, which is no population in the tree (308 entries, 307 files, 287
+  executable files, 286 names). Corrected to 195 from the paragraph's own two
+  numbers, with this note rather than a guess at what produced 215.
+
+**AND THREE COMMANDS WERE MISSING THAT COST NO SOURCE, NO COMPILE AND NO
+DECISION, BECAUSE BELL LABS' OWN INSTALL ARMS MAKE THEM AS HARD LINKS FROM
+BINARIES ALREADY INSTALLED.** `cmd/ed/Makefile` is `ln /bin/ed /bin/e`;
+`cmd/compress/Makefile` is `ln $D/compress $D/uncompress` then
+`ln $D/uncompress $D/zcat`. Verified the way `pcat` was — the shipped copies are
+byte-identical with **different** inodes, the tarball having lost the links on
+extraction. 163 → 166. Three things:
+
+- **`e` HAD BEEN REASONED ABOUT AND DISMISSED WITH A CORRECT ANSWER TO THE WRONG
+  QUESTION.** The Makefile's `$(EX_LINKS)` note says `e` is an `ex` arm that was
+  never run, and that is TRUE: ex's makefile links it under `BINDIR`, `BINDIR`
+  is `/usr/bin`, and no `/usr/bin/e` exists. But `e` IS shipped, in `/bin`, at
+  13312 bytes against ex's 116736 — it is **ed's** link, from a different
+  makefile. So the ex arm never ran *and* `e` was a genuine gap, and only the
+  first half was written down. That is the vi-is-ex rule — *check whether it is
+  a LINK before recording it as sourceless* — followed with the check aimed at
+  the wrong parent. **A correct answer to the wrong question is more durable
+  than a wrong one, because nothing about it invites re-checking.**
+- **TWO LINK FAMILIES NEED DIFFERENT CASES, AND THE SOURCE SAYS WHICH.**
+  `compress.c:385` strips the directory from `argv[0]` and compares it against
+  `"uncompress"` and `"zcat"`, so those links are LOAD-BEARING and an inode
+  comparison would not prove the link reached the program — each name gets a
+  behavioural case, including that `zcat` leaves the `.Z` in place. `ed` reads
+  `argv[0]` nowhere, so `e` is a pure alias and the inode IS the claim.
+- **AND MUTATION FOUND A FIFTH KIND OF VACUOUS CASE, IN TWO CASES THAT PREDATE
+  THIS WORK.** `ls -i a b c 2>/dev/null | sort -u | wc -l` answers **1** when
+  `b` and `c` do not exist, because a missing name is a missing ROW rather than
+  an error — so "these N names are one inode" passes against a tree where the
+  links were never installed. Measured: dropping the install list fired every
+  behavioural case and left every inode case green. `ex vi view edit are one
+  inode` and `pcat and unpack are one inode` had carried it for as long as they
+  have existed. All four assert the names SEEN beside the distinct inodes now
+  (`4 1`, `3 1`, `2 1`), and re-mutating fires **6 where it fired 4**. Fixing
+  only the new ones would have been this file's most repeated shape: the fix
+  landing on one line while the line beside it keeps the assumption.
+
+**AND FOLLOWING THE re-measure-citations-INTO-THE-FILE RULE FOUND THE TEST
+COUNT STALE FOR THE THIRD TIME, IN THE ONE LINE THAT HAS A RECORDED HISTORY OF
+IT.** Editing ARTICLE.md meant grepping for citations into it; exactly one
+exists, and it points at the sentence *"N tests across 17 suites"*. That line
+said **2222** against a measured **2483**, and PLAN.md records it stale once
+before at 1767. Two things, and the first is a correction to this file:
+
+- **THIS DOCUMENT SAYS THE TEST COUNT IS "the one thing that WAS mechanically
+  checked", AND IT IS NOT CHECKED BY ANYTHING.** `tests/wavea` guards the
+  COMMAND count and says so in as many words — *"It is the COMMAND COUNT and
+  not the test count, deliberately: the test total cannot be had without
+  running every suite, which is circular from inside one of them."* So the
+  sentence describes a period when a person updated the number on request,
+  which is not a guard and rots the moment nobody asks. **A number that stayed
+  current under attention is not evidence of a mechanism.**
+- **AND THE STATED REASON IS TRUE OF A SUITE AND FALSE OF `make test`.** The
+  circularity is real from inside one of seventeen; the `test:` recipe runs
+  only when all seventeen have succeeded and already writes `.tests-passed`,
+  so it can compare without circularity. Not done here because the obvious
+  implementation is a trap: piping each runner to `tee` to capture its count
+  puts the pipeline's status on `tee`, which is this file's most-cited shell
+  hazard and would stop a failing suite failing the build. **A guard that
+  costs the harness its exit status is worse than the stale number it fixes.**
+  Task #7 carries it, with the mutation that matters named: not only that a
+  wrong count fails, but that a FAILING SUITE still fails.
 
 ## Architecture: three layers, three different rules
 
