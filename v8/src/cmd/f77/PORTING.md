@@ -343,3 +343,61 @@ to read a stream of `long`-sized words instead:
 Measured on a five-line program: 512 bytes of intermediate, and `h.s` carrying
 `_s_wsfe`, `_do_fio` and `_e_wsfe` — the same libI77 entry points stage 1's probe
 called by hand before any compiler existed.
+
+### The intermediate format, decoded from a real file
+
+`p2triple` is the whole header encoding:
+
+```c
+word = op | (var<<8) | ((long int) type)<<16;
+```
+
+so every record begins with one word carrying an opcode, a small count, and a
+pcc1 type word, followed by however many operand words that opcode implies.
+Decoded from `l.x`, the 64-word intermediate for
+
+```fortran
+      program p
+      integer i
+      i = 2
+      write(6,10) i
+   10 format(1x,i3)
+      end
+```
+
+| word | value | meaning |
+|---|---|---|
+| 0 | `0x2c8` | `P2PASS`(200), var 2 — two words of literal assembly follow |
+| 1–2 | `0x7865742e`, `0x74` | `".text"`, four chars per word (`p2str`) |
+| 3 | `0x100cb` | `P2LBRACKET`(203), var 0 regvars, type 1 = procno |
+| 4 | `0` | `BITSPERCHAR*autoleng` — no autos |
+| 5 | `0x1c9` | `P2STMT`(201), var 1 — one word of filename |
+| 6 | `0x662e6c` | `"l.f"` |
+| 7 | `0xb00cf` | `P2LABEL`(207), type 11 = the label number |
+| 8–9 | `0x40002`, `0x312e76` | `P2NAME`(2) type `P2INT`, then `"v.1"` |
+| 11–12 | `0x40004`, `2` | `P2ICON`(4) type `P2INT`, value **2** |
+| 13 | `0x4003a` | `P2ASSIGN`(58) — `i = 2` |
+| 14 | `0x300c9` | `P2STMT`, type 3 = line number |
+| 15–18 | `0x940104`, `0`, `"_s_wsfe"`, `0` | `P2ICON` with type 148 — `P2INT` under `P2PTR|P2FUNCT`, i.e. a function address — then the name in two words |
+| 19–21 | `0x140104`, `0`, `"v.2"` | `P2ICON` type 20 = `P2INT\|P2PTR`, the `cilist` |
+| 23 | `0x40046` | `P2CALL`(70) |
+| 27 | `"_do_fio"` | and the transfer |
+
+Three things that fall out of this and are worth having written down:
+
+- **`p2name` fits `"_s_wsfe"` in ONE word plus a zero word**, because the
+  non-`UCBPASS2` form declares `union { long int word[2]; char str[8]; }` and
+  writes both words. `long` is eight bytes here, so `str[8]` fits entirely in
+  `word[0]` — on a VAX it needed both. The record length is the same either way,
+  which is why nothing notices.
+- **The type word is pcc1's 4-bit-per-level encoding**: `148` is `P2INT` with
+  `PTR` and `FUNCT` stacked above it. Our pcc2 uses five bits per level
+  (`BTSHIFT` 4→5), so this is the field the translator has to re-shift.
+- **`P2PASS` records carry literal assembly through**, which is how `prolog()`'s
+  label and `prarif()`'s comparisons reach the output at all. So `/lib/f1`'s
+  copy-through path is not an edge case — it is most of what the file contains
+  for a small program.
+
+With that decoded, stage 4 is mechanical rather than exploratory: read the words,
+rebuild the trees, re-shift the type field, map the eight differing opcodes, and
+supply the fourteen names this port's pass 2 wants from pass 1.
