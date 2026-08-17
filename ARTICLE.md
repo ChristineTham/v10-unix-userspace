@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2592 tests across 17 suites** guard it.
+assembly. **2597 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4949,6 +4949,72 @@ hardware V8 never saw. What is missing is the compiler in the middle: stages 3
 and 4, one of which is a second code generator.
 
 173 to 174.
+
+### And then the width change found a compiler bug
+
+The INTEGER-width problem looked like a judgment call with a visible cost, so I
+wrote it up as one and moved on. Then I went back to check whether `SZLONG`
+really could not be 8, and found it is pinned **twice**:
+
+```c
+case TYLONG:
+	if(length == 0)  return(tyint);
+	if(length == 2)  return(TYSHORT);
+	if(length == 4)  goto ret;      /* INTEGER*4 -> TYLONG */
+```
+
+The literal `4`. `lengtype()` hardcodes the length constants, so
+`typesize[TYLONG]` must be four bytes whatever the float layout said. There is no
+value of `SZLONG` other than 4 that satisfies both, which means it was never a
+decision — the runtime's `long` had to narrow, and V8's own compiler agrees it
+always meant 32 bits.
+
+So 39 files in `libF77` and four sites in `libI77` changed, one token each, and
+the byte-identical count dropped from 153 of 154 to 112. Worth stating plainly:
+that is the cost, and the `PROVENANCE` hashes keep the diff reconstructible,
+which is what the mechanism is for.
+
+The half that needed judgment was what *not* to change. Thirteen `libI77` files
+use `long` for a file offset, and those must stay 64-bit; the `long x` locals
+that widen a value for `icvt` are correct as they are. A blanket `-Dlong=int`
+would have broken every one. Which end supplies the operand decides the width —
+the same question as the permission bug three sections up, in a typedef.
+
+And then the first run of the probe said:
+
+```
+f77probe: i_nint -2.5: want -3 got -3
+```
+
+Both print as −3 and they are not equal. That is this port's signature failure,
+and it means the comparison is happening at 64 bits while the print reads 32.
+Ten lines reproduced it, and the emitted code named the cause:
+
+```
+	fcvtzs	w9, d16
+	mov	x0, x9
+```
+
+`fcvtzs Wd, Dn` writes a **w** register, and any write to a w register zeroes
+bits 63:32. This back end keeps a signed `int` sign-extended, and every
+arithmetic site restores that with an `sxtw` — the fix for a bug found in a dump
+tape's checksum two years of this project ago. The *conversion* had none. So a
+negative float converted to an integer came back as `0x00000000fffffffd`.
+
+It is a sixth site for that fix, and the only one that is a **conversion** rather
+than an operator — which is exactly why the sweep that found the unary `-` and
+`~` could not reach it: that sweep switches on an operator, and a conversion is
+not one. And nothing had ever observed it, because `libF77`'s intrinsics returned
+`long` until that afternoon. There was no high half to get wrong.
+
+**A width change is a way of asking a compiler questions it has never been
+asked.** That is an argument for making one on purpose rather than avoiding it.
+
+Three of the four tests I wrote for the fix were vacuous, and the mutation said
+so: they used an automatic, which is stored back through `str w` and re-narrowed
+by the store. Only `register` keeps the value in a register long enough to be
+wrong — which is why the four operator cases sitting immediately above them all
+say `register`, a detail I had read past twice.
 
 ---
 

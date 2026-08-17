@@ -2399,6 +2399,44 @@ misreading the other.
   whether `p2compile()` wants globals beyond those fourteen. It cannot be tested
   alone -- nothing writes the intermediate file until f77pass1 exists -- so
   stages 3 and 4 land together.
+**AND TASK #12 IS DONE, AND NARROWING THE ABI FOUND A LIVE COMPILER BUG WITHIN
+THE HOUR -- THE SIXTH `arm64_trunc()` SITE, AND THE FIRST THAT IS A CONVERSION.**
+The Fortran INTEGER width was recorded as an owner decision; it is not one,
+because `SZLONG` is pinned TWICE and no other value works. Beyond
+`typesize[TYREAL]` being `SZLONG` against `r_nint`'s `float *`, **`lengtype()` at
+`proc.c:951` hardcodes the length constants** -- `INTEGER*4` falls to `goto ret`
+and returns `TYLONG`, `INTEGER*2` gives `TYSHORT`, `REAL*4` gives `TYREAL`. So
+`typesize[TYLONG]` must be 4 whatever the floats said.
+
+- **THE RUNTIME'S `long` NARROWED, AND THE COST IS STATED RATHER THAN HIDDEN.**
+  39 libF77 files and 4 libI77 sites, each one token; byte-identical files went
+  **153 -> 112 of 154**. The justification is `daddr_t`'s exactly: V8's own
+  compiler made C's `long` 32 bits, so `int` is what the source always meant.
+  **What did NOT change is the half that needed judgement** -- `long` as a host
+  file offset (13 libI77 files), the `long x` locals in `rd_I`/`wrt_I` that widen
+  a value for `icvt`, and `ltostr.c`. A blanket `-Dlong=int` breaks every one,
+  which is the *which end supplies each operand* discipline arriving in a type.
+- **`fcvtzs Wd, Dn` WRITES A W REGISTER, AND NOBODY RE-EXTENDED IT.** Any write
+  to a w register zeroes bits 63:32; this back end keeps a signed `int`
+  sign-extended and every arithmetic site restores that with `sxtw`. The
+  CONVERSION had none, so `(int)(-2.5)` was `0x00000000fffffffd`. The tell is
+  this port's signature: `printf("%d")` reads the low half and is RIGHT while
+  `== -3` compares all 64 bits and is WRONG, so the failure prints **`want -3
+  got -3`**. Reproduced in ten lines.
+- **IT SURVIVED FIVE EARLIER SITES BECAUSE arm64_trunc() SWITCHES ON AN
+  OPERATOR, AND A CONV IS NOT ONE.** The sweep that added the unary `-` and `~`
+  structurally could not reach it. And nothing observed it because libF77's
+  intrinsics returned `long` -- there was no high half to get wrong.
+  **A WIDTH CHANGE IS A WAY OF ASKING A COMPILER QUESTIONS IT HAS NEVER BEEN
+  ASKED**, which is a reason to make one deliberately rather than to avoid it.
+- **AND THREE OF THE FOUR NEW CASES WERE VACUOUS ON THEIR FIRST DRAFT**, for a
+  cause this file already records: they used an AUTOMATIC, which is stored back
+  through `str w` and re-narrowed by the store, so only `register` exposes it --
+  which is why the four operator cases beside them all say `register`. The
+  non-firing mutation is what said so; two fire now and two are stated controls
+  (a positive value, where both extensions agree, and a `long` destination, where
+  `arm64_widen` correctly emits nothing).
+
 - **THE SHAPE TO CARRY: A COSTING WRITTEN FROM ONE COMPARISON IS A GUESS.** The
   first reading compared the two `mfile2` headers, saw two different matching
   vocabularies, and concluded "different compilers" -- true of the files

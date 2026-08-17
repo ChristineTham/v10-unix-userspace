@@ -2836,8 +2836,11 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	mkdir -p f77dw && (cd f77dw && rm -f prog f77probe.o
 	  "$CC" -c "$ROOT/tests/wavea/f77probe.c" >cc.log 2>&1
 	  "$V8ROOT/usr/bin/f77" f77probe.o -o prog >ld.log 2>&1) >/dev/null 2>&1
+	# The ftnlen line is filtered out here and asserted on its own below, so
+	# that a width change fails the WIDTH case rather than this one -- a case
+	# that fails for two unrelated reasons names neither.
 	check 'f77: links an object against libF77/libI77 and it runs' 'XB plain checks ok' \
-	    "$(cd f77dw && ./prog 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+	    "$(cd f77dw && ./prog 2>/dev/null | grep -v '^ftnlen' | tr '\n' ' ' | sed 's/ $//')"
 	check 'f77: and what it produced is a V8 binary, not a host one' '' \
 	    "$(nm -u f77dw/prog 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
 
@@ -2902,6 +2905,23 @@ check 'f77: and the source directory still has upstream(s) (SZADDR 4)' '4' \
 check 'f77: SZLONG is 4, pinned by TYREAL and not by Cs long' '4' \
     "$(sed -n 's/^#define[[:blank:]]*SZLONG[[:blank:]]*\([0-9]*\).*/\1/p' \
          "$ROOT/build/stage0/f77/machdefs")"
+
+# THE FORTRAN ABI WIDTH, CHECKED AGAINST f77's OWN MACHINE DESCRIPTION.
+#
+# This is the guard for task #12, and it is a relation between THREE things, none
+# transcribed: what the probe's sizeof() reports (the C side of the convention),
+# what the built arm64defs says SZLENG is (f77's side), and the fact that both
+# must be 4.  Two copies of a number agreeing is the trap this tree keeps
+# finding, so the third is f77's own machdefs read off disk.
+#
+# It is 4 because typesize[TYREAL] is SZLONG and libF77's r_nint takes `float *',
+# and because lengtype() at proc.c:951 hardcodes INTEGER*4 -> TYLONG.  V8's own
+# compiler had C's long at 32 bits (`# define NOLONG', ccom/vax/macdefs.h:20),
+# which is why libI77's fio.h spelled ftnlen `long' and was right to.
+f77szleng=$(sed -n 's/^#define[[:blank:]]*SZLONG[[:blank:]]*\([0-9]*\).*/\1/p' \
+             "$ROOT/build/stage0/f77/machdefs")
+check 'f77 runtime: ftnlen and ftnint match f77s own SZLENG' "ftnlen $f77szleng ftnint $f77szleng" \
+    "$(cd f77dw 2>/dev/null && ./prog 2>/dev/null | sed -n 's/^\(ftnlen .*\)/\1/p')"
 
 # ecvt.o is the one object given an -I, and what it must NOT have picked up is
 # libI77's own values.h -- which has three machine arms (u3b, vax, gcos) and no

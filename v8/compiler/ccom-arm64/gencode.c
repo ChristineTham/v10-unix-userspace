@@ -1317,6 +1317,30 @@ gen(p, want)
 			    tyunsigned(dt) ? "fcvtzu" : "fcvtzs",
 			    tybytes(dt) == 8 ? xreg(ir) : wreg(ir),
 			    freg(st, l.reg));
+			/*
+			 * ...and RE-EXTEND, which is the sixth site of the bug
+			 * arm64_trunc() exists for and the only one that is a
+			 * CONVERSION rather than an operator.
+			 *
+			 * `fcvtzs Wd, Dn' writes a w register, and any write to
+			 * a w register zeroes bits 63:32 architecturally.  This
+			 * back end keeps a signed int SIGN-extended, and every
+			 * arithmetic site restores that with an sxtw; the
+			 * conversion did not, so (int)(-2.5) came back as
+			 * 0x00000000fffffffd.  Measured, and it is the shape
+			 * this port has now met six times: printf("%d") reads
+			 * the low half and is RIGHT, while `== -3' compares all
+			 * 64 bits and is WRONG -- so the value disagrees with
+			 * itself and the failure prints `want -3 got -3'.
+			 *
+			 * Found by narrowing the Fortran ABI (task #12): while
+			 * libF77's intrinsics returned `long' there was no high
+			 * half to get wrong, and i_nint() made it observable the
+			 * hour they became `int'.  arm64_widen() emits nothing
+			 * for an 8-byte destination, so the 64-bit case is
+			 * unaffected and pays nothing.
+			 */
+			arm64_widen(dt, ir);
 			fregfree(l.reg);
 			res.reg = ir; res.flag = R_REG;
 			return (res);

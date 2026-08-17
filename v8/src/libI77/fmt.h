@@ -51,7 +51,7 @@ typedef union
 typedef union
 {	short is;
 	char ic;
-	long il;
+	int il;		/* PORT: the FORTRAN INTEGER arm; see fio.h */
 } uint;
 #define GET(x) if((x=(*getn)())<0) return(x)
 #define VAL(x) (x!='\n'?x:' ')

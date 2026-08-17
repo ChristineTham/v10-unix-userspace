@@ -324,11 +324,38 @@ written for it**, deliberately: there is nothing observable to assert.
 
 ## Open
 
-- **`ftnint`/`ftnlen` are `long`, which is 8 bytes here and 4 on a VAX.** Safe
-  today because both ends of the convention are ours. **f77's arm64 `machdefs`
-  must agree when stage 3 lands** — upstream's says `SZLONG 4` and `TYLENG =
-  TYLONG`, so generated code would pass 4-byte hidden lengths to a library
-  expecting 8. This is the first thing to check in stage 3.
+- **`ftnint`/`ftnlen` WERE `long`, and are `int` now — the open item is closed.**
+  It was recorded here as "the first thing to check in stage 3", and stage 2
+  checked it. `SZLONG` is pinned at 4 twice over: `typesize[TYREAL]` is `SZLONG`
+  against `r_nint`'s `float *`, and `lengtype()` at `proc.c:951` hardcodes
+  `INTEGER*4` → `TYLONG`. So the runtime's `long` had to narrow, and V8's own
+  compiler agrees it always meant 32 bits (`# define NOLONG`,
+  `src/cmd/ccom/vax/macdefs.h:20`).
+
+  **39 libF77 files and 4 libI77 sites**, each one token: 56 `long int`,
+  `ef1asc_.c`'s word-size `M`, `outstr_.c`'s `register long`, two `%ld`, then
+  `fio.h`'s two typedefs, `fmt.h`'s `uint.il` and `nio.c`'s `plong` plus one
+  `sizeof(long)`. Byte-identical files went **153 → 112 of 154**, stated rather
+  than hidden.
+
+  What did NOT change: `long` as a host file offset (`fseek`/`ftell`, 13 libI77
+  files), the `long x` locals in `rd_I`/`wrt_I` that widen a value for `icvt`,
+  and `ltostr.c`. A blanket `-Dlong=int` would have broken every one of them,
+  which is why the two kinds had to be told apart by hand.
+
+- **And narrowing it found a live compiler bug within the hour.** `i_nint(-2.5)`
+  returned a value that printed `-3` and did not compare equal to `-3`.
+  `fcvtzs Wd, Dn` writes a **w** register, zeroing bits 63:32, where this back
+  end keeps a signed `int` sign-extended — so a negative float-to-int conversion
+  came back as `0x00000000fffffffd`. A **sixth** `arm64_trunc()` site, and the
+  only one that is a *conversion* rather than an operator, which is why the sweep
+  that added the unary `-` and `~` could not reach it. Unobservable while these
+  intrinsics returned `long`: there was no high half to get wrong.
+  `compiler/ccom-arm64/gencode.c` calls `arm64_widen()` there now, with four
+  cases in `tests/v8ccom` — two firing, two stated controls, and three of the
+  four vacuous on their first draft for using an automatic where only `register`
+  keeps the value in a register.
+
 - **`libI77/values.h` and `src/include/values.h` are now two copies**, differing
   by an SCCS stamp, one machine name (`u3b2`), and this port's arm64 arm. Only
   the second is on any include path. If a second libI77 file ever includes

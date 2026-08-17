@@ -56,10 +56,16 @@ compiler says so in one line, `# define NOLONG /* map longs to ints */` at
 `src/cmd/ccom/vax/macdefs.h:20` — so the sources are correct for the compiler
 they were written for and wrong for this one.
 
-Reconciling that is a decision about 38 files of authentic source, and it is
-**deliberately not taken here**: task #12 costs the four options. Nothing in
-stage 2 touches it, because the driver never calls the runtime. `tests/wavea`
-asserts `SZLONG` is 4 so the decision cannot be made by accident.
+**And `SZLONG` is pinned TWICE, which is what settled it.** Beyond the float
+layout, `lengtype()` at `proc.c:951` hardcodes the length constants: `INTEGER*4`
+falls to `goto ret` and returns `TYLONG`, `INTEGER*2` gives `TYSHORT`, `REAL*4`
+gives `TYREAL` and `REAL*8` gives `TYDREAL`. So `typesize[TYLONG]` must be 4
+whatever the floats said, and no other value of `SZLONG` satisfies both.
+
+The runtime was therefore narrowed — see `src/libF77/PORTING.md`, which records
+the 39+4 files and the drop from 153 to 112 byte-identical. `tests/wavea` guards
+the width as a relation between the probe's `sizeof`, the `SZLONG` in the
+generated `arm64defs`, and the requirement that they agree.
 
 ## `ARM64` is a new machine token, and the alternative was measured first
 

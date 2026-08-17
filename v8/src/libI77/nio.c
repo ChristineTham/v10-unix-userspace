@@ -28,7 +28,7 @@ typedef union {
 	char	*pchar;
 	short	*pshort;
 	int	*pint;
-	long	*plong;
+	int	*plong;	/* PORT: points at a FORTRAN INTEGER; see fio.h */
 	float	*pfloat;
 	double	*pdouble;
 	char	**pptr;
@@ -207,7 +207,7 @@ Nlentry *pnlent;
 			break;
 		case TYLOGICAL:
 		case TYLONG:
-			size = sizeof(long);
+			size = sizeof(int);	/* PORT: TYLONG is 4; see fio.h */
 			break;
 		case TYREAL:
 		case TYCOMPLEX:
@@ -306,7 +306,7 @@ cilist *pnlarg;
 					(void) sprintf(buf,"%d", *ptr.pshort++);
 					break;
 				case TYLONG:
-					(void) sprintf(buf,"%ld", *ptr.plong++);
+					(void) sprintf(buf,"%d", *ptr.plong++);
 					break;
 				case TYREAL:
 					(void)sprintf(buf,"%.8f",*ptr.pfloat++);

@@ -783,6 +783,80 @@ f() {
 }
 EOF
 
+# THE SIXTH SITE, AND THE ONLY ONE THAT IS A CONVERSION RATHER THAN AN OPERATOR.
+#
+# `fcvtzs Wd, Dn' writes a w register, and any write to a w register zeroes bits
+# 63:32 -- so a NEGATIVE result of a float-to-int conversion came back
+# zero-extended where this back end keeps a signed int sign-extended.  Every
+# arithmetic site restored that with an sxtw; the conversion had none, so
+# (int)(-2.5) was 0x00000000fffffffd.
+#
+# The tell is this port's signature: printf("%d") reads the low half and is
+# RIGHT while `== -3' compares all 64 bits and is WRONG, so the failure prints
+# `want -3 got -3'.  Both halves are asserted below, because a case that only
+# printed could never have failed.
+#
+# WHY IT SURVIVED FIVE EARLIER SITES: arm64_trunc() switches on an OPERATOR, and
+# a CONV is not one, so the sweep that added the unary - and ~ could not reach
+# it.  And nothing observed it, because libF77's intrinsics returned `long'
+# until task #12 narrowed the Fortran ABI to int -- at which point i_nint(-2.5)
+# found it within the hour.  A width change is a way of asking a compiler
+# questions it has never been asked.
+# REGISTER, not an automatic, and the first draft of this case used an automatic
+# and was VACUOUS -- measured, it stayed green under the mutation.  An automatic
+# is stored back through `str w' and the store re-narrows it, which is the same
+# reason the four operator cases above all say `register'.  The non-firing
+# mutation is what said so; nothing about a green run would have.
+t 'a negative float converted to int is sign-extended' '1' <<'EOF'
+double dv;
+f() {
+	register i;
+	dv = -2.5;
+	i = (int) (dv - 0.5);		/* -3 */
+	return (i == -3);
+}
+EOF
+
+# The same value through a RETURN, which is how i_nint() delivers it -- the
+# conversion's result leaves in x0 and a caller comparing it must see -3.
+t 'and survives being returned across a call' '1' <<'EOF'
+double dv;
+cvt(d) double d; { return( (int) (d - 0.5) ); }
+f() {
+	dv = -2.5;
+	return (cvt(dv) == -3);
+}
+EOF
+
+# The positive value is the NEGATIVE CONTROL: zero-extension and sign-extension
+# agree above zero, so this case passed throughout the bug and must keep
+# passing.  Without it, a "fix" that mangled positives would look clean.
+t 'a positive float converted to int is unchanged' '1' <<'EOF'
+double dv;
+f() {
+	register i;
+	dv = 2.5;
+	i = (int) (dv + 0.5);		/* 3 */
+	return (i == 3);
+}
+EOF
+
+# ...and an 8-byte destination must pay NOTHING, because arm64_widen emits no
+# instruction for one.  This case CANNOT discriminate the fix -- fcvtzs writes
+# the whole x register for a long, so it is right either way -- and it is here
+# to catch a "fix" that widened unconditionally and broke the 64-bit path.  Said
+# out loud, because a case that cannot fail against the bug it sits beside is
+# the vacuous kind unless its purpose is stated.
+t 'a long destination needs no re-extension' '1' <<'EOF'
+double dv;
+f() {
+	register long l;
+	dv = -2.5;
+	l = (long) (dv - 0.5);
+	return (l == -3);
+}
+EOF
+
 # AND, OR, ER and RS of correctly-extended operands are ALREADY correct, so
 # arm64_trunc deliberately leaves them alone.  This is the negative control for
 # that decision: it must still be right, and if someone "simplifies" the guard
