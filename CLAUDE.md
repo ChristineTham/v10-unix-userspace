@@ -2365,6 +2365,47 @@ links an object against libF77/libI77 and the result runs. `src/cmd/f77/PORTING.
   citation before committing is what caught them -- the sweep could not, since
   most had drifted onto plausible code.
 
+**AND "DIFFERENT COMPILERS" WAS TOO STRONG, WHICH IS A CORRECTION TO THE ENTRY
+ABOVE MADE THE SAME DAY.** The stage-1 entry says pcc1 and pcc2 are "same
+filenames, same ancestry, different compilers", written before the two `manifest`
+files were compared. Measured: **110 of 118 shared operator names are identical
+in name AND number**, and the eight that differ are **one fact** -- pcc2 widened
+the type-encoding field by a bit, so `BTSHIFT` 4->5 and `BTMASK`/`PTR`/`FTN`/`ARY`
+follow, leaving `CAST`/`INIT` off by 3 and `UNDEF` 0 vs 17. f77's README predicted
+exactly that (*"the pcc internal representation of types ... has changed too"*)
+and it is the one sentence of that README I had taken at face value while
+misreading the other.
+
+- **THE OPERATORS ARE THE SAME LANGUAGE; THE ALGORITHM IS NOT.** `pcc1 in` is
+  `{op, rall, type, su, ...}` -- register allocation plus a Sethi-Ullman number,
+  matched against SHAPES -- and ours is `{op, goal, type, cst[NCOSTS], ...}`, a
+  cost vector matched against TYPES. So the strong half of the claim survives:
+  `UCtable.c` cannot be reused and `compiler/ccom-arm64/local2.c` implements a
+  different interface. What does not survive is the implication that the
+  intermediate LANGUAGE differs.
+- **AND THE CORRECTION MADE A CHEAPER PATH REAL, WHICH IS THE POINT OF MAKING
+  IT.** A translator that reads f77's text intermediate, builds OUR NODEs -- 110
+  opcodes unchanged, 8 mapped, the type word shifted 4->5 bits per level -- and
+  calls `p2compile()` is a few hundred lines against ~2500 for a new
+  instruction-selection table.
+- **AND THIS PORT'S PASS 2 IS NEARLY SEPARABLE, WHICH IS WHAT MAKES IT
+  TRACTABLE.** Measured on the built objects: `reader.o local2.o gencode.o
+  emit.o printx.o t2print.o xdefs.o catch2.o` define **139** names and need
+  **34** -- 20 of them libc, and only **FOURTEEN** from pass 1
+  (`arm64_aggparam cerror codgen dope ftitle getlab maxarg mkdope node opst
+  pjwend pjwreader talloc tfree`), most of them small: a node allocator, the
+  operator dope VECTOR, a label counter, an error reporter, a filename. So
+  `/lib/f1` is **a reader plus fourteen glue definitions**. Still unmeasured:
+  whether `p2compile()` wants globals beyond those fourteen. It cannot be tested
+  alone -- nothing writes the intermediate file until f77pass1 exists -- so
+  stages 3 and 4 land together.
+- **THE SHAPE TO CARRY: A COSTING WRITTEN FROM ONE COMPARISON IS A GUESS.** The
+  first reading compared the two `mfile2` headers, saw two different matching
+  vocabularies, and concluded "different compilers" -- true of the files
+  compared, and it never occurred to me to compare the OP TABLES, which are the
+  thing an intermediate file is actually made of. Ask what the artefact crossing
+  the seam consists of, and compare THAT.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never

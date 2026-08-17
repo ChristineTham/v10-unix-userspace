@@ -34,10 +34,75 @@ arm is `mv fort ${DESTDIR}/lib/f1`, built from `pcc1/mip` compiled `-DFORT`.
 why in their first forty lines.** pcc1 matches on *shapes and cookies* —
 `SAREG`, `SOREG`, `SNAME`, `OPSIMP`, `INTAREG`, nine cookies. pcc2 — V8's ccom,
 hence this port's back end — matches on *types*: `TCHAR`, `TSHORT`, `TSTRUCT`,
-`optab.tyop/ltype/rtype`, three cookies. Same filenames, same ancestry,
-different compilers. f77's own `README` says it outright: *"f77 is a pcc1
-compiler. c is a pcc2 compiler these days."* That sentence reads as a remark
-about stabs; it is a remark about the whole back end.
+`optab.tyop/ltype/rtype`, three cookies. f77's own `README` says it outright:
+*"f77 is a pcc1 compiler. c is a pcc2 compiler these days."* That sentence reads
+as a remark about stabs; it is a remark about the whole back end.
+
+### And that paragraph said "different compilers", which is too strong — measured
+
+The sentence above was written before the two `manifest` files were compared, and
+the comparison narrows the claim considerably. **The operators are the same
+language**; it is the pass-2 *algorithm* that differs.
+
+| | |
+|---|---|
+| pcc1 numbered names | 128 |
+| ours | 171 |
+| shared by name | 118 |
+| **identical in name AND number** | **110** |
+| disagree | **8** |
+
+And the eight are one fact, not eight: pcc2 **widened the type-encoding field by
+one bit**. `BTSHIFT` 4→5, and `BTMASK`, `PTR`, `FTN`, `ARY` all follow from it;
+the remaining three are `CAST`/`INIT` renumbered by 3 and `UNDEF` 0 vs 17. f77's
+README predicted precisely this — *"the pcc internal representation of types
+(which is put out in the type field of the stab) has changed too"* — and it is
+the one sentence of that README I had taken at face value.
+
+What genuinely differs is the node and the algorithm:
+
+```
+pcc1 in: { op, rall, type, su,   name, stalign, left, right }
+ours in: { op, goal, type, cst[NCOSTS], name, pad, left, right }
+```
+
+`rall`/`su` is register allocation plus a Sethi-Ullman number, matched against
+shapes; `goal`/`cst[]` is a cost vector matched against types. So `UCtable.c`
+really cannot be reused and `compiler/ccom-arm64/local2.c` really does implement
+a different interface.
+
+**But it makes a cheaper path real, and task #9 carries it.** Rather than writing
+a new instruction-selection table in pcc1's shape (~2500 lines), a translator
+could read f77's text intermediate, build **our** NODEs — 110 opcodes pass
+through unchanged, 8 map, and the type word needs a per-level 4→5 bit shift —
+and hand them to `p2compile()`. That is a few hundred lines.
+
+### And this port's pass 2 is nearly separable, which is what makes it tractable
+
+Measured on the built objects. `reader.o local2.o gencode.o emit.o printx.o
+t2print.o xdefs.o catch2.o` define **139** names and need **34** — of which
+**20 are libc** (`printf`, `malloc`, `memcpy`, the stack-check symbols) and only
+**fourteen** come from pass 1:
+
+```
+arm64_aggparam cerror codgen dope ftitle getlab maxarg
+mkdope node opst pjwend pjwreader talloc tfree
+```
+
+Most are small. `talloc`/`tfree`/`node` are the node allocator; `dope`/`mkdope`/
+`opst` are the operator dope *vector*, a table; `getlab` is a label counter;
+`cerror` the error reporter; `ftitle` a filename; `maxarg` the argument-area
+size; `arm64_aggparam` this port's own aggregate-parameter recorder; `pjwend`/
+`pjwreader` its debug hooks.
+
+So `/lib/f1` is **a reader plus fourteen glue definitions**, not a second code
+generator. Still unmeasured: whether `p2compile()` wants globals beyond those
+fourteen, and whether the cost model needs anything pass 1 currently
+initialises.
+
+It cannot be *tested* alone, because nothing produces the intermediate file
+until `f77pass1` exists — so stages 3 and 4 should land together, and task #12's
+INTEGER-width decision gates stage 3's correctness.
 
 So these two libraries are the only portable part, and they are the only part
 buildable with the tools that exist today.
