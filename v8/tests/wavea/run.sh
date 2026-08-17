@@ -2873,14 +2873,71 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	    "$(cd f77dw && "$V8ROOT/usr/bin/f77" -d f77probe.o -o /dev/null 2>&1 |
 	       tr ' ' '\n' | grep '^-Wl,' | tr '\n' ' ' | sed 's/ $//')"
 
+	# ---------------------------------------------------------------
+	# f77pass1 -- stage 3.  It EMITS AND IS NOT YET CONSUMED: the pcc
+	# intermediate it writes needs /lib/f1 to become assembly.  So the
+	# cases below assert what is verifiable today, and the last one
+	# asserts where the pipeline STOPS, so stage 4 arriving is a
+	# decision rather than a discovery -- the same reason tests/kmemu
+	# asserts that w(1) says `No mem'.
+	check 'f77pass1: installed, and imports nothing from the host' 'yes' \
+	    "$([ -x "$V8ROOT/usr/lib/f77pass1" ] &&
+	       [ -z "$(nm -u "$V8ROOT/usr/lib/f77pass1" 2>/dev/null)" ] && echo yes)"
+
+	# It compiles a Fortran program.  The two progress lines are the
+	# HERE==ARM64 arm of driver.c:393 working -- upstream spells "is this
+	# a Unix" as a list of the three Unixes V8 knew, and without this
+	# machine in that list there would be no output at all.
+	rm -rf f77p1w && mkdir -p f77p1w && (cd f77p1w
+	  printf '      program hello\n      integer i\n      i = 2\n      write(6,10) i\n   10 format(1x,i3)\n      end\n' > h.f
+	  "$V8ROOT/usr/lib/f77pass1" - h.f h.s h.d h.x) >p1.log 2>&1
+	check 'f77pass1: compiles a Fortran program' 'h.f: MAIN hello:' \
+	    "$(tr -s ' \n' ' ' < p1.log | sed 's/^ //; s/ $//')"
+
+	# THE ASSEMBLY IT WRITES DIRECTLY IS arm64/Mach-O, NOT VAX, and this is
+	# what says arm64.c is in the link rather than vax.c.  Four directives
+	# that only this target uses: the Mach-O section name, p2align (VAX
+	# says .align), and quad (VAX has no eight-byte directive because it
+	# has no eight-byte pointer).
+	check 'f77pass1: and the assembly is arm64 Mach-O, not VAX' 'yes' \
+	    "$(cd f77p1w && grep -q '__TEXT,__const' h.s &&
+	       grep -q 'p2align' h.s && ! grep -q '\.word\|LWM' h.s && echo yes)"
+	# It reaches libI77 by name, which is the two halves of the port
+	# meeting: these are the same entry points stage 1's probe called by
+	# hand before any compiler existed.
+	#
+	# ALL THREE, and the program has to have an output LIST for that: a bare
+	# `write(6,10)' emits only the record start and end, because there is
+	# nothing for do_fio to transfer.  The first draft of this case used one
+	# and expected three, and what it measured was my reading of the program
+	# rather than the compiler -- so the program grew an `i' instead.
+	check 'f77pass1: emits calls to the libI77 entry points' 'do_fio e_wsfe s_wsfe' \
+	    "$(cd f77p1w && grep -oE '_(s_wsfe|do_fio|e_wsfe)' h.s |
+	       sed 's/^_//' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+	# The intermediate is BINARY -- putpcc.c's second line says "NEW
+	# VERSION USING BINARY POLISH POSTFIX INTERMEDIATE" -- so it is
+	# asserted as bytes rather than as text.  A nonempty h.x is what
+	# stage 4 will have to read.
+	check 'f77pass1: writes a nonempty binary intermediate' 'yes' \
+	    "$(cd f77p1w && [ -s h.x ] && echo yes)"
+
+	# WHERE THE PIPELINE STOPS.  With pass 1 present the driver gets one
+	# step further than it did before stage 3, and this case is what makes
+	# that visible: the message names /lib/f1 rather than /usr/lib/f77pass1.
+	check 'f77: the pipeline now stops at /lib/f1, not at pass 1' 'Cannot load /lib/f1' \
+	    "$(cd f77p1w && "$V8ROOT/usr/bin/f77" h.f 2>&1 |
+	       sed -n 's/.*\(Cannot load .*\)/\1/p' | head -1)"
+
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
 	# tests/kmemu asserts that w(1) says `No mem'.
-	check 'f77: says so plainly that f77pass1 is not here yet' 'Cannot load /usr/lib/f77pass1' \
-	    "$(cd f77dw && printf '      end\n' > h.f
-	       "$V8ROOT/usr/bin/f77" h.f 2>&1 | sed -n 's/.*\(Cannot load .*\)/\1/p' | head -1)"
+	# ...and this case is DELETED rather than left green: it asserted
+	# `Cannot load /usr/lib/f77pass1', which stage 3 made false.  Its
+	# replacement is the /lib/f1 case above -- re-derive what a case
+	# discriminates when the thing it names arrives, rather than deleting
+	# it as stale or leaving it to pass for a new reason.
 else
-	fail=$((fail+7)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+12)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism

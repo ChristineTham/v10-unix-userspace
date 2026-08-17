@@ -287,3 +287,59 @@ ported**.
 neither should be written speculatively: a prologue that looks right and does not
 match the epilogue produces a binary that links and corrupts its own frame,
 which is precisely the class this port has spent its life finding.
+
+## Stage 3 is in: `f77pass1` builds, installs, and compiles Fortran
+
+`arm64.c` is written and all sixteen objects compile under v8cc. `f77pass1`
+installs to `/usr/lib/f77pass1`, and `f77 hello.f` now reports
+`Cannot load /lib/f1` — one step further than before, which is the case
+`tests/wavea` asserts.
+
+The grammar is **generated**, unlike efl's: upstream's rule seds the token
+numbers into `%token` lines, cats the five fragments after them, and runs yacc.
+V8's own yacc reports **four shift/reduce conflicts**, which is exactly what
+upstream's makefile echoes as expected — a good independent signal that the
+fragments assembled correctly.
+
+### What `arm64.c` had to change, against the prediction
+
+The three non-portable pieces were the ones flagged above, and the first is
+**removed rather than translated**:
+
+| | |
+|---|---|
+| `.word LWM<n>` + `fixlwm` | **gone.** arm64 has no register-save mask, and `arm64_endfunction()` already owns the frame. Removing a handshake is safer than reimplementing one — a mismatched prologue links and corrupts its own frame. |
+| `mvarg`, `prsave`, `goret` | silent. AAPCS64 passes in `x0`–`x7`; pass 2 spills them and emits the epilogue. |
+| `realcon[]` | rewritten — VAX D-format octal to IEEE 754. |
+| `prcmgoto` | the VAX's one-instruction `casel` became a bounds check plus an indexed load from a `.quad` table. |
+
+**Two smaller things would have been silent wrong answers**, which is why they are
+called out rather than absorbed:
+
+- **`.word` is two bytes on a VAX and FOUR to clang.** Porting `prconi`
+  literally would have doubled every `INTEGER*2` initialiser with no diagnostic.
+  It emits `.short`.
+- **`praddr` needed `.quad`.** An address is eight bytes here and `SZADDR` says
+  so; `.long` would have truncated every initialised pointer. This is the only
+  directive in the file whose *width* differs rather than its spelling.
+
+### The intermediate is BINARY, which re-costs stage 4 again
+
+`putpcc.c`'s second line is *"NEW VERSION USING BINARY POLISH POSTFIX
+INTERMEDIATE"*. So `mainp2()`'s text reader in `pcc1/mip/reader.c` — which the
+earlier costing was written against — is the **older** format, and `/lib/f1` has
+to read a stream of `long`-sized words instead:
+
+- `p2triple(op, var1, var2)` and `p2word(w)` write raw words through a 128-word
+  buffer flushed with `write(2)`.
+- The word is `long int`, so **eight bytes here and four on a VAX**. Both ends
+  are ours, so that is consistent — and it is the third time in this port that a
+  `long` turned out to be an ABI decision rather than a type.
+- `p2name()` has two forms on `UCBPASS2`; this build does not define it, so names
+  are the fixed 8-character form.
+- `pccdefs` holds the opcodes (`P2PLUS 6` … `P2LABEL 207`), and the ones above
+  200 are f77's own additions.
+
+Measured on a five-line program: 512 bytes of intermediate, and `h.s` carrying
+`_s_wsfe`, `_do_fio` and `_e_wsfe` — the same libI77 entry points stage 1's probe
+called by hand before any compiler existed.

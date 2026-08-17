@@ -2927,8 +2927,95 @@ $(BINDIR)/f77: $(F77DRV_OBJ) $(V8DEPS)
 	@mkdir -p $(@D)
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(F77DRV_OBJ) $(V8LIBS)
 
-F77_BUILT   = $(BINDIR)/f77
-F77_INSTALL = $(call v8install,f77)
+# f77pass1 -- the compiler front end, stage 3.  Sixteen objects, and the whole
+# machine-dependent half is src/cmd/f77/arm64.c (vax.c's counterpart) plus the
+# generated machdefs the driver rules above already produce.
+#
+# It EMITS BUT IS NOT YET CONSUMED, which is stated rather than implied: the
+# pcc intermediate it writes needs /lib/f1 (stage 4) to become assembly, and
+# that does not exist.  What is verifiable today -- and asserted in
+# tests/wavea -- is that all sixteen objects compile under v8cc, that the
+# grammar builds with V8's own yacc reporting upstream's expected four
+# shift/reduce conflicts, that it compiles a Fortran program without error, and
+# that the assembly it writes DIRECTLY is arm64/Mach-O rather than VAX.
+#
+# gram.c IS GENERATED HERE, unlike efl's, which is checked in.  Upstream's rule
+# is the one reproduced: sed the token numbers into %token lines, cat the five
+# grammar fragments after them, and run yacc.  So the token numbers the parser
+# uses and the ones the lexer returns come from one file, tokens, and cannot
+# drift -- which is the invariant efl has to assert with a test precisely
+# BECAUSE its parser is checked in.
+F77P1_NAME = main init lex proc equiv data expr exec intr io misc error put \
+             putpcc arm64 arm64x
+F77P1_OBJ  = $(patsubst %,$(BUILD)/f77p1/%.o,$(F77P1_NAME)) \
+             $(BUILD)/f77p1/gram.o
+
+# The same staging trick the driver uses, and for the same reason: a quoted
+# include tries the includer's directory first, so machdefs must sit beside the
+# source being compiled.  pass 1 needs three more non-headers than the driver --
+# defs (which every object includes), pccdefs and fio.h.
+F77P1_STAGE = $(BUILD)/f77p1/defs $(BUILD)/f77p1/defines $(BUILD)/f77p1/ftypes \
+              $(BUILD)/f77p1/pccdefs $(BUILD)/f77p1/fio.h \
+              $(BUILD)/f77p1/machdefs $(BUILD)/f77p1/tokdefs
+
+$(BUILD)/f77p1/machdefs: $(F77SRC)/arm64defs
+	@mkdir -p $(@D) && cp $< $@
+
+$(BUILD)/f77p1/defs $(BUILD)/f77p1/defines $(BUILD)/f77p1/ftypes \
+$(BUILD)/f77p1/pccdefs $(BUILD)/f77p1/fio.h: $(BUILD)/f77p1/%: $(F77SRC)/%
+	@mkdir -p $(@D) && cp $< $@
+
+# tokdefs: upstream's own one-liner, and the SAME idiom efl/tokdefs uses --
+# grep -n numbers the lines, sed turns each into a #define.  Through a temporary
+# because `>' creates the file before the pipeline runs, so a failure would
+# leave an empty, freshly-dated tokdefs and the next make would call it current.
+$(BUILD)/f77p1/tokdefs: $(F77SRC)/tokens $(BINDIR)/grep $(BINDIR)/sed
+	@mkdir -p $(@D)
+	V8ROOT=$(ROOTFS) $(BINDIR)/grep -n . $(F77SRC)/tokens | \
+	  V8ROOT=$(ROOTFS) $(BINDIR)/sed "s/\([^:]*\):\(.*\)/#define \2 \1/" >$@.tmp
+	@test -s $@.tmp && mv $@.tmp $@
+
+# The grammar, by upstream's recipe.  It expects four shift/reduce conflicts and
+# says so in an echo; yacc reports them on stderr and exits 0, so the count is
+# asserted in tests/wavea rather than here.
+$(BUILD)/f77p1/gram.c: $(F77SRC)/gram.head $(F77SRC)/gram.dcl \
+                       $(F77SRC)/gram.expr $(F77SRC)/gram.exec \
+                       $(F77SRC)/gram.io $(BUILD)/f77p1/tokdefs $(YACC) \
+                       $(BINDIR)/sed
+	@mkdir -p $(@D)
+	cd $(BUILD)/f77p1 && \
+	  ( V8ROOT=$(ROOTFS) $(BINDIR)/sed <tokdefs "s/#define/%token/" ; \
+	    cat $(F77SRC)/gram.head $(F77SRC)/gram.dcl $(F77SRC)/gram.expr \
+	        $(F77SRC)/gram.exec $(F77SRC)/gram.io ) >gram.in && \
+	  V8ROOT=$(ROOTFS) $(YACC) gram.in && mv y.tab.c gram.c && rm -f gram.in
+
+$(BUILD)/f77p1/gram.o: $(BUILD)/f77p1/gram.c $(F77P1_STAGE) $(V8CC_DEPS)
+	@cd $(BUILD)/f77p1 && V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc \
+	    -I$(LIBCSRC)/stdio $(F77CFL) -c -o gram.o gram.c
+
+$(BUILD)/f77p1/%.o: $(F77SRC)/%.c $(F77P1_STAGE) $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@cp $< $(BUILD)/f77p1/$*.c
+	@cd $(BUILD)/f77p1 && V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc \
+	    -I$(LIBCSRC)/stdio $(F77CFL) -c -o $*.o $*.c
+
+# Upstream states both of these: `driver.o $(OBJECTS) : defs defines machdefs
+# ftypes', `lex.o : tokdefs' and `io.o : fio.h'.
+$(F77P1_OBJ): $(BUILD)/f77p1/defs
+$(BUILD)/f77p1/lex.o: $(BUILD)/f77p1/tokdefs
+$(BUILD)/f77p1/io.o: $(BUILD)/f77p1/fio.h
+$(BUILD)/f77p1/put.o $(BUILD)/f77p1/putpcc.o $(BUILD)/f77p1/arm64.o: \
+	$(BUILD)/f77p1/pccdefs
+
+$(BUILD)/f77p1/f77pass1: $(F77P1_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(F77P1_OBJ) $(V8LIBS)
+
+$(ROOTFS)/usr/lib/f77pass1: $(BUILD)/f77p1/f77pass1
+	@mkdir -p $(@D) && cp $< $@
+
+F77_BUILT   = $(BINDIR)/f77 $(BUILD)/f77p1/f77pass1
+F77_INSTALL = $(call v8install,f77) $(ROOTFS)/usr/lib/f77pass1
 
 # B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
 # also what the $(ROOTFS)/etc/% generator further down has to iterate over --
