@@ -26,6 +26,20 @@
 # not the same thing as a neglected one.  What would be alarming is a new
 # PROGRAM, not a new line.
 #
+# f77pass1 (1) -- `-d' only, and it is upstream's DEBUG flag doing exactly what
+#   it is for.  error.c:89-90 is `if(debugflag) abort();' -- so a compiler error
+#   under -d dumps core on purpose, for the compiler writer.  `f77pass1 -d' with
+#   no source file reaches fatal("arg count %d") with debugflag set, prints
+#   `Compiler error line 0 of (null): arg count 0', and aborts.  Identical on a
+#   VAX: nothing here is about the target.
+#
+#   The other 51 single-letter options are NOT crashes -- they report `invalid
+#   flag X' and exit 3 -- so this is one line rather than a family, and the
+#   count is what says the option loop is otherwise sound.
+#
+#   (The `(null)' in that message is task #2, printf %%s of a null pointer,
+#   where V8 printed the empty string.  A second instance, recorded there.)
+#
 # dmesg (51) -- every single-letter option except -i.  Berkeley's, 1981, and
 #   unbounded mutual recursion rather than a bad pointer: done() ends
 #   `if (wflg) writebuf();' and writebuf() calls done("can't open buffer\n")
@@ -202,3 +216,5 @@
 11 lex -x
 11 lex -y
 11 lex -z
+
+6 f77pass1 -d
