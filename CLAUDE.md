@@ -1348,7 +1348,8 @@ single-file imports compiled and linked with zero failures, and then:
   reading the **Mac's** group database from inside the jail. All three existed
   upstream and had simply never been imported.
 - **the linker** caught `cb`, whose `cb.c:3` is `#include "cbtype.c"` -- the
-  fourteenth member of the included-non-header list, and upstream's own
+  fourteenth member of the included-non-header list (sixteen now -- efl added
+  two), and upstream's own
   makefile says so outright (`cb.o: cb.c cbtype.c cbtype.h`). Building it as a
   translation unit is a duplicate `_ctype_`.
 
@@ -2056,6 +2057,111 @@ N; exec'` rather than a backgrounding wrapper, because ratfor reads stdin and a
 backgrounded job in a non-interactive shell gets its stdin from `/dev/null` --
 `ex`'s most expensive recorded lesson.
 
+**AND `efl` IS IN -- 12k LINES, **ZERO SOURCE CHANGES**, AND THE BUG WAS IN OUR
+COMPILER.** The owner picked it over `lcomp` (1925 lines, the next by size).
+All 34 files byte-identical to pristine V8, verified against `PROVENANCE`; what
+the port needed was a fix to `compiler/ccom-arm64/gencode.c`.
+`src/cmd/efl/PORTING.md`. Seven things generalise:
+
+- **ONE TYPEDEF DECIDES WHETHER A PROGRAM HAS AN LP64 SURFACE AT ALL.**
+  `defs:36` is `typedef int *ptr` -- a generic pointer type that is *already*
+  pointer-sized -- so efl's ~40 node-returning functions are declared `ptr` and
+  none narrows. `tests/v8ccom`'s rootfs-wide sweep found **exactly one**
+  narrowed call in twelve thousand lines, `conval`, and it genuinely returns an
+  int. Compare `struct(1)` one batch earlier, where `#define VERT int` stored
+  pointers in an `int` and cascaded into two headers. **Read the central
+  typedef before costing the audit**: it is the difference between eight
+  defects and none.
+- **A CHAINED ASSIGNMENT TO TWO BIT FIELDS BROKE ccom, AND THE FAULT ADDRESS
+  WAS THE DIAGNOSIS.** `misc.c`'s `p->vproc = q->vproc = v` died at **0x80**;
+  `vproc` is 2 bits at bit 6 and the value was 2, so `2<<6 == 128 == 0x80` --
+  ccom was storing **the spliced field value as an address**. `lvaddr()`
+  described a field's containing word in a slot of a static pool and released
+  the slot **on return** instead of in `lvfree()`. An lvalue stays live across
+  `gen(right)`, and here the right-hand side was another bit-field assignment,
+  so both got `contbuf[0]`. Two symptoms, one cause: the outer store went to
+  the **wrong object** (the correct address sat unused in x9) and reached it
+  through a register the inner `lvfree()` had already returned to the pool, so
+  `regalloc()` handed it straight back to `lvload()`.
+- **THE AUTHOR'S OWN ERROR MESSAGE NAMED THE MISCONCEPTION.** It read `"bit
+  fields nested too deeply"` -- and C has no bit field inside a bit field, so
+  that recursion is always exactly one deep. The quantity needing a bound was
+  never nesting but **lvalues live at once**, which `a.f = b.f = v` makes two
+  of. When a limit has never been hit, check that it counts the thing its name
+  claims. Same family as the survey that enumerated every sleeper except the
+  only reachable one.
+- **THE macOS CRASH REPORT SYMBOLICATES A FULL V8 BACKTRACE, WHICH lldb CANNOT
+  AND THIS FILE SAYS TO AVOID.** `~/Library/Logs/DiagnosticReports/*.ips` gave
+  six correct frames (`setvproc <- extname <- yyparse <- dofile <- main <-
+  v8start`) plus the faulting address, because it walks the **x29 frame-pointer
+  chain** that v8cc does maintain rather than needing DWARF unwind info. lldb
+  hung. Reach for the crash report FIRST; it costs one command and beats the
+  bisect-by-`fprintf` that `struct(1)` needed. (Read the `.ips` with python3 --
+  it is a JSON line followed by a JSON body.)
+- **`ed(1)` IS A COMPILER PASS HERE, AND A FAILED RUN OF IT IS A SILENT NO-OP
+  THAT EXITS 0.** `fixuplex` is an `ed` script that patches the scanner `lex`
+  just generated: one substitution routing input through efl's pushback macro,
+  and a 27-line append of global flags the lex skeleton cannot express. It
+  works unchanged (1455 -> 1482 lines). **This entry first said "it is NOT
+  idempotent -- V7 ed prints `?` on a failed substitute and keeps reading
+  commands, so a second run appends the block twice", and that is wrong**;
+  measured with a three-line script whose first command cannot match, V7 ed
+  reading a here-document **aborts the entire script on the first error** --
+  the append never runs, `w` never runs, the file is untouched -- **and still
+  exits 0**. So a second run is harmless and the real hazard is the opposite
+  one: a `fixuplex` whose substitution stopped matching hands the build an
+  unpatched scanner with nothing in the status to say so. **The `&&` chain
+  therefore guards the `lex` step and NOT the `ed` step**, and the only
+  instrument is a content check -- `tests/wavea` asserts the `input()` macro
+  reaches `efgetc` and that `getc(yyin)` survives nowhere. PATH is set to
+  `$(BINDIR)` **alone** rather than prepended, because the Mac's `ed` would run
+  the script perfectly well and silently -- `v8-make.sh`'s reasoning applied to
+  a different tool.
+- **A CHECKED-IN PARSER LEAVES AN INVARIANT WITH NO BUILD STEP TO PROTECT IT.**
+  `gram.c` is committed and upstream's yacc rule is commented out with the
+  reason -- *"gram.c can no longer be made on a pdp11 because of yacc limits"*
+  -- so its 83 baked-in token numbers and the 83 the build derives from
+  `tokens` are **two hand-maintained copies of one list**. Token numbers ARE
+  line numbers, so inserting one line renumbers everything below it and the
+  lexer starts returning numbers the parser reads as different tokens, with
+  both halves still compiling. Two copies of a wrong list agree, so
+  `tests/wavea` compares them as **sets in both directions** -- two lists of 83
+  can differ and still both be 83 -- and `tests/deps` states the other half as
+  `nodep`s, since a `dep` on the grammar fragments would be a lie about how the
+  parser is made.
+- **THE INCLUDED-NON-HEADER LIST IS 16 NOW, AND THE NEW SPECIES IS
+  *GENERATED*.** `efl/defs` is the ordinary kind (24 objects include it; note
+  it is the **second** file in the tree called `defs`, so a basename-keyed
+  sweep conflates it with `make/defs`). **`efl/tokdefs` does not exist in
+  `src/` at all** -- a `grep -n | sed` pipeline makes it -- so it is invisible
+  three ways: not a `.h`, not a `.c`, and not in the source tree. Re-derive
+  rather than trust, and note the documented sweep **matches its own
+  documentation**: 4 of its hits are `PORTING.md` prose quoting the pattern.
+
+**AND TWO INSTRUMENTS I WROTE WERE WRONG IN THE SAME HOUR, BOTH ALREADY
+DOCUMENTED HERE.** A provenance check written as a zsh `while read` loop
+reported **"34 files deviate from pristine V8"** -- every file -- because
+`git` came back `command not found` inside the loop while working fine one line
+outside it. Re-run under `sh` (this file's own standing remedy, from `$OPTS`)
+it reports **0 of 34**. Believing it would have written the exact opposite of
+the truth into PORTING.md. And `cc -S -o bf2.s bf.c` silently ignores `-o` and
+writes `bf.s`; the first invocation "worked" only because the two names
+coincided, and the second left me comparing a file against itself. **Before
+concluding from a loop, run one iteration by hand; before diffing two build
+outputs, check the tool wrote where you asked.**
+
+**AND TWO OF THE CITATIONS I WROTE THAT HOUR WERE INVENTION, WHICH IS THE CLASS
+`cites.awk` CAN NEVER CATCH.** `defs:52` for the `efgetc` macro (really **55**,
+and 52 is `extern int verbose;`) and `misc.c:405` for the chained assignment
+(really **417**; 405 is `ptr q;`). Both were written from memory of a file read
+minutes earlier, both landed on plausible live code, and the sweep passed them
+-- 317 checked, 0 stale -- exactly as its own header predicts. The rule this
+file already states is *measure the line every time; the sweep catches a subset
+of drift and none of invention*, and the cheap form of it is one command:
+`sed -n "${l}p" $f` for every citation before committing, which is what found
+these. **A brand-new file's citations are ALL candidates for invention**, since
+there has been no time for anything to drift.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
@@ -2145,7 +2251,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 172 installed**, stable. (It moves when something is imported,
+**286 shipped, 173 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.  This sentence said 150 for several batches while the
 guard kept ARTICLE.md exact — **a number with a test beside it stays current and
@@ -4018,16 +4124,27 @@ Four debugging rounds went to correct source compiled from already-fixed files.
 `tests/deps` exists for this; see below.
 
 **Files `#include`d that are not headers** are invisible to every dependency
-scanner *and* to a `*.c` glob. **Thirteen**, not the seven this used to list:
-`lex/ldefs.c`, `lex/once.c`, `tbl/t..c`, `refer/refer..c`, `refer/what..c`,
-`make/defs`, `yacc/dextern`, `yacc/files`, `yacc/y.debug`, `ccom/common`,
-`ccom/y.debug`, `cpp/yylex.c`, `eqn/e.def`. All are declared explicitly in the
-Makefile **except `refer/what..c`**, which feeds `whatabout` — not in
-`REFER_PROGS`, so this port does not build it and the gap is latent rather
-than live. Re-derive the list rather than trusting it; the `#`-then-space
-spelling is why it is easy to miss one:
+scanner *and* to a `*.c` glob. **Sixteen** — this said thirteen, then fourteen
+when `cb/cbtype.c` arrived, and efl brought two more:
+`cb/cbtype.c`, `ccom/common`, `ccom/y.debug`, `cpp/yylex.c`, **`efl/defs`**,
+**`efl/tokdefs`**, `eqn/e.def`, `lex/ldefs.c`, `lex/once.c`, `make/defs`,
+`refer/refer..c`, `refer/what..c`, `tbl/t..c`, `yacc/dextern`, `yacc/files`,
+`yacc/y.debug`. All are declared explicitly in the Makefile **except
+`refer/what..c`**, which feeds `whatabout` — not in `REFER_PROGS`, so this port
+does not build it and the gap is latent rather than live.
+
+Two things the efl pair teaches about the list itself. **`defs` is now the name
+of TWO different files** (`make/defs` and `efl/defs`), so a sweep keyed on the
+basename conflates them — print the directory. And **`efl/tokdefs` is
+GENERATED**, so it is not a `.h`, not a `.c`, and *not in the source tree at
+all*: a sweep over `src/` cannot see it, and only the build description knows
+it exists. Re-derive the list rather than trusting it; the `#`-then-space
+spelling is why it is easy to miss one, and **exclude `.md` or the sweep counts
+its own documentation** — four hits today are PORTING.md prose quoting this
+very pattern:
 ```bash
-grep -rnE '#[[:blank:]]*include[[:blank:]]*"[^"]*"' src/cmd | grep -v '\.h"'
+grep -rnE '#[[:blank:]]*include[[:blank:]]*"[^"]*"' src/cmd |
+     grep -v '\.h"' | grep -v '\.md:'
 ```
 
 **The compiler has no known unimplemented feature.** The last one was `STARG`,

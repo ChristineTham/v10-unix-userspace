@@ -438,6 +438,77 @@ struct bf { unsigned lo:4; unsigned hi:4; };
 f() { struct bf b; b.lo = 5; b.hi = 3; return b.lo + b.hi; }
 EOF
 
+# A BIT-FIELD LVALUE STAYS LIVE ACROSS THE RIGHT-HAND SIDE, AND THE RIGHT-HAND
+# SIDE CAN HOLD ANOTHER ONE.  lvaddr() describes a field's containing word in a
+# slot of a static pool; it used to release that slot on return rather than in
+# lvfree(), so `p->f = q->f = v' -- ASSIGN(FLD(p), ASSIGN(FLD(q), v)) -- handed
+# both assignments contbuf[0].  The outer store then went to Q's word, through
+# a register the inner lvfree() had already freed, so regalloc() gave lvload()
+# that same register back and ccom emitted
+#	ldr w10,[x10] ; bfi x10,w11,#6,#2 ; str w10,[x10]
+# storing the SPLICED FIELD VALUE AS AN ADDRESS.  efl's setvproc() is exactly
+# `p->vproc = q->vproc = v' and died at 0x80 -- which IS that value, 2 at bit
+# 6.  Nothing in 172 programs had reached it: the shape needs a chained
+# assignment to two DIFFERENT bit fields, and the register clash on top of that
+# needs enough pressure that regalloc() has the freed register to hand back.
+#
+# The three cases below are aimed at the three separate claims, because the two
+# faults are independent and a single case cannot separate them:
+#   - the outer store reaches P at all (with the bug, x.b keeps its old value)
+#   - it does not damage the neighbouring field packed in the same word
+#   - the pool holds MORE THAN ONE slot, which is what NCONTLV is for
+t 'bitfield chained assignment' '77' <<'EOF'
+struct bf { unsigned a:4; unsigned b:4; };
+struct bf x, y;
+set(p, q, v) register struct bf *p; register struct bf *q; register int v;
+{ p->b = q->b = v; }
+f() { x.a = 1; x.b = 0; y.a = 2; y.b = 0; set(&x, &y, 7);
+      return x.b * 10 + y.b; }
+EOF
+
+t 'bitfield chain leaves its neighbour alone' '1727' <<'EOF'
+struct bf { unsigned a:4; unsigned b:4; };
+struct bf x, y;
+set(p, q, v) register struct bf *p; register struct bf *q; register int v;
+{ p->b = q->b = v; }
+f() { x.a = 1; x.b = 0; y.a = 2; y.b = 0; set(&x, &y, 7);
+      return x.a * 1000 + x.b * 100 + y.a * 10 + y.b; }
+EOF
+
+t 'three bit-field lvalues live at once' '555' <<'EOF'
+struct bf { unsigned a:4; unsigned b:4; };
+struct bf x, y, z;
+set3(p, q, r, v) register struct bf *p; register struct bf *q;
+	register struct bf *r; register int v;
+{ p->b = q->b = r->b = v; }
+f() { x.b = 0; y.b = 0; z.b = 0; set3(&x, &y, &z, 5);
+      return x.b * 100 + y.b * 10 + z.b; }
+EOF
+
+# The same defect through the OTHER door: compound assignment also generates
+# its lvalue once and holds it across gen(right), so a bit-field ++ on the
+# right reuses the slot in exactly the same way.  Kept separate because it
+# reaches lvaddr() from case ASG PLUS rather than from case ASSIGN.
+t 'bitfield += with a bitfield lvalue on the right' '75' <<'EOF'
+struct bf { unsigned a:4; unsigned b:4; };
+struct bf x, y;
+g(p, q) register struct bf *p; register struct bf *q;
+{ p->b += q->b++; }
+f() { x.b = 3; y.b = 4; g(&x, &y); return x.b * 10 + y.b; }
+EOF
+
+# NEGATIVE CONTROL.  One bit-field assignment through a pointer never had the
+# bug -- there is no second lvaddr() to steal the slot -- so this must pass
+# both before and after.  Without it, a "fix" that simply serialised every
+# bit-field store would look indistinguishable from the real one.
+t 'single bitfield store through a pointer' '9' <<'EOF'
+struct bf { unsigned a:4; unsigned b:4; };
+struct bf x;
+set1(p, v) register struct bf *p; register int v;
+{ p->b = v; }
+f() { x.a = 0; x.b = 0; set1(&x, 9); return x.b; }
+EOF
+
 # ------------------------------------------------------------- many arguments
 t 'twelve arguments' '78' <<'EOF'
 g(a,b,c,d,e,ff,gg,hh,ii,jj,kk,ll) int a,b,c,d,e,ff,gg,hh,ii,jj,kk,ll;
@@ -978,7 +1049,15 @@ INTFNS='_strlen _dysize _slength _maplow _length _width _sgn _roman _decml
         _atoi _abc _read _jan1 _findcol _dolncnt _apack
         _column _tabcol _lineDOT _lineDOL
         _getnum _getsigned
-        _blklen'
+        _blklen
+        _conval'
+# `_conval' is efl's misc.c:105 -- `int val; if(isicon(p,&val)) return(val);
+# fatal("bad conval");' -- the integer VALUE of a constant expression node, so
+# narrowing it is right.  It is worth saying why efl produced exactly one entry
+# from 12k lines: efl's generic pointer type is `typedef int *ptr', an already
+# pointer-sized type, so the tree's hundreds of node-returning functions are
+# declared `ptr' and never narrow.  The one that does return an int is the one
+# whose whole job is to extract an int.
 # `_blklen' is csh's sh.misc.c:100 -- `register int i = 0; while (*av++) i++;
 # return (i)', the length of a string vector, so a genuine int.  The sweep
 # flagged it the moment csh reached the rootfs, which is the sweep working: it

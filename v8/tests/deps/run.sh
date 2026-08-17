@@ -400,6 +400,44 @@ dep 'ratfor objects -> binary'     src/cmd/ratfor/r2.c        $B/bin/ratfor
 # is a claim about the PROGRAM.  It is not an input to the build, and a rule
 # that made it one would rebuild ratfor whenever the prose changed.
 nodep 'BUGS is not a build input'  src/cmd/ratfor/BUGS        $B/bin/ratfor
+#
+# efl (batch 3).  Three generated inputs from three different V8 programs, and
+# the interesting edges are the two that name no header at all.
+#
+# `defs' is efl's central header under a name with no extension -- 24 of the 25
+# objects include it -- so it is invisible to a header scanner AND to a *.c
+# glob, which is the class that caused this port's worst bug.  Two objects are
+# asserted rather than one because a single case cannot distinguish "the
+# $(EFL_OBJ) group edge is stated" from "this one object happens to be listed".
+dep 'defs -> main.o'    src/cmd/efl/defs   $B/efl/main.o
+dep 'defs -> mk.o'      src/cmd/efl/defs   $B/efl/mk.o
+#
+# tokdefs is the same class one step further out: it is GENERATED, so it is not
+# a .h, not a .c, and not in the source tree at all.  Its content is the LINE
+# NUMBERS of `tokens', so inserting a line renumbers every token below it --
+# and only lex.o and init.o include it, which is upstream's own dependency line
+# (`lex.o init.o : tokdefs') and is why the third case below is a nodep.
+dep 'tokens -> tokdefs'  src/cmd/efl/tokens $B/efl/tokdefs
+dep 'tokdefs -> lex.o'   $B/efl/tokdefs     $B/efl/lex.o
+dep 'tokdefs -> init.o'  $B/efl/tokdefs     $B/efl/init.o
+nodep 'tokdefs is not an input to mk.o' $B/efl/tokdefs $B/efl/mk.o
+#
+# The scanner is lex.l THROUGH an ed(1) script: lex generates lex.yy.c,
+# `fixuplex' patches it, and the patched copy becomes lex.c.  Both halves are
+# prerequisites -- editing fixuplex changes the scanner just as surely as
+# editing lex.l does, and it is the half nothing else in this tree has.
+dep 'lex.l -> lex.c'      src/cmd/efl/lex.l     $B/efl/lex.c
+dep 'fixuplex -> lex.c'   src/cmd/efl/fixuplex  $B/efl/lex.c
+dep 'efl objects -> binary' src/cmd/efl/simple.c $B/bin/efl
+#
+# gram.c is CHECKED IN, not generated: upstream's yacc rule is commented out
+# because the grammar outgrew a pdp-11's yacc.  So there is no gram.y edge to
+# assert, and the four grammar fragments are inputs to NOTHING -- which is the
+# whole reason tests/wavea has to compare gram.c's baked-in token numbers
+# against the ones this build derives.  A dep here would be a lie about how the
+# parser is made; the nodep is the true statement.
+nodep 'gram.head is not a build input' src/cmd/efl/gram.head $B/bin/efl
+nodep 'gram.exec is not a build input' src/cmd/efl/gram.exec $B/bin/efl
 # diff3 is the SPELL SHAPE: /usr/bin/diff3 is a shell script and the binary it
 # execs is /usr/lib/diff3.  Both halves have to install or the command is a
 # script calling something absent -- which fails at RUN time with `not found',

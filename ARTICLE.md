@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2518 tests across 17 suites** guard it.
+assembly. **2545 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **172** of the 286 V8 shipped, and the ones still missing mostly
+port installs **173** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -4580,6 +4580,102 @@ later on hardware that did not exist. There is a test asserting it still does,
 because repairing it would have to be a decision rather than a tidy-up.
 
 171 to 172.
+
+### efl, where the program was innocent and the compiler was not
+
+The next one by size is `lcomp` at 1925 lines; the owner picked `efl` instead,
+at 10089, and it turned out to be the right call for a reason nobody could have
+predicted. Feldman's Extended Fortran Language gives Fortran 66 structured
+control flow, C-like data structures and generic procedures. Twelve thousand
+lines over twenty-five objects — the largest thing in this port after the C++
+front end.
+
+**Every one of its thirty-four files is byte-identical to pristine V8.** The
+port needed no source change at all. What it needed was a fix to our compiler.
+
+That the LP64 class was absent is down to a single line. `defs` opens
+
+```c
+typedef int *ptr;
+```
+
+which is a generic pointer type that is *already pointer-sized*. Compare
+`struct(1)` one batch earlier, whose `#define VERT int` stored pointers in an
+`int` and cascaded into two headers. Every node-returning function in efl is
+declared `ptr` and the allocators are declared in `defs`, so the rootfs-wide
+truncation sweep found exactly one narrowed call across twelve thousand lines —
+`conval`, the function whose entire job is to extract an integer. A program can
+be enormous and have almost no LP64 surface, and one typedef decides which.
+
+It still crashed on `procedure main`. The address was **0x80**, and that
+address was the whole diagnosis.
+
+`misc.c` contains `p->vproc = q->vproc = v` — a chained assignment to two bit
+fields. `vproc` is a 2-bit field at bit 6, and the value being stored was 2, so
+`2 << 6` is 128 is 0x80. The compiler was storing the spliced field value *as
+an address*:
+
+```asm
+ldr  w12, [x10]          ; first insert -- value in its own register
+bfi  x12, x11, #6, #2
+str  w12, [x10]
+
+ldr  w10, [x10]          ; second -- value loaded INTO the address register
+bfi  x10, x11, #6, #2    ; x10 is now 0x80; the address is gone
+str  w10, [x10]
+```
+
+Underneath was a static scratch pool released one scope too early. The back end
+describes a bit field's containing word in a slot of `contbuf[]`, and freed the
+slot when the function returned rather than when the lvalue died. An lvalue
+stays live across the evaluation of the right-hand side, and here the
+right-hand side was *another bit-field assignment*, so both got slot zero. Two
+symptoms, one cause: the outer store went to the wrong object — the correct
+address was computed into `x9` and never used — and it went there through a
+register the inner cleanup had already returned to the pool, so the allocator
+handed that same register straight back.
+
+The author's own error message names the misconception. It reads `"bit fields
+nested too deeply"`, and C has no bit field inside a bit field: the recursion is
+always exactly one deep. The quantity that needed bounding was never nesting
+but *bit-field lvalues live at once*, and `a.f = b.f = v` has two. One hundred
+and seventy-two programs had never produced that shape.
+
+The build is the other reason efl was worth taking. It has three generated
+inputs made by three different V8 programs, and one of them is a text editor.
+`fixuplex` is an `ed` script that patches the scanner lex just generated:
+one substitution to route character input through efl's own pushback macro, and
+a twenty-seven-line append of global-flag checks the lex skeleton has no way to
+express. `ed` is a compiler pass. It works unchanged, V8's `ed` on V8's `lex`'s
+output, 1455 lines in and 1482 out — and it is not idempotent, because V7 `ed`
+prints `?` on a failed substitute and keeps reading commands, so a second run
+would append the block twice and exit zero.
+
+The third input is the one that is *not* generated. `gram.c` is checked in, and
+upstream's yacc rule is commented out with the reason attached: *"gram.c can no
+longer be made on a pdp11 because of yacc limits."* So the eighty-three token
+numbers baked into the parser and the eighty-three the build derives from the
+`tokens` file are two hand-maintained copies of one list, with no step left
+that would notice them disagreeing — and token numbers are *line numbers*, so
+inserting one line renumbers everything below it and the lexer starts returning
+numbers the parser reads as different tokens. Both halves still compile. This
+is the shape that let two errno tables agree perfectly about a set missing seven
+names, so the test compares them as sets in both directions: two lists of
+eighty-three can differ and still both be eighty-three.
+
+And it works. Given a `struct point {real x, y; integer tag}` and an array of
+eight, efl emits
+
+```fortran
+      integer p(3, 8), i
+      real p1(3, 8)
+      equivalence (p(1,1), p1(1,1))
+```
+
+— a two-dimensional array with an `EQUIVALENCE` aliasing the same words at a
+second type, because there is no other way to say "structure" in Fortran 66.
+
+172 to 173.
 
 ---
 

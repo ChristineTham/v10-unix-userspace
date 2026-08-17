@@ -1,0 +1,40 @@
+# Provenance for v8/src/cmd/efl
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+839f8031cd97ffa2b88ec0194a3308d5a03a3cb7  v8/usr/src/cmd/efl/gram.expr
+c03d04889a6c26183101a0951b13ceb35b5b6344  v8/usr/src/cmd/efl/temp.c
+4d8e59cbc606f17dffd695e01558f1c0a904e62b  v8/usr/src/cmd/efl/lex.l
+fe82fc80c7668715e40fb91ef11a2e8e816bdb64  v8/usr/src/cmd/efl/print.c
+ea8584b0b26102b770856bb7ec3ab6a78d27ba7a  v8/usr/src/cmd/efl/exec.c
+470c757257db3860a58e00cf71e6c17d8e246f6e  v8/usr/src/cmd/efl/Test
+b05f66c9628b8ecb5273e3ab7d60639249350133  v8/usr/src/cmd/efl/mk.c
+afd30dd1e369ddd91d8b30cdf76975a2b836a3d2  v8/usr/src/cmd/efl/io.c
+e850139be39df8b0f11d50ab88a7572d79f9075f  v8/usr/src/cmd/efl/gram.c
+ead6d321edc1ae71e7d139532e6246d9ae7c1268  v8/usr/src/cmd/efl/addr.c
+ea2f89059508db662d5a189476ea5e4f3a67320f  v8/usr/src/cmd/efl/blklab.c
+50eb4699ef9632c01a37b2751e82f6df4710b9a3  v8/usr/src/cmd/efl/init.c
+d7a22299486480079ef400a88f80958e3f1fa6a6  v8/usr/src/cmd/efl/Makefile
+a2c6afb7b389bdf62e5a1fce1fc627e66ca1d638  v8/usr/src/cmd/efl/alloc.c
+18aaa613a2577fbdf281baeb0d09250671e7cce4  v8/usr/src/cmd/efl/gram.dcl
+af640c13e6eea34f2d468f91dc5f504bcb78b43d  v8/usr/src/cmd/efl/dcl.c
+e8188a585833de287554613810f8af4a757c57ac  v8/usr/src/cmd/efl/main.c
+850950661806a1671e8f008f8fc3e067f79d3d40  v8/usr/src/cmd/efl/dclgen.c
+16a1ac333b307bf0cef0b33fc8d4fcbe56b66c6a  v8/usr/src/cmd/efl/error.c
+eadf5525f33d6f8630f39713a34f810da106f958  v8/usr/src/cmd/efl/free.c
+0230d14756f4780a2aa042101c5ad149d85e2952  v8/usr/src/cmd/efl/pass2.c
+a000e2ec5acf55f96a2cdf8e031d5cdc30d06c2b  v8/usr/src/cmd/efl/fixuplex
+2a702cd412591c9ab3714ed583602ec82845e14e  v8/usr/src/cmd/efl/simple.c
+e5aefbed949b97011bcb37b4760c4f507fd976eb  v8/usr/src/cmd/efl/gram.exec
+93fc7d07cd78f812dda715de74049e22feb061a3  v8/usr/src/cmd/efl/icfile.c
+a4fbfde533e41c0610e2e529aea5431deb4f618e  v8/usr/src/cmd/efl/field.c
+6219e085e463b426091211ec718b3e989f1414eb  v8/usr/src/cmd/efl/misc.c
+6c31340f2938978011b81cc4cbfa6eb755f1d225  v8/usr/src/cmd/efl/struct.c
+23662773b6de2c5097f5c1132d013bdbd19437df  v8/usr/src/cmd/efl/namgen.c
+dc16dd8b402c6047d49915caa060d92251c8ef56  v8/usr/src/cmd/efl/tokens
+a6a7f4ff1cc0d7a9bf4a1c46ceeea83ff027f48e  v8/usr/src/cmd/efl/tailor.c
+666cd00ab27991038fa9af0e4f7cff7cc6727875  v8/usr/src/cmd/efl/symtab.c
+a394ff25182b297e1ca50854874894b2b7cb7c15  v8/usr/src/cmd/efl/defs
+7ab99c5e7b47362dd60e46c00d3142faee527f8b  v8/usr/src/cmd/efl/gram.head

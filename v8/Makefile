@@ -2585,6 +2585,99 @@ $(BINDIR)/ratfor: $(RAT_OBJ) $(V8DEPS)
 RAT_BUILT   = $(BINDIR)/ratfor
 RAT_INSTALL = $(call v8install,ratfor)
 
+# efl is Feldman's Extended Fortran Language (1977): structured control flow,
+# real data structures and generic procedures, compiling down to Fortran 66.
+# 12k lines over 25 objects -- the largest program in this port after cfront --
+# and the only build here with THREE generated inputs made by three different
+# V8 programs:
+#
+#   tokdefs   grep -n . tokens | sed ...   token numbers ARE line numbers in
+#                                          `tokens', so an inserted line
+#                                          renumbers everything below it
+#   lex.c     lex lex.l, then `fixuplex'   which is an ed(1) SCRIPT that
+#                                          patches the generated scanner
+#   gram.c    NOT GENERATED.  Checked in, and upstream's rule for it is
+#             commented out with a reason: "gram.c can no longer be made on a
+#             pdp11 because of yacc limits".
+#
+# That last one is why $(EFL_NAMES) has no yacc step and why tests/wavea
+# carries a case nothing else here needs.  gram.c:1-83 spells out the same 83
+# token numbers the tokdefs rule derives, and with the regeneration gone there
+# is no step left that would notice them disagreeing -- two hand-maintained
+# copies of one list, which is the shape that let v8fsd's and p9cl's errno
+# tables agree perfectly about a set missing seven names.  The lexer would
+# simply start returning numbers the parser reads as different tokens.
+#
+# The tools are V8's own -- $(BINDIR)/{grep,sed,ed} beside $(LEX) -- for the
+# reason maketab is built by V8's cc and run: upstream's makefile invokes them,
+# so using the host's would leave nothing to say the step was V8's.  fixuplex
+# reaches ed through PATH, so PATH is set to $(BINDIR) ALONE rather than
+# prepended: the Mac's ed would run this script perfectly well and silently.
+# The SHELL running fixuplex is deliberately the host's, spelled /bin/sh
+# because PATH no longer finds one: V8's sh is not a $(BINDIR) binary (it has
+# its own :fix pass), and every other recipe in this Makefile runs under GNU
+# make's /bin/sh anyway.  Rung 5 is where V8's sh runs recipes; the tool
+# upstream's makefile NAMES at this step is ed.
+#
+# A FAILED fixuplex IS A SILENT NO-OP THAT REPORTS SUCCESS, which is the
+# opposite of what it looks like and is why the && chain below cannot be the
+# guard.  Measured, not assumed: V7 ed reading from a here-document ABORTS the
+# whole script on the first error -- the append never runs, `w' never runs, the
+# file is untouched -- and it still EXITS 0.  So running fixuplex twice is
+# harmless (measured: 1482 lines both times, one pushlex block), and a fixuplex
+# whose substitution stopped matching would hand the build an unpatched scanner
+# with nothing in the exit status to say so.  tests/wavea checks the CONTENT --
+# that the input() macro reaches efgetc and that getc(yyin) survives nowhere --
+# because that is the only observable there is.
+#
+# lex and fixuplex are still one recipe, which is how upstream wrote it, and the
+# `mv' still comes last behind && so a failed LEX leaves no target.
+EFLSRC = $(SRC)/cmd/efl
+EFL_NAMES = main init tailor gram symtab dcl addr struct field blklab mk \
+            misc alloc print simple exec temp io error pass2 icfile free \
+            dclgen namgen
+EFL_OBJ = $(patsubst %,$(BUILD)/efl/%.o,$(EFL_NAMES)) $(BUILD)/efl/lex.o
+
+# test -s because a pipeline's exit status is its LAST element: a grep that
+# failed would leave sed reporting success over an empty file, and every token
+# would then be undefined a hundred lines further on in someone else's object.
+$(BUILD)/efl/tokdefs: $(EFLSRC)/tokens $(BINDIR)/grep $(BINDIR)/sed
+	@mkdir -p $(BUILD)/efl
+	V8ROOT=$(ROOTFS) $(BINDIR)/grep -n . $(EFLSRC)/tokens | \
+	  V8ROOT=$(ROOTFS) $(BINDIR)/sed "s/\([^:]*\):\(.*\)/#define \2 \1/" >$@.tmp
+	@test -s $@.tmp && mv $@.tmp $@
+
+$(BUILD)/efl/lex.c: $(EFLSRC)/lex.l $(EFLSRC)/fixuplex $(LEX) $(ROOTFS_NCFORM) \
+                    $(BINDIR)/ed
+	@mkdir -p $(BUILD)/efl
+	cd $(BUILD)/efl && V8ROOT=$(ROOTFS) $(LEX) $(EFLSRC)/lex.l && \
+	  V8ROOT=$(ROOTFS) PATH=$(BINDIR) /bin/sh $(EFLSRC)/fixuplex && \
+	  mv lex.yy.c lex.c
+
+# Explicit, so it beats the %.o pattern below -- which would take the stem
+# `lex' and go looking for $(EFLSRC)/lex.c, a file that does not exist and
+# never will: the scanner lives in lex.l.
+$(BUILD)/efl/lex.o: $(BUILD)/efl/lex.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/efl -I$(EFLSRC) -c -o $@ $(BUILD)/efl/lex.c
+
+$(BUILD)/efl/%.o: $(EFLSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(BUILD)/efl -I$(EFLSRC) -c -o $@ $<
+
+# Upstream states both of these, one line each: `$(OBJECTS) : defs' and
+# `lex.o init.o : tokdefs'.  defs is an #include'd non-header -- invisible to
+# every dependency scanner AND to a *.c glob, which is the edge whose absence
+# caused this port's worst bug.
+$(EFL_OBJ): $(EFLSRC)/defs
+$(BUILD)/efl/lex.o $(BUILD)/efl/init.o: $(BUILD)/efl/tokdefs
+
+$(BINDIR)/efl: $(EFL_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(EFL_OBJ) $(V8LIBS)
+
+EFL_BUILT   = $(BINDIR)/efl
+EFL_INSTALL = $(call v8install,efl)
+
 # B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
 # also what the $(ROOTFS)/etc/% generator further down has to iterate over --
 # showq and dmesg land in /etc and the generator's own comment promises "the
@@ -2600,12 +2693,12 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
-                   $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT)
+                   $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
-                   $(RAT_INSTALL) $(LINKED_INSTALL)
+                   $(RAT_INSTALL) $(EFL_INSTALL) $(LINKED_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

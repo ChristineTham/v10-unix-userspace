@@ -968,7 +968,16 @@ argv, keep the entire user-facing flag surface. Milestone gates:
 
 **Deferred/dropped in toolchain:** `as`, `ld`, `nm`, `size`, `strip`, `ar`, `ranlib`,
 `prof`, `lcomp`, `adb`, `sdb` → host tools (exception list, §7). `f77`+`pcc1` backend,
-`cfront` (C++ 1.0!), `cyntax`, `efl` → stretch goals, each needing separate scoping.
+`cfront` (C++ 1.0!), `cyntax` → stretch goals, each needing separate scoping.
+
+**`efl` is DONE** (Wave A2 batch 3, owner-picked over `lcomp`): 12k lines, 25
+objects, **zero source changes**, and the only defect it exposed was in our own
+back end. `src/cmd/efl/PORTING.md`. `ratfor` and `hoc` are likewise done, so
+the stretch-goal list above is now `f77`, `cfront`, `cyntax` — and `lcomp`,
+whose status this document **contradicts itself about**: it is a host-tool
+deferral in the line above and an owner-mandated language system in §the-big-
+language-systems below. That has to be settled by the owner before anyone
+picks it, because "next by size" points straight at it.
 `lint` → port early (pass-1 only, no codegen) with an LP64 `macdefs` — then run it over
 everything we port as our `NOLONG`-assumption detector.
 
@@ -3508,9 +3517,11 @@ fifteen files byte-identical, and one defect with five faces.
     honestly when the host has none.
   - **`awk`, `expr`, `m4`, `bc`** — all need yacc/lex wiring, which the
     Makefile has per-program and not generically.
-  - **The big language systems**, owner-mandated: `f77` (with `libF77` and
-    `libI77`, both present upstream and unimported), `efl`, `ratfor`,
-    `cfront`, `hoc`, `lcomp`.
+  - **The big language systems**, owner-mandated. `hoc` (batch 2d), `ratfor`
+    and `efl` (batch 3) are DONE. What is left is `f77` (with `libF77` and
+    `libI77`, both present upstream and unimported), `cfront`, and `lcomp` —
+    which §5 lists as a *host-tool deferral* instead, and the two statements
+    cannot both stand.
   - **`/etc/ttys` synthesized truthfully.** It is installed unchanged and
     lists `console tty00 tty01 tty02 tty03` — a VAX's serial lines, on a
     machine that has none. The synthesized `/etc/passwd` is the precedent and

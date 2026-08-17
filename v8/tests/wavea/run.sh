@@ -2654,6 +2654,113 @@ check 'ratfor: the 1981 BUGS report still hangs, as upstream shipped it' \
        out=$(perl -e 'alarm 5; exec @ARGV' "$V8ROOT/usr/bin/ratfor" < "$TMP/bugs.r" 2>&1); st=$?
        echo "$st $(printf '%s' "$out" | wc -c | tr -d ' ')")"
 
+# efl(1) -- Wave A2 batch 3, the second language system.  Feldman's Extended
+# Fortran Language: structured control flow, C-like data structures and generic
+# procedures, compiling to Fortran 66.
+#
+# The deadline is ratfor's, and for ratfor's reason: efl reads stdin when given
+# no file, and `perl -e alarm; exec' is the only wrapper that does not eat it.
+eflc() { perl -e 'alarm 15; exec @ARGV' "$V8ROOT/usr/bin/efl" "$@" 2>&1; }
+
+check 'efl: installed where V8 put it' 'yes' \
+    "$([ -x "$V8ROOT/usr/bin/efl" ] && echo yes)"
+check 'efl: imports nothing from libSystem' '' \
+    "$(nm -u "$V8ROOT/usr/bin/efl" 2>/dev/null | tr -d '[:space:]')"
+
+# THE INVARIANT WITH NO BUILD STEP LEFT TO PROTECT IT.  gram.c is checked in
+# and upstream's yacc rule is commented out -- "gram.c can no longer be made on
+# a pdp11 because of yacc limits" -- so the 83 token numbers baked into
+# gram.c:1-83 and the 83 the build derives from `tokens' are two hand-written
+# copies of one list.  Nothing regenerates either from the other.  Token
+# numbers ARE line numbers in `tokens', so inserting one line renumbers every
+# token below it and the lexer starts returning numbers the parser reads as
+# different tokens -- silently, since both halves still compile.  This is the
+# shape that let v8fsd's and p9cl's errno tables agree perfectly about a set
+# that was missing seven names; here the third source is the tree itself.
+#
+# Compared as SETS in both directions, not as a count: two lists of 83 can
+# differ and still both be 83.
+check 'efl: the checked-in parser agrees with tokens, both ways' '83 83 0 0' \
+    "$(sed -n '1,85p' "$ROOT/src/cmd/efl/gram.c" |
+         sed -n 's/^#[[:blank:]]*define[[:blank:]]*\([A-Z][A-Z0-9]*\)[[:blank:]]*\([0-9][0-9]*\).*/\1 \2/p' |
+         sort > "$TMP/efl.gram"
+       grep -n . "$ROOT/src/cmd/efl/tokens" |
+         sed 's/\([^:]*\):\(.*\)/\2 \1/' | sort > "$TMP/efl.tok"
+       echo "$(wc -l < "$TMP/efl.gram" | tr -d ' ') $(wc -l < "$TMP/efl.tok" | tr -d ' ')" \
+            "$(comm -23 "$TMP/efl.gram" "$TMP/efl.tok" | wc -l | tr -d ' ')" \
+            "$(comm -13 "$TMP/efl.gram" "$TMP/efl.tok" | wc -l | tr -d ' ')")"
+
+# The generated scanner is lex(1) THROUGH an ed(1) script.  fixuplex makes two
+# edits and both are load-bearing: the substitution routes character input
+# through efl's own efgetc (so `include' and `define' can push text back), and
+# the 27-line append is three global flags the lex skeleton has no way to
+# express.  Assert BOTH -- and assert the substitution by the ABSENCE of the
+# original text, since a fixuplex that silently did nothing leaves getc(yyin).
+# Aimed at the LINE the ed script edits, not at a global count: `efgetc' also
+# occurs in lex.l's own action code, so a count of occurrences conflates
+# fixuplex's edit with source that was always there.  What fixuplex changes is
+# the input() macro, and the absence of getc(yyin) anywhere is what says the
+# substitution ran rather than silently failing -- V7 ed prints `?' on a failed
+# substitute and keeps going, so a broken script exits 0.
+check 'efl: fixuplex rerouted the scanner through efgetc' 'yes 0' \
+    "$(printf '%s %s' \
+        "$(grep 'define input()' "$ROOT/build/stage0/efl/lex.c" |
+             grep -q 'efgetc' && echo yes)" \
+        "$(grep -c 'getc(yyin)' "$ROOT/build/stage0/efl/lex.c" | tr -d ' ')")"
+check 'efl: fixuplex appended the pushback block' 'yes' \
+    "$(grep -q 'if(pushlex)' "$ROOT/build/stage0/efl/lex.c" && echo yes)"
+
+# The language itself.  Feldman's for takes COMMAS, not semicolons.
+check 'efl: a procedure becomes a subroutine' 'subroutine main' \
+    "$(printf 'procedure main\ninteger i\ni = 1\nend\n' > "$TMP/e1.e"
+       eflc "$TMP/e1.e" | sed -n 's/^ *\(subroutine main\)$/\1/p')"
+
+# for/next/while/repeat-until all lower to gotos, which is the whole point of
+# the program.  Asserting the STRUCTURE rather than the text: a backward goto
+# must exist, and the relational must have become Fortran's .gt. form.
+check 'efl: for becomes a counted loop with a backward goto' 'yes' \
+    "$(printf 'procedure main\ninteger i, s\ns = 0\nfor(i = 1, i <= 3, i = i + 1)\n\ts = s + i\nend\n' > "$TMP/e2.e"
+       eflc "$TMP/e2.e" | grep -q '\.gt\.' && echo yes)"
+check 'efl: repeat/until becomes a backward goto' 'yes' \
+    "$(printf 'procedure main\ninteger s\ns = 0\nrepeat\n\t{\n\ts = s + 1\n\t}\nuntil(s > 5)\nend\n' > "$TMP/e3.e"
+       eflc "$TMP/e3.e" | grep -q '\.le\.' && echo yes)"
+
+# STRUCTURES ARE THE HEADLINE FEATURE and the one ratfor does not have, so this
+# is the case that says efl is efl.  An array of a mixed-type struct becomes a
+# 2-D array plus an EQUIVALENCE aliasing the same words at a second type --
+# there is no other way to say it in Fortran 66 -- and that is also the hardest
+# exercise of the block allocator and symbol table in the program.
+check 'efl: a struct array becomes an equivalenced 2-D array' 'yes yes yes' \
+    "$(printf 'procedure main\n\t{\n\tstruct point\n\t\t{\n\t\treal x, y\n\t\tinteger tag\n\t\t}\n\tpoint p(8)\n\tinteger i\n\tfor(i = 1, i <= 8, i = i + 1)\n\t\t{\n\t\tp(i).x = i\n\t\tp(i).tag = 0\n\t\t}\n\t}\nend\n' > "$TMP/e4.e"
+       o=$(eflc "$TMP/e4.e")
+       printf '%s %s %s' \
+         "$(printf '%s' "$o" | grep -q 'integer p(3, 8)' && echo yes)" \
+         "$(printf '%s' "$o" | grep -q 'equivalence' && echo yes)" \
+         "$(printf '%s' "$o" | grep -q 'p(3, i) = 0' && echo yes)")"
+
+# THE CASE THIS PORT OWES A COMPILER BUG.  efl's misc.c:417 is
+# `p->vproc = q->vproc = v' -- a chained assignment to two bit fields -- and it
+# crashed at address 0x80, which is the spliced field value stored AS an
+# address.  tests/v8ccom carries the aimed unit cases; this is the end-to-end
+# one, and it is here rather than there because what it proves is that the
+# 12k-line program built on the fixed compiler actually runs.  Any efl output
+# at all exercises setvproc: `procedure main' alone reaches it through
+# extname().
+check 'efl: the chained-bitfield path runs (compiler bug 0x80)' '0 yes' \
+    "$(printf 'procedure main\nend\n' > "$TMP/e5.e"
+       o=$(eflc "$TMP/e5.e"); st=$?
+       printf '%s %s' "$st" "$(printf '%s' "$o" | grep -q 'subroutine main' && echo yes)")"
+
+# efl leaves eflc/efld/efle.PID scratch files ONLY when it dies before its own
+# cleanup -- which is how tests/deps caught the crash above, as litter in the
+# repo root.  A clean compile must leave none, and the case runs in its own
+# directory so it measures efl rather than whatever else has run.
+check 'efl: a clean compile leaves no scratch files' '' \
+    "$(mkdir -p "$TMP/eflw" && cd "$TMP/eflw" && rm -f efl[cde].*
+       printf 'procedure main\ninteger i\ni = 1\nend\n' > c.e
+       perl -e 'alarm 15; exec @ARGV' "$V8ROOT/usr/bin/efl" c.e >/dev/null 2>&1
+       ls efl[cde].* 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

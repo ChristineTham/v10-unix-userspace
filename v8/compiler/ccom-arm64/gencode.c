@@ -953,6 +953,18 @@ static void lvaddr();
 static ret lvload();
 static void lvstore();
 
+/*
+ * Storage for the containing-word lvalue of a bit field.  A slot is claimed by
+ * lvaddr() and released by lvfree(), so it lasts exactly as long as the lvalue
+ * that owns it -- see the FLD arm below for what releasing it early cost.  The
+ * bound is on bit-field lvalues LIVE AT ONCE, which is why it is not 1: C has
+ * no bit field inside a bit field, so the recursion in lvaddr() is always
+ * exactly one deep, but `a.f = b.f = c.f = v' has three live at the same time.
+ */
+#define NCONTLV	16
+static struct lval contbuf[NCONTLV];
+static int contdepth;
+
 static void
 lvaddr(p, lv)
 	NODE *p;
@@ -975,17 +987,31 @@ lvaddr(p, lv)
 		 * is itself an lvalue and must likewise be generated once.
 		 * Geometry is packed into tn.rval: rval/64 is the bit offset,
 		 * rval%64 the width.
+		 *
+		 * The slot is claimed here and released in lvfree(), NOT when
+		 * this function returns.  An lvalue stays live across the
+		 * evaluation of the right-hand side, and that side can hold
+		 * another bit field: `p->f = q->f = v' is ASSIGN(FLD(p),
+		 * ASSIGN(FLD(q), v)), so a whole second bit-field assignment
+		 * runs between the outer lvaddr() and its lvstore().
+		 * Releasing on return handed both of them contbuf[0], and the
+		 * outer store then went to Q's word, through a register the
+		 * inner lvfree() had already returned to the pool -- so
+		 * regalloc() handed that same register back to lvload() and
+		 * ccom emitted `ldr w10,[x10]; bfi x10,..; str w10,[x10]',
+		 * storing the SPLICED FIELD VALUE as an address.  efl's
+		 * setvproc() is `p->vproc = q->vproc = v' and died at 0x80,
+		 * which is exactly that value: PROCINTRINSIC (2) at bit 6.
+		 * Two symptoms -- wrong object, clobbered address -- one
+		 * cause, and the fault address named the bug.
 		 */
-		static struct lval contbuf[8];
-		static int contdepth;
-
 		lv->fldoff = p->tn.rval / 64;
 		lv->fldsiz = p->tn.rval % 64;
 		if (lv->fldsiz == 0) cerror("zero-width bit field");
-		if (contdepth >= 8) cerror("bit fields nested too deeply");
+		if (contdepth >= NCONTLV)
+			cerror("too many bit-field lvalues live at once");
 		lv->cont = &contbuf[contdepth++];
 		lvaddr(p->in.left, lv->cont);
-		contdepth--;
 		return;
 	}
 
@@ -1096,7 +1122,10 @@ static void
 lvfree(lv)
 	struct lval *lv;
 {
-	if (lv->cont) lvfree(lv->cont);
+	if (lv->cont) {
+		lvfree(lv->cont);
+		contdepth--;	/* the slot lvaddr() claimed, held until now */
+	}
 	if (lv->reg >= 0) regfree(lv->reg);
 }
 
