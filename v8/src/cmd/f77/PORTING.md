@@ -250,3 +250,40 @@ to a stub because `arm64defs` leaves `SDB` undefined.
 is *correct* is only answerable by `/lib/f1` consuming it, so the two land
 together; `f77 hello.f` producing a working binary is the test, and nothing
 smaller is.
+
+### And `prolog` is a rewrite, not a translation — the last unknown, measured
+
+`prolog()` is the largest thing `arm64.c` owes, and it is not portable in the way
+the fifteen directive printers are. Three of its VAX assumptions have no arm64
+counterpart:
+
+- **`.word LWM<procno>` in the function's first word** (`vax.c:359`) — the VAX
+  register-save mask that `calls`/`callg` read. arm64 has nothing like it.
+- **`ap`-relative argument access**, via `mvarg()` emitting
+  `movl n(ap), m(fp)`. AAPCS64 passes in `x0`–`x7`.
+- **`prsave()`'s `subl2 $LF<n>,sp`**, a frame whose size is a forward-referenced
+  assembler symbol.
+
+And the first of those is a **two-way contract between the passes**, which is the
+part that makes stages 3 and 4 one piece of work rather than two.
+`fixlwm()` (`vax.c:474-482`) emits
+
+```
+	.set	LWM<procno>,0x<mask>
+```
+
+*after* the body has been generated, once `highregvar` is known — so pass 1 emits
+a forward reference to a symbol whose value pass 2's register allocation decides,
+and the assembler resolves it.
+
+On arm64 there is no mask, and `arm64_endfunction()` in
+`compiler/ccom-arm64/emit.c:437` already lays out the frame itself — in **three
+regions**, an arrangement CLAUDE.md records as having cost a real bug when two of
+them collided. So the prologue `prolog()` writes has to match an epilogue the
+back end already emits, and that contract must be **designed rather than
+ported**.
+
+**That is why nothing smaller than `f77 hello.f` can test either stage**, and why
+neither should be written speculatively: a prologue that looks right and does not
+match the epilogue produces a binary that links and corrupts its own frame,
+which is precisely the class this port has spent its life finding.
