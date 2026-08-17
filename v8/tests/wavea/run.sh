@@ -498,8 +498,24 @@ mkdest() {	# mkdest <directory> <program> -- where its OWN makefile puts it
 		v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]*$/, "", v)
 		var[n] = v }
 	    END {
+		# TWO CANDIDATES, BECAUSE A MAKEFILE MAY STATE TWO
+		# DESTINATIONS AND ONLY ONE OF THEM IS THE INSTALL.  ex has
+		# "ninstall: ... cp a.out ${NBINDIR}/ex" with NBINDIR=/usr/new
+		# at line 111 and "install: ... cp a.out ${BINDIR}/ex" with
+		# BINDIR=/usr/bin at line 125 -- BSD staging directory first,
+		# real install second -- and a loop that exits on the first
+		# match reads the staging one.  /usr/new is in no shipped V8
+		# tree.  So a recipe under a target named install wins, and
+		# anything else is only a fallback for the makefiles that name
+		# their install target something else or use the D= form.
+		best = ""; bestinst = ""; tgt = ""
 		for (i = 1; i <= NR; i++) {
 			s = line[i]
+			# Recipe lines begin with whitespace; a target line does
+			# not.  Test BEFORE the leading tab is stripped below.
+			if (s !~ /^[ \t]/ && s ~ /^[A-Za-z_][A-Za-z0-9_.\-]*[ \t]*:/) {
+				tgt = s; sub(/[ \t]*:.*/, "", tgt)
+			}
 			# BOTH SPELLINGS.  DESTDIR is an install prefix passed
 			# on the command line, so it is never one of the
 			# variables defined in the file and the generic
@@ -552,14 +568,57 @@ mkdest() {	# mkdest <directory> <program> -- where its OWN makefile puts it
 				# single-quoted shell string, and an apostrophe in
 				# a COMMENT closes it just as well as one in code.
 				# Measured -- that is how this edit first failed.)
+				# ...OR THE DESTINATION NAMES IT, which is the
+				# THIRD bug found in this parser and the largest
+				# by population.  Requiring p among the SOURCES
+				# assumes the installed file is spelled with the
+				# name of the program, and NINE imported
+				# makefiles do not spell it that way: six use
+				# the a.out idiom (awk eqn ex m4 qed ratfor,
+				# whose target is a.out and whose install arm is
+				# "cp a.out /usr/bin/NAME"), two use the shell
+				# script split (spell struct, "cp NAME.sh
+				# /usr/bin/NAME"), and plot installs $(PROGS).
+				# Every one of them was silently reported as
+				# stating no destination at all.
+				#
+				# grap escaped only by an accident of ORDERING:
+				# its "cp grap /usr/bin" is at line 12 and its
+				# "cp a.out /usr/bin/grap" at line 31, and this
+				# loop exits on the first match.
+				#
+				# The vacuity guard below could not see any of
+				# it -- it requires ten makefiles to state a
+				# destination, and the ones that do kept the
+				# count up while a fifth of the population went
+				# unread.  A threshold guard bounds how wrong a
+				# sweep can be, never how incomplete.
+				# THE BASENAME TEST APPLIES TO A SINGLE-SOURCE cp
+				# ONLY, and that is cp semantics rather than a
+				# heuristic: with more than one source the
+				# destination MUST be a directory.  Without the
+				# nf==3 guard, struct line 27 --
+				# "cp structure beautify /usr/lib/struct" --
+				# matches, because /usr/lib/struct is a DIRECTORY
+				# named struct holding structure and beautify,
+				# and the sweep reported struct as installing to
+				# /usr/lib.  Measured: a false positive this very
+				# fix introduced, the same shape as the f[3] bug
+				# it sits beside.
 				found = 0
 				for (k = 2; k < nf; k++) if (f[k] == p) found = 1
+				if (nf == 3) { b = f[nf]; sub(/^.*\//, "", b)
+					       if (b == p) found = 1 }
 				if (!found) continue
 				d = f[nf]
 			} else continue
 			sub("/" p "$", "", d); sub(/^\//, "", d)
-			if (d != "") { print d; exit }
-		} }
+			if (d == "") continue
+			if (best == "") best = d
+			if (tgt == "install" && bestinst == "") bestinst = d
+		}
+		if (bestinst != "") print bestinst
+		else if (best != "") print best }
 	' "$_m"
 }
 # THE CANDIDATE SET IS A UNION, AND FOR MOST OF THIS SWEEP'S LIFE IT WAS HALF
@@ -608,6 +667,43 @@ done
 # wrong reason -- tests/cpp's failure exactly.
 if [ "$(echo $mkseen | wc -w | tr -d ' ')" -ge 10 ]; then pass=$((pass+1))
 else fail=$((fail+1)); echo "FAIL only $(echo $mkseen | wc -w) makefiles state a destination:$mkseen"; fi
+
+# AND A THRESHOLD BOUNDS HOW WRONG A SWEEP CAN BE, NEVER HOW INCOMPLETE IT IS.
+# The guard above passed throughout the whole life of a parser that could not
+# read NINE of the imported makefiles -- a fifth of the population -- because
+# the ones it could read kept the count over ten.  What it could not see was an
+# install line whose SOURCE is not spelled with the name of the program:
+#
+#   cp a.out /usr/bin/ratfor      awk eqn ex m4 qed ratfor -- target is a.out
+#   cp struct.sh /usr/bin/struct  spell struct -- the shell-script split
+#
+# grap has the a.out form too and escaped by an accident of ORDERING, its
+# "cp grap /usr/bin" sitting nineteen lines above its "cp a.out /usr/bin/grap".
+#
+# So the guard is a RELATION now rather than a floor: every directory whose
+# makefile installs the program under the directory's own name must resolve.
+# That is derived from the tree each run, so a tenth such makefile is covered
+# the day it is imported and nobody edits this file.  The a.out set is named
+# explicitly beside it because those are the six the threshold could not see,
+# and a case aimed at the defect is what says the sweep discriminates.
+mkblind=
+for name in awk eqn ex m4 qed ratfor spell struct; do
+	[ -d "$ROOT/src/cmd/$name" ] || continue
+	[ -n "$(mkdest "$name" "$name")" ] || mkblind="$mkblind $name"
+done
+check 'the sweep reads a makefile whose install source is not the program name' \
+      '' "$mkblind"
+
+# The two that are not merely "seen" but were being read WRONG, one each for
+# the two halves of the fix.  ex states two destinations -- ninstall to
+# /usr/new, install to /usr/bin -- and a first-match loop takes BSD staging.
+# struct line 27 is "cp structure beautify /usr/lib/struct", where the trailing
+# struct is a DIRECTORY and not the program, which is why the basename test is
+# restricted to a single-source cp.
+check 'ex resolves to its install arm, not ninstall staging' \
+      'usr/bin' "$(mkdest ex ex)"
+check 'a multi-source cp does not read its directory as the program' \
+      'usr/bin' "$(mkdest struct struct)"
 # THREE, and ALL THREE are programs that appear in no table at all, so
 # Admin/dest is answering by fall-through in each -- which is what makes the
 # third source worth consulting rather than a curiosity.  `cpp' is the one that
@@ -2484,6 +2580,79 @@ check 'csh: libjobs.a installed beside it' 'yes' \
 # would link silently and run on macOS's signal semantics instead of V8's.
 check 'csh: imports nothing from libSystem' '' \
     "$(nm -u "$V8ROOT/bin/csh" 2>/dev/null | tr -d '[:space:]')"
+
+# ---------------------------------------------------------------------------
+# ratfor(1) -- Wave A2 batch 3, the first of the language systems.
+#
+# The deadline is perl alarm+exec and NOT a backgrounding wrapper, for the
+# reason src/cmd/ex/PORTING.md spends a page on: a backgrounded job in a
+# non-interactive shell gets its stdin from /dev/null, and ratfor reads stdin.
+# ratfor names neither alarm nor SIGALRM (measured, 0 hits), so alarm bounds it.
+ratf() { perl -e 'alarm 10; exec @ARGV' "$V8ROOT/usr/bin/ratfor" 2>&1; }
+
+check 'ratfor: installed where V8 put it' 'yes' \
+    "$([ -x "$V8ROOT/usr/bin/ratfor" ] && echo yes)"
+check 'ratfor: imports nothing from libSystem' '' \
+    "$(nm -u "$V8ROOT/usr/bin/ratfor" 2>/dev/null | tr -d '[:space:]')"
+
+# THE yylval HALF.  Text reaching the GOK token is carried through the parser
+# as a POINTER in yylval and walked by outcode(xp) char *xp.  With r.h back at
+# upstream int, this is a SIGSEGV on the first line -- so what the case asserts
+# is that the text arrives at all, not merely that ratfor exits 0.
+check 'ratfor: text survives the GOK pointer path' \
+    'call small(i)' \
+    "$(printf 'if (i < 5)\n\tcall small(i)\nend\n' | ratf | sed -n 's/^ *\(call.*\)/\1/p' | head -1)"
+
+# THE yyval HALF, AND IT NEEDS A RELATION RATHER THAN A LITERAL.  genlab()
+# hands out small sequential labels; with r.h back at upstream int, yaccpar
+# leaves the upper half of a POINTER in yyval and a 4-byte store replaces only
+# the lower half, so a label prints as e.g. 4294990298 -- and ratfor still
+# EXITS 0 with Fortran that looks correct apart from the numbers.  A case
+# checking the exit status or the statement text cannot see it.  Every label V8
+# generates is five digits from 23000 up, so anything wider is the bug.
+check 'ratfor: every generated label fits in a V8 int' '' \
+    "$(printf 'while (i < 3) {\n\ti = i + 1\n}\nend\n' | ratf |
+       awk '{ for (k = 1; k <= NF; k++) if ($k+0 > 99999) print $k }' | head -3 | tr '\n' ' ' | sed 's/ $//')"
+
+# The control for the case above: the labels are not merely small, they are the
+# RIGHT ones, and they nest.  A repeat/until is a top label and a trailing test.
+check 'ratfor: repeat/until becomes a backward goto' \
+    '23000 continue|23001 if(.not.(j .gt. 4))goto 23000' \
+    "$(printf 'repeat {\n\tj = j + 1\n} until (j > 4)\nend\n' | ratf |
+       sed -n 's/^ *//; /^23/p' | tr '\n' '|' | sed 's/|$//')"
+
+# struct(1) IS ratfor's INVERSE -- it reads Fortran and writes Ratfor -- so the
+# pair round-trips, and that is an end-to-end assertion needing no f77.  struct
+# is a shell script exec-ing the absolute path /usr/lib/struct/structure, which
+# resolves only INSIDE the jail, so it has to run under V8's sh; run from the
+# host it exits 127 and the case would be measuring the host shell.
+if [ -x "$V8ROOT/usr/bin/struct" ] && [ -x "$V8ROOT/bin/sh" ]; then
+	rtin=$TMP/rt.f; rtmid=$TMP/rt.r
+	printf '      i = 0\n10    i = i + 1\n      if (i .lt. 10) goto 10\n      end\n' > "$rtin"
+	PATH=/bin:/usr/bin:/etc "$V8ROOT/bin/sh" -c "struct < $rtin" > "$rtmid" 2>/dev/null
+	check 'struct: Fortran becomes a Ratfor repeat' 'repeat' \
+	    "$(sed -n 's/^[ \t]*//; /^repeat/p' "$rtmid" | head -1)"
+	check 'ratfor: and ratfor turns it back into Fortran' 'yes' \
+	    "$(ratf < "$rtmid" | grep -q 'goto 23000' && echo yes)"
+else
+	fail=$((fail+1)); echo "FAIL struct or sh missing, so the round trip was not run"
+fi
+
+# A CASE WHOSE WHOLE PURPOSE IS TO ASSERT THAT AN UPSTREAM BUG IS STILL THERE,
+# which is cb(1)s precedent in this file.  ratfor/BUGS is a mail message from
+# Rick Becker dated 4 March 1981 reporting that an unclosed for( sends ratfor
+# into a loop; Kernighan shipped it unfixed.  It reproduces here exactly --
+# exit 142 is 128+SIGALRM with zero bytes of output -- and S1 forbids repairing
+# it, so repairing it has to be a DECISION rather than a tidy-up.
+#
+# The deadline is what makes this safe to run at all: a hang is the failure
+# mode that reports nothing, and without a bound it takes the suite down
+# instead of failing it.
+check 'ratfor: the 1981 BUGS report still hangs, as upstream shipped it' \
+    '142 0' \
+    "$(printf 'for(i=1;i<=2;i=i+1\n\t\tii=1\nstop\nend\n' > "$TMP/bugs.r"
+       out=$(perl -e 'alarm 5; exec @ARGV' "$V8ROOT/usr/bin/ratfor" < "$TMP/bugs.r" 2>&1); st=$?
+       echo "$st $(printf '%s' "$out" | wc -c | tr -d ' ')")"
 
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

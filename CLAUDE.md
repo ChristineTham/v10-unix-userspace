@@ -1529,8 +1529,19 @@ Nine translation units, one of which does not exist until the build makes it.
   regex in an awk program went through a truncated address. The sweep the
   grammar side already has needs a partner:
 
+  **THAT SWEEP MISSED ITS THIRD INSTANCE ENTIRELY, AND IS WIDENED HERE.** It
+  globbed `*.l` and `*.c` and matched `yylval` alone; ratfor declares **both**
+  `yyval` and `yylval` `int` in `r.h`, a HEADER, with a grammar in `r.g` and a
+  lexer in `rlex.c`. Run over the tree with ratfor imported, its only hit was
+  `awk.lx.l:11` -- **the PORT comment describing the awk instance** -- so a
+  green run was compatible with two live total-failure instances. Narrow three
+  ways at once (file set, symbol set, and matching its own documentation), and
+  every one of the three is a shape recorded elsewhere in this file:
+
   ```bash
-  grep -rnE '(extern|static)?[[:blank:]]*(int|short)[[:blank:]]+yylval' src/cmd/*/*.l src/cmd/*/*.c
+  grep -rnE '(extern|static)?[[:blank:]]*(int|short)[[:blank:]]+(yylval|yyval)\b' \
+       src/cmd/*/*.l src/cmd/*/*.c src/cmd/*/*.h src/cmd/*/*.y src/cmd/*/*.g |
+       grep -vE '^\s*\*|PORT:'
   ```
 - **AND A POINTER CAN ROUND-TRIP THROUGH A STRUCT FIELD, WHICH THE FILE'S OWN
   COMMENT ANNOUNCES.** `struct rrow`'s `int lval` is written `(long) right(v)`
@@ -1968,6 +1979,83 @@ The tool was right (`v8/src/v8/` says v8 twice inside an already-v8-scoped
 tree, which is the redundancy that commit existed to remove), so the files
 moved and six references followed.
 
+**AND BATCH 3 BEGAN WITH `ratfor`, PICKED BY SIZE, AND IT COST TWO WORDS IN ONE
+FILE -- WITH EVERY INTERESTING THING BEING ABOUT AN INSTRUMENT RATHER THAN THE
+PROGRAM.** The five language systems PLAN.md names measure 1263 (`ratfor`),
+1925 (`lcomp`), 10089 (`efl`), 16140 (`f77`, plus 5165 in `libF77`/`libI77`)
+and 22442 (`cfront`) lines, so the order is not close. `r.h` declares `yyval`
+and `yylval` `long` where upstream says `int`; **every other file is
+byte-identical to pristine V8**, verified against `PROVENANCE`.
+`src/cmd/ratfor/PORTING.md`. Six things generalise:
+
+- **THE SWEEP THIS FILE PRESCRIBES FOR THIS EXACT CLASS COULD NOT HAVE FOUND
+  EITHER INSTANCE**, and its only hit was **its own documentation**. See the
+  widened version in the awk entry above. Narrow three ways at once -- file set
+  (`.h` never globbed, and the grammar is `r.g` rather than `.y`), symbol set
+  (`yyval` never matched, one line from `yylval`), and matching its own prose,
+  which is the `time(&` shape at its most degenerate. **Ask of any documented
+  sweep what file extensions and what symbol names its claim is limited to**,
+  because both are part of the claim and neither is visible in its output.
+- **THE TWO LIES COOPERATE, so fixing either alone leaves the other corrupting
+  it.** `yaccpar:73` is `yyval = yylval`, so once a token carrying a pointer
+  has been read `yyval`'s upper half holds that pointer's upper half, and a
+  later `yyval = genlab(3)` through an `int` declaration replaces only the
+  lower half. Measured separately: reverting `yylval` is **SIGSEGV on the first
+  line**; reverting `yyval` is **exit 0** with plausible Fortran and a label
+  printed `4294990298` -- `0x100005ADA`, label 23002 with a 1 in bit 32. The
+  second is the dangerous one and it is the one a naive case cannot see, so its
+  guard asserts a **relation** (every label V8 generates fits in five digits)
+  rather than the statement text or the status.
+- **AND THE THIRD CHANGE WAS REVERTED AFTER BEING MEASURED, WHICH IS
+  `maketab.c` ARRIVING A SECOND TIME.** `rlex.c`'s `yylval = (int) str` reads
+  as a second truncation and is not: with `yylval` declared `long`, v8cc emits
+  `adrp`/`add`/`str x10,[x9]` -- a full 64-bit store, no narrowing instruction
+  -- for `(int)` and `(long)` alike, and the two `.s` files are byte-identical
+  at 19066 bytes. S1 forbids a change that is not forced by the target, so the
+  file stays upstream's and PORTING.md records the measurement. **Diff `cc -S`
+  before patching a cast**; the question is whether the compiler ever
+  materialises the value as a 32-bit quantity, not what the C says.
+- **A THIRD LATENT BUG IN `tests/wavea`'s makefile-versus-`Admin/dest` PARSER,
+  AND THE LARGEST BY POPULATION.** It required the program's name among the
+  **sources** of the `cp`; ratfor's install arm is `cp a.out /usr/bin/ratfor`.
+  **Nine imported makefiles were already unreadable to it** -- `awk eqn ex m4
+  qed ratfor` (the `a.out` idiom), `spell struct` (`cp NAME.sh
+  /usr/bin/NAME`), `plot` (`$(PROGS)`) -- a fifth of the population, each
+  silently reported as stating no destination. `grap` escaped only by an
+  accident of ORDERING, its `cp grap /usr/bin` sitting nineteen lines above its
+  `cp a.out /usr/bin/grap`. Third bug in one parser after `f[3]` and the
+  directory-name one, and unlike those two it was **not** exposed by the import
+  -- six of the nine predate it and nobody had looked.
+- **A THRESHOLD BOUNDS HOW WRONG A SWEEP CAN BE, NEVER HOW INCOMPLETE.** The
+  vacuity guard (`mkseen >= 10`, written after `tests/cpp`'s skip) passed
+  throughout, because the readable makefiles kept the count over ten. It is a
+  derived **relation** now -- every directory whose makefile installs under its
+  own name must resolve -- so a tenth such makefile is covered the day it is
+  imported and nobody edits the suite.
+- **AND THE FIX IMMEDIATELY PRODUCED A FALSE POSITIVE OF THE SHAPE IT WAS
+  FIXING.** A basename test on the destination read `cp structure beautify
+  /usr/lib/struct` as `struct` installing to `/usr/lib` -- `/usr/lib/struct` is
+  a **directory** named struct, holding two programs. The discriminator is `cp`
+  semantics rather than a heuristic: with more than one source the destination
+  must be a directory, so the test applies at `nf == 3` only. Fixing it also
+  surfaced a real second reading in `ex`, whose makefile states **two**
+  destinations -- `ninstall:` to `/usr/new`, BSD's staging directory, and
+  `install:` to `/usr/bin` -- where a first-match loop takes the staging one.
+  A recipe under a target named `install` wins now. Each half has an aimed
+  case, and each mutation fires exactly its own.
+
+**AND IT REPRODUCES A BUG REPORTED IN 1981, WHICH IS THE FIDELITY CONTRACT
+PAYING OUT RATHER THAN A DEFECT.** `ratfor/BUGS` is a mail message from Rick
+Becker to Brian Kernighan dated 4 March 1981: an unclosed `for(` sends ratfor
+into a loop, and it shipped unfixed. The same four lines hang this build --
+exit 142, **zero bytes** of output -- forty-five years later. `tests/wavea`
+asserts it still does, so repairing it must be a decision rather than a
+tidy-up, which is `cb`'s precedent. **A hang is the failure mode that reports
+nothing**, so the case carries a deadline; and the deadline is `perl -e 'alarm
+N; exec'` rather than a backgrounding wrapper, because ratfor reads stdin and a
+backgrounded job in a non-interactive shell gets its stdin from `/dev/null` --
+`ex`'s most expensive recorded lesson.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
@@ -2057,7 +2145,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 166 installed**, stable. (It moves when something is imported,
+**286 shipped, 172 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.  This sentence said 150 for several batches while the
 guard kept ARTICLE.md exact — **a number with a test beside it stays current and
@@ -2164,7 +2252,8 @@ before at 1767. Two things, and the first is a correction to this file:
 
 **AND FIVE MORE COMMANDS WENT IN AS SHELL SCRIPTS, WHICH MADE CORRECTNESS A
 PROPERTY OF `$PATH` FOR THE FIRST TIME IN THIS PORT.** `true false dirname
-nohup whois`, 166 → 171, nothing compiled: V8 shipped them as scripts, so the
+nohup whois`, 166 → 171 (and `ratfor` since took it to 172), nothing compiled:
+V8 shipped them as scripts, so the
 installed file IS the source and their whole dependency set (`expr`, `nice`,
 `test`, `grep`, `sh`) was already installed. `true` is **zero bytes** — the
 original empty file rather than a program that exits 0, and `git hash-object`

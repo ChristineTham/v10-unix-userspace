@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2500 tests across 17 suites** guard it.
+assembly. **2518 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **171** of the 286 V8 shipped, and the ones still missing mostly
+port installs **172** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -4470,6 +4470,116 @@ passwd** rather than a transcribed string: the host's root line is a property
 of whoever's Mac this is, and the jail's is a property of the port.
 
 166 to 171.
+
+---
+
+## A language system, and the sweep that could not have found its bug
+
+The next batch is the language systems, and they were picked by size. Counting
+source lines settles it and is not close: `ratfor` 1263, `lcomp` 1925, `efl`
+10089, `f77` 16140 — plus another 5165 in `libF77` and `libI77`, so 21305 —
+and `cfront` 22442.
+
+`ratfor` is Kernighan's Rational Fortran preprocessor. It reads C-like control
+flow and writes Fortran 66, and it has a consumer already installed, because
+`struct(1)` is its inverse: `struct` reads Fortran and writes Ratfor. So the
+pair round-trips, which is an end-to-end assertion that needs no `f77` at all:
+
+```
+      i = 0                       i = 0                    i = 0
+10    i = i + 1      struct →     repeat      ratfor →     23000 continue
+      if (i .lt. 10) goto 10        i = i+1                i = i+1
+      call done(i)                  until(i>=10)           23001 if(.not.(i.ge.10))goto 23000
+      end                        call done(i)              call done(i)
+```
+
+`struct` recognised the backward `goto` as a `repeat/until`; `ratfor` turned it
+back into a labelled one. Two Bell Labs programs from the early eighties,
+inverses of each other, both running on Apple Silicon.
+
+**The port needed two words changed, in one file.** `r.h` declares `yyval` and
+`yylval` `int`; this port's yacc emits `#define YYSTYPE long` and defines both
+objects itself, so the declarations described four bytes of an eight-byte
+object. Every other file — six `.c`, the grammar, the makefile — is
+byte-identical to pristine V8.
+
+The interesting part is not the fix. It is that **this project already
+documents this exact bug class, prescribes a sweep for it, and the sweep could
+not have found either instance.** Run over the tree with `ratfor` imported, its
+only hit is the comment describing the *previous* instance. It is narrow three
+ways at once: it globs `*.l` and `*.c`, and ratfor's grammar is `r.g` while
+both declarations are in a **header**; it matches `yylval` only, and `yyval` is
+the same lie about the same symbol one line away; and it matches its own
+documentation, which is the shape where writing a finding down grows the
+population being counted.
+
+**The two lies cooperated, which is why fixing one would not have been
+enough.** `yaccpar` contains `yyval = yylval`, so once a token carrying a
+pointer has been read, `yyval`'s upper half holds that pointer's upper half —
+and a later `yyval = genlab(3)` written through an `int` declaration replaces
+only the lower half.
+
+Measured separately, the two halves fail in completely different registers:
+
+| reverted | result |
+|---|---|
+| `yylval` | **SIGSEGV** on the first line of input |
+| `yyval` | **exit 0**, plausible Fortran, and a label printed as `4294990298` |
+
+`4294990298` is `0x100005ADA` — label 23002 with a 1 sitting in bit 32. The
+segfault announces itself. The other one would have shipped, which is why the
+test for it asserts a *relation* — every label V8 generates fits in five digits
+— rather than the statement text or the exit status, neither of which can see
+it.
+
+**And one of the three changes was reverted after being measured.**
+`rlex.c`'s `yylval = (int) str` looks like a second truncation. It is not: with
+`yylval` declared `long`, v8cc emits `adrp`/`add`/`str x10,[x9]` — a full
+64-bit store with no narrowing instruction — for `(int)` and `(long)` alike,
+and the two `.s` files are byte-identical at 19066 bytes. A change to authentic
+source has to be *forced by the target*, and one that emits the same
+instructions is not. So `rlex.c` stays as Bell Labs wrote it and the
+measurement goes in the porting notes instead — the same call, settled the same
+way, as `awk`'s `maketab.c`.
+
+### The third bug in one test's parser
+
+`ratfor`'s install line is `cp a.out /usr/bin/ratfor`, and that shape broke
+something. A test compares each imported makefile's stated destination against
+Bell Labs' own `Admin/dest` tables, and its parser required the program's name
+to appear among the **sources** of the `cp`. Here the source is `a.out`.
+
+That was not a bug `ratfor` introduced. **Nine of the imported makefiles were
+already unreadable to it** — six with `a.out` targets, two installing a shell
+script under a different name, one installing a variable — a fifth of the
+population, silently reported as stating no destination at all. One program,
+`grap`, escaped only because an earlier line in its makefile happened to spell
+its own name.
+
+The guard against exactly this was in place and passed throughout: the sweep
+must find at least ten makefiles stating a destination. It did, because the
+readable ones kept the count up. **A threshold bounds how wrong a sweep can be
+and never how incomplete it is.** It is a derived relation now — every makefile
+installing under its directory's own name must resolve — plus cases aimed at
+the two halves of the fix.
+
+Fixing it immediately produced a false positive of its own, which is the same
+shape as the bug it sits beside: `cp structure beautify /usr/lib/struct`
+installs two programs *into a directory named* `struct`, and a basename test
+read that as `struct` installing to `/usr/lib`. The discriminator is `cp`
+semantics rather than a heuristic — with more than one source the destination
+must be a directory — and it surfaced a genuine second reading in `ex`, whose
+makefile states two destinations, BSD's `/usr/new` staging directory first and
+the real `/usr/bin` second.
+
+**And ratfor reproduces a bug reported in 1981.** Its `BUGS` file is a mail
+message from Rick Becker to Brian Kernighan, dated 4 March 1981: an unclosed
+`for(` sends ratfor into a loop, and it shipped unfixed. Fed the same four
+lines, this build hangs — exit 142, zero bytes of output, forty-five years
+later on hardware that did not exist. There is a test asserting it still does,
+because repairing it would have to be a decision rather than a tidy-up.
+
+171 to 172.
 
 ---
 

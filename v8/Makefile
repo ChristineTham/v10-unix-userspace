@@ -2534,6 +2534,57 @@ $(BINDIR)/csh: $(CSH_OBJ) $(BUILD)/libjobs/libjobs.a $(V8DEPS)
 CSH_BUILT   = $(BINDIR)/csh
 CSH_INSTALL = $(call v8install,csh) $(ROOTFS)/usr/lib/libjobs.a
 
+# ---------------------------------------------------------------------------
+# Wave A2 batch 3 -- the language systems, smallest first.
+#
+# ratfor is Kernighan's Rational Fortran preprocessor: it reads C-like control
+# flow and writes Fortran 66.  It is the SMALLEST of the five by a wide margin
+# -- 1263 lines against lcomp 1925, efl 10089, f77 16140 (plus 5165 more in
+# libF77 and libI77) and cfront 22442 -- and it is the one with a consumer
+# already installed, because struct(1) is its inverse: struct reads Fortran and
+# writes Ratfor.  So the pair round-trips, which is an end-to-end assertion
+# needing no f77.
+#
+# THE GRAMMAR IS r.g, NOT r.y, AND THAT IS NOT COSMETIC.  This port's own
+# documented sweep for the yylval-width class globs src/cmd/*/*.y and
+# src/cmd/*/*.l; ratfor's grammar matches neither, and its lexer is rlex.c
+# rather than a .l file.  Both live instances were in r.h -- a HEADER, which
+# that sweep does not glob either.  See src/cmd/ratfor/PORTING.md.
+#
+# y.tab.h comes out of the -d invocation and is deliberately not a target of
+# its own, for the reason the awk block gives: GNU make 3.81 has no grouped
+# targets, so naming both would be two rules sharing a recipe and would race
+# under -j.  Everything needing the header depends on y.tab.c instead -- and
+# here that is EVERY object, because r.h includes "y.tab.h" and all six .c
+# files include r.h.  Upstream states the same edge six times over, one line
+# per object: `r0.o: r.h y.tab.h r0.c'.
+RATSRC = $(SRC)/cmd/ratfor
+RAT_NAMES = r0 r1 r2 rio rlex rlook
+RAT_OBJ = $(patsubst %,$(BUILD)/ratfor/%.o,$(RAT_NAMES)) $(BUILD)/ratfor/y.tab.o
+
+$(BUILD)/ratfor/y.tab.c: $(RATSRC)/r.g $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/ratfor
+	cd $(BUILD)/ratfor && V8ROOT=$(ROOTFS) $(YACC) -d $(RATSRC)/r.g
+
+# Explicit, so it beats the %.o pattern below -- which would otherwise take the
+# stem `y.tab' and go looking for $(RATSRC)/y.tab.c.  The name is upstream's:
+# its own link line is `cc r*.o y.tab.o'.
+$(BUILD)/ratfor/y.tab.o: $(BUILD)/ratfor/y.tab.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/ratfor -I$(RATSRC) -c -o $@ $(BUILD)/ratfor/y.tab.c
+
+$(BUILD)/ratfor/%.o: $(RATSRC)/%.c $(BUILD)/ratfor/y.tab.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(BUILD)/ratfor -I$(RATSRC) -c -o $@ $<
+
+$(patsubst %,$(BUILD)/ratfor/%.o,$(RAT_NAMES)): $(RATSRC)/r.h
+
+$(BINDIR)/ratfor: $(RAT_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(RAT_OBJ) $(V8LIBS)
+
+RAT_BUILT   = $(BINDIR)/ratfor
+RAT_INSTALL = $(call v8install,ratfor)
+
 # B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
 # also what the $(ROOTFS)/etc/% generator further down has to iterate over --
 # showq and dmesg land in /etc and the generator's own comment promises "the
@@ -2549,12 +2600,12 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
-                   $(STRUCT_BUILT) $(CSH_BUILT)
+                   $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
-                   $(LINKED_INSTALL)
+                   $(RAT_INSTALL) $(LINKED_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

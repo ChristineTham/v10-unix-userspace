@@ -373,6 +373,33 @@ dep 'expr regexp.h -> object'  src/cmd/expr/regexp.h          $B/expr/expr.o
 dep 'm4 grammar -> tables'     src/cmd/m4/m4y.y               $B/m4/y.tab.c
 dep 'm4.h -> m4ext.o'          src/cmd/m4/m4.h                $B/m4/m4ext.o
 nodep 'm4.h is not m4y.o edge' src/cmd/m4/m4.h                $B/m4/m4y.o
+
+# ratfor (batch 3).  Its grammar is r.g rather than r.y, which matters for a
+# reason beyond taste -- see src/cmd/ratfor/PORTING.md -- but for the build it
+# only means the rule cannot be a pattern and the built-in %.c: %.y is not
+# involved either way.
+dep 'ratfor grammar -> tables' src/cmd/ratfor/r.g             $B/ratfor/y.tab.c
+#
+# THE EDGE THAT MATTERS IS THE ONE WITH NO HEADER TO NAME.  Upstream states it
+# six times over, one line per object -- `r0.o: r.h y.tab.h r0.c' -- and
+# y.tab.h is a BUILD PRODUCT of the yacc run, deliberately not a make target of
+# its own (GNU make 3.81 has no grouped targets, so naming it beside y.tab.c
+# would be two rules sharing one recipe and would race under -j).  So the edge
+# every object really needs is spelled through y.tab.c, and if that spelling is
+# ever dropped the failure is a STALE GENERATED HEADER: r.h includes y.tab.h,
+# every .c includes r.h, and a token added to r.g would renumber the lot while
+# make called all six objects current.
+dep 'r.g -> rlex.o (via y.tab.h)'  src/cmd/ratfor/r.g         $B/ratfor/rlex.o
+dep 'r.g -> r1.o (via y.tab.h)'    src/cmd/ratfor/r.g         $B/ratfor/r1.o
+dep 'r.h -> r0.o'                  src/cmd/ratfor/r.h         $B/ratfor/r0.o
+dep 'r.h -> rlook.o'               src/cmd/ratfor/r.h         $B/ratfor/rlook.o
+dep 'ratfor objects -> binary'     src/cmd/ratfor/r2.c        $B/bin/ratfor
+#
+# And the negative control.  BUGS is upstream's 1981 mail message about the
+# unclosed-for loop; tests/wavea asserts the bug is still reproducible, which
+# is a claim about the PROGRAM.  It is not an input to the build, and a rule
+# that made it one would rebuild ratfor whenever the prose changed.
+nodep 'BUGS is not a build input'  src/cmd/ratfor/BUGS        $B/bin/ratfor
 # diff3 is the SPELL SHAPE: /usr/bin/diff3 is a shell script and the binary it
 # execs is /usr/lib/diff3.  Both halves have to install or the command is a
 # script calling something absent -- which fails at RUN time with `not found',

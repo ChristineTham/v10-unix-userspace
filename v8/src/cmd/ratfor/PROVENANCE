@@ -1,0 +1,16 @@
+# Provenance for v8/src/cmd/ratfor
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+0ebf64a923343df1ec6d252e85bb609f510212be  v8/usr/src/cmd/ratfor/rlook.c
+367d7f4c21e224c9100da6fe97b6949101ac1698  v8/usr/src/cmd/ratfor/r0.c
+009002a608ac2eabb991f17b6478fd11b15ed0fa  v8/usr/src/cmd/ratfor/makefile
+71e52536fc25af808c044a9d3b05f3a170afd1fd  v8/usr/src/cmd/ratfor/BUGS
+d4660c422f3b9bec318286e4d5fbb989717b4af5  v8/usr/src/cmd/ratfor/rio.c
+5856eb9f3b09dc49a6987189eafaed5b500f5610  v8/usr/src/cmd/ratfor/rlex.c
+02c887e3038befc50678c6dc2f8dd5a4c5c9d246  v8/usr/src/cmd/ratfor/r2.c
+cebd2e104b79e0f13fa472857391bf54a68dc419  v8/usr/src/cmd/ratfor/r.h
+c692f2ce6f4e3b662008ae60eb6f3a1f9d2ce308  v8/usr/src/cmd/ratfor/r.g
+fa419d1589b0ee79cc87c6768faa010a650c201c  v8/usr/src/cmd/ratfor/r1.c
