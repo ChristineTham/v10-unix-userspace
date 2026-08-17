@@ -119,14 +119,14 @@ ne_d(s,p) char *s,**p;
 		case 'X':
 		case 'x': (void) op_gen(X,n,0,0); break;
 		case 'H':
-		case 'h': (void) op_gen(H,n,(int)(s+1),0);
+		case 'h': (void) op_gen(H,(long)n,(long)(s+1),0L);
 			s+=n;
 			break;
 		}
 		break;
 	case GLITCH:
 	case '"':
-	case '\'': (void) op_gen(APOS,(int)s,0,0);
+	case '\'': (void) op_gen(APOS,(long)s,0L,0L);
 		if((*p = ap_end(s)) == NULL)
 			return(0);
 		return(1);
@@ -255,6 +255,8 @@ e_d(s,p) char *s,**p;
 	return(1);
 }
 op_gen(a,b,c,d)
+int a;
+long b,c,d;		/* PORT: b and c carry pointers; see fmt.h */
 {	struct syl *p= &syl[pc];
 	if(pc>=SYLMX)
 	{	fprintf(stderr,"format too complicated:\n%s\n",

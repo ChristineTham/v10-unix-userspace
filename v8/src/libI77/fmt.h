@@ -1,7 +1,27 @@
 /*	@(#)fmt.h	1.2	*/
 /*	3.0 SID #	1.2	*/
+/* PORT: p1, p2 and p3 CARRY POINTERS AS WELL AS COUNTS, and on this target an
+   int cannot hold one.  fmt.c:129 is `op_gen(APOS,(int)s,0,0)' and fmt.c:122 is
+   `op_gen(H,n,(int)(s+1),0)' -- a char * into the format string, cast to int and
+   cast back by wrt_AP() and wrt_H().  Exact on a VAX, where sizeof(int) was
+   sizeof(char *); here the top half is lost and the format interpreter faults.
+
+   Measured before the fix, with the crash report giving the whole path:
+   main -> e_wsfe -> en_fio -> do_fio -> w_ned -> wrt_AP, EXC_BAD_ACCESS at
+   0x4feb9e9 -- a truncated address.  `write(6,10)' with `format(1x,i3)' ran
+   correctly throughout, because an integer edit descriptor puts a WIDTH in p1
+   and never a pointer, which is why the fault looked like a character-handling
+   bug rather than a width one.
+
+   Widened rather than unioned: what upstream means by these fields is "a
+   machine word", and a width fits in a long as happily as an address does.
+   That is struct(1)'s VERT lesson -- when a type is punned, widen the TYPE and
+   not the uses.  Safe because struct syl has ONE end: it is the interpreter's
+   own state, not a record on disk and not across the shim seam.
+   src/libF77/PORTING.md. */
 struct syl
-{	int op,p1,p2,p3;
+{	int op;
+	long p1,p2,p3;
 };
 #define RET 1
 #define REVERT 2

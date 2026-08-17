@@ -45,6 +45,8 @@
 #define P2NAME		2
 #define P2ICON		4
 #define P2PLUS		6
+#define P2PLUSEQ	7
+#define P2STAREQ	12
 #define P2MINUS		8
 #define P2NEG		10
 #define P2STAR		11
@@ -109,6 +111,8 @@
 #define V_CON	0		/* a literal */
 #define V_ADDR	1		/* the address of a named object */
 #define V_REG	2		/* already in a register */
+#define V_MEM	3		/* offset(reg), an OREG -- a temporary */
+#define V_VAR	4		/* a named variable: its VALUE, not its address */
 
 struct val {
 	int	kind;
@@ -238,6 +242,25 @@ into(v, r)
 		if (v->reg != r)
 			printf("\tmov\tx%d, x%d\n", r, v->reg);
 		break;
+	case V_MEM:
+		/* An OREG is offset(reg) -- pass 1's temporaries, which it
+		   allocates in the frame it told us about at LBRACKET.  The
+		   register is AUTOREG from arm64defs, x29. */
+		printf("\tldr\tw%d, [x%d, #%ld]\n", r, v->reg, v->con);
+		break;
+	case V_VAR:
+		/* A NAME IS A VALUE AND AN ICON IS AN ADDRESS, and that is the
+		   whole distinction the stream draws.  `i + j' arrives as
+		   NAME/NAME/PLUS, and an argument passed by reference arrives as
+		   an ICON whose type carries PTR.  Treating both as addresses
+		   made `i + j' ADD THE TWO ADDRESSES -- which produced Fortran's
+		   field-overflow marker rather than a wrong number, because the
+		   sum did not fit i2.  Measured in the emitted code: two
+		   adrp/add pairs and then `add w12, w12, w13'. */
+		printf("\tadrp\tx%d, %s@PAGE\n", r, v->name);
+		printf("\tadd\tx%d, x%d, %s@PAGEOFF\n", r, r, v->name);
+		printf("\tldr\tw%d, [x%d]\n", r, r);
+		break;
 	}
 }
 
@@ -321,8 +344,21 @@ doassign()
 	lhs = vpop();
 	r = 10;
 	into(&rhs, r);
-	if (lhs.kind != V_ADDR) {
-		fprintf(stderr, "f1: assignment to something that is not a name\n");
+	if (lhs.kind == V_MEM) {
+		printf("\tstr\tw%d, [x%d, #%ld]\n", r, lhs.reg, lhs.con);
+		return;
+	}
+	/* A DO loop assigns to its control variable, which pass 1 may have put
+	   in a register -- so a REG is a legitimate assignment target and the
+	   store is a move.  Kept as a w move: the value is a Fortran INTEGER. */
+	if (lhs.kind == V_REG) {
+		printf("\tmov\tw%d, w%d\n", lhs.reg, r);
+		printf("\tsxtw\tx%d, w%d\n", lhs.reg, lhs.reg);
+		return;
+	}
+	if (lhs.kind != V_VAR && lhs.kind != V_ADDR) {
+		fprintf(stderr, "f1: assignment to a %s, which is not an lvalue\n",
+			lhs.kind == V_CON ? "constant" : "temporary");
 		exit(2);
 	}
 	printf("\tadrp\tx11, %s@PAGE\n", lhs.name);
@@ -333,7 +369,6 @@ doassign()
 		printf("\tstrb\tw%d, [x11]\n", r);
 	else
 		printf("\tstr\tw%d, [x11]\n", r);
-	vsp = stmtbase;
 }
 
 static char *
@@ -368,6 +403,8 @@ opname(o)
 	case P2NAME:	return ("NAME");
 	case P2ICON:	return ("ICON");
 	case P2PLUS:	return ("PLUS");
+	case P2PLUSEQ:	return ("PLUSEQ");
+	case P2STAREQ:	return ("STAREQ");
 	case P2MINUS:	return ("MINUS");
 	case P2STAR:	return ("STAR");
 	case P2SLASH:	return ("SLASH");
@@ -530,7 +567,7 @@ genrec()
 
 	case P2NAME:
 		getname(buf);
-		v.kind = V_ADDR; v.con = 0; v.reg = -1; v.vtype = type;
+		v.kind = V_VAR; v.con = 0; v.reg = -1; v.vtype = type;
 		strncpy(v.name, buf, sizeof(v.name)-1);
 		v.name[sizeof(v.name)-1] = '\0';
 		vpush(&v);
@@ -562,8 +599,155 @@ genrec()
 	case P2LISTOP:
 		break;
 
+	/* The binary arithmetic.  Both operands are materialised into scratch
+	   registers and the result stays in one -- no attempt at a cost model,
+	   because f77 emits already-simple trees and this pass has no register
+	   pressure to speak of with x9..x15 free.
+	   THE OPERATION IS 32-BIT, on w registers, because a Fortran INTEGER is
+	   four bytes here: SZLONG in arm64defs, pinned by typesize[TYREAL] and
+	   by lengtype()'s hardcoded INTEGER*4.  Using x would compute in 64 and
+	   store 32, which is right until something compares the result. */
+	case P2PLUS: case P2MINUS: case P2STAR: case P2SLASH:
+		{
+			struct val a, b, r;
+			b = vpop(); a = vpop();
+			into(&a, 12); into(&b, 13);
+			printf("\t%s\tw12, w12, w13\n",
+			    op == P2PLUS  ? "add" :
+			    op == P2MINUS ? "sub" :
+			    op == P2STAR  ? "mul" : "sdiv");
+			/* sign-extend, for the reason gencode.c's arm64_trunc
+			   exists: a w-register write zeroes bits 63:32 and this
+			   port keeps a signed int sign-extended. */
+			printf("\tsxtw\tx12, w12\n");
+			r.kind = V_REG; r.reg = 12; r.con = 0;
+			r.vtype = type; r.name[0] = '\0';
+			vpush(&r);
+		}
+		break;
+
+	/* OREG -- offset(reg), a temporary in pass 1's frame.  The record is
+	   the header, then the offset, then an empty name (p2name("")), and the
+	   empty name has to be CONSUMED or every record after it is misread. */
+	case P2OREG:
+		if (!getword(&w))
+			w = 0;
+		getname(buf);
+		v.kind = V_MEM; v.con = w; v.reg = var; v.vtype = type;
+		v.name[0] = '\0';
+		vpush(&v);
+		break;
+
+	/* REG -- and the number is ALREADY an arm64 one, which is the point of
+	   choosing them in arm64defs: AUTOREG is 29 and regnum[] starts at 19,
+	   so pass 1 speaks x-register numbers and no mapping is wanted.  A first
+	   draft added 8 to make room for a scratch range and emitted
+	   `mov x1, x37' for the frame pointer -- the assembler said "unknown
+	   AArch64 fixup kind", which names neither the register nor the
+	   mapping. */
+	case P2REG:
+		v.kind = V_REG; v.reg = var;
+		v.con = 0; v.vtype = type; v.name[0] = '\0';
+		vpush(&v);
+		break;
+
+	/* FORCE -- put the top of the stack where a result is expected, which
+	   is x0.  putforce() emits it before an arithmetic IF and a computed
+	   GOTO, both of which then read r0. */
+	case P2FORCE:
+		{
+			struct val a, r;
+			a = vpop();
+			into(&a, 0);
+			r.kind = V_REG; r.reg = 0; r.con = 0;
+			r.vtype = type; r.name[0] = '\0';
+			vpush(&r);
+		}
+		break;
+
+	/* The compound assignments, which a DO loop's induction uses: `s = s + k'
+	   comes through as PLUSEQ rather than as PLUS followed by ASSIGN.  The
+	   target is loaded, combined and stored back through the same path
+	   doassign() uses, so a register, a temporary and a named variable all
+	   work without three copies of the store. */
+	case P2PLUSEQ: case P2STAREQ:
+		{
+			struct val rhs, lhs, sum;
+			rhs = vpop(); lhs = vpop();
+			into(&lhs, 12);
+			into(&rhs, 13);
+			printf("\t%s\tw12, w12, w13\n",
+			    op == P2PLUSEQ ? "add" : "mul");
+			printf("\tsxtw\tx12, w12\n");
+			sum.kind = V_REG; sum.reg = 12; sum.con = 0;
+			sum.vtype = type; sum.name[0] = '\0';
+			vpush(&lhs); vpush(&sum);
+			doassign();
+			/* AND LEAVES ITS VALUE, because a compound assignment is
+			   an EXPRESSION here: a DO loop's `k += 1' is compared
+			   against the bound in the very next record.  Resetting
+			   the stack after it -- which is right for a plain
+			   ASSIGN statement -- made the comparison underflow. */
+			vpush(&sum);
+		}
+		break;
+
+	/* The relationals and the conditional branch, which is how a DO loop
+	   tests its bound.  pcc emits the comparison and the branch as separate
+	   records, with CBRANCH carrying the label -- so the comparison leaves
+	   its OPERATOR on the stack for the branch to read rather than
+	   materialising a boolean, which is what the hardware wants anyway. */
+	case P2EQ: case P2NE: case P2LE: case P2LT: case P2GE: case P2GT:
+		{
+			struct val a, b, r;
+			b = vpop(); a = vpop();
+			into(&a, 12); into(&b, 13);
+			printf("\tcmp\tw12, w13\n");
+			r.kind = V_REG; r.reg = -1; r.con = op;
+			r.vtype = type; r.name[0] = '\0';
+			vpush(&r);
+		}
+		break;
+
+	case P2CBRANCH:
+		{
+			struct val c, lab;
+			char *cc;
+			/* THE TARGET IS AN ICON PUSHED BEFORE THE BRANCH, not a
+			   field of the record -- measured from the dump, where
+			   `ICON 15' precedes CBRANCH.  Reading it out of var
+			   left the label on the stack and underflowed the next
+			   statement. */
+			lab = vpop();
+			c = vpop();
+			switch ((int) c.con) {
+			/* INVERTED, and this is pcc's rule rather than a choice:
+			   CBRANCH jumps when the condition is FALSE, so a DO
+			   loop's `k > bound' branches back into the body while
+			   k is still <= it.  Emitting the condition directly ran
+			   the body exactly once and printed sum = 1 -- a
+			   plausible wrong answer, not a crash. */
+			case P2EQ: cc = "ne"; break;
+			case P2NE: cc = "eq"; break;
+			case P2LE: cc = "gt"; break;
+			case P2LT: cc = "ge"; break;
+			case P2GE: cc = "lt"; break;
+			case P2GT: cc = "le"; break;
+			default:
+				fprintf(stderr, "f1: branch on a value that is not a comparison\n");
+				exit(2);
+			}
+			/* var carries the label, and the sense is INVERTED: pcc's
+			   CBRANCH jumps when the condition is FALSE, which is how a
+			   loop test falls through into its body. */
+			printf("\tb.%s\tL%ld\n", cc, lab.con);
+			vsp = stmtbase;
+		}
+		break;
+
 	case P2ASSIGN:
 		doassign();
+		vsp = stmtbase;		/* a statement, so its value is discarded */
 		break;
 
 	case P2CALL:

@@ -2992,16 +2992,60 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# and now the artefact.  Re-derive what a case discriminates rather than
 	# deleting it as stale.
 	#
-	# IT ASSERTS THE EXECUTABLE AND NOT ITS OUTPUT, deliberately.  The
-	# generated program links and then FAULTS inside libI77's format
-	# interpreter -- the crash report gives main -> e_wsfe -> en_fio ->
-	# do_fio -> w_ned -> wrt_AP on a bad pointer -- so claiming it runs
-	# would be false.  What is true today is that four programs cooperate to
-	# produce a Mach-O executable, and that is what is checked.
-	check 'f77: the whole pipeline produces a linked executable' 'yes' \
-	    "$(cd f77p1w && rm -f prog
-	       "$V8ROOT/usr/bin/f77" h.f -o prog >ld.log 2>&1
-	       [ -x prog ] && file prog | grep -q 'Mach-O.*executable' && echo yes)"
+	# AND IT RUNS.  Five programs, each adding one thing the one before it
+	# did not have, so a failure names which construct broke rather than
+	# only that Fortran is broken.  Every one of them found a real defect
+	# while being written -- the character literal found a char * stored in
+	# an int, the addition found a NAME being addressed rather than loaded,
+	# and the loop found CBRANCH's inverted sense.
+	f77run() {
+		( cd f77p1w && printf '%s\n' "$2" > r.f && rm -f r
+		  "$V8ROOT/usr/bin/f77" r.f -o r >/dev/null 2>&1
+		  [ -x r ] && ./r 2>&1 | tr '\n' '|' )
+	}
+	check 'f77: a Hollerith format' 'hello|' \
+	    "$(f77run h '      program h
+      write(6,10)
+   10 format(5hhello)
+      end')"
+	check 'f77: a character literal and an integer' ' n = 42|' \
+	    "$(f77run q "      program q
+      integer n
+      n = 42
+      write(6,10) n
+   10 format(1x,'n = ',i2)
+      end")"
+	check 'f77: arithmetic on two variables' '  5|' \
+	    "$(f77run a '      program a
+      integer i,j
+      i = 2
+      j = 3
+      write(6,10) i+j
+   10 format(1x,i2)
+      end')"
+	check 'f77: multiplication and three output items' '  6 7 42|' \
+	    "$(f77run m '      program m
+      integer i,j
+      i = 6
+      j = 7
+      write(6,10) i, j, i*j
+   10 format(1x,i2,i2,i3)
+      end')"
+	# THE LOOP IS THE ONE THAT MATTERS: it exercises the induction variable
+	# in a register, a compound assignment used as an EXPRESSION, and the
+	# conditional branch -- and it printed 1 rather than 15 until CBRANCH's
+	# sense was inverted, which is a plausible wrong answer rather than a
+	# crash.  A case asserting only that it ran would have passed.
+	check 'f77: a DO loop, summing 1 to 5' ' sum = 15|' \
+	    "$(f77run l "      program l
+      integer k, s
+      s = 0
+      do 20 k = 1, 5
+         s = s + k
+   20 continue
+      write(6,10) s
+   10 format(1x,'sum = ',i2)
+      end")"
 
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason

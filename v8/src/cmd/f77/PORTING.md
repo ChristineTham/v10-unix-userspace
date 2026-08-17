@@ -462,3 +462,52 @@ works as far as `do_fio`.
 `tests/wavea` therefore asserts **the executable and not its output**. Claiming
 it runs would be false; what is true today is that four programs cooperate to
 produce a Mach-O binary, and that is what is checked.
+
+## It compiles and runs Fortran
+
+```
+$ f77 loop.f -o loop && ./loop
+ sum 1..5 = 15
+```
+
+Five programs are asserted in `tests/wavea`, each adding one construct the one
+before it lacked: a Hollerith format, a character literal with an integer,
+arithmetic on two variables, multiplication with three output items, and a `DO`
+loop. Every one of them found a real defect while being written, and **every one
+produced a plausible wrong answer rather than a crash**:
+
+| program | defect |
+|---|---|
+| character literal | `fmt.c:129`, `op_gen(APOS,(int)s,0,0)` — a `char *` through an `int` |
+| `i + j` | a `NAME` **addressed** instead of loaded, so it added the two addresses |
+| `DO` loop | `CBRANCH` jumps when the condition is **false**; emitting it directly ran the body once |
+
+The addition is the sharpest. `format(1x,i3)` worked throughout, because an
+integer edit descriptor puts a *width* in `p1` and never a pointer — so the
+failures sorted themselves into "text broken, numbers fine", which is exactly
+the wrong diagnosis. And the loop is why its case asserts **15** rather than an
+exit status: a test checking only that it ran would have passed against a loop
+that executed once.
+
+### `struct syl` carried pointers through `int`, and the sweep had missed it
+
+`fmt.h`'s `{ int op,p1,p2,p3; }` holds a width for `I`, a count for `X` — and a
+`char *` into the format string for `APOS` and `H`. Exact on a VAX where
+`sizeof(int) == sizeof(char *)`.
+
+The earlier libI77 sweep looked for `long` holding a Fortran INTEGER and could
+not see this, because it is the *opposite* pun: an `int` holding a pointer.
+Widened the **type**, not the uses — `struct(1)`'s `VERT` lesson — and safe
+because `syl` has one end: the interpreter's own state. `op_gen`'s parameters
+were undeclared and therefore implicit `int` too, so widening only the struct
+would have moved the truncation one call earlier and left the symptom identical.
+
+### What `/lib/f1` implements, and what it refuses
+
+Nineteen operators: `NAME ICON OREG REG PASS STMT LABEL GOTO LBRACKET RBRACKET
+LISTOP ASSIGN PLUSEQ STAREQ PLUS MINUS STAR SLASH FORCE`, the six relationals
+and `CBRANCH`. **Anything else is refused BY NAME and exits 2**, which is how the
+boundary was found at all — each unimplemented operator named itself in turn
+(`OREG`, then `REG`, then `PLUSEQ`, then `GT`) instead of being silently skipped.
+A code generator that ignores an operator emits a program that links and computes
+the wrong thing.

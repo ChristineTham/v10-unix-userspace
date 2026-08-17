@@ -178,6 +178,7 @@ wrt_IM(n,w,m,len) uint *n; ftnlen len;
 	return(0);
 }
 wrt_AP(n)
+long n;			/* PORT: a pointer through p1; see fmt.h */
 {	char *s,quote;
 	if(cursor && mv_cur()) return(mv_cur());
 	s=(char *)n;
@@ -190,6 +191,7 @@ wrt_AP(n)
 	return(1);
 }
 wrt_H(a,b)
+long a,b;		/* PORT: b is a pointer through p2; see fmt.h */
 {	char *s=(char *)b;
 	if(cursor && mv_cur()) return(mv_cur());
 	while(a--) (*putn)(*s++);
