@@ -492,6 +492,38 @@ i77nfile() {
 	    "$ROOT/src/libI77/err.c" 2>/dev/null |
 	    grep -oE '_iob\[[0-9]+\]' | head -1
 }
+# --- f77(1), the driver (stage 2) -------------------------------------------
+#
+# machdefs is GENERATED, from src/cmd/f77/arm64defs, because upstream's own
+# makefile generates it too -- `machdefs : vaxdefs / cp vaxdefs machdefs'.  So
+# the edge is arm64defs -> the generated copy -> the objects, and asserting the
+# middle link is what says the port used f77's own hook for a new target rather
+# than editing the checked-in file.
+dep 'arm64defs -> generated machdefs' src/cmd/f77/arm64defs $B/f77/machdefs
+dep 'machdefs -> driver.o'            $B/f77/machdefs        $B/f77/driver.o
+dep 'machdefs -> arm64x.o'            $B/f77/machdefs        $B/f77/arm64x.o
+# The three authentic non-headers, staged beside it so the QUOTED includes in
+# driver.c resolve to the build directory.  Upstream states two of these itself:
+# `driver.o $(OBJECTS) : defs defines machdefs ftypes' and `driver.o : drivedefs'.
+dep 'defines -> driver.o'    $B/f77/defines   $B/f77/driver.o
+dep 'ftypes -> driver.o'     $B/f77/ftypes    $B/f77/driver.o
+dep 'drivedefs -> driver.o'  $B/f77/drivedefs $B/f77/driver.o
+dep 'driver.c -> driver.o'   src/cmd/f77/driver.c $B/f77/driver.o
+dep 'arm64x.c -> arm64x.o'   src/cmd/f77/arm64x.c $B/f77/arm64x.o
+dep 'f77 objects -> binary'  $B/f77/arm64x.o  $B/bin/f77
+dep 'f77 -> installed'       $B/bin/f77       rootfs/usr/bin/f77
+# vaxx.c and pdp11x.c are the OTHER machines' answers to arm64x.c and are inputs
+# to nothing.  A dep on either would be a lie about which machine this builds
+# for, and the nodep is what makes arm64x.c's role explicit.
+nodep 'vaxx.c is not a build input'    src/cmd/f77/vaxx.c    $B/bin/f77
+nodep 'pdp11x.c is not a build input'  src/cmd/f77/pdp11x.c  $B/bin/f77
+# ...and neither is the CHECKED-IN machdefs, which is upstream's generated copy
+# committed by accident.  This is the load-bearing negative: a quoted include
+# tries the includer's directory FIRST, so if driver.c were compiled in the
+# source directory this file would win and SZADDR would be 4.  tests/wavea
+# asserts the value; this asserts the edge does not exist.
+nodep 'the checked-in machdefs is not an input' src/cmd/f77/machdefs $B/f77/driver.o
+
 i77ours=$(i77nfile "")
 i77theirs=$(i77nfile "-I$ROOT/src/libI77")
 if [ "$i77ours" = "_iob[120]" ]; then

@@ -1,0 +1,113 @@
+/*
+ * arm64defs -- the machine description for this port, in the shape of vaxdefs.
+ *
+ * THIS IS A NEW FILE AND IT NEEDS NO EDIT TO UPSTREAM'S BUILD, because
+ * upstream's own makefile generates machdefs by copying one of these:
+ *
+ *	machdefs : vaxdefs
+ *		cp vaxdefs machdefs
+ *
+ * So a per-machine defs file IS the mechanism f77 provides for a new target,
+ * and the port's Makefile copies this one instead.  (The checked-in machdefs in
+ * the source directory is that rule's output, committed upstream by accident;
+ * it is byte-identical to vaxdefs, measured.)
+ *
+ * SZLONG IS 4 AND IT IS PINNED BY THE FLOAT LAYOUT, NOT BY THE INTEGER WIDTH.
+ * That is worth stating first because it is the opposite of what LP64 suggests.
+ * typesize[] -- which exists twice, identically, at driver.c:1032 and
+ * init.c:45 -- is
+ *
+ *	{ 1, SZADDR, SZSHORT, SZLONG, SZLONG, 2*SZLONG,
+ *	  2*SZLONG, 4*SZLONG, SZLONG, 1, 1, 1 }
+ *
+ * indexed by ftypes, so typesize[TYREAL] is SZLONG and typesize[TYDREAL] is
+ * 2*SZLONG.  libF77's r_nint takes `float *' and d_nint takes `double *', so a
+ * Fortran REAL is four bytes and a DOUBLE PRECISION is eight -- which forces
+ * SZLONG to 4, and with it Fortran's INTEGER, LOGICAL and hidden character
+ * length, since ftypes has only TYSHORT and TYLONG and machdefs says
+ * TYINT = TYLENG = TYLONG.  There is no way to give the integer and the float
+ * different sizes here.
+ *
+ * The consequence is recorded rather than hidden: libI77's fio.h spells the
+ * hidden length `typedef long ftnlen', which is EIGHT bytes under v8cc, and 37
+ * libF77 files spell Fortran INTEGER as `long' too.  On a VAX those were four
+ * bytes -- V8's own compiler says so in one line, `# define NOLONG /(*)map longs
+ * to ints(*)/' at src/cmd/ccom/vax/macdefs.h:20 -- so the sources are correct
+ * for the compiler they were written for and wrong for this one.  Reconciling
+ * that is a decision about 38 files of authentic source and is deliberately not
+ * taken here; see src/cmd/f77/PORTING.md.  Nothing in stage 2 touches it,
+ * because the driver never calls the runtime.
+ */
+
+#ifndef TARGET
+TARGET NOT DEFINED !!!
+#endif
+#if TARGET!=ARM64
+Target= TARGET OUT OF RANGE!!
+#endif
+
+#ifndef FAMILY
+FAMILY NOT DEFINED!!!
+#endif
+#if FAMILY!=PCC && FAMILY!=DMR
+Family = FAMILY OUT OF RANGE
+#endif
+
+/* SDB drives the stab output in vax.c/arm64.c.  Off, because this port emits
+   Mach-O and the stab type encoding f77's README spends its whole first half
+   apologising for is a.out's.  A debugger for V8 Fortran is a separate project;
+   leaving it off means the arm64 code generator has no stab arm to get wrong. */
+
+#define TYLENG	TYLONG
+
+#define TYINT	TYLONG
+#define SZADDR	8	/* a pointer, and the only thing here that is not the VAX's */
+#define SZSHORT	2
+#define SZINT	4
+
+#define SZLONG	4	/* see the note above: pinned by TYREAL, not by C's long */
+#define SZLENG	SZLONG
+
+#define ALIADDR SZADDR
+#define ALISHORT SZSHORT
+#define ALILONG 4
+#define ALIDOUBLE 8	/* AAPCS64 aligns a double to 8; the VAX said 4 */
+#define ALIINT	ALILONG
+#define ALILENG	ALILONG
+
+/*
+ * The register conventions.  AUTOREG and ARGREG are the register NUMBERS the
+ * generated code uses as frame and argument pointers, and on arm64 there is no
+ * separate argument pointer: AAPCS64 passes in x0-x7 and spills the rest onto
+ * the stack, with x29 the frame pointer.  These are stated for completeness and
+ * are NOT yet exercised -- every consumer of them is in vax.c, putpcc.c and
+ * proc.c, which stage 3 replaces.  An unexercised rule cannot be seen to be
+ * incomplete, so they are marked rather than trusted.
+ */
+#define AUTOREG 29	/* x29, the frame pointer */
+#define ARGREG 29	/* no separate argument pointer on arm64 */
+#define CARGREG 29
+#define ARGOFFSET 0	/* the VAX's 4 skipped the argument count word */
+#define SAVESPACE 80
+
+#define FUDGEOFFSET 1
+#define BITSPERCHAR 8
+#define XL 8		/* the longest external name f77 will emit */
+
+/*
+ * The section directives.  clang's arm64 assembler takes Mach-O section names
+ * rather than the VAX's numbered .data segments, which is why these three are
+ * the only lines here that could not have been copied.
+ */
+#define USETEXT		".text"
+#define USECONST	".section __TEXT,__const"
+#define USEBSS		".data"
+#define USEINIT		".data"
+
+#define BLANKCOMMON "_BLNK_"
+
+#define LABELFMT "%s:\n"
+
+#define MAXREGVAR 4
+#define TYIREG TYLONG
+#define MSKIREG  (M(TYSHORT)|M(TYLONG))

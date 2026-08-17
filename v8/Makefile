@@ -2858,6 +2858,78 @@ $(ROOTFS)/usr/lib/libF77.a: $(BUILD)/libF77/libF77.a
 F77LIB_BUILT   = $(BUILD)/libF77/libF77.a $(BUILD)/libI77/libI77.a
 F77LIB_INSTALL = $(ROOTFS)/usr/lib/libF77.a $(ROOTFS)/usr/lib/libI77.a
 
+# f77(1) -- the driver, and f77 stage 2 of four.
+#
+# IT IS NOT ONLY A DRIVER, which is why upstream links it as `driver.o vaxx.o'
+# rather than from one object.  driver.c is 1226 lines and from :1039 it holds
+# dodata(), the DATA statement emitter: f77pass1 writes an intermediate file of
+# `name offset length type [value]' records, the driver sorts it with sort(1),
+# walks it, and lays the initialised variables out as assembler directives.  So
+# the driver contains real machine-dependent output, and vaxx.c/pdp11x.c are
+# each one machine's four directive printers.  src/cmd/f77/arm64x.c is ours.
+#
+# machdefs IS GENERATED, AND THAT IS UPSTREAM'S OWN MECHANISM.  Its makefile has
+#
+#	machdefs : vaxdefs
+#		cp vaxdefs machdefs
+#
+# so a per-machine defs file is the hook f77 provides for a new target, and this
+# copies src/cmd/f77/arm64defs instead.  The checked-in machdefs in the source
+# directory is that rule's output, committed upstream by accident -- measured
+# byte-identical to vaxdefs -- and the -I order below is what makes ours win:
+# the generated copy is in $(BUILD)/f77 and driver.c's `#include "machdefs"' is
+# a QUOTED include, which tries the includer's directory first.  So the source
+# directory's copy would win, and it is not enough to put ours on -I.
+#
+# THE FIX IS TO COMPILE FROM THE BUILD DIRECTORY, not to reorder -I.  A quoted
+# include tries the directory of the FILE BEING COMPILED, so the recipe copies
+# driver.c and arm64x.c beside the generated machdefs and compiles them there.
+# That is the same trick shim/kern/dev/tty.h relies on from the other side, and
+# it needs no edit to Bell Labs' include line.
+#
+# CFL IS THE MACHINE DESCRIPTION AND IT IS THREE TOKENS.  Upstream's is
+# `-DHERE=VAX -DTARGET=VAX -DFAMILY=PCC -DUCBVAXASM -DUCBPASS2'; ours drops the
+# two UCB flags, which name the Berkeley VAX assembler's syntax and the Berkeley
+# pass 2, and neither is what this target has.  drivedefs and arm64defs both
+# #error out if HERE, TARGET and FAMILY disagree, so a stale CFL cannot quietly
+# build a VAX compiler.
+F77SRC   = $(SRC)/cmd/f77
+F77CFL   = -DHERE=ARM64 -DTARGET=ARM64 -DFAMILY=PCC
+F77DRV_OBJ = $(BUILD)/f77/driver.o $(BUILD)/f77/arm64x.o
+
+$(BUILD)/f77/machdefs: $(F77SRC)/arm64defs
+	@mkdir -p $(@D) && cp $< $@
+
+# The three authentic non-headers driver.o needs, staged beside the generated
+# machdefs so the quoted includes resolve to this directory.  Upstream states
+# two of the edges itself: `driver.o $(OBJECTS) : defs defines machdefs ftypes'
+# and `driver.o : drivedefs'.
+F77DRV_STAGE = $(BUILD)/f77/defines $(BUILD)/f77/ftypes \
+               $(BUILD)/f77/drivedefs $(BUILD)/f77/machdefs
+
+$(BUILD)/f77/defines $(BUILD)/f77/ftypes $(BUILD)/f77/drivedefs: \
+	$(BUILD)/f77/%: $(F77SRC)/%
+	@mkdir -p $(@D) && cp $< $@
+
+$(BUILD)/f77/driver.o: $(F77SRC)/driver.c $(F77DRV_STAGE) $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@cp $(F77SRC)/driver.c $(BUILD)/f77/driver.c
+	@cd $(BUILD)/f77 && V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc \
+	    -I$(LIBCSRC)/stdio $(F77CFL) -c -o driver.o driver.c
+
+$(BUILD)/f77/arm64x.o: $(F77SRC)/arm64x.c $(F77DRV_STAGE) $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@cp $(F77SRC)/arm64x.c $(BUILD)/f77/arm64x.c
+	@cd $(BUILD)/f77 && V8ROOT=$(ROOTFS) $(ROOTFS)/bin/cc \
+	    -I$(LIBCSRC)/stdio $(F77CFL) -c -o arm64x.o arm64x.c
+
+$(BINDIR)/f77: $(F77DRV_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(F77DRV_OBJ) $(V8LIBS)
+
+F77_BUILT   = $(BINDIR)/f77
+F77_INSTALL = $(call v8install,f77)
+
 # B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
 # also what the $(ROOTFS)/etc/% generator further down has to iterate over --
 # showq and dmesg land in /etc and the generator's own comment promises "the
@@ -2874,12 +2946,12 @@ V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
-                   $(F77LIB_BUILT)
+                   $(F77LIB_BUILT) $(F77_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
-                   $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) \
+                   $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \
                    $(LINKED_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these

@@ -1,0 +1,52 @@
+# Provenance for v8/src/cmd/f77
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+9602aa94e38ca2abb2bee331e686287e7273b453  v8/usr/src/cmd/f77/fio.h
+09250ff0d2c0ef7dd6e22b58099bed8525cc1801  v8/usr/src/cmd/f77/gram.expr
+e69de29bb2d1d6434b8b29ae775ad8c2e48c5391  v8/usr/src/cmd/f77/m.2
+78d500b7c6ee10653cd67489ad3927f4caa05fc7  v8/usr/src/cmd/f77/drivedefs
+903046a46f62adfb87a134cbf3221e72da610dd5  v8/usr/src/cmd/f77/hello.c
+9b9d4909b56b903b5c328ba44292012648dd7729  v8/usr/src/cmd/f77/exec.c
+928022810aa650b90a5aef8e2d9fea3940581f27  v8/usr/src/cmd/f77/vaxdefs
+a5c903f586bcc483df7ee6cb89578650248c6082  v8/usr/src/cmd/f77/pccdefs
+27aabd9052752187f0244e078dab05af7aa4e1c0  v8/usr/src/cmd/f77/io.c
+5bcd6007eb6aa530237676320e1a61ed217ebdbf  v8/usr/src/cmd/f77/lex.c
+1911431faff806d9a496a7d9ad7bd3fd64f38aba  v8/usr/src/cmd/f77/gram.io
+83377851b67b8c48322138855aaad12d6c32d342  v8/usr/src/cmd/f77/init.c
+b94559fe9440d87d4e431c33d82582d52c93ae44  v8/usr/src/cmd/f77/Makefile
+5d629a9e1d5e7b762070ecd8c90decd1354be696  v8/usr/src/cmd/f77/gram.dcl
+5e33d2af66ca1e3d5ef284ea5ca047654925a252  v8/usr/src/cmd/f77/dmrdefs
+ae1be313e82b2031005365ffb16c029af469032e  v8/usr/src/cmd/f77/README
+8b54a512942babd1197e34209c933e4552986f80  v8/usr/src/cmd/f77/pdp11x.c
+663ee6ceda29100dda7b2fe87628e3e922d20136  v8/usr/src/cmd/f77/defines
+5da5925ce3ca151b1f2327cea14d0e35e99de581  v8/usr/src/cmd/f77/of77pass1
+0c463f24beb0fd891e01d75d8a9c8e3a63a0697a  v8/usr/src/cmd/f77/putpcc.c
+814f8763bea44a8a0b7a3a86e89790f1ca420191  v8/usr/src/cmd/f77/m.1
+d16352b2656b265eab7016f6eef5f033d18a809a  v8/usr/src/cmd/f77/main.c
+6cb3a385f91ee89c08d46ebc5d47514b5b0853b2  v8/usr/src/cmd/f77/error.c
+859c772ee6c13d02294f62caea94a6ac1f457f50  v8/usr/src/cmd/f77/equiv.c
+c6d238afc69e04122a6fe0cf57489f7ca6a26c3c  v8/usr/src/cmd/f77/pdp11defs
+0c99b1ef52576fa3be1599a16268d7c88887ffd8  v8/usr/src/cmd/f77/putdmr.c
+17e53a580c7618079767c20635aaf41c5415a85c  v8/usr/src/cmd/f77/ftypes
+508446598ae60c7bf2b2bd79ea5ab0ee6e7e2eed  v8/usr/src/cmd/f77/proc.c
+a5c903f586bcc483df7ee6cb89578650248c6082  v8/usr/src/cmd/f77/scjdefs
+f2a4094b2fdbaff4aff545dc03653f0028f63886  v8/usr/src/cmd/f77/malloc.c
+28650ed0a118b53d73d90577bff78510a7769941  v8/usr/src/cmd/f77/gram.exec
+5897b0f271f1ae9592eb611e348c8b0e2f9cbf61  v8/usr/src/cmd/f77/putscj.c
+e58123fdb3a14d171ee7491b0b57b0e56357e8e1  v8/usr/src/cmd/f77/vaxx.c
+3dddf7fbc90ec5c9ad6e43560e4d2438e074e955  v8/usr/src/cmd/f77/vax.c
+ac7e7d391b9001fe90f042dbae111bfc9326dfab  v8/usr/src/cmd/f77/data.c
+105dfe9a65f6984c92572ea31cc706d83279471a  v8/usr/src/cmd/f77/misc.c
+cd6f14267a76fb1e946eca84e6c0b29b35da9ebb  v8/usr/src/cmd/f77/pdp11.c
+855b7e108e947040525efc0aef807091a1f01d4b  v8/usr/src/cmd/f77/tokens
+233d02b74d6ced0f874966de69277452574e11b6  v8/usr/src/cmd/f77/put.c
+70ea63684f2996ec41946780148b3a3738c0c860  v8/usr/src/cmd/f77/fltused.s
+6825a09b450ea0d0755941a68fd377510e77374a  v8/usr/src/cmd/f77/driver.c
+9c7482da20c4eef4e47e66b53885ffde251326f9  v8/usr/src/cmd/f77/expr.c
+8f976a8fa6a01530be9d1715929cd2d5ed8908a1  v8/usr/src/cmd/f77/defs
+66ad886741cc3ed06784b358f98ffa7317e21dea  v8/usr/src/cmd/f77/intr.c
+928022810aa650b90a5aef8e2d9fea3940581f27  v8/usr/src/cmd/f77/machdefs
+554953d45312838d58811838a2d0df8c12ade57f  v8/usr/src/cmd/f77/gram.head

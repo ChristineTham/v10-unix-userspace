@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2569 tests across 17 suites** guard it.
+assembly. **2592 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **173** of the 286 V8 shipped, and the ones still missing mostly
+port installs **174** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -4851,6 +4851,104 @@ guard is empty.
 
 173 to 173 — no new commands, because a library is not a command. What moved is
 that `-lF77 -lI77` now resolves, which is something V8 itself could not say.
+
+### The driver, and a number pinned from an unexpected direction
+
+Stage 2 is `/usr/bin/f77` itself, and the first surprise is that it is not only
+a driver. Upstream links it from two objects — `driver.o vaxx.o` — because from
+line 1159 `driver.c` holds the **DATA statement emitter**: it sorts the
+intermediate file the compiler wrote, walks it, and lays initialised variables
+out as assembler directives. So the driver carries real machine-dependent
+output, and `vaxx.c` and `pdp11x.c` are each one machine's four directive
+printers. Ours is `arm64x.c`, and three of its four functions are what the VAX
+did verbatim. Only one differs, because clang's assembler reads `0101` as
+decimal 101 where the VAX read octal — a plausible wrong answer rather than an
+error.
+
+Then the machine description had to be written, and it produced the most
+consequential number in the port from a direction I was not looking.
+
+LP64 says `long` is 64 bits, so the instinct is that Fortran's default INTEGER
+should follow. It cannot, and the reason is nothing to do with integers.
+`typesize[]` — which exists twice, identically, in the driver and in the
+compiler — is
+
+```c
+{ 1, SZADDR, SZSHORT, SZLONG, SZLONG, 2*SZLONG,
+  2*SZLONG, 4*SZLONG, SZLONG, 1, 1, 1 }
+```
+
+indexed by type. The fourth entry is INTEGER and the **fifth is REAL**, and they
+are the same expression. libF77's `r_nint` takes a `float *` and `d_nint` takes
+a `double *`, so a Fortran REAL is four bytes and a DOUBLE PRECISION is eight —
+which forces `SZLONG` to 4, and with it INTEGER, LOGICAL, and the hidden length
+that rides along behind every character argument. f77 has exactly two integer
+types and no way to give the integer and the float different sizes.
+
+And that collides with the library I had just finished. `libI77`'s `fio.h`
+spells the hidden length `typedef long ftnlen`, and 37 libF77 files spell
+Fortran INTEGER as `long` too. Under this compiler that is eight bytes. On a
+VAX it was four — V8's own compiler says so in one line, `# define NOLONG`,
+*map longs to ints* — so the sources are correct for the compiler they were
+written for and wrong for this one.
+
+Stage 1's write-up had predicted exactly this, in a sentence ending *"the first
+thing to check in stage 3"*. It was worth writing down: the answer is that 38
+files of authentic source need reconciling, and the cost is visible enough that
+it is the owner's call rather than mine. Stage 2 does not touch it — the driver
+never calls the runtime — so it is costed, recorded, and left standing.
+
+### `HERE` meant two different things
+
+The driver has six machine conditionals, and porting it turned on noticing that
+they are not all the same kind of question. Three ask *"is this a VAX"* — the
+one-input-file assembler workaround, the PDP-11 cross-compile cleanup, the
+Interdata optimiser. Three ask *"is this a Unix"*, and spell it as a list of the
+three Unixes V8 knew:
+
+```c
+#if HERE==PDP11 || HERE==INTERDATA || HERE==VAX
+	if( (waitpid = fork()) == 0)
+```
+
+That one guards the entire fork-and-exec of the link editor. Without this
+machine's name added to it, the driver builds, runs, reports no error, and never
+invokes the linker at all.
+
+There was a shortcut available: compile with `-DHERE=VAX -DTARGET=VAX` and every
+arm comes out right. I checked all six; it genuinely does. It is still a lie —
+`HERE` means the machine the compiler runs on — and the cost of the lie is that
+the next person reads `-DTARGET=VAX` in a recipe and believes it. Naming the
+machine is one line in a file that already numbers seven of them.
+
+### Correcting a flag's spelling was not the fix
+
+The link then failed on the loader flags, and the sequence is worth keeping
+because the middle step looked like success.
+
+Upstream passes `-X` to `ld`, meaning *discard local symbols*. ld64 answers
+`warning: -X is obsolete` on every link. Mach-O's spelling is `-x`, so I changed
+one character — and the link died with
+
+```
+clang: error: language not recognized: '-u'
+```
+
+which names neither the flag I changed nor anything obviously related. `-x` is
+*clang's* option for specifying a source language, and it had eaten the next
+argument as its operand. The flag was never reaching `ld` at all: this port's
+assembler and linker are the host's, reached through clang, so every loader flag
+needs `-Wl,`.
+
+**Read which program parses a flag before correcting its spelling.** Three
+drafts of three lines, and only the third was about the right program.
+
+With that, `f77 prog.o -o prog` links an object against `libF77` and `libI77`
+and the result runs — a Fortran-shaped program, built by V8's own driver, on
+hardware V8 never saw. What is missing is the compiler in the middle: stages 3
+and 4, one of which is a second code generator.
+
+173 to 174.
 
 ---
 

@@ -2281,6 +2281,90 @@ v8cc, install to `/usr/lib`, and are exercised by `tests/wavea/f77probe.c`.
   `rootfs/usr/lib`. Same family as *check the artefact the suite actually reads*,
   with the artefact being one copy further along.
 
+**AND f77 STAGE 2, THE DRIVER, IS IN -- 43 of 46 FILES BYTE-IDENTICAL, AND IT
+PINNED A NUMBER FROM A DIRECTION NOBODY WAS LOOKING.** `f77 prog.o -o prog`
+links an object against libF77/libI77 and the result runs. `src/cmd/f77/PORTING.md`.
+
+- **`SZLONG` IS 4 AND THE FLOAT LAYOUT IS WHY, NOT THE INTEGER WIDTH.** The
+  instinct under LP64 is that Fortran's INTEGER follows C's `long`. It cannot:
+  `typesize[]` -- which exists TWICE, identically, at `driver.c:1152` and
+  `init.c:45` -- is `{1, SZADDR, SZSHORT, SZLONG, SZLONG, 2*SZLONG, ...}` indexed
+  by `ftypes`, so the fourth entry is INTEGER and the **fifth is REAL and they
+  are the same expression**. libF77's `r_nint` takes `float *` and `d_nint` takes
+  `double *`, so REAL is 4 and DOUBLE PRECISION is 8, which forces SZLONG to 4 --
+  and with it INTEGER, LOGICAL and the hidden character length, because `ftypes`
+  has only TYSHORT and TYLONG and there is no way to size the integer and the
+  float differently. **The consequence is that stage 1 was not finished**:
+  `libI77/fio.h` spells the hidden length `typedef long ftnlen`, 8 bytes here,
+  and 37 libF77 files spell Fortran INTEGER as `long` too. `# define NOLONG`
+  (`src/cmd/ccom/vax/macdefs.h:20`) says V8's own `long` was 32 bits, so the
+  sources are right for their compiler and wrong for ours. Task #12 costs the
+  four options; it is 38 files of authentic source, so it is a decision rather
+  than a patch. **Stage 1's PORTING.md predicted this in a sentence ending "the
+  first thing to check in stage 3", which is the argument for writing the
+  prediction down rather than the reassurance.**
+- **`HERE` MEANS TWO DIFFERENT THINGS AND ONLY ONE OF THEM IS ABOUT A VAX.** Six
+  conditionals in `driver.c`. Three ask "is this a VAX" -- the one-input-file
+  assembler workaround, the PDP-11 cross-compile cleanup, the Interdata
+  optimiser. Three ask **"is this a Unix"** and spell it as a list of the three
+  Unixes V8 knew, and `:678` is `#if HERE==PDP11 || HERE==INTERDATA || HERE==VAX`
+  guarding the **entire fork/execv of the link editor** -- so without this
+  machine's name added, the driver builds, runs, reports no error and never
+  invokes the linker. The `-DCM_` shape: a missing `-D` selects an empty arm
+  rather than failing to compile. Ask of every machine conditional which of the
+  two questions it is asking.
+- **AND THE SHORTCUT WAS MEASURED BEFORE BEING REFUSED.** `-DHERE=VAX
+  -DTARGET=VAX` comes out RIGHT on all six arms -- checked, not assumed -- and is
+  still a lie, because HERE means the machine the compiler runs on. `#define
+  ARM64 8` continues upstream's own numbering in `defines`, costs one line, and
+  leaves the next reader able to see that arm64 was considered rather than
+  finding `-DTARGET=VAX` in a recipe and believing it. Same reasoning as
+  `values.h`'s fourth arm. **Measure the shortcut anyway**: "it would have
+  worked" is part of the record.
+- **CORRECTING A FLAG'S SPELLING WAS NOT THE FIX, AND THE SECOND DRAFT LOOKED
+  LIKE ONE.** Upstream passes `-X` to ld; ld64 answers `warning: -X is obsolete`
+  on every link. Mach-O's spelling is `-x`, so one character -- and the link died
+  with `clang: error: language not recognized: '-u'`, naming neither the flag
+  changed nor anything related. **`-x` is CLANG's "specify language"** and it ate
+  the next argument. `ldname` is `/usr/bin/clang`, not a link editor, so every
+  loader flag needs `-Wl,`. **Read which program parses a flag before correcting
+  its spelling.** Mutation-verified: reverting it fires exactly two cases, one
+  naming the effect (nothing links) and one the cause (the missing flag).
+- **`-lc` MUST BE EXPANDED, NOT DROPPED, AND cc.c CAN DROP IT ONLY BECAUSE OF
+  WHAT IT DOES NEXT.** `v8lib()` mirrors `libpath()` at `cc.c:160` and `v8path()`
+  mirrors `setpaths()` at `cc.c:91` -- both forced by one sentence, that clang is
+  a host binary and never sees `rootpath()`. An early draft also copied cc.c's
+  DROPPING of `-lc`, and the link died on `__iob`, `__flsbuf` and `__sobuf`:
+  cc.c gets away with it by appending libv8c, libv8stubs, libv8sys and -lSystem
+  unconditionally afterwards, which f77's driver does not. `-lc` IS V8's libc, so
+  expanding it to those four keeps upstream's liblist meaningful. **Copying a
+  decision from a sibling means copying what makes it safe.**
+- **A GENERATED HEADER NEEDS THE COMPILE MOVED, NOT THE `-I` REORDERED.**
+  `machdefs` is generated -- upstream's own makefile is `machdefs : vaxdefs / cp
+  vaxdefs machdefs`, so a per-machine defs file IS f77's hook for a new target
+  and `arm64defs` needs no edit to that rule. But a quoted include tries the
+  INCLUDER's directory first, and the source directory still holds upstream's
+  copy, so `-I` cannot win. The recipe copies `driver.c` beside the generated
+  header and compiles it there. Mutation-verified in the strongest way: compiling
+  in the source directory **fails the build** (`liblist undefined`) and `cpp`
+  confirms it saw `SZADDR 4`.
+- **AND THE STATUS IS USELESS BECAUSE UPSTREAM DISCARDS IT.** `doload` ends
+  `await(waitpid);` -- a bare statement, no `if` -- so `f77` exits **0** on a
+  failed link, on a VAX as much as here. Every case therefore asserts the
+  ARTEFACT, which is `rm(1)`'s lesson arriving in a compiler driver.
+- **AND THE PREDICTED CRASH WAS NOT THERE.** `case 'o'` reads the argv terminator
+  (`aoutname = *++argv` with `-o` last), which reads as the address-0 class this
+  port has met ten times. Measured: no fault. The NULL is only PLACED in the
+  `execv` vector, never dereferenced, so it terminates the vector early and clang
+  says `argument to '-o' is missing`. Identical on a VAX. **A shape that matches
+  a known class still has to be run.**
+- **AND TEN OF THE CITATIONS IN THE NEW PORTING.md WERE STALE ON FIRST WRITING**,
+  by 10 to 120 lines, because they were measured before this file's own PORT
+  comments were added and the comments pushed everything below them down. The
+  self-invalidating-citation shape at its most literal. `sed -n "${l}p"` on every
+  citation before committing is what caught them -- the sweep could not, since
+  most had drifted onto plausible code.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never

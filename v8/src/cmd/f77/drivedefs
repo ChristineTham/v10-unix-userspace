@@ -1,0 +1,72 @@
+/*
+  Definitions for Fortran 77 Compiler driver
+  For the VAX, Running on the VAX, 
+  using the second pass of the Portable C compiler as code generator.
+*/
+
+/* PORT: a second arm, for arm64.  This file is the one machine description f77
+   does NOT keep one copy of per machine -- there is no vaxdrivedefs beside
+   vaxdefs -- so upstream's own practice was to edit it per port, and the guard
+   below is what makes a mismatched CFL fail loudly instead of building a VAX
+   compiler.  src/cmd/f77/PORTING.md. */
+#if TARGET==ARM64
+
+#if HERE!=ARM64 || FAMILY!=PCC
+	Wrong Definitions File!
+#endif
+
+#define PASS1NAME	"/usr/lib/f77pass1"
+#define PASS2NAME	"/lib/f1"
+
+/* PASS2OPT IS DELIBERATELY ABSENT, and the absence is the whole statement.
+   Upstream's is "/lib/c2" -- the VAX peephole optimiser, whose source is at
+   cmd/c2 and whose entire subject is VAX instruction patterns.  driver.c wraps
+   its invocation in `#ifdef PASS2OPT' inside `#if TARGET==PDP11 || TARGET==VAX',
+   so leaving it undefined removes the step rather than needing a flag, and -O
+   still reaches f77pass1 as an f-flag.  Defining it to something would be
+   claiming a peephole pass this port does not have. */
+
+/* as and ld are the HOST's, reached through clang, which is the deliberate
+   exception at PLAN.md S1 rule 2 and is spelled the same way in src/cmd/cc.c:
+   `char *as = "/usr/bin/clang"; char *ld = "/usr/bin/clang";'.  Porting V8's
+   VAX assembler and link editor would buy no authenticity, and their a.out
+   output could not be executed here anyway.
+
+   THE JAIL GATES THIS, not this file: sanctioned() in shim/v8sys/syscall.c
+   permits only what something actually execs, and /usr/bin/clang is on it. */
+#define ASMNAME	"/usr/bin/clang"
+#define LDNAME	"/usr/bin/clang"
+
+#define FOOTNAME	"/lib/crt0.o"
+/* PROFFOOT is upstream's /lib/mcrt0.o, the profiling crt0.  V8 shipped one and
+   this port does not build it, so -p would name a file that is not there.  It
+   is left pointing at the same name upstream used rather than at crt0.o: a
+   missing file fails loudly at the link, where silently profiling nothing would
+   not.  driver.c only reads it under -p. */
+#define PROFFOOT	"/lib/mcrt0.o"
+#define TEMPPREF	"fort"
+
+/* Upstream's order, unchanged, and the order is load-bearing: -lF77 -lI77
+   precede -lc so that libF77's cabs, sinh, cosh and tanh and libI77's ecvt win
+   over libv8c's, which is what tests/kmemu asserts.  -lm resolves to this
+   port's reproduction of V8's own empty archive. */
+static char *liblist [ ] = { "-lF77", "-lI77", "-lm", "-lc", NULL };
+
+#else	/* upstream's VAX arm, unchanged */
+
+#if HERE!=VAX || TARGET!=VAX || FAMILY!=PCC
+	Wrong Definitions File!
+#endif
+
+#define PASS1NAME	"/usr/lib/f77pass1"
+#define PASS2NAME	"/lib/f1"
+#define PASS2OPT	"/lib/c2"
+#define ASMNAME	"/bin/as"
+#define LDNAME	"/bin/ld"
+#define FOOTNAME	"/lib/crt0.o"
+#define PROFFOOT	"/lib/mcrt0.o"
+#define TEMPPREF	"fort"
+
+static char *liblist [ ] = { "-lF77", "-lI77", "-lm", "-lc", NULL };
+
+#endif

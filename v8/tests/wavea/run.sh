@@ -2814,6 +2814,95 @@ else
 	fail=$((fail+6)); echo "FAIL f77probe (build)"; head -5 f77p.log
 fi
 
+# ---------------------------------------------------------------------------
+# f77(1) -- the driver, stage 2 of four.  f77pass1 and /lib/f1 do not exist yet,
+# so what is testable is everything EXCEPT compiling: the option handling, the
+# machine description the build generates, and the whole link path.
+#
+# THE STATUS IS USELESS HERE AND UPSTREAM IS WHY.  doload() ends `await(waitpid);'
+# -- a bare statement, no if -- so f77 exits 0 on a FAILED link, on a VAX as
+# much as here.  Measured: a bare `f77' reports an undefined _MAIN__ and exits 0.
+# That is upstream's defect on upstream's hardware and S1 leaves it, so every
+# case below asserts the ARTEFACT.  Same shape as rm(1) not being an instrument
+# for write errors.
+if [ -x "$V8ROOT/usr/bin/f77" ]; then
+	check 'f77: installed, and imports nothing from the host' 'yes' \
+	    "$([ -z "$(nm -u "$V8ROOT/usr/bin/f77" 2>/dev/null)" ] && echo yes)"
+
+	# THE END-TO-END CASE, and it is the one worth having: an object that
+	# defines MAIN__, linked BY THE DRIVER against stage 1's libraries, run.
+	# f77probe.c is the stage-1 probe, reused -- it is shaped like a Fortran
+	# program already, because libF77's own main() calls MAIN__.
+	mkdir -p f77dw && (cd f77dw && rm -f prog f77probe.o
+	  "$CC" -c "$ROOT/tests/wavea/f77probe.c" >cc.log 2>&1
+	  "$V8ROOT/usr/bin/f77" f77probe.o -o prog >ld.log 2>&1) >/dev/null 2>&1
+	check 'f77: links an object against libF77/libI77 and it runs' 'XB plain checks ok' \
+	    "$(cd f77dw && ./prog 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+	check 'f77: and what it produced is a V8 binary, not a host one' '' \
+	    "$(nm -u f77dw/prog 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+
+	# NOTHING ON THE LINK LINE MAY ESCAPE THE ROOTFS, and this is a RELATION
+	# rather than a transcription: -d prints the command, and the assertion is
+	# that the only -l left unresolved is -lSystem.  Upstream's liblist is
+	# { -lF77, -lI77, -lm, -lc }; clang resolves -l against the macOS SDK, so
+	# an unresolved one is a hole in the jail -- the bug cc.c documents, where
+	# -lm answered with a libSystem re-export and the link died on an _errno
+	# with no address.  Counting rather than matching paths, because the paths
+	# hold $V8ROOT and that differs per machine.
+	check 'f77: every -l but -lSystem resolves inside the rootfs' '0' \
+	    "$(cd f77dw && "$V8ROOT/usr/bin/f77" -d f77probe.o -o /dev/null 2>&1 |
+	       tr ' ' '\n' | grep '^-l' | grep -vx '\-lSystem' | wc -l | tr -d ' ')"
+	# ...and the archives it DID name are all under $V8ROOT.  The pair matters:
+	# the case above would also pass if the liblist had simply been emptied.
+	#
+	# SIX, not four, and getting that wrong first is the point: upstream's
+	# liblist has four entries but -lc is not an archive -- it EXPANDS to
+	# libv8c, libv8stubs and libv8sys, which is what V8's libc is here.  So
+	# three resolved from the liblist (F77, I77, m) plus three from that
+	# expansion.  A transcribed number would have hidden the expansion.
+	check 'f77: and the six archives it names are all V8s' '6' \
+	    "$(cd f77dw && "$V8ROOT/usr/bin/f77" -d f77probe.o -o /dev/null 2>&1 |
+	       tr ' ' '\n' | grep "^$V8ROOT.*\.a$" | wc -l | tr -d ' ')"
+	# The loader flags reach ld through clang.  -X warns, a bare -x is read by
+	# CLANG as "specify language" and kills the link naming a different flag,
+	# and -Wl, is right.  Asserted because the middle one looked like a fix.
+	check 'f77: the loader flags are routed through clang with -Wl' '-Wl,-x -Wl,-u -Wl,_MAIN__' \
+	    "$(cd f77dw && "$V8ROOT/usr/bin/f77" -d f77probe.o -o /dev/null 2>&1 |
+	       tr ' ' '\n' | grep '^-Wl,' | tr '\n' ' ' | sed 's/ $//')"
+
+	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
+	# arriving is a decision rather than a discovery -- the same reason
+	# tests/kmemu asserts that w(1) says `No mem'.
+	check 'f77: says so plainly that f77pass1 is not here yet' 'Cannot load /usr/lib/f77pass1' \
+	    "$(cd f77dw && printf '      end\n' > h.f
+	       "$V8ROOT/usr/bin/f77" h.f 2>&1 | sed -n 's/.*\(Cannot load .*\)/\1/p' | head -1)"
+else
+	fail=$((fail+7)); echo "FAIL f77 driver is not installed"
+fi
+
+# The machine description the build GENERATES, which is upstream's own mechanism
+# -- its makefile has `machdefs : vaxdefs / cp vaxdefs machdefs' -- and the
+# discriminator is SZADDR, because a pointer is the one thing on this target that
+# is not the VAX's width.  Both directions, so neither case can be vacuous: the
+# source directory still holds upstream's machdefs, and it must NOT be the one
+# the compile opened.
+check 'f77: the build generated an arm64 machdefs (SZADDR 8)' '8' \
+    "$(sed -n 's/^#define[[:blank:]]*SZADDR[[:blank:]]*\([0-9]*\).*/\1/p' \
+         "$ROOT/build/stage0/f77/machdefs")"
+check 'f77: and the source directory still has upstream(s) (SZADDR 4)' '4' \
+    "$(sed -n 's/^#define[[:blank:]]*SZADDR[[:blank:]]*\([0-9]*\).*/\1/p' \
+         "$ROOT/src/cmd/f77/machdefs")"
+# SZLONG IS 4 AND IT IS PINNED BY THE FLOAT LAYOUT, which is the opposite of what
+# LP64 suggests and the single most consequential number in the f77 port.
+# typesize[] -- at driver.c:1032 and again identically at init.c:45 -- makes
+# typesize[TYREAL] SZLONG and typesize[TYDREAL] 2*SZLONG, and libF77's r_nint
+# takes `float *' while d_nint takes `double *'.  So REAL is 4 and DOUBLE
+# PRECISION is 8, and with ftypes offering only TYSHORT and TYLONG that fixes
+# Fortran's INTEGER and hidden character length at 4 as well.  See task #12.
+check 'f77: SZLONG is 4, pinned by TYREAL and not by Cs long' '4' \
+    "$(sed -n 's/^#define[[:blank:]]*SZLONG[[:blank:]]*\([0-9]*\).*/\1/p' \
+         "$ROOT/build/stage0/f77/machdefs")"
+
 # ecvt.o is the one object given an -I, and what it must NOT have picked up is
 # libI77's own values.h -- which has three machine arms (u3b, vax, gcos) and no
 # arm64, so _DEXPLEN and _HIDDENBIT would be undefined.  The patched copy is
