@@ -92,6 +92,60 @@ So `tests/wavea` carries three kinds of case:
 - a line that prints how high this host's pids actually go, and says out loud
   when the value cases cannot see anything.
 
+## And a second defect, found by CI: backquotes lost their output ~0.4% of the time
+
+The commit that installed csh went red on the runner with `csh: backquotes
+finish / want [inner] / got []`.  Reproduced locally under eight-way
+contention: **2 failures in 480**, where V8's `sh` doing the same thing was
+**0 in 480**.
+
+The difference between the two shells is the whole diagnosis.  csh installs a
+SIGCHLD handler (`sigset(SIGCHLD, pchild)`); `sh` installs none, so only csh
+can have a blocking read interrupted.  And `backeval` reads the backquote pipe
+like this (`sh.glob.c:690-691`):
+
+```c
+icnt = read(pvec[0], ip, BUFSIZ);
+if (icnt <= 0) { c = -1; break; }
+```
+
+**EINTR is indistinguishable from end-of-file there.**  So a SIGCHLD landing
+inside that read ended the substitution early and `set v = \`echo inner\``
+quietly produced the empty string.
+
+**IT IS NOT csh's BUG AND THE FIX IS NOT IN csh.**  On upstream's kernel that
+read is restarted, and V8 decides it in one flag:
+
+| | |
+|---|---|
+| `sys4.c:318-320` | `ssig()` sets `SNUSIG` when the action is `SIGISDEFER(f)` -- exactly what `sigset()` passes |
+| `sys2.c:55,103` | `read`/`write`: `if ((p_flag&SNUSIG) && setjmp(u_qsav)) if (u_count == uap->count) u_eosys = RESTARTSYS` |
+| `trap.c:184` | `if (u.u_eosys == RESTARTSYS) pc = opc` -- back the PC over the chmk and re-issue |
+
+So V7's `signal(2)` yields EINTR and the reliable interface **restarts**, in the
+same kernel, and the shim was applying the first rule to both.  `v8s_sigsys`
+sets `SA_RESTART` on its deferred arm now -- XNU's flag carries the same
+proviso as `u_count == uap->count`, so it maps exactly rather than
+approximately.  Measured after: **0 failures in 1200**.
+
+Three things generalise:
+
+- **A RECORDED DECISION WAS RIGHT AND INCOMPLETE, which is worse than wrong.**
+  `shim/v8sys/signal.c` and `shim/NOTES.md` both said "no SA_RESTART -- V8
+  programs expect a slow read to fail with EINTR".  True of `signal(2)`, silent
+  about the interface that had no caller until csh arrived.  The unexercised-rule
+  shape, in a *note* rather than in code.
+- **THE GUARD CANNOT BE THE SYMPTOM.**  At 0.4% no behavioural case is worth
+  anything.  `tests/v8sys` asserts the PROPERTY, as a pair -- one case per arm,
+  because a blanket rule in either direction passes half of them -- and it is
+  deterministic and cannot hang, because **the handler is the writer**: the
+  read is interrupted, the handler puts a byte in the pipe, and the restarted
+  read returns it.
+- **CI FOUND IT AND LOCAL RUNS DID NOT**, twice over: the runner's pids reached
+  98638, so it was not the "freshly booted, low pids" machine the width guard
+  was written for -- the assumption in that guard's comment was about runners in
+  general and is now measured to be false for this one.
+
 ## What was fixed getting here, and all of it is independently right
 
 Four of these are defects in code csh merely *reached* first:

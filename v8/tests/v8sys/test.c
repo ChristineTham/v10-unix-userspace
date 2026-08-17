@@ -46,6 +46,7 @@ extern int v8s_kill(int, int);
 extern int v8s_pause(void);
 extern unsigned v8s_alarm(unsigned);
 extern v8handler v8s_signal(int, v8handler);
+extern char *v8s_sigsys(int, char *);	/* 4.1BSD call 48, libjobs' primitive */
 extern int v8sys_signo_to_host(int);
 extern int v8sys_signo_from_host(int);
 extern int v8sys_errno(int);
@@ -264,6 +265,61 @@ c_eintr(void)
 	if (v8s_read(fd[0], &b, 1) != -1) _exit(5);
 	if (v8_errno != V8_EINTR) _exit(6);
 	if (hits != 1) _exit(7);
+	_exit(0);
+}
+
+/*
+ * ...AND THE OTHER INTERFACE RESTARTS IT, which is the other half of the pair
+ * above and is upstream's rule rather than a preference.  V8 decides in one
+ * flag: ssig() (sys4.c:318-320) sets SNUSIG when the action is SIGISDEFER(f)
+ * -- which is exactly what sigset() passes -- and read() then opens with
+ * `if ((p_flag&SNUSIG) && setjmp(u_qsav)) if (u_count == uap->count)
+ * u_eosys = RESTARTSYS' (sys2.c:55), which trap.c:184 turns into backing the
+ * PC over the chmk.  So V7's signal(2) yields EINTR and the reliable interface
+ * restarts, in the SAME kernel.
+ *
+ * THE HANDLER IS THE WRITER, which is what makes this deterministic and
+ * unhangable: with the restart the read is interrupted, the handler puts a
+ * byte in the pipe, and the restarted read returns it; without the restart the
+ * read returns -1/EINTR and the case fails at once.  No fork, no second
+ * process, no timing.
+ *
+ * It is worth a case rather than a comment because the defect it guards is a
+ * silent WRONG ANSWER at a fraction of a percent: csh's backeval reads the
+ * backquote pipe with `if (icnt <= 0) { c = -1; break; }', so an interrupted
+ * read is indistinguishable from end-of-file and `set v = `echo x`' quietly
+ * became the empty string.  Measured before the fix at 2 in 480 under eight-way
+ * contention -- far too rare for a behavioural case, which is why this asserts
+ * the PROPERTY instead.
+ */
+static int restartfd;
+
+static void
+onsig_write(int sig)
+{
+	char c = 'x';
+
+	hits++;
+	seen = sig;
+	(void)v8s_write(restartfd, &c, 1);
+}
+
+static void
+c_sigsys_restart(void)
+{
+	int fd[2];
+	char b;
+
+	hits = 0; seen = -1; b = 0;
+	if (v8s_pipe(fd) < 0) _exit(2);
+	restartfd = fd[1];
+	/* DEFERSIG: the low bit is the defer flag, and it is what sets SNUSIG */
+	if (v8s_sigsys(V8SIG_ALRM, (char *)((long)onsig_write | 1)) ==
+	    (char *)-1) _exit(3);
+	if (v8s_alarm(1) != 0) _exit(4);
+	if (v8s_read(fd[0], &b, 1) != 1) _exit(5);	/* -1 == not restarted */
+	if (hits != 1) _exit(6);
+	if (b != 'x') _exit(7);
 	_exit(0);
 }
 
@@ -1056,6 +1112,8 @@ main(void)
 	    "V7 reset-on-delivery: SIG_DFL is what is installed afterwards");
 	okchild(c_eintr, 5000,
 	    "a slow read is interrupted with EINTR rather than restarted");
+	okchild(c_sigsys_restart, 5000,
+	    "...but a DEFERRED handler restarts it, which is what SNUSIG means");
 	okchild(c_pause, 5000,
 	    "pause() blocks until a signal is delivered, then returns EINTR");
 	okchild(c_longjmp, 5000,

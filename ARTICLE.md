@@ -4083,6 +4083,49 @@ The sweep that followed found the same class one more time, in `w`, where a
 `short` copy had been left behind when this port widened the process structure
 it is copied from.
 
+### And the shell had a second bug, which CI found and I could not
+
+Installing csh turned the build red on the next push, with one case failing:
+backquote substitution had produced nothing. It passed a hundred times out of a
+hundred on my machine.
+
+Running it eight ways at once found it — two failures in four hundred and
+eighty. The measurement that actually located the bug was not a debugger but a
+comparison: V8's Bourne shell, doing exactly the same thing under exactly the
+same load, failed zero times in four hundred and eighty. The two shells differ
+in one relevant way. csh installs a handler for the "child has died" signal;
+`sh` installs none. So only csh can have a blocking read interrupted — and
+csh's backquote reader treats an interrupted read as end-of-input. A child
+dying at the wrong microsecond ended the substitution early, and the shell
+quietly produced an empty string instead of the answer.
+
+The interesting part is whose bug it is. On a VAX that read is *restarted*
+rather than interrupted, so the code is correct on its own hardware. This port
+had a note recording the opposite — "no automatic restart; V8 programs expect a
+slow read to fail and check for it" — and that note was **right, and
+incomplete, which is worse than wrong**. V8's kernel decides in a single flag:
+a process that installs a handler through the older `signal` call gets the
+interrupt, and one that uses the newer reliable interface gets its read
+restarted, in the same kernel, three files apart. csh uses the newer one. The
+note had been written when nothing in the port used that interface at all, so
+it had stayed plausible for years.
+
+One line of shim, and the failure rate went from two in four hundred and eighty
+to zero in twelve hundred. What guards it now is not a repeat of the failing
+scenario — at four tenths of a percent no such test is worth anything — but the
+underlying property, asserted as a *pair*: one case per interface, because a
+blanket rule in either direction satisfies half of them, and a single case would
+have been passed by the bug. The case is made deterministic by a small trick:
+the signal handler is the thing that writes to the pipe, so the read is
+interrupted, the handler supplies a byte, and a correct restart returns it.
+
+It also refuted something I had written a few hours earlier, in the same
+document, about the previous bug: that a continuous-integration runner hands out
+low process ids. This one reached 98,638. A runner is a machine with no
+*history*, which is not the same as a machine with a low counter — the counter
+climbs with everything the job has already spawned, and a full build plus
+seventeen test suites spawns a great many.
+
 ### Moving the tree to another disk, which found two more
 
 Halfway through that work the repository moved to a different machine and a

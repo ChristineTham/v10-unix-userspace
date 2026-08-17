@@ -2245,9 +2245,17 @@ cd "$TMP" || exit 1
 # pjwait read back -20269, which is 0xB0D3 as a signed short.
 #
 # A FRESHLY BOOTED HOST HANDS OUT LOW PIDS, which is the same property that let
-# the 16-bit p_pid survive in tests/kmemu, so every case here would have passed
-# on a CI runner against the broken shell.  The suite says so out loud below
-# rather than reporting a green run that proves nothing.
+# the 16-bit p_pid survive in tests/kmemu, so these cases can pass against a
+# broken shell on a machine that has just come up.  The suite says so out loud
+# below rather than reporting a green run that proves nothing.
+#
+# DO NOT READ "CI RUNNER" AS "LOW PIDS", which is what the first version of this
+# comment said.  Measured on the runner that caught the NEXT csh defect: pids
+# reached 98638.  A runner is a machine with no HISTORY, not a machine with a
+# low pid counter, and the two are different properties -- the counter climbs
+# with everything the job has already spawned, and a full build plus seventeen
+# suites spawns a great many.  The width case below is the guard because it is
+# true at every pid, not because runners are predictable.
 #
 # The deadline is perl's alarm with exec -- NOT a backgrounding wrapper.
 # src/cmd/ex/PORTING.md spends a page on why: a backgrounded job in a

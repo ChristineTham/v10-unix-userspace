@@ -3328,8 +3328,13 @@ Five things generalise, and the first two are about diagnosis rather than code:
   the silence was believed, which is what caught it; a tracer that opens its own
   file answered immediately. Fourth instance of *an instrument you wrote is a
   suspect*.
-- **A FRESHLY BOOTED HOST HANDS OUT LOW PIDS, SO EVERY BEHAVIOURAL CASE PASSES
-  ON A RUNNER.** This is the recorded host-property trap arriving as the *only*
+- **A FRESHLY BOOTED HOST HANDS OUT LOW PIDS, SO A BEHAVIOURAL CASE CAN PASS
+  AGAINST THE BROKEN SHELL.** (This entry first said "on a runner", and the
+  runner that caught the *next* csh defect reached **98638**. A runner is a
+  machine with no HISTORY, which is a different property from a low pid
+  counter — the counter climbs with everything the job has already spawned, and
+  a build plus seventeen suites spawns a great many. The corrected claim is
+  weaker and true.) This is the recorded host-property trap arriving as the *only*
   guard anyone would think to write: run a command, run a pipeline, run twenty
   in a row — all of them pass against the broken shell wherever pids stay under
   32767, which is every CI runner. So the load-bearing case is the **width**,
@@ -3363,6 +3368,54 @@ Five things generalise, and the first two are about diagnosis rather than code:
   which narrowing `daddr_t` already demonstrated once in `libc/gen/ltol3.c`.
   Not exercised (w's proc half exits at `:469` with `No mem`), and recorded as
   unexercised rather than left implied.
+
+**AND CI THEN FOUND A SECOND csh DEFECT THAT WAS NOT csh's, AND THE RECORDED
+DECISION IT BROKE WAS RIGHT AND INCOMPLETE — WHICH IS WORSE THAN WRONG.** The
+commit installing csh went red with `csh: backquotes finish / want [inner] /
+got []`. Reproduced under eight-way contention: **2 in 480**, against V8's `sh`
+at **0 in 480** doing the same thing. The difference between the shells is the
+diagnosis — csh installs a SIGCHLD handler and `sh` installs none, so only csh
+can have a blocking read interrupted — and `backeval` reads the backquote pipe
+with `icnt = read(...); if (icnt <= 0) { c = -1; break; }` (`sh.glob.c:690-691`),
+where **EINTR is indistinguishable from end-of-file**. So the substitution
+silently became the empty string.
+
+**THE FIX IS IN THE SHIM AND UPSTREAM'S KERNEL DICTATES IT.** `shim/v8sys/signal.c`
+and `shim/NOTES.md` both recorded "no `SA_RESTART` — V8 programs expect a slow
+read to fail with EINTR". True of `signal(2)`, and silent about the interface
+that had no caller until csh arrived. V8 splits it on one flag:
+
+| | |
+|---|---|
+| `sys4.c:318-320` | `ssig()` sets `SNUSIG` when the action is `SIGISDEFER(f)` — exactly what `sigset()` passes |
+| `sys2.c:55,103` | `read`/`write`: `if ((p_flag&SNUSIG) && setjmp(u_qsav)) if (u_count == uap->count) u_eosys = RESTARTSYS` |
+| `trap.c:184` | `if (u.u_eosys == RESTARTSYS) pc = opc` — back the PC over the chmk and re-issue |
+
+So V7's `signal(2)` yields EINTR and the reliable interface **restarts**, in the
+same kernel. `v8s_sigsys` sets `SA_RESTART` on its deferred arm; XNU's flag
+carries the same "only if nothing was transferred" proviso as
+`u_count == uap->count`, so it maps exactly rather than approximately.
+Measured after: **0 in 1200**. Four things generalise:
+
+- **AN UNEXERCISED RULE IN A *NOTE* IS THE SAME SHAPE AS ONE IN CODE.** The
+  no-`SA_RESTART` sentence was a blanket claim written when only one caller
+  existed, and it stayed true-sounding for years because nothing used the other
+  interface. Both copies now state the split, and the pair is a TEST.
+- **THE GUARD CANNOT BE THE SYMPTOM AT 0.4%.** `tests/v8sys` asserts the
+  property, as **two cases, one per arm** — a blanket rule in either direction
+  passes half of them, so a single case would have been satisfied by the bug.
+  It is deterministic and cannot hang because **the handler is the writer**:
+  the read is interrupted, the handler puts a byte in the pipe, and the
+  restarted read returns it.
+- **TWO SHELLS IS THE EXPERIMENT THAT LOCATED IT.** `sh` and csh doing the same
+  thing, 0/480 against 2/480, said "signal machinery" before any code was read
+  — and said it far faster than the stack sample, which is what sent the
+  *previous* csh session into the wrong layer for a day.
+- **AND IT REFUTED A CLAIM MADE HOURS EARLIER IN THIS SAME ENTRY**, that a CI
+  runner has low pids. The runner reached **98638**. A runner is a machine with
+  no HISTORY, which is a different property — the pid counter climbs with
+  everything the job has already spawned, and a build plus seventeen suites
+  spawns a great many.
 
 **A 1985 BUFFER SIZE IS THE SAME CLASS, and the ratio is what breaks.** Raising
 `DIRSIZ` 14 → 254 did not just widen a field; it invalidated every buffer sized

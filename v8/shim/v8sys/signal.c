@@ -167,6 +167,13 @@ v8sys_sigcall(v8handler h, long infostyle, long hostsig, void *info, void *uctx,
  *   NO SA_RESTART.  V8 programs expect a slow read to fail with EINTR and
  *   check for it.
  *
+ *   AND THAT IS TRUE OF THIS INTERFACE ONLY, which the sentence above did not
+ *   say and which cost a rare wrong answer in csh.  V8 splits it on one flag:
+ *   ssig() sets SNUSIG for a DEFERRED handler (sys4.c:318-320) and read()
+ *   restarts for such a process (sys2.c:55).  So signal(2) yields EINTR and
+ *   sigsys-with-DEFERSIG restarts, in the same kernel -- see v8s_sigsys below,
+ *   which sets SA_RESTART for exactly that arm.
+ *
  *   SA_RESETHAND -- the reset-on-delivery behaviour V8 code is written around,
  *   re-arming inside the handler.
  *
@@ -323,7 +330,41 @@ v8s_sigsys(int v8sig, char *action)
 	sa.sa_tramp = (void (*)(void *, int, int, siginfo_t *, void *))
 	    v8sys_sigtramp;
 	sa.sa_mask = defer ? mask : 0;
-	sa.sa_flags = defer ? 0 : (SA_RESETHAND | SA_NODEFER);
+	/*
+	 * SA_RESTART ON THE DEFERRED ARM, AND UPSTREAM'S KERNEL IS THE
+	 * AUTHORITY RATHER THAN A PREFERENCE.  v8s_signal above sets no
+	 * SA_RESTART and its comment says why -- "V8 programs expect a slow
+	 * read to fail with EINTR".  That is true of signal(2) and FALSE here,
+	 * and V8 draws the line itself, in one flag:
+	 *
+	 *   sys4.c:318-320  ssig() -- the sigsys syscall -- sets SNUSIG when
+	 *                   the number carries a modifier bit OR the action is
+	 *                   SIGISDEFER(f).  That is exactly sigset(), which
+	 *                   always passes DEFERSIG(_sigcatch).
+	 *   sys2.c:55,103   read() and write() open with
+	 *                   `if ((p_flag&SNUSIG) && setjmp(u_qsav))
+	 *                        if (u_count == uap->count) u_eosys = RESTARTSYS'
+	 *   trap.c:184      `if (u.u_eosys == RESTARTSYS) pc = opc' -- back up
+	 *                   the PC over the chmk and re-issue the call.
+	 *
+	 * So a V8 process using the RELIABLE signal interface has its slow
+	 * reads restarted when nothing was transferred, and one using V7's
+	 * signal(2) does not.  XNU's SA_RESTART is the same rule including the
+	 * same proviso -- a partial transfer returns the short count rather
+	 * than restarting -- so the flag maps onto `u_count == uap->count'
+	 * exactly rather than approximately.
+	 *
+	 * WHAT IT COSTS TO GET WRONG is a rare, silent wrong ANSWER rather than
+	 * an error.  csh's backeval (sh.glob.c:690-691) reads the backquote
+	 * pipe with `icnt = read(...); if (icnt <= 0) { c = -1; break; }' --
+	 * EINTR is indistinguishable from end-of-file there -- so a SIGCHLD
+	 * landing inside that read truncated the substitution to nothing and
+	 * `set v = `echo inner`' quietly produced the empty string.  Measured
+	 * before the fix: 2 failures in 480 under eight-way contention, and
+	 * once on a CI runner; V8's sh, which installs no SIGCHLD handler at
+	 * all and so cannot have that read interrupted, was 0 in 480 beside it.
+	 */
+	sa.sa_flags = defer ? SA_RESTART : (SA_RESETHAND | SA_NODEFER);
 	if (h == (v8handler)SIG_IGN || h == (v8handler)SIG_DFL) {
 		sa.sa_mask = 0;
 		sa.sa_flags = 0;

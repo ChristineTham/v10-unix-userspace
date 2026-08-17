@@ -43,7 +43,14 @@ into V8's numbering, calling the handler, issuing `sigreturn`.
 
 Three flags and the absence of a fourth make it V7's `signal(2)`:
 
-* **no `SA_RESTART`** — V8 programs expect a slow read to fail with `EINTR`;
+* **no `SA_RESTART`** — V8 programs expect a slow read to fail with `EINTR`.
+  **This is true of `signal(2)` and NOT of the reliable interface**, which the
+  first version of this line did not say. V8 decides on one flag: `ssig()` sets
+  `SNUSIG` when the action is `SIGISDEFER(f)` (`sys4.c:318-320`), and `read()`
+  restarts for such a process when nothing was transferred (`sys2.c:55`,
+  `trap.c:184`). `v8s_sigsys` therefore sets `SA_RESTART` on its deferred arm,
+  and `tests/v8sys` asserts the two as a pair — one case per arm, because a
+  blanket rule in either direction passes half of them;
 * **`SA_RESETHAND`** — reset-on-delivery, which V8 code re-arms inside the
   handler;
 * **`SA_NODEFER`**, which is the subtle one. `sigaction` blocks the signal for
