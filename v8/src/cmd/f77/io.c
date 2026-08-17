@@ -95,13 +95,37 @@ LOCAL struct Ioclist
 
 #define SZFLAG SZIOINT
 
+/* PORT: THESE OFFSETS DESCRIBE A C STRUCT AND MUST AGREE WITH THE COMPILER
+   THAT COMPILED IT, and on this target they did not.  cilist is
+
+	{ flag cierr; ftnint ciunit; flag ciend; char *cifmt; ftnint cirec; }
+
+   and upstream's arithmetic gives cifmt at 2*SZFLAG + SZIOINT = 12.  That is
+   right when SZADDR equals SZIOINT, which it did on a VAX -- both four.  Here
+   SZADDR is 8 and SZIOINT is 4 (SZLONG, pinned by typesize[TYREAL] and by
+   lengtype's INTEGER*4), so v8cc pads the pointer to 16 and f77 addressed it at
+   12.  Measured: ld refused the object outright, `pointer not aligned in
+   v.1+0xC' -- which is the good direction, because the alternative is a cilist
+   whose format pointer is half one field and half another.
+
+   IOALIGN rounds a running offset up to a pointer boundary, which is what a C
+   compiler does before a pointer member, so the arithmetic stays upstream's
+   shape rather than becoming a table of literals.
+
+   ONLY THE EXTERNAL READ/WRITE OFFSETS ARE CORRECTED HERE, because those are
+   the ones a compiled program has reached.  The internal-I/O, OPEN, CLOSE and
+   INQUIRE lists below have the same defect and are marked rather than fixed:
+   an unexercised correction is a claim nothing can check, and each needs its
+   own C struct read alongside it. */
+#define IOALIGN(n)	(((n) + SZADDR - 1) & ~(SZADDR - 1))
+
 /* offsets for external READ and WRITE statements */
 
 #define XERR 0
 #define XUNIT	SZFLAG
 #define XEND	SZFLAG + SZIOINT
-#define XFMT	2*SZFLAG + SZIOINT
-#define XREC	2*SZFLAG + SZIOINT + SZADDR
+#define XFMT	IOALIGN(2*SZFLAG + SZIOINT)
+#define XREC	IOALIGN(2*SZFLAG + SZIOINT) + SZADDR
 #define XRLEN	2*SZFLAG + 2*SZADDR
 #define XRNUM	2*SZFLAG + 2*SZADDR + SZIOINT
 

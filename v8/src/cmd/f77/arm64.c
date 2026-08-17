@@ -15,17 +15,23 @@
  *	movl n(ap),m(fp)	mvarg()'s argument copy.  AAPCS64 passes in x0-x7
  *				and this port's own prologue spills them, so the
  *				copy is pass 2's business.
- *	subl2 $LF<n>,sp		prsave()'s frame adjustment, likewise.
+ *	movl n(ap),m(fp)	mvarg()'s argument copy -- AAPCS64 has no ap.
  *
- * That trio is a HANDSHAKE on the VAX, not three independent lines: pass 1 emits
- * `.word LWM<n>' as a forward reference and fixlwm() later emits
- * `.set LWM<n>,0x<mask>' once pass 2's register allocation has settled
- * highregvar.  On arm64 there is no mask to communicate, and
- * arm64_endfunction() in compiler/ccom-arm64/emit.c already lays the frame out
- * in three regions -- so the contract is simply removed rather than
- * reimplemented, and pass 2 owns the frame end to end.  Removing a handshake is
- * safer than translating one: the failure mode of a mismatched prologue is a
- * binary that links and corrupts its own frame.
+ * The mask is a HANDSHAKE on the VAX, not one line: pass 1 emits `.word LWM<n>'
+ * as a forward reference and fixlwm() later emits `.set LWM<n>,0x<mask>' once
+ * register allocation has settled highregvar.  arm64 has no mask to
+ * communicate, so the contract is removed rather than reimplemented -- and
+ * removing a handshake is safer than translating one, because the failure mode
+ * of a mismatched prologue is a binary that links and corrupts its own frame.
+ *
+ * BUT THE FRAME ITSELF STAYS HERE, which is the opposite of what this comment
+ * first said.  prsave() and goret() emit the prologue and epilogue as literal
+ * text, exactly as the VAX's did with `subl2' and `ret'.  The intermediate
+ * settled it: the entry stub is written AFTER the body -- putbracket() rewrites
+ * the header in place -- so a second pass emitting the prologue at LBRACKET
+ * would put it before the label it belongs to, and an epilogue at RBRACKET
+ * lands after the stub's branch where it is unreachable.  Both were measured
+ * that way round before moving here.
  *
  * SDB IS OFF (arm64defs leaves it undefined), so the 120 lines of stab
  * machinery in vax.c -- prstab, stabline, prstleng, stabtype, prcomssym -- are
@@ -84,23 +90,41 @@ double realcon[6] =
 
 
 /*
- * prsave -- the VAX subtracted the frame here.  Pass 2 owns the frame on this
- * target, so there is nothing to emit.  Kept as an entry point because prolog()
- * calls it and deleting the call would be an edit to the shared half.
+ * prsave -- the frame, and it is emitted HERE rather than by /lib/f1, which is
+ * the opposite of what this file first assumed.  The intermediate settled it:
+ * the entry stub arrives AFTER the body, because putbracket() rewrites the
+ * header in place, so a second pass that emitted the prologue at LBRACKET would
+ * put it before the label it belongs to.  prsave() is called from prolog(), at
+ * exactly the right point, and the VAX did the same thing here with `subl2'.
+ *
+ * A FIXED 256-byte frame.  Nothing this pass emits spills, and computing one
+ * would mean adopting arm64_endfunction()'s three-region layout -- the contract
+ * this design avoids needing.  256 covers the stack argument area AAPCS64 wants
+ * beyond x0-x7 and costs one instruction.
  */
 prsave(proflab)
 int proflab;
 {
+p2pass("\tstp\tx29, x30, [sp, #-16]!");
+p2pass("\tmov\tx29, sp");
+p2pass("\tsub\tsp, sp, #256");
 }
 
 
 
+/*
+ * goret -- the epilogue, matching prsave() above.  proc.c calls it at the exit
+ * label, which is the one place it can go: the body falls through to there and
+ * the entry stub is emitted later still.  A /lib/f1 that emitted this at
+ * RBRACKET put it after the stub's `b', where it is unreachable and the body
+ * runs off the end -- measured, before this moved here.
+ */
 goret(type)
 int type;
 {
-/* Pass 2's epilogue does the restore and the ret; emitting one here would
-   produce two.  The function is reached at the end of every procedure, so it
-   must exist and must be silent. */
+p2pass("\tmov\tsp, x29");
+p2pass("\tldp\tx29, x30, [sp], #16");
+p2pass("\tret");
 }
 
 
@@ -143,11 +167,17 @@ fprintf(fp, "\t%s\t%ld\n", (type==TYSHORT ? ".short" : ".long"), (long) n);
 
 
 
+/*
+ * prcona -- .quad, not .long, for the same reason praddr uses it: this emits
+ * the ADDRESS of a label into initialised data, and an address is eight bytes
+ * here.  Measured before it was: ld reported `32-bit pointer in 64-bit arch:
+ * r_length=2', which names the relocation and not the directive that made it.
+ */
 prcona(fp, a)
 FILEP fp;
 ftnint a;
 {
-fprintf(fp, "\t.long\tL%ld\n", (long) a);
+fprintf(fp, "\t.quad\tL%ld\n", (long) a);
 }
 
 
@@ -210,15 +240,17 @@ int k;
 {
 register int lg;
 
-/* .align takes a log2 count in Mach-O as it did on the VAX, so the arithmetic
-   is upstream's.  The extra arm is because an eight-byte alignment is reachable
-   here: SZADDR is 8 where the VAX's was 4. */
-if(k > 4)
+/* PORT: A DATA BLOCK IS NEVER ALIGNED LESS THAN A POINTER HERE, which is why
+   this does not simply translate upstream's ladder.  dodata() picks the
+   alignment from the FIRST element's type -- typealign[TYLONG] is 4 -- and the
+   block may still contain an address further in, as a cilist does at offset 16.
+   Mach-O relocations require the pointer to be 8-aligned, and ld says so:
+   `alignment (1) of atom v.1 is too small and may result in unaligned
+   pointers', then refuses the object.  On a VAX SZADDR was 4 and the first
+   element's alignment covered everything after it.
+   The cost is padding between blocks and nothing else. */
+if(k > 1)
 	lg = 3;
-else if(k > 2)
-	lg = 2;
-else if(k > 1)
-	lg = 1;
 else
 	return;
 fprintf(asmfile, "\t.p2align\t%d\n", lg);
@@ -326,12 +358,17 @@ char *name;
 
 
 
+/*
+ * prlocvar -- with an explicit alignment, which the VAX's two-operand .lcomm did
+ * not need.  ld64 warns `alignment (1) of atom v.1 is too small and may result
+ * in unaligned pointers' otherwise, and a Fortran COMMON or local can hold a
+ * double or an address.  Three is log2(8), the widest thing that can land here.
+ */
 prlocvar(s, len)
 char *s;
 ftnint len;
 {
-/* .lcomm on Mach-O takes the same two operands the VAX's did. */
-fprintf(asmfile, "\t.lcomm\t%s,%ld\n", s, (long) len);
+fprintf(asmfile, "\t.lcomm\t%s,%ld,3\n", s, (long) len);
 }
 
 
@@ -384,7 +421,18 @@ if(procclass == CLMAIN)
 		fudgelabel = 0;
 		}
 	else
+		{
 		p2pass( "_MAIN__:" );
+		/* PORT: prsave() HERE TOO, which vax.c does not do.  Upstream's
+		   CLMAIN arm emits only the label and the register mask, because
+		   the VAX's `calls' instruction builds the frame from that mask
+		   at the CALL site.  arm64 has no such instruction and every
+		   function builds its own, so the main program needs the same
+		   prologue as any other -- measured: without this the entry stub
+		   was a bare `b L11' and the epilogue at L12 restored a frame
+		   nobody had made. */
+		prsave(0);
+		}
 	}
 else if(ep->entryname)
 	{
@@ -394,7 +442,10 @@ else if(ep->entryname)
 		fudgelabel = 0;
 		}
 	else
+		{
 		p2ps("_%s:", varstr(XL, ep->entryname->extname));
+		prsave(0);
+		}
 	}
 
 if(procclass == CLBLOCK)

@@ -2935,9 +2935,11 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# against a decode of the same bytes done a different way, rather than
 	# against itself.  You can read the Fortran back out of it: NAME/ICON/
 	# ASSIGN is `i = 2', and the three ICONs joined by two LISTOPs are
-	# do_fio's three arguments.
+	# do_fio's three arguments.  The eight PASS records before GOTO are the
+	# epilogue and entry stub: prsave() and goret() in arm64.c emit three
+	# lines each as literal text, which is where the frame lives.
 	check 'f1: decodes the intermediate as an independent hand decode did' \
-	    'PASS LBRACKET STMT LABEL NAME ICON ASSIGN STMT ICON ICON CALL STMT ICON ICON ICON LISTOP ICON LISTOP CALL STMT ICON CALL0 STMT LABEL PASS PASS GOTO STMT RBRACKET PASS' \
+	    'PASS LBRACKET STMT LABEL NAME ICON ASSIGN STMT ICON ICON CALL STMT ICON ICON ICON LISTOP ICON LISTOP CALL STMT ICON CALL0 STMT LABEL PASS PASS PASS PASS PASS PASS PASS PASS GOTO STMT RBRACKET PASS' \
 	    "$(cd f77p1w && "$V8ROOT/lib/f1" -d h.x | awk '{print $1}' |
 	       tr '\n' ' ' | sed 's/ $//')"
 	# The type word is pcc1's four-bits-per-level encoding, and a function
@@ -2947,11 +2949,24 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	check 'f1: reads pcc1s stacked type word, so a callee is int * ()' 'int * ()' \
 	    "$(cd f77p1w && "$V8ROOT/lib/f1" -d h.x |
 	       sed -n 's/.*type \(int \* ()\) name "_s_wsfe".*/\1/p' | head -1)"
-	# ...and it says so plainly that it cannot compile yet, so the code
-	# generator arriving is a decision rather than a discovery.
-	check 'f1: reports honestly that code generation is not written' '2 yes' \
-	    "$(cd f77p1w && "$V8ROOT/lib/f1" h.x >f1.out 2>&1; s=$?
-	       printf '%s %s' "$s" "$(grep -q 'not written yet' f1.out && echo yes)")"
+	# ...and it COMPILES: the twelve operators a whole program uses each
+	# emit arm64, and the three that carry the program's meaning are
+	# asserted by name.  A store for `i = 2', an adrp/add pair for each
+	# address argument, and a bl per call.
+	check 'f1: compiles the intermediate to arm64' 'adrp bl str' \
+	    "$(cd f77p1w && "$V8ROOT/lib/f1" h.x |
+	       grep -oE '^\t(bl|str|adrp)' | sed 's/^\t//' | sort -u |
+	       tr '\n' ' ' | sed 's/ $//')"
+	# The frame is arm64.c's, not f1's, and the ORDER is what proves it:
+	# the epilogue must precede the entry stub, because putbracket() writes
+	# the stub last.  An epilogue after the stub's branch is unreachable and
+	# the body runs off the end -- which is what the first working version
+	# did, so the order is asserted rather than the presence.
+	check 'f1: the epilogue precedes the entry stub, not follows it' 'yes' \
+	    "$(cd f77p1w && "$V8ROOT/lib/f1" h.x > o.s
+	       e=$(grep -n 'ldp' o.s | head -1 | cut -d: -f1)
+	       m=$(grep -n '^_MAIN__:' o.s | head -1 | cut -d: -f1)
+	       [ -n "$e" ] && [ -n "$m" ] && [ "$e" -lt "$m" ] && echo yes)"
 
 	# TWO COPIES OF ONE LIST, which is the trap this tree keeps finding.
 	# shim/f1/f1.c respells pccdefs rather than including it, because
@@ -2970,23 +2985,28 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# WHERE THE PIPELINE STOPS.  With pass 1 present the driver gets one
 	# step further than it did before stage 3, and this case is what makes
 	# that visible: the message names /lib/f1 rather than /usr/lib/f77pass1.
-	# ...and with f1 present it gets one step FURTHER: the driver now runs
-	# all four programs and stops inside the last one.  This case replaced
-	# `Cannot load /lib/f1' when f1 arrived, which replaced `Cannot load
-	# /usr/lib/f77pass1' when pass 1 did -- re-derive what a case
-	# discriminates each time the thing it names shows up.
-	check 'f77: the pipeline runs all four and stops inside f1' 'yes' \
-	    "$(cd f77p1w && "$V8ROOT/usr/bin/f77" h.f 2>&1 |
-	       grep -q 'code generation is not written' && echo yes)"
+	# THE WHOLE PIPELINE.  f77 runs all four programs -- driver, f77pass1,
+	# f1, clang -- and produces a linked executable.  This case has been
+	# rewritten three times, each time the thing it named arrived: it
+	# asserted `Cannot load /usr/lib/f77pass1', then `Cannot load /lib/f1',
+	# and now the artefact.  Re-derive what a case discriminates rather than
+	# deleting it as stale.
+	#
+	# IT ASSERTS THE EXECUTABLE AND NOT ITS OUTPUT, deliberately.  The
+	# generated program links and then FAULTS inside libI77's format
+	# interpreter -- the crash report gives main -> e_wsfe -> en_fio ->
+	# do_fio -> w_ned -> wrt_AP on a bad pointer -- so claiming it runs
+	# would be false.  What is true today is that four programs cooperate to
+	# produce a Mach-O executable, and that is what is checked.
+	check 'f77: the whole pipeline produces a linked executable' 'yes' \
+	    "$(cd f77p1w && rm -f prog
+	       "$V8ROOT/usr/bin/f77" h.f -o prog >ld.log 2>&1
+	       [ -x prog ] && file prog | grep -q 'Mach-O.*executable' && echo yes)"
 
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
 	# tests/kmemu asserts that w(1) says `No mem'.
-	# ...and this case is DELETED rather than left green: it asserted
-	# `Cannot load /usr/lib/f77pass1', which stage 3 made false.  Its
-	# replacement is the /lib/f1 case above -- re-derive what a case
-	# discriminates when the thing it names arrives, rather than deleting
-	# it as stale or leaving it to pass for a new reason.
+
 else
 	fail=$((fail+17)); echo "FAIL f77 driver is not installed"
 fi

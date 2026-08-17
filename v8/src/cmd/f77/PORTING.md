@@ -401,3 +401,64 @@ Three things that fall out of this and are worth having written down:
 With that decoded, stage 4 is mechanical rather than exploratory: read the words,
 rebuild the trees, re-shift the type field, map the eight differing opcodes, and
 supply the fourteen names this port's pass 2 wants from pass 1.
+
+## Stage 4 compiles, and the pipeline produces an executable
+
+`f77 hello.f -o hello` now runs all four programs — driver, `f77pass1`,
+`/lib/f1`, clang — and produces a linked Mach-O executable.
+
+`/lib/f1` is a **stack machine**, not pcc's second pass. The intermediate is
+postfix, so the operands of every operator are already adjacent; rebuilding a
+tree only to flatten it again would be work in both directions. Each statement
+is a complete expression, which is what makes the operand stack tractable: `STMT`
+marks the boundary, so for a call the callee is the first value pushed since the
+mark and the arguments are what follow. That removes the only genuinely
+ambiguous decoding question, because `LISTOP` carries no arity.
+
+**The frame lives in `arm64.c`, not in `f1`**, and the intermediate settled that
+rather than reasoning: the entry stub is written *after* the body, because
+`putbracket()` rewrites the header in place. An epilogue emitted at `RBRACKET`
+therefore lands after the stub's branch, unreachable, with the body running off
+the end — measured, before `prsave()` and `goret()` took it over. That is exactly
+where the VAX put `subl2` and `ret`.
+
+### Six defects between "it links" and "it runs", and four are host properties
+
+- **A CASE-INSENSITIVE FILESYSTEM.** `crfnames` picks nine temp suffixes and two
+  pairs differ only in case: `s`/`S` and `a`/`A`. On any Unix that is nine files;
+  on a default APFS volume `.s` and `.S` are **one**, so
+  `sort <initfname >sortfname` truncated the assembly `f77pass1` had just written
+  and filled it with sorted data records. The assembler reported either a file
+  beginning `0v.1 00000 00020 3` or no file at all, and neither message names the
+  cause. Renamed to `srt` and `set`, so no two suffixes differ only in case and
+  the collision cannot return by someone picking another letter.
+- **`clang` is a DRIVER, not `as`,** three times over: it needed `-c` or it went
+  on to link (`Undefined symbols: _e_wsfe ... _main`); it read `.a` as an
+  **archive** and said `unknown file type`; and it refuses `-o` with two inputs.
+  **Upstream already had the answer to the third** — the VAX arm's comment is
+  *"vax assembler currently accepts only one input file"* — so the cat-then-
+  assemble arm was reused rather than reinvented, for a different reason.
+- **`prcona` emitted `.long` for a label address.** `ld`: *"32-bit pointer in
+  64-bit arch, r_length=2"*, which names the relocation and not the directive.
+- **`io.c`'s `cilist` offsets describe a C struct and disagreed with it.**
+  `XFMT` is `2*SZFLAG + SZIOINT` = 12, right when `SZADDR` equals `SZIOINT` as it
+  did on a VAX; here `SZADDR` is 8 and v8cc pads the pointer to 16. `ld` refused
+  the object — the good direction, since the alternative is a format pointer
+  half in one field and half in another.
+- **A data block is aligned by its FIRST element's type**, and a `cilist` holds a
+  pointer at offset 16 with a `TYLONG` at 0.
+- **`pruse` emitted no alignment after a section switch.** Mach-O keeps whatever
+  alignment the assembler last had, so the first atom after `.data` came out
+  1-aligned.
+
+### What is still wrong, stated rather than implied
+
+The generated program **links and then faults**. The crash report gives a full
+symbolicated backtrace — `main → e_wsfe → en_fio → do_fio → w_ned → wrt_AP` —
+faulting on a bad pointer inside libI77's format interpreter, so the defect is in
+the Hollerith/character path rather than in the call sequence, which visibly
+works as far as `do_fio`.
+
+`tests/wavea` therefore asserts **the executable and not its output**. Claiming
+it runs would be false; what is true today is that four programs cooperate to
+produce a Mach-O binary, and that is what is checked.

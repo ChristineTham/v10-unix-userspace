@@ -51,11 +51,28 @@ fprintf(fp, ".byte 0x%x,0x%x\n", s[0] & 0377, s[1] & 0377);
 
 
 
+/*
+ * pruse -- a section directive, PLUS AN ALIGNMENT, which the VAX's did not need.
+ *
+ * dodata() emits `.data' and then the first variable's label, relying on the
+ * per-variable doeven() for alignment -- and doeven() emits nothing when the
+ * running offset is already 0, which it always is for the first one.  On a VAX
+ * that was harmless because a section began aligned enough for anything.  In
+ * Mach-O the first atom after a section switch keeps whatever alignment the
+ * assembler last had, so a block holding a pointer came out 1-aligned and ld
+ * refused it: `alignment (1) of atom v.1 is too small'.
+ *
+ * Three is log2(8), the widest thing a Fortran data block can hold.  Emitting
+ * it here rather than in dodata() keeps the fix on the machine-dependent side,
+ * where the reason lives.
+ */
 pruse(fp, s)
 FILEP fp;
 char *s;
 {
 fprintf(fp, "\t%s\n", s);
+if(s[0] == '.' && (s[1] == 'd' || s[1] == 't' || s[1] == 's'))
+	fprintf(fp, "\t.p2align\t3\n");
 }
 
 

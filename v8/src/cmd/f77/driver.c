@@ -551,7 +551,27 @@ else
 #endif
 
 #if TARGET!=INTERDATA && TARGET!=PDP11 && TARGET!=VAX
+#if TARGET==ARM64
+	/* PORT: -c AND ONE INPUT, and upstream already wrote this arm -- for the
+	   VAX, whose comment is "vax assembler currently accepts only one input
+	   file".  clang has the same limitation for an entirely different
+	   reason ("cannot specify -o when generating multiple output files"), so
+	   the VAX's cat-then-assemble is exactly right here and is reused rather
+	   than reinvented.
+
+	   -c because ASMNAME is clang and not as(1): as always produces an
+	   object, and clang without -c goes on to LINK, so this step tried to
+	   make an executable out of one translation unit and failed on
+	   `Undefined symbols: _e_wsfe ... _main' -- naming the runtime and the
+	   entry point rather than the missing flag.  Third instance of one
+	   shape, after -Wl, and the .a suffix: clang is a DRIVER, and every
+	   place upstream assumed a bare assembler has to say so. */
+	sprintf(buff, "cat %s >>%s", asmpass2, asmfname);
+	sys(buff);
+	sprintf(buff, "%s -c -o %s %s", asmname, obj, asmfname);
+#else
 	sprintf(buff, "%s -o %s %s %s", asmname, obj, asmfname, asmpass2);
+#endif
 #endif
 
 	if( sys(buff) )
@@ -955,15 +975,38 @@ if(stat(filename,&buf) < 0)
 
 crfnames()
 {
+/* PORT: TWO OF THESE NINE DIFFER ONLY IN CASE, AND macOS FILESYSTEMS ARE
+   CASE-INSENSITIVE BY DEFAULT.  Upstream's suffixes are x s a d S o p z A --
+   nine distinct files on any Unix, and on a default APFS volume `s' and `S' are
+   ONE FILE, as are `a' and `A'.
+
+   The `s'/`S' collision is fatal and silent: f77pass1 writes the assembly to
+   asmfname (.s), then dodata() runs `sort <initfname >sortfname' -- which
+   truncates that very file and fills it with sorted data records.  Measured:
+   the assembler was handed a file beginning `0v.1 00000 00020 3 .long 0', and
+   once rmf(sortfname) ran it was handed nothing at all, reporting only
+   `no such file or directory'.  Neither message names the cause.
+
+   Renamed rather than uppercased differently, so the collision cannot come back
+   by someone choosing another letter: `srt' and `set' say what they are, and no
+   two suffixes here now differ only in case.  Measured on this volume: writing
+   .X then reading .x returns the .X content and ls finds one file.
+
+   AND asmpass2 IS `2.s' RATHER THAN `a', WHICH IS A DIFFERENT HAZARD IN THE
+   SAME LINE.  ASMNAME here is clang, and clang dispatches on the SUFFIX: it
+   read /tmp/fortNNN.a as an archive and said `unknown file type', which reads
+   as a corrupt file rather than as a naming problem.  On a VAX the assembler
+   was /bin/as and took whatever it was given.  `2.s' keeps the name obviously
+   pass 2's and gives clang the suffix it needs. */
 fname(textfname, "x");
 fname(asmfname, "s");
-fname(asmpass2, "a");
+fname(asmpass2, "2.s");	/* PORT: see below */
 fname(initfname, "d");
-fname(sortfname, "S");
+fname(sortfname, "srt");
 fname(objfdefault, "o");
 fname(prepfname, "p");
 fname(optzfname, "z");
-fname(setfname, "A");
+fname(setfname, "set");
 }
 
 
