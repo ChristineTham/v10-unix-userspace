@@ -1,0 +1,39 @@
+# Provenance for v8/src/libI77
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+3b645f9f1be5e4bf80a9e8f324b3d37df1269e78  v8/usr/src/libI77/fio.h
+78ee56c48e4bfc4384f4c26651e86c4ba4ecc8ec  v8/usr/src/libI77/backspace.c
+68595caa43c647044a0fb448a80a36311a479cbf  v8/usr/src/libI77/util.c
+fe0bd3a722330c5dcbdd077a24a5e401d8f77342  v8/usr/src/libI77/rsfe.c
+a14c81992e2b32409d61360df1b778c11f3b52a0  v8/usr/src/libI77/makefile
+d3ee8508b272e93563b0c8bcf3c61a5eb7bbf8dc  v8/usr/src/libI77/lio.c
+97ea0fd320a03454932aeb59cb5eabafacb364ec  v8/usr/src/libI77/endfile.c
+6f8993767eebde661981793d37035908ef8fdf6a  v8/usr/src/libI77/nio.c
+4b90e416f0c52de5334f30d6a58af5bbbebb273e  v8/usr/src/libI77/ecvt.c
+4a8a508491e51af2b332ab5aa1bf6354d46de507  v8/usr/src/libI77/lread.c
+d8bddfd55d50a2ea7dc380baa9c3dd7a5c60c099  v8/usr/src/libI77/fmt.h
+23264ae6650ddfa71bd7df8e3d6db58e3ba23d28  v8/usr/src/libI77/ltostr.c
+c2c79f4e512cc3560e91db7f00dd8444db45db00  v8/usr/src/libI77/iio.c
+225be2e2a56edaeaccf5a0c39f0a6e48eda36d4e  v8/usr/src/libI77/values.h
+257adbfcbd4b7caae6772b95203a6b7c80f6f90f  v8/usr/src/libI77/wrtfmt.c
+d1376ddbe319ce6e9bcad47aa2cd67dcce51460e  v8/usr/src/libI77/err.c
+63262bf9f7917aaedfe72248258a3a906ec9dd35  v8/usr/src/libI77/nan.h
+ff4fd6e122ac07de1e9a7c370907325bbda1ceac  v8/usr/src/libI77/sue.c
+06f398a0730832b96a143cbc0450905760b1c2a8  v8/usr/src/libI77/due.c
+c95c709580b1b25f2c633c46041f831ec0acc336  v8/usr/src/libI77/fmtlib.c
+ecf24255d1c70e2fae5689d8daf42a007f36bb71  v8/usr/src/libI77/uio.c
+f85bc83fde02022631d666fc1e36f8352330c27b  v8/usr/src/libI77/Version.c
+25b1c44a3e2789821aaa2b5ef0d2ac9d0a47fe28  v8/usr/src/libI77/stdio.h
+2439707659b5ac31d3647f9016557f9ff755587b  v8/usr/src/libI77/inquire.c
+c81edd75e7e7ba87bb5f575642f346096558c6de  v8/usr/src/libI77/rewind.c
+de590912de3ee6f7d6a415859aef9d2e74fc36c1  v8/usr/src/libI77/rdfmt.c
+4c90c9bc6f3f8114710aebb27a8b29971cb86090  v8/usr/src/libI77/lio.h
+c444c279f70cb3a6ebfd5867b8ef358cda809927  v8/usr/src/libI77/wsfe.c
+8adac021344bb051e38a2715ecaa427001734199  v8/usr/src/libI77/sfe.c
+33e5c7a7b864732cc85f4e7f182e0138c31faf54  v8/usr/src/libI77/dfe.c
+8c72b3ab7bf6001a34795440fb676b3ddc9ae446  v8/usr/src/libI77/fmt.c
+c62ecdb8b6cac20aa5ea909aad99a60a638f69ad  v8/usr/src/libI77/open.c
+678e1b5bc66f11b246985982c6072904aa61bcca  v8/usr/src/libI77/close.c

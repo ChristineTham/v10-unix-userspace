@@ -2761,6 +2761,72 @@ check 'efl: a clean compile leaves no scratch files' '' \
        perl -e 'alarm 15; exec @ARGV' "$V8ROOT/usr/bin/efl" c.e >/dev/null 2>&1
        ls efl[cde].* 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
 
+# ---------------------------------------------------------------------------
+# libF77 and libI77 -- the Fortran runtime, and REACHED BY NOTHING INSTALLED,
+# so a probe is the only instrument.  Same shape as tgotoprobe above, and for
+# the same recorded reason: when a mutation would not fire because there is no
+# CONSUMER rather than because the code is dead or the case is vacuous, a probe
+# is what fixes it.  f77 itself is three more programs -- the driver, the front
+# end, and /lib/f1, a SECOND code generator in pcc1's architecture -- and none
+# of them exists yet.
+#
+# THE FIRST CASE IS THE LINK, and it is the one carrying the finding.  V8's own
+# /usr/lib/libI77.a references setvbuf and _bufendtab, and neither appears in
+# any other archive Bell Labs shipped -- measured across all of them -- so no
+# Fortran program could reach ld's exit on a real V8.  shim/libI77/sysv.c is
+# what closes that, and a link that succeeds is the whole assertion.
+#
+# The archives are named as -lF77 -lI77 rather than by path DELIBERATELY: that
+# is the driver's own liblist from f77's drivedefs, in its order, so the case
+# also exercises libpath() in src/cmd/cc.c resolving -lNAME against the rootfs
+# instead of escaping to the macOS SDK.
+if "$CC" -o f77probe "$ROOT/tests/wavea/f77probe.c" -lF77 -lI77 -lm \
+	>f77p.log 2>&1; then
+	check 'f77 runtime: links, which V8s own libI77.a could not' 'linked' \
+	    "$([ -x f77probe ] && echo linked)"
+	# nm -u empty is the same assertion tests/kmemu makes tree-wide: nothing
+	# leaked to -lSystem.  It is worth repeating here because libF77 defines
+	# cabs, sinh, cosh and tanh and libI77 defines ecvt, all five of which
+	# libv8c ALSO defines -- so a link that quietly took the host's would
+	# still run and would still be wrong.
+	check 'f77 runtime: imports nothing from the host' '' \
+	    "$(nm -u f77probe 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+	f77out=$(./f77probe 2>&1); f77st=$?
+	# The intrinsics.  One token, because a per-check breakdown is what the
+	# probe's own stderr gives when it goes wrong.
+	check 'f77 runtime: the libF77 intrinsics agree with Fortran' 'checks ok' \
+	    "$(printf '%s\n' "$f77out" | grep '^checks')"
+	# THE FORMATTED-WRITE PATH, which is the only thing that reaches the two
+	# objects built with -D_bufend='(unsigned char *)v8_bufend'.  XB rather
+	# than AB is the load-bearing token: the format is (A2,T1,A1), so T1
+	# moves the cursor BACK to column 1 over an already-written AB, and that
+	# backward move is the sole caller of _bufend at wrtfmt.c:48,58 and
+	# wsfe.c:41.  A purely forward write never reaches it, so `plain' alone
+	# would assert nothing about the rename.
+	check 'f77 runtime: a formatted WRITE, cursor moved backward by T' 'XB' \
+	    "$(printf '%s\n' "$f77out" | sed -n 1p)"
+	check 'f77 runtime: and a second record follows it' 'plain' \
+	    "$(printf '%s\n' "$f77out" | sed -n 2p)"
+	# The status as well as the output: a probe that SIGSEGVs after printing
+	# has printed the right thing.  CLAUDE.md's fourth kind of vacuous case.
+	check 'f77 runtime: the probe exits 0' '0' "$f77st"
+else
+	fail=$((fail+6)); echo "FAIL f77probe (build)"; head -5 f77p.log
+fi
+
+# ecvt.o is the one object given an -I, and what it must NOT have picked up is
+# libI77's own values.h -- which has three machine arms (u3b, vax, gcos) and no
+# arm64, so _DEXPLEN and _HIDDENBIT would be undefined.  The patched copy is
+# src/include/values.h.  Asserting the ARM rather than the compile: a build
+# that read the wrong header does not link, so the compile is already checked
+# by the case above; what is worth stating is that our arm is the one present.
+check 'values.h: this port has an arm64 arm, and it is IEEE' '11 1 1' \
+    "$(sed -n '/^#if arm64/,/^#endif/p' "$ROOT/src/include/values.h" |
+       sed -n 's/^#define[[:blank:]]*_DEXPLEN[[:blank:]]*\([0-9]*\).*/\1/p;
+               s/^#define[[:blank:]]*_HIDDENBIT[[:blank:]]*\([0-9]*\).*/\1/p;
+               s/^#define[[:blank:]]*_IEEE[[:blank:]]*\([0-9]*\).*/\1/p' |
+       sort -rn | tr '\n' ' ' | sed 's/ $//')"
+
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
 

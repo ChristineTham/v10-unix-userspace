@@ -296,3 +296,54 @@ by coincidence, twice over, and **invisible to anyone auditing "the port's
 headers"**, because it was not among them. `tests/deps` had even written the
 gap down — its case read *"sys/fblk.h is upstream, so sys/filsys.h stands for
 it"* — and now depends on the real file.
+
+## `values.h` — a fourth machine arm, and an LP64 defect in the formula below it
+
+Imported for `f77` stage 1: `src/libI77/ecvt.c` is the tree's **only** includer
+of `<values.h>`, and it did not compile.
+
+`values.h` describes a floating-point format and selects one by a macro the
+compiler predefines. Upstream's three arms are `u3b || u3b5 || u3b2`,
+`pdp11 || vax`, and `gcos`. **Measured, this port's `cc` predefines `unix` and
+`arm64`** — so none of the three is taken and `_DEXPLEN`, `_HIDDENBIT` and
+`_IEEE` are simply undefined. On a real V8 the `vax` arm was taken, because
+V8's cc predefined `vax`; the arm64 arm is the exact counterpart.
+
+The failure is **loud** — `ecvt.c` will not compile — rather than a wrong
+number, which is the good direction and the reason nothing else in the tree was
+affected. This is `sys/fblk.h`'s shape with the opposite outcome: another header
+nobody had imported, still 1985's, and this one could not stay right by
+coincidence because there was no arm to be right.
+
+The values are IEEE 754 binary64/binary32, identical to the `u3b` arm because
+the 3B20 was IEEE too. They are stated separately anyway: sharing the arm would
+make this machine claim to be that one.
+
+### And `DMAXPOWTWO` had to be restated, because the generic formula is LP64-unsafe
+
+At the bottom of the file, unconditional in upstream:
+
+```c
+#define DMAXPOWTWO	((double)(1L << BITS(long) - 2) * \
+				(1L << DSIGNIF - BITS(long) + 1))
+```
+
+It needs `DSIGNIF > BITS(long)` for the second shift to be non-negative:
+
+| machine | `BITS(long)` | `DSIGNIF` | second shift |
+|---|---|---|---|
+| VAX | 32 | 56 | 25 |
+| arm64 | 64 | **53** | **−10** |
+
+A negative shift is undefined behaviour, and `ecvt.c:64` evaluates it at run
+time (`if (value >= 2.0 * MAXPOWTWO)`). The quantity meant is the largest
+double whose neighbours are one apart, i.e. `2^DSIGNIF` — which is *directly*
+expressible here precisely because `DSIGNIF` is smaller than a long rather than
+larger.
+
+`DMAXPOWTWO` and `FMAXPOWTWO` are therefore `#ifndef`-guarded at the bottom
+rather than given a fourth `#if`: what has to be said is *"this machine already
+answered"*, and that is what `#ifndef` says.
+
+`tests/wavea` asserts the arm's three constants (`11 1 1`) so that removing it
+is a decision rather than a silent regression.

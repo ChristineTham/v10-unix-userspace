@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2545 tests across 17 suites** guard it.
+assembly. **2569 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4676,6 +4676,181 @@ eight, efl emits
 second type, because there is no other way to say "structure" in Fortran 66.
 
 172 to 173.
+
+---
+
+## Fortran, and a library that never linked
+
+`f77` was the next language system, and the first thing the survey found was
+that f77 is not one program. It is four.
+
+The driver at `/usr/bin/f77` is an `exec` pipeline, the same shape as `cc`.
+`/usr/lib/f77pass1` is the compiler front end. And then there is a line in a
+twenty-line file called `drivedefs`:
+
+```c
+#define PASS2NAME	"/lib/f1"
+```
+
+`f77pass1` does not emit assembly. It emits **pcc intermediate code**, and
+`/lib/f1` is a separate compiler that turns it into assembly. Its source is not
+under `cmd/f77` at all; it is `cmd/pcc1`, built with `-DFORT`, and the install
+arm of its makefile is `mv fort ${DESTDIR}/lib/f1`.
+
+The obvious move was to point it at the ARM64 back end this port already has.
+`compiler/ccom-arm64/` is a pcc-family code generator written inside pcc's own
+architecture — `local2.c`, `macdefs.h`, the same file names and hooks. It has
+been compiling the whole tree for a year.
+
+It cannot be done, and the two `mfile2` files say why in their first forty
+lines. pcc1 matches on **shapes and cookies** — `SAREG`, `SOREG`, `SNAME`,
+`OPSIMP`, `INTAREG`, nine of them. pcc2, which is V8's ccom and therefore ours,
+matches on **types** — `TCHAR`, `TSHORT`, `TSTRUCT`, three cookies, an entirely
+different `optab`. Same filenames, same ancestry, different compilers.
+
+f77's own `README` says it in one line, and I had read that line an hour
+earlier without hearing it:
+
+> f77 is a pcc1 compiler. c is a pcc2 compiler these days.
+
+I had filed it as a remark about the debugger symbol format, because that is
+what the paragraph around it is about. It is a remark about the whole back end.
+So `/lib/f1` is a second machine-dependent code generator, roughly 2,500 lines
+of new ARM64, and f77 became a four-stage job instead of a step.
+
+### The stage that was portable
+
+The two runtime libraries — `libF77` and `libI77`, 154 files and 5,607 lines —
+have no assembly and four sites in the whole set that mention a machine name.
+They are the only part buildable with the tools that exist today.
+
+They are also, it turns out, the part that never worked.
+
+`libI77` is a System V library that Bell Labs dropped into V8 and never
+reconciled. Two of the things it calls are System V libc internals: `setvbuf`,
+and a table called `_bufendtab` that holds the end of each stream's buffer. I
+searched for them across every `.a` in the distribution:
+
+| symbol | found in |
+|---|---|
+| `_sobuf` | `lib/libc.a`, `usr/lib/11libc.a` — resolves |
+| `setvbuf` | `usr/lib/libI77.a` **and nowhere else** |
+| `_bufendtab` | `usr/lib/libI77.a` **and nowhere else** |
+
+Two undefined symbols. **No Fortran program on a real V8 could reach the end of
+`ld`.** And the library knew: four lines above the first `setvbuf` call there is
+a comment reading *"IOLBUF and setvbuf only in system 5+"*, sitting directly
+above the unguarded call it describes.
+
+Reproducing that faithfully would mean shipping something unusable. So the port
+supplies the two missing pieces in eighty lines of layer-2 code, archived
+**into `libI77.a`** — not into libc, because putting `setvbuf` in libc would
+invent a C library V8 never shipped, and because the driver's library list is a
+fixed four names with no room for a fifth.
+
+`_bufendtab` needed no table. Every stdio buffer in V8 is exactly `BUFSIZ`
+bytes — `flsbuf.c:25` is the literal `base+BUFSIZ` — so the answer is
+computable from the stream, and being computed it cannot go stale the way a
+table can.
+
+### The header that had to be kept off the include path
+
+`libI77` also ships its own `stdio.h`. It is System V's, and it disagrees with
+V8's about where the fields are:
+
+| | V8 | libI77 |
+|---|---|---|
+| `_flag` | `short` | `char` |
+| offset of `_file` | 26 | **25** |
+| `_NFILE` | 120 | 128 |
+| `_IOLBF` | 0200 | 0100 — which is V8's `_IOSTRG` |
+
+One byte. `fileno()` would read the high half of `_flag`, and `libI77.a` and
+`libv8c.a` would disagree about `FILE` in a program that links both. Upstream's
+makefile says `CFLAGS = -I. -g`, so it *did* compile against that header, and
+the shipped archive proves it by carrying `_bufendtab`.
+
+The interesting part is that the `-I` turns out not to be needed. `fio.h`,
+`fmt.h` and `lio.h` are quoted includes and resolve by the includer's own
+directory. Exactly one file wants anything else — `ecvt.c`, which needs
+`<nan.h>` and `<values.h>` — and `ecvt.c` is also the only file in the library
+that mentions `FILE`, `printf`, `getc`, `stdout`, `stderr` and `stdin` exactly
+zero times. So it is the one file that can safely be handed a flag.
+
+It gets a staging directory holding **one header**, and `<values.h>` falls
+through to ours. Which mattered, because ours had to be written.
+
+### A floating-point format with no arm for this machine
+
+`values.h` describes a floating-point format and picks one from a macro the
+compiler predefines. Upstream has three arms: `u3b`, `vax`, `gcos`. This port's
+`cc` predefines `unix` and `arm64`. So none of them is taken, `_DEXPLEN` comes
+out undefined, and the compile stops — loudly, which is the good direction.
+
+Adding an IEEE arm is four constants. What was not four constants is the line
+underneath it, which upstream writes unconditionally for every machine it knows:
+
+```c
+#define DMAXPOWTWO	((double)(1L << BITS(long) - 2) * \
+				(1L << DSIGNIF - BITS(long) + 1))
+```
+
+That needs the mantissa to be **wider than a long**. On a VAX, `DSIGNIF` is 56
+and `BITS(long)` is 32, so the second shift is 25. Under LP64 the mantissa is
+53 bits and a long is 64, so the shift is **minus ten** — undefined behaviour,
+evaluated at run time. The quantity meant is `2^DSIGNIF`, which is directly
+expressible here *precisely because* the mantissa is now the smaller of the two.
+
+### Proving it, with no compiler to prove it with
+
+There is no Fortran compiler in this tree, so the runtime has no caller — and a
+component with no consumer is one this project has learned not to trust. The
+answer is a probe: a C program that supplies `MAIN__` and lets `libF77`'s own
+`main()` call it, which is exactly the shape of a Fortran program.
+
+Most of it checks intrinsics — that `s_cmp("ab", "ab  ")` is zero because
+Fortran blank-pads, that `MOD(-7,3)` is `-1` because Fortran keeps the sign of
+the dividend, that `NINT` rounds half away from zero. One check found a bug in
+the probe rather than the library: `i_nint` takes a `REAL` and `d_nint` takes a
+`DOUBLE PRECISION`, and the prefix letter is the only thing that says so, so
+handing `i_nint` the address of a double reads its low four bytes as a float —
+which for 2.5 are zero.
+
+But the load-bearing part is one two-letter token. The format is `(A2,T1,A1)`:
+write `AB`, then `T1` to move the cursor **back** to column one, then `X`. The
+answer is `XB`.
+
+It has to be backward. `_bufend`'s three call sites are all inside the same
+question — *can I skip inside the buffer, or must I seek?* — and a purely
+forward write never reaches any of them. A probe that just printed a line would
+have proven nothing at all about the one thing this build invents.
+
+### And the guard that turned out not to be one
+
+The shim's `_bufend` returns `_base + BUFSIZ`, except when there is no buffer,
+where it returns `_base` so the comparison fails and the caller seeks instead.
+I wrote a paragraph explaining that the unguarded version would let an
+unbuffered stream advance its pointer off NULL into low memory.
+
+Then I removed the guard, and every test stayed green.
+
+The first half of the claim was true and the consequence was not. With no
+buffer, every character goes through the unbuffered arm of `_flsbuf`, which
+writes it directly and never touches the pointer. Measured with a probe that
+unbuffers stdout first — which is what the library itself does on a terminal —
+both spellings print the same bytes.
+
+The arm stays, because advancing a pointer off NULL is undefined whether or not
+anything reads it. But the comment now says it is defensive rather than
+load-bearing, and **no test is written for it**, because there is nothing
+observable to assert. A case with no difference to detect is the kind this tree
+keeps finding by accident; writing one on purpose would be worse.
+
+That is what the non-firing mutation is for. A green run can never tell you a
+guard is empty.
+
+173 to 173 — no new commands, because a library is not a command. What moved is
+that `-lF77 -lI77` now resolves, which is something V8 itself could not say.
 
 ---
 

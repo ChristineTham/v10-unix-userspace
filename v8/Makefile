@@ -2678,6 +2678,186 @@ $(BINDIR)/efl: $(EFL_OBJ) $(V8DEPS)
 EFL_BUILT   = $(BINDIR)/efl
 EFL_INSTALL = $(call v8install,efl)
 
+# libF77 and libI77 -- the Fortran runtime, and the first half of f77 to land.
+#
+# f77 is FOUR programs, not one, and these two are the only portable ones.
+# drivedefs names PASS1NAME /usr/lib/f77pass1 and PASS2NAME /lib/f1, and
+# pcc1/pcc/makefile's install arm is `mv fort ${DESTDIR}/lib/f1' -- so the
+# compiler proper is a front end emitting pcc INTERMEDIATE code plus a separate
+# second pass that turns it into assembly.  Both of those need new ARM64 code
+# generation; neither of these does.  154 files, 5607 lines, no assembly, and
+# four sites in the whole set that mention a machine name.
+#
+# THEY ARE SEPARATE ARCHIVES BECAUSE THE DRIVER SAYS SO.  driver.c's liblist is
+# a fixed { "-lF77", "-lI77", "-lm", "-lc" }, in that order, and the order is
+# load-bearing rather than tidy: libF77 defines cabs, sinh, cosh and tanh, and
+# libI77 defines ecvt, all five of which libv8c ALSO defines.  -lF77 preceding
+# -lc is what makes libF77's win, which is upstream's own arrangement.  The two
+# cabs are not even the same function -- libc/math/hypot.c's takes one struct
+# by value, libF77/cabs.c's takes two doubles -- so a Fortran program that got
+# libc's would read its imaginary part out of the caller's second slot.
+#
+# WHY libI77's SOURCE DIRECTORY IS NOT ON THE INCLUDE PATH, and it is the whole
+# reason this block looks the way it does.  libI77 ships its own stdio.h, which
+# is System V's: _flag is char where V8's is short (so _file lands at offset 25
+# rather than 26, and fileno() reads the high byte of _flag), _NFILE is 128
+# against 120, _IOLBF is 0100 against V8's 0200 -- which is V8's _IOSTRG -- and
+# the field order flips on "#if vax", a macro this port deliberately does not
+# define.  libI77.a and libv8c.a disagreeing about FILE by one byte is the
+# DIRSIZ trap arriving through a vendored header.  Upstream's own makefile says
+# `CFLAGS = -I. -g' and therefore READ that header; the shipped libI77.a proves
+# it, carrying _bufendtab and _setvbuf, which exist in no other archive Bell
+# Labs shipped.  So the shipped library could not link against the shipped libc,
+# and reproducing that faithfully would mean shipping something unusable.
+#
+# The -I is not needed anyway, which is what makes the decision cheap.  fio.h,
+# fmt.h and lio.h are all `#include "..."' and resolve by the includer's own
+# directory.  Exactly ONE file needs anything else: ecvt.c, the only includer of
+# <nan.h> (which V8 has no copy of) and <values.h> (whose two copies differ by
+# an SCCS stamp and one machine name).  ecvt.c is also the only file that can
+# safely be given the flag, measured: it mentions FILE, printf, getc, stdout,
+# stderr and stdin exactly zero times, so libI77's stdio.h cannot reach it.
+I77SRC   = $(SRC)/libI77
+F77SRC   = $(SRC)/libF77
+
+# Upstream's OBJ list verbatim, from libI77/makefile.  Note it does NOT build
+# every .c in the directory -- iio.o and nio.o are there, but there is no stest
+# or ftest, whose objects the dependency lines at the bottom of that makefile
+# still mention.  Deriving this from a glob would build two files upstream does
+# not.
+I77_NAME = Version backspace dfe due iio inquire rewind rsfe rdfmt sue uio \
+           wsfe sfe fmt nio lio lread open close util endfile wrtfmt err \
+           fmtlib ecvt ltostr
+I77_OBJ  = $(patsubst %,$(BUILD)/libI77/%.o,$(I77_NAME)) $(BUILD)/libI77/sysv.o
+
+# libF77's makefile groups its objects into ten macros; this is their union,
+# plus the three that are named directly on the archive line (cabs, tanh, sinh).
+# main.o is in MISC and IS included: it defines main() for a Fortran program,
+# which calls MAIN__().  That never collides with a C program's own main,
+# because a C program defines the symbol itself and the linker has no undefined
+# reference left to pull the member in for.
+F77_NAME = Version main s_rnge abort_ getarg_ iargc_ getenv_ signal_ s_stop \
+           s_paus system_ \
+           pow_ci pow_dd pow_di pow_hh pow_ii pow_ri pow_zi pow_zz \
+           c_abs c_cos c_div c_exp c_log c_sin c_sqrt \
+           z_abs z_cos z_div z_exp z_log z_sin z_sqrt \
+           r_abs r_acos r_asin r_atan r_atn2 r_cnjg r_cos r_cosh r_dim r_exp \
+           r_imag r_int r_lg10 r_log r_mod r_nint r_sign r_sin r_sinh r_sqrt \
+           r_tan r_tanh \
+           d_abs d_acos d_asin d_atan d_atn2 d_cnjg d_cos d_cosh d_dim d_exp \
+           d_imag d_int d_lg10 d_log d_mod d_nint d_prod d_sign d_sin d_sinh \
+           d_sqrt d_tan d_tanh \
+           i_abs i_dim i_dnnt i_indx i_len i_mod i_nint i_sign \
+           h_abs h_dim h_dnnt h_indx h_len h_mod h_nint h_sign \
+           l_ge l_gt l_le l_lt hl_ge hl_gt hl_le hl_lt \
+           ef1asc_ ef1cmc_ s_cat s_cmp s_copy \
+           cabs tanh sinh derf_ derfc_ erf_ erfc_ mclock_ outstr_ subout
+F77_OBJ  = $(patsubst %,$(BUILD)/libF77/%.o,$(F77_NAME))
+
+# The two objects that reach _bufend.  It is _bufendtab[(p)->_file] in libI77's
+# stdio.h and there is no such table in V8; the value is computable instead,
+# because every V8 stdio buffer is exactly BUFSIZ bytes (libc/stdio/flsbuf.c:25
+# is the literal `base+BUFSIZ').  A function rather than a macro because V8's
+# cpp does not support a function-like -D -- measured, `-D'_bufend(p)=...''
+# leaves the name unexpanded and ccom says "call of non-function".  The
+# object-like rename into a real call is what works.
+#
+# THE CAST IS NOT DECORATION AND v8cc SAID SO.  Without it the rename produces
+# a call to an UNDECLARED function, so its result is implicit int, and the
+# three sites are `cf->_ptr + n < _bufend(cf)' -- pointer against int.  v8cc
+# reported "illegal pointer/integer combination, op <" on all three, which is
+# the truncated-pointer-return class this port's own sweep exists to catch,
+# arriving through a flag rather than through source.  A cast binds looser than
+# a call, so `(unsigned char *)v8_bufend(cf)' casts the RESULT and the compare
+# is pointer against pointer again.  There is no declaration to add instead:
+# wrtfmt.c and wsfe.c include only "fio.h", "fmt.h" and V8's <stdio.h>, all
+# three of which are layer 1.
+#
+# QUOTED because the value holds parens and a space, and an unquoted one is a
+# shell syntax error in the recipe rather than a cpp complaint.
+I77_BUFEND = '-D_bufend=(unsigned char *)v8_bufend'
+
+$(BUILD)/libI77/%.o: $(I77SRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/libI77
+	@$(V8CCRUN) -c -o $@ $<
+
+# ecvt.o and the two _bufend users override the pattern rule above rather than
+# widening it, so the flags are visible per object and a third file acquiring
+# one of these needs a deliberate edit.
+#
+# ecvt.c gets a STAGING DIRECTORY HOLDING ONE HEADER rather than -I on libI77's
+# own source, and the difference is not fastidiousness -- measured, -I on the
+# source directory does not work.  ecvt.c wants <nan.h>, which V8 has no copy
+# of, and <values.h>, which V8 does have and which this port has PATCHED: none
+# of upstream's three machine arms is arm64, so _DEXPLEN and _HIDDENBIT come
+# out undefined.  Point -I at libI77 and its own unpatched values.h shadows the
+# patched one in /usr/include, because -I dirs are searched before the system
+# dir.  Staging nan.h alone lets <values.h> fall through to ours.
+#
+# nan.h is needed only for an EMPTY macro, which is worth saying because it
+# reads like a real dependency.  ecvt.c:44 is KILLNaN(value) with upstream's
+# own comment "(3b only)"; outside #if u3b the header's else-arm defines it to
+# nothing.  That is the same on arm64 as it was on a VAX, so there is nothing
+# here to port -- only a file that has to exist for cpp to find.
+$(BUILD)/libI77/inc/nan.h: $(I77SRC)/nan.h
+	@mkdir -p $(@D) && cp $< $@
+
+$(BUILD)/libI77/ecvt.o: $(I77SRC)/ecvt.c $(BUILD)/libI77/inc/nan.h $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/libI77
+	@$(V8CCRUN) -I$(BUILD)/libI77/inc -c -o $@ $(I77SRC)/ecvt.c
+
+$(BUILD)/libI77/wrtfmt.o: $(I77SRC)/wrtfmt.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/libI77
+	@$(V8CCRUN) $(I77_BUFEND) -c -o $@ $(I77SRC)/wrtfmt.c
+
+$(BUILD)/libI77/wsfe.o: $(I77SRC)/wsfe.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/libI77
+	@$(V8CCRUN) $(I77_BUFEND) -c -o $@ $(I77SRC)/wsfe.c
+
+# The port-owned half, archived INTO libI77.a because the driver's liblist has
+# no fourth name for it and because setvbuf in libv8c would invent a C library
+# V8 never shipped.  shim/libm/dummy.c is the precedent.
+$(BUILD)/libI77/sysv.o: shim/libI77/sysv.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/libI77
+	@$(V8CCRUN) -c -o $@ $<
+
+$(BUILD)/libF77/%.o: $(F77SRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/libF77
+	@$(V8CCRUN) -c -o $@ $<
+
+# Upstream states this one: `lio.o: lio.h' and `lread.o: lio.h', plus a block
+# of fio.h/fmt.h lines at the bottom of libI77/makefile.  Stated here for the
+# same reason efl's `$(EFL_OBJ): defs' is -- a quoted include is invisible to a
+# *.c glob, and these three headers have no rule of their own to hang off.
+$(I77_OBJ): $(I77SRC)/fio.h
+$(BUILD)/libI77/dfe.o $(BUILD)/libI77/fmt.o $(BUILD)/libI77/iio.o \
+$(BUILD)/libI77/lio.o $(BUILD)/libI77/lread.o $(BUILD)/libI77/nio.o \
+$(BUILD)/libI77/rdfmt.o $(BUILD)/libI77/rsfe.o $(BUILD)/libI77/wrtfmt.o \
+$(BUILD)/libI77/wsfe.o: $(I77SRC)/fmt.h
+$(BUILD)/libI77/lio.o $(BUILD)/libI77/lread.o $(BUILD)/libI77/nio.o: \
+	$(I77SRC)/lio.h
+# 19 of libF77's files include "complex", which is the third file in this tree
+# named neither .h nor .c and included anyway -- after make/defs, efl/defs,
+# f77/defs and efl/tokdefs.
+$(F77_OBJ): $(F77SRC)/complex
+
+$(BUILD)/libI77/libI77.a: $(I77_OBJ)
+	@rm -f $@ && ar rcs $@ $(I77_OBJ)
+	@echo "built $@"
+
+$(BUILD)/libF77/libF77.a: $(F77_OBJ)
+	@rm -f $@ && ar rcs $@ $(F77_OBJ)
+	@echo "built $@"
+
+$(ROOTFS)/usr/lib/libI77.a: $(BUILD)/libI77/libI77.a
+	@mkdir -p $(@D) && cp $< $@
+
+$(ROOTFS)/usr/lib/libF77.a: $(BUILD)/libF77/libF77.a
+	@mkdir -p $(@D) && cp $< $@
+
+F77LIB_BUILT   = $(BUILD)/libF77/libF77.a $(BUILD)/libI77/libI77.a
+F77LIB_INSTALL = $(ROOTFS)/usr/lib/libF77.a $(ROOTFS)/usr/lib/libI77.a
+
 # B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
 # also what the $(ROOTFS)/etc/% generator further down has to iterate over --
 # showq and dmesg land in /etc and the generator's own comment promises "the
@@ -2693,12 +2873,14 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
-                   $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT)
+                   $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
+                   $(F77LIB_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
-                   $(RAT_INSTALL) $(EFL_INSTALL) $(LINKED_INSTALL)
+                   $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) \
+                   $(LINKED_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

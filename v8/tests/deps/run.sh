@@ -438,6 +438,77 @@ dep 'efl objects -> binary' src/cmd/efl/simple.c $B/bin/efl
 # parser is made; the nodep is the true statement.
 nodep 'gram.head is not a build input' src/cmd/efl/gram.head $B/bin/efl
 nodep 'gram.exec is not a build input' src/cmd/efl/gram.exec $B/bin/efl
+
+# --- libF77 and libI77: the Fortran runtime (f77 stage 1) --------------------
+#
+# `complex' is the fifth #include'd non-header in this tree, after make/defs,
+# efl/defs, efl/tokdefs and f77/defs -- two typedefs, and 19 of libF77's files
+# include it.  Invisible to every dependency scanner AND to a *.c glob, which
+# is the edge whose absence caused this port's worst bug.
+dep 'complex -> c_abs.o'   src/libF77/complex   $B/libF77/c_abs.o
+dep 'complex -> z_div.o'   src/libF77/complex   $B/libF77/z_div.o
+# fio.h, fmt.h and lio.h are libI77's own, quoted-included, and stated in the
+# Makefile because upstream states them: `lio.o: lio.h' and a block of fio.h
+# lines at the bottom of libI77/makefile.
+dep 'fio.h -> err.o'       src/libI77/fio.h     $B/libI77/err.o
+dep 'fmt.h -> wrtfmt.o'    src/libI77/fmt.h     $B/libI77/wrtfmt.o
+dep 'lio.h -> lread.o'     src/libI77/lio.h     $B/libI77/lread.o
+# nan.h reaches ecvt.o through a STAGING COPY rather than through -I on libI77's
+# source directory, so the edge has two halves and both are asserted.  The
+# staging exists because pointing -I at libI77 would also pick up its own
+# values.h, which has no arm64 arm.
+dep 'nan.h -> staged copy' src/libI77/nan.h     $B/libI77/inc/nan.h
+dep 'staged nan.h -> ecvt.o' $B/libI77/inc/nan.h $B/libI77/ecvt.o
+# The port-owned object, and the archive it belongs to.  It is IN libI77.a
+# rather than in libv8c because setvbuf in libc would invent a C library V8
+# never shipped, and because f77's driver liblist has no fourth name.
+dep 'shim sysv.c -> sysv.o' shim/libI77/sysv.c  $B/libI77/sysv.o
+dep 'sysv.o -> libI77.a'    $B/libI77/sysv.o    $B/libI77/libI77.a
+dep 'objects -> libF77.a'   $B/libF77/s_cmp.o   $B/libF77/libF77.a
+dep 'libF77.a -> installed' $B/libF77/libF77.a  rootfs/usr/lib/libF77.a
+dep 'libI77.a -> installed' $B/libI77/libI77.a  rootfs/usr/lib/libI77.a
+#
+# THE ONE THAT MATTERS, AND IT CANNOT BE A MAKE EDGE.
+#
+# libI77 ships its own stdio.h -- System V's -- and it must never be compiled
+# against, because _flag is char where V8's is short, putting _file at offset
+# 25 rather than 26, and libI77.a would then disagree with libv8c.a about FILE.
+# A `nodep' would pass whether or not the header is read: make only knows the
+# edges the Makefile declares, and these objects have no .d files, so touching
+# an undeclared header can never make anything stale.  That is the buf.h lesson
+# -- a case can stay green while the header named in it is no longer the one
+# the compile opens -- so the assertion has to be on CONTENT.
+#
+# _NFILE is the discriminator and cpp reports it directly: V8 says 120, libI77
+# says 128.  Measured both ways round before this case was written, which is
+# what says it can fail.
+#
+# The negative control below is not optional: without it this pair could pass
+# against a cpp that reported 120 for everything, which is the vacuity shape
+# this suite has met before.  Measured both ways round before the case was
+# written, which is what says it can fail.
+i77nfile() {
+	V8ROOT=$ROOT/rootfs "$ROOT/rootfs/lib/cpp" $1 -I"$ROOT/src/libc/stdio" \
+	    "$ROOT/src/libI77/err.c" 2>/dev/null |
+	    grep -oE '_iob\[[0-9]+\]' | head -1
+}
+i77ours=$(i77nfile "")
+i77theirs=$(i77nfile "-I$ROOT/src/libI77")
+if [ "$i77ours" = "_iob[120]" ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL libI77 must compile against V8's stdio.h, not its own"
+	echo "  want _iob[120] (V8's _NFILE), got [$i77ours]"
+fi
+if [ "$i77theirs" = "_iob[128]" ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL the control: upstream's own -I. should give the System V header"
+	echo "  want _iob[128] (libI77's _NFILE), got [$i77theirs]"
+	echo "  if this fails the case above proves nothing"
+fi
 # diff3 is the SPELL SHAPE: /usr/bin/diff3 is a shell script and the binary it
 # execs is /usr/lib/diff3.  Both halves have to install or the command is a
 # script calling something absent -- which fails at RUN time with `not found',

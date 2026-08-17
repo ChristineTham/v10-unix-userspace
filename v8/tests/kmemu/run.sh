@@ -1431,6 +1431,66 @@ else
 	bad "archives missing -- cannot sweep for duplicate definitions"
 fi
 
+# --- THE f77 RUNTIME IS A SIXTH AND SEVENTH ARCHIVE, AND ITS OVERLAP WITH ---
+# --- libv8c IS DELIBERATE, SO IT GETS AN AIMED CASE RATHER THAN A DUPOK -----
+#
+# libF77.a and libI77.a collide with libv8c on six names.  They are NOT put on
+# DUPOK, because DUPOK is global and an entry there would also wave the name
+# through for kern/sys/stub -- an allow-list widened past what it was argued
+# for, which is how tests/kmemu's own ALLOWED list went stale once already.
+# These two archives are linked into a FORTRAN program and nothing else, so the
+# claim about them is its own claim.
+#
+# WHY THE OVERLAP IS CORRECT.  f77's driver liblist is a fixed
+# { "-lF77", "-lI77", "-lm", "-lc" } (drivedefs), and -lF77 -lI77 preceding -lc
+# is what makes the Fortran versions win.  That is upstream's arrangement, not
+# an accident: `cabs' is not even the same function on the two sides --
+# libc/math/hypot.c declares cabs(struct complex) taking ONE struct by value
+# where libF77/cabs.c declares cabs(double, double).  A Fortran program that got
+# libc's would read its imaginary part out of the caller's second slot.
+#
+# WHY IT CANNOT FIRE, AND IT IS ONE NAME.  Archive semantics pull a member only
+# to satisfy an undefined reference, so a doubly-defined symbol needs BOTH
+# members pulled.  Measured, the four libv8c members holding these six names
+# define almost nothing else:
+#
+#	hypot.o   cabs hypot        sinh.o   cosh sinh
+#	tanh.o    tanh              ecvt.o   ecvt fcvt
+#
+# Every name there is one the f77 side also defines EXCEPT `hypot'.  So `hypot'
+# is the entire hinge: reference it from a Fortran program and hypot.o comes in
+# beside libF77's cabs.o, and the link fails on a duplicate `cabs'.  Nothing in
+# the runtime does, and that is what the second case asserts.
+#
+# THE SET IS DERIVED EVERY RUN, not transcribed.  Three attempts at this count
+# were wrong in three different ways, each instrument better than the last:
+# comparing source FILENAMES against symbols gave 7 with 3 false positives and
+# missed `cosh' (it lives in sinh.c); reading the definitions out of the source
+# found cosh and missed `fcvt' (it lives in ecvt.c); nm on the built archives
+# gives six.  Prefer the artefact.
+F77A=$ROOT/build/stage0/libF77/libF77.a
+I77A=$ROOT/build/stage0/libI77/libI77.a
+if [ -f "$F77A" ] && [ -f "$I77A" ] && [ -f "$LIBCA" ]; then
+	adefs "$F77A" > "$TMP/d.f77a"
+	adefs "$I77A" > "$TMP/d.i77a"
+	sort -u "$TMP/d.f77a" "$TMP/d.i77a" > "$TMP/d.f77"
+	# Vacuity floor, for the reason the five above have one: an empty set
+	# makes comm's answer empty and this whole block passes measuring nothing.
+	[ "$(wc -l < "$TMP/d.f77" | tr -d ' ')" -ge 100 ] && ok ||
+		bad "the f77 runtime defines almost nothing -- this sweep is vacuous"
+	check "the f77 runtime overlaps libv8c in exactly the six upstream names" \
+	    "cabs cosh ecvt fcvt sinh tanh" \
+	    "$(comm -12 "$TMP/d.libc" "$TMP/d.f77" | tr '\n' ' ' | sed 's/ $//')"
+	# The hinge.  If this ever reports a reference, the six above stop being
+	# harmless and a Fortran link starts failing on a duplicate cabs.
+	check "and nothing in it references hypot, which is what keeps both out" "" \
+	    "$(nm -g "$F77A" "$I77A" 2>/dev/null |
+	       awk '$1=="U"{print $2} $2=="U"{print $3}' |
+	       grep -x '_hypot' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+else
+	bad "the f77 runtime archives are missing -- cannot sweep them"
+fi
+
 # --- AND THE THIRD POPULATION, WHICH IS THE PROGRAM'S OWN OBJECTS --------
 #
 # The sweep above is archive against archive.  It cannot see a name that a

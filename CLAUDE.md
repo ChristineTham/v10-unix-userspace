@@ -2162,6 +2162,125 @@ of drift and none of invention*, and the cheap form of it is one command:
 these. **A brand-new file's citations are ALL candidates for invention**, since
 there has been no time for anything to drift.
 
+**AND `f77` IS FOUR PROGRAMS, ONE OF WHICH IS A SECOND COMPILER BACK END -- SO
+THE STEP IS STAGED, AND STAGE 1 IS IN.** The owner picked it after efl.
+`src/libF77` (121 files, 1819 lines) and `src/libI77` (33, 3788) build under
+v8cc, install to `/usr/lib`, and are exercised by `tests/wavea/f77probe.c`.
+`src/libF77/PORTING.md` has both halves. The costing that decided the staging:
+
+| component | installs to | lines | new machine-dependent code |
+|---|---|---|---|
+| `f77` driver | `/usr/bin/f77` | 1268 | `drivedefs` -- paths only |
+| `f77pass1` | `/usr/lib/f77pass1` | ~13000 | `machdefs` + `vax.c` 650 + `vaxx.c` 42 |
+| **`/lib/f1`** | `/lib/f1` | 6441 | `UClocal2.c` 1172 + `UCtable.c` 837 + `order.c` 527 |
+| the two libraries | `/usr/lib` | 5607 | ~none |
+
+- **A BUILD DESCRIPTION CAN NAME A SECOND COMPILER, AND THE ONE WE HAVE IS THE
+  WRONG DIALECT OF THE SAME COMPILER.** `drivedefs` is `PASS2NAME "/lib/f1"`,
+  and `pcc1/pcc/makefile`'s install arm is `mv fort ${DESTDIR}/lib/f1` -- so
+  `f77pass1` emits pcc INTERMEDIATE code and a separate program turns it into
+  assembly. The obvious move is `compiler/ccom-arm64/`, which is a pcc-family
+  arm64 back end already. **It cannot be done**: pcc1's `mfile2` matches on
+  SHAPES and COOKIES (`SAREG SOREG SNAME OPSIMP INTAREG`, nine cookies) and
+  pcc2's `mfile2.h` matches on TYPES (`TCHAR TSHORT TSTRUCT`, `optab.tyop`,
+  three). Same filenames, same ancestry, different compilers. **f77's own
+  README says so in one line** -- *"f77 is a pcc1 compiler. c is a pcc2 compiler
+  these days"* -- and I read it as a remark about stabs, because the paragraph
+  around it is about stabs. **A sentence in a README is a claim about the whole
+  program even when its paragraph is about something small.**
+- **AND V8's OWN `libI77.a` COULD NOT LINK, MEASURED ACROSS EVERY ARCHIVE IT
+  SHIPPED.** `err.c:81,97` call `setvbuf` and `wrtfmt.c:48,58`/`wsfe.c:41` reach
+  `_bufendtab`; both appear in `usr/lib/libI77.a` **and in no other `.a` in the
+  distribution**, while `_sobuf` -- the third System V name -- does resolve.
+  libI77 is a System V library dropped into V8 and never reconciled, and
+  `err.c:93` is upstream's own *"IOLBUF and setvbuf only in system 5+"* four
+  lines above the unguarded call. Reproducing that faithfully ships something
+  unusable, so `shim/libI77/sysv.c` closes it -- **archived into `libI77.a`**,
+  because `setvbuf` in libv8c would invent a C library V8 never shipped and the
+  driver's liblist is a fixed four names. `shim/libm/dummy.c` is the precedent.
+  The sweep for the next one is `strings -a` on each archive, since these are
+  VAX a.out and `nm` cannot read them.
+- **A VENDORED LIBRARY CAN SHIP A HEADER THAT REDECLARES A TYPE libc OWNS, AND
+  THAT IS THE DIRSIZ TRAP FROM THE OTHER SIDE.** `libI77/stdio.h` is System V's:
+  `_flag` is `char` where V8's is `short`, so `_file` sits at offset **25**
+  rather than 26 and `fileno()` reads the high byte of `_flag`; `_NFILE` 128 vs
+  120; `_IOLBF` 0100, which is V8's `_IOSTRG`. `shim/kern/h/param.h` states the
+  rule for a header WE write; this is the same rule for one we merely import,
+  and the answer is the opposite -- keep it off the include path entirely.
+  Upstream's `CFLAGS = -I. -g` did read it, and the shipped archive proves it.
+  **The `-I` was not needed**: `fio.h`/`fmt.h`/`lio.h` are quoted includes, and
+  exactly one file wants anything else. Give the flag to that ONE object.
+- **AND THE GUARD FOR IT CANNOT BE A MAKE EDGE.** These objects have no `.d`
+  files, so a `nodep` passes whether or not the header is read -- the
+  `shim/kern/h/buf.h` lesson, where a case stayed green while the header named
+  in it was no longer the one the compile opened. `tests/deps` asserts CONTENT:
+  `cpp` reports `_iob[120]` for V8's `_NFILE` and `_iob[128]` for libI77's, and
+  **both directions are cases**, so a cpp that answered 120 for everything
+  cannot pass.
+- **A SWEEP KEYED ON FILENAMES AGAINST SYMBOLS IS WRONG IN BOTH DIRECTIONS, AND
+  I MEASURED BOTH.** Comparing `ls libF77/*.c libI77/*.c` against what `libv8c`
+  defines gave 7 collision candidates: **3 false positives** (`rewind.c` defines
+  `f_rew`, `open.c` defines `f_open`, `close.c` defines `f_clos`) and it **missed
+  `cosh`**, which is defined in `sinh.c`. 43% noise and a live miss. Compile and
+  ask `nm`, which is the discipline already prescribed for the truncation sweep.
+  The five real ones are `cabs sinh cosh tanh ecvt`, reconciled by upstream's own
+  link order -- and **`cabs` is not even the same function**: `libc/math/hypot.c`
+  takes one `struct complex` by value where `libF77/cabs.c` takes two doubles.
+- **AN OBJECT-LIKE `-D` CAN RENAME INTO A REAL FUNCTION, AND THE CAST IS
+  LOAD-BEARING.** V8's cpp has **no function-like `-D`** -- measured,
+  `cc -D'_bufend(p)=...'` leaves the name unexpanded and ccom says "call of
+  non-function". `-D_bufend=v8_bufend` does work, but the renamed function is
+  UNDECLARED at the call, so its result is implicit `int` and v8cc reported
+  "illegal pointer/integer combination, op <" on all three sites. A cast binds
+  looser than a call, so `'-D_bufend=(unsigned char *)v8_bufend'` casts the
+  RESULT. The truncated-pointer-return class arriving through a flag. Quote it:
+  parens and a space in a `-D` are a shell syntax error in the recipe.
+- **A MACHINE-DESCRIPTION HEADER WITH NO ARM FOR THIS MACHINE FAILS LOUDLY,
+  WHICH IS THE GOOD DIRECTION -- AND ITS GENERIC FORMULA WAS LP64-UNSAFE.**
+  `values.h` has three arms (`u3b`, `vax`, `gcos`) and our `cc` predefines
+  `unix` and `arm64`, measured -- so `_DEXPLEN` was simply undefined and
+  `libI77/ecvt.c`, the tree's only includer, would not compile. `sys/fblk.h`'s
+  shape with the opposite outcome: another header nobody imported, still 1985's,
+  and this one could not be right by coincidence because there was no arm to be
+  right. The arm is IEEE and stated separately from `u3b` rather than sharing
+  it, because sharing would make this machine claim to be that one. What was
+  not four constants is `DMAXPOWTWO`, written unconditionally at the bottom:
+  `(1L << DSIGNIF - BITS(long) + 1)` needs the mantissa WIDER THAN A LONG --
+  VAX 56 > 32, shift 25; arm64 **53 < 64, shift MINUS TEN**, undefined and
+  evaluated at run time by `ecvt.c:64`. Guarded with `#ifndef` rather than a
+  fourth `#if`, because what has to be said is "this machine already answered".
+- **THE NON-FIRING MUTATION HAS A FOURTH CAUSE: THE CODE IS DEFENSIVE RATHER
+  THAN LOAD-BEARING, AND THE HONEST FIX IS TO CORRECT THE COMMENT AND WRITE NO
+  CASE.** `v8_bufend`'s NULL arm was justified by a paragraph claiming the
+  unguarded form lets an unbuffered stream advance `_ptr` into low memory. The
+  first half is true and the consequence is not: with `_IONBF` every `putc` goes
+  through `_flsbuf`'s unbuffered arm, which never dereferences `_ptr`. Measured
+  with a probe calling `setbuf(stdout,0)` first -- what `f_init` does on a tty,
+  `err.c:94-96` -- and both spellings print the same bytes. The arm is kept
+  (advancing off NULL is undefined whether or not anything reads it, the
+  `do_seek` lesson) and the comment now says which of the two it is. **Writing a
+  case would have been manufacturing a vacuous one on purpose**, which is worse
+  than the ones this tree finds by accident.
+- **AND A LINK TEST CANNOT SEE A SYMBOL THE HOST ALSO DEFINES.** Dropping
+  `sysv.o` from the archive left `_v8_bufend` undefined and the link failed --
+  but `setvbuf` **resolved silently from `-lSystem`**, because macOS has one. So
+  the link case covers one of the shim's two halves and not the other, and that
+  is stated in PORTING.md rather than implied. This port's own
+  "a missing libc function does not fail the link" hazard, met from inside a
+  guard written to prove a link.
+- **AN OBJECT LIST IS PART OF THE BUILD DESCRIPTION, NOT A RESTATEMENT OF `ls`.**
+  libF77's directory holds 121 `.c` and its ten object macros name **118** --
+  `derf_ derfc_ erf_ erfc_ mclock_ outstr_ subout` are in the directory and in no
+  macro. libI77's `OBJ` names 27, and the bottom of its makefile still carries
+  dependency lines for `stest.o` and `ftest.o`, which have **no sources at all**.
+  A glob would have built files upstream does not.
+- **AND A SUITE THAT READS THE ROOTFS IS MEASURING THE INSTALL, NOT THE BUILD.**
+  The first reading of the drop-`sysv.o` mutation said `wavea` did not fire; re-
+  run minutes later it fired six cases. The window is between the archive being
+  rebuilt and the install rule copying it, and `tests/wavea` links against
+  `rootfs/usr/lib`. Same family as *check the artefact the suite actually reads*,
+  with the artefact being one copy further along.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
