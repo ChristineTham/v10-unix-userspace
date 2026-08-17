@@ -511,3 +511,119 @@ boundary was found at all — each unimplemented operator named itself in turn
 (`OREG`, then `REG`, then `PLUSEQ`, then `GT`) instead of being silently skipped.
 A code generator that ignores an operator emits a program that links and computes
 the wrong thing.
+
+## Stage 5: the rest of Fortran, and what the refusal could not see
+
+The paragraph above is left standing because its central claim turned out to be
+**half right, and the wrong half was the reassuring one**. Measured on four
+programs written to exercise what stage 4 did not:
+
+| probe | result |
+|---|---|
+| arrays | refused — `operator 64`, which is `P2LSHIFT` |
+| an `INTEGER FUNCTION` | refused — "indirect call not implemented" |
+| a subroutine `CALL` | **compiled, linked, SIGSEGV** |
+| `REAL` arithmetic | **compiled, linked, hung** |
+
+**A GUARD ON THE VOCABULARY IS NOT A GUARD ON THE GRAMMAR.** The refusal is a
+`default:` arm in an operator switch, so it can only fire on an operator the pass
+does not *recognise*. The two programs that produced wrong binaries used only
+operators it did recognise, and mishandled them — which is precisely the failure
+mode the refusal was designed to prevent, arriving through the door it does not
+watch. Nothing about the design was wrong; the claim made for it was too broad.
+
+**AND THE REFUSAL NAMED A FEATURE THE PROGRAM DOES NOT CONTAIN.** `f(n)` in an
+expression was rejected as an *indirect call*. There is no indirect call in it:
+`docall` took the callee to be the first value pushed since `P2STMT`, which is
+true of a call statement and false of a call in an expression, because the result
+temporary is pushed first. A wrong answer in a diagnostic is worse than no
+diagnostic — it sends the next reader after a missing feature instead of a bug.
+The fix is a second, LOGICAL stack: `LISTOP` merges the top two logical values,
+so `CALL` takes the top one as its argument run and the one below as the callee,
+needing no arity from the record and no assumption about statements.
+
+### The frame was wrong in two independent ways, and each hid behind a sentence
+
+**`mvarg()` was an empty function and this file said so twice.** Its header
+carried two entries claiming the argument copy was "pass 2's business" because
+"this port's own prologue spills x0-x7". No prologue spilled anything. The claim
+was duplicated in the one file that could have refuted it, which is why neither
+copy read as wrong.
+
+**`AUTOREG` and `ARGREG` were both x29 with `ARGOFFSET 0`.** `proc.c:806-814`
+gives autos positive offsets from `AUTOREG` on every target but the VAX and the
+PDP-11; `putpcc.c` addresses a parameter as `ARGOFFSET + memno` from `ARGREG`.
+With one register and no bias a parameter and a temporary land at the SAME
+ADDRESS — measured, `OREG reg 29 offset 0 type int` and `OREG reg 29 offset 0
+type int *` in one procedure, two objects at one address with nothing in the
+record to tell a second pass which it was holding.
+
+Upstream needs two registers because its `ap` points into the CALLER's frame:
+`proc.c:316` allocates an `argvec` only when `nentry>1`, so an ordinary
+procedure never copies its arguments at all. arm64 passes in registers, so they
+must be spilled into this frame regardless — and once both regions are in one
+frame, **a constant separates them and no second register is wanted**. The
+machine difference removes a register requirement rather than adding one.
+`ARGOFFSET` is now the size of the auto area, stated once, with `prolog()`
+refusing a procedure whose `autoleng` exceeds it.
+
+### `prcmgoto` — an interface invented rather than read
+
+`vax.c` does not define it: `putcmgo` takes a `#if TARGET == VAX` branch to
+`vaxgoto` and its `casel` instruction. So there was no neighbour to copy, and the
+first version took `struct Labelblock *labs[]` and emitted the jump table itself.
+`putcmgo` passes `int labarray` — the label of a table it has ALREADY written —
+so the subscript dereferenced a label number and pass 1 died at address `0x13`,
+which is 19, which was the label. **`pdp11.c` is the only other implementation in
+the tree and has the signature written out.** The macOS crash report named
+`prcmgoto ← putcmgo ← yyparse` in five frames and cost one command; reading the
+caller's own argument list would have cost none.
+
+### A jump table is a relocation, so the constant pool moved out of `__TEXT`
+
+`USECONST` was `.section __TEXT,__const`, which is right for numbers and wrong
+for `.quad L16`. arm64 Mach-O forbids a relocation in `__TEXT`, so the link
+failed — and **f77 reported success over the top of it**, because `doload` ends
+with a bare `await(waitpid)`. The observable was a program that compiled, said
+nothing, and did not exist. This is the boundary CLAUDE.md records for `sh`'s
+`:fix` and `cpp`'s `:yyfix` reaching f77's own constant pool; there it stops rung
+5 because the optimisation *is* the build step, here it costs one section name.
+
+### What is implemented now
+
+`NEG MOD LSHIFT RSHIFT BITAND BITOR BITXOR BITNOT NOT ANDAND OROR INDIRECT CONV
+COMOP` join the nineteen, and the arithmetic dispatches on type: `w` for an
+INTEGER with a re-extension after, `x` for a pointer, `fadd`/`fdiv` on `s` or `d`
+for a REAL or a DOUBLE PRECISION. `QUEST` and `COLON` remain unimplemented and
+still refuse by name; nothing f77 emits has reached them.
+
+**`.AND.` and `.OR.` do not short-circuit, and must not.** The stream is postfix,
+so both operands are evaluated before the operator is read — there is nothing
+left to skip. Fortran 77 explicitly does not require short-circuit evaluation of
+`.AND.`/`.OR.`, so evaluating both is conforming, and it is what f77's own
+intermediate commits to by emitting them as operators rather than as branches.
+
+**Adding them exposed a defect that predates them.** A comparison was left in the
+FLAGS for `CBRANCH` to read, which is right until a second comparison arrives
+before the first is used — and `i .gt. 3 .and. j .lt. 4` is exactly that.
+Nothing had ever produced two comparisons in one expression, so nothing could
+show it.
+
+### Half the type conversions are stated and half are implied
+
+f77 emits an explicit `CONV type double` over an INTEGER and **nothing at all**
+over a REAL: in pcc an operator's type is the type of its RESULT and its operands
+may be narrower. A pass honouring only the stated conversions read a
+single-precision bit pattern with `fadd d`, so `2.5 + 1.5` came out `2.5` and the
+program printed 7.5 where it should print 12 — a plausible number, from an
+expression in which every operator was one this pass knows.
+
+### v8cc's floating-point convention is asymmetric, and both halves were measured
+
+A `double` is **passed in an x register** and **returned in `d0`**. Measured on
+v8cc's own output rather than assumed symmetric: `double twice(x)` reads its
+parameter from where x0 was spilled and ends `fmov d0, d16`. CLAUDE.md records
+each half in a different note; nothing had put them side by side. `FORCE` is
+therefore the return path — `proc.c` gives every non-subroutine a `retslot` auto
+and the exit label is followed by that slot and a `FORCE` — and it dispatches on
+type, while an argument always goes to an x register.

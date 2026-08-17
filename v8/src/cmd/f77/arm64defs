@@ -79,15 +79,33 @@ Family = FAMILY OUT OF RANGE
  * The register conventions.  AUTOREG and ARGREG are the register NUMBERS the
  * generated code uses as frame and argument pointers, and on arm64 there is no
  * separate argument pointer: AAPCS64 passes in x0-x7 and spills the rest onto
- * the stack, with x29 the frame pointer.  These are stated for completeness and
- * are NOT yet exercised -- every consumer of them is in vax.c, putpcc.c and
- * proc.c, which stage 3 replaces.  An unexercised rule cannot be seen to be
- * incomplete, so they are marked rather than trusted.
+ * the stack, with x29 the frame pointer.
+ *
+ * SO ONE REGISTER SERVES BOTH, AND ARGOFFSET IS WHAT KEEPS THEM APART.  These
+ * were "stated for completeness and NOT yet exercised" with ARGOFFSET 0, which
+ * put a parameter and a temporary at the SAME ADDRESS: proc.c:806-814 gives
+ * autos positive offsets from AUTOREG on every target but the VAX and PDP11,
+ * and putpcc.c addresses a parameter as ARGOFFSET + memno from ARGREG.  With
+ * both registers 29 and no bias, `subroutine s(p,q)' holding one temporary
+ * emitted `OREG reg 29 offset 0 type int' and `OREG reg 29 offset 0 type int *'
+ * -- two different objects, one address, and nothing in the record to tell a
+ * second pass which it was holding.  The unexercised-rule shape, in a machine
+ * description: the numbers were right about the machine and wrong about each
+ * other, and only a procedure having BOTH a parameter and a temporary could
+ * show it.
+ *
+ * ARGOFFSET IS THEREFORE THE SIZE OF THE AUTO AREA, not a header skip, and it
+ * is the one place that number is written.  arm64.c derives the frame from it
+ * and prolog() refuses a procedure whose autoleng exceeds it, so an overrun is
+ * a diagnostic rather than a temporary landing on a parameter.  1024 is chosen
+ * against what the autos actually are -- f77 puts local arrays in static
+ * storage through prlocvar(), so autovar() hands out only per-statement
+ * temporaries -- and costs stack, which is the cheap resource here.
  */
-#define AUTOREG 29	/* x29, the frame pointer */
-#define ARGREG 29	/* no separate argument pointer on arm64 */
+#define AUTOREG 29	/* x29, the frame pointer, and the base of the autos */
+#define ARGREG 29	/* no separate argument pointer on arm64; see ARGOFFSET */
 #define CARGREG 29
-#define ARGOFFSET 0	/* the VAX's 4 skipped the argument count word */
+#define ARGOFFSET 1024	/* the auto area, which the spilled arguments sit above */
 #define SAVESPACE 80
 
 #define FUDGEOFFSET 1
@@ -100,7 +118,26 @@ Family = FAMILY OUT OF RANGE
  * the only lines here that could not have been copied.
  */
 #define USETEXT		".text"
-#define USECONST	".section __TEXT,__const"
+/*
+ * __DATA,__const AND NOT __TEXT,__const, WHICH IS A RELOCATION RULE RATHER THAN
+ * A PREFERENCE.  Both are read-only to the program; the difference is that
+ * arm64 Mach-O forbids a relocation in __TEXT, and this section holds more than
+ * numbers.  A computed GOTO's jump table is `.quad L16' per arm -- an address,
+ * hence a relocation -- and in __TEXT the link editor refuses the whole program:
+ *
+ *	ld: Found illegal text-relocations
+ *
+ * with f77 reporting SUCCESS over the top of it, because doload() ends with a
+ * bare `await(waitpid)' and discards the status.  So the observable was a
+ * program that compiled, said nothing, and did not exist.
+ *
+ * This is the same boundary CLAUDE.md records for sh's :fix and cpp's :yyfix --
+ * 1985 wanted initialised data in shared read-only text and arm64 Mach-O cannot
+ * give it -- reaching f77's own constant pool.  There it stops rung 5 because
+ * the optimisation IS the build step; here it costs one section name, since
+ * __DATA,__const provides the read-only guarantee the pool actually wanted.
+ */
+#define USECONST	".section __DATA,__const"
 #define USEBSS		".data"
 #define USEINIT		".data"
 

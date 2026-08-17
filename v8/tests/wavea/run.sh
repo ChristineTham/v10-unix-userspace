@@ -2899,8 +2899,16 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# that only this target uses: the Mach-O section name, p2align (VAX
 	# says .align), and quad (VAX has no eight-byte directive because it
 	# has no eight-byte pointer).
+	#
+	# THE SECTION IS __DATA,__const AND NOT __TEXT,__const, which this case
+	# spelled until a computed GOTO needed a jump table.  A table of `.quad
+	# L16' is a table of ADDRESSES, and arm64 Mach-O refuses a relocation in
+	# __TEXT: `ld: Found illegal text-relocations', with f77 reporting
+	# success over the top of it because doload() discards the status.  Both
+	# names are equally Mach-O and equally un-VAX, so the case still
+	# discriminates exactly what it says it does; see arm64defs.
 	check 'f77pass1: and the assembly is arm64 Mach-O, not VAX' 'yes' \
-	    "$(cd f77p1w && grep -q '__TEXT,__const' h.s &&
+	    "$(cd f77p1w && grep -q '__DATA,__const' h.s &&
 	       grep -q 'p2align' h.s && ! grep -q '\.word\|LWM' h.s && echo yes)"
 	# It reaches libI77 by name, which is the two halves of the port
 	# meeting: these are the same entry points stage 1's probe called by
@@ -2938,9 +2946,19 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# do_fio's three arguments.  The eight PASS records before GOTO are the
 	# epilogue and entry stub: prsave() and goret() in arm64.c emit three
 	# lines each as literal text, which is where the frame lives.
+	#
+	# A RUN OF PASS RECORDS IS COLLAPSED TO ONE `PASS*', because their COUNT
+	# is a property of a different file.  This case pinned eight of them and
+	# went red when prsave() grew from three instructions to seventeen --
+	# correctly, but for a reason that has nothing to do with decoding a
+	# stream: the frame gained the callee-saved registers and the spill of
+	# x0-x7.  What the hand decode is evidence about is the SEQUENCE of
+	# operators, and a frame this pass merely copies through should not be
+	# able to invalidate it.  The frame has two cases of its own below.
 	check 'f1: decodes the intermediate as an independent hand decode did' \
-	    'PASS LBRACKET STMT LABEL NAME ICON ASSIGN STMT ICON ICON CALL STMT ICON ICON ICON LISTOP ICON LISTOP CALL STMT ICON CALL0 STMT LABEL PASS PASS PASS PASS PASS PASS PASS PASS GOTO STMT RBRACKET PASS' \
+	    'PASS* LBRACKET STMT LABEL NAME ICON ASSIGN STMT ICON ICON CALL STMT ICON ICON ICON LISTOP ICON LISTOP CALL STMT ICON CALL0 STMT LABEL PASS* GOTO STMT RBRACKET PASS*' \
 	    "$(cd f77p1w && "$V8ROOT/lib/f1" -d h.x | awk '{print $1}' |
+	       awk '$0=="PASS"{if(!p)printf "PASS*\n"; p=1; next} {p=0; print}' |
 	       tr '\n' ' ' | sed 's/ $//')"
 	# The type word is pcc1's four-bits-per-level encoding, and a function
 	# address is the base type under PTR and FUNCT -- 148 for an int.  That
@@ -2974,13 +2992,49 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# path -- so the values are DERIVED from src/cmd/f77/pccdefs here and
 	# compared, and a divergence is a failure rather than a silent
 	# disagreement about what an opcode means.
+	# THE LIST IS EVERY OPCODE f1.c SPELLS, derived from f1.c itself rather
+	# than typed out again: a hand-written list is a third copy, and it goes
+	# stale the moment an operator is implemented without anyone adding it
+	# here -- which is what happened, thirteen names covering a file that now
+	# names thirty-nine.  A "#define P2X n" in f1.c that pccdefs does not
+	# have, or disagrees with, is what this must catch.
+	#
+	# THE BLANK AFTER THE NAME IS REQUIRED, NOT OPTIONAL, and the widened
+	# list is what exposed it: a trailing [[:blank:]]* after P2STAR also
+	# matches the line defining P2STAREQ, because zero blanks and zero digits
+	# both satisfy it and the trailing .* eats the rest -- so the capture
+	# picked up an extra EMPTY line and P2STAR compared 11 against a two-line
+	# value.  The thirteen-name list this replaced contained neither P2STAR
+	# nor P2STAREQ, so no input it was ever given could show it: a parser
+	# correct for everything it had been handed, which is the third instance
+	# of that shape in this suite.
+	#
+	# AND THIS COMMENT LIVES OUTSIDE THE SUBSTITUTION, which cost a run to
+	# learn.  Written inside it in the Bell Labs quoting style, the opening
+	# backquote of a quoted name STARTS A COMMAND SUBSTITUTION and the whole
+	# file stops parsing -- "unexpected EOF while looking for matching
+	# backquote", reported 3400 lines away from the comment.  CLAUDE.md
+	# records the apostrophe version of this for an awk program inside single
+	# quotes; a backquote inside a substitution is the same hazard one
+	# character over, and being a comment is no shelter from either.
 	check 'f1: its opcode numbers agree with f77s pccdefs' '' \
-	    "$(for n in P2NAME P2ICON P2ASSIGN P2CALL P2CALL0 P2LISTOP P2GOTO \
-	               P2PASS P2STMT P2LBRACKET P2RBRACKET P2EOF P2LABEL; do
-	         a=$(sed -n "s/^#define $n[[:blank:]]*\([0-9]*\).*/\1/p" "$ROOT/src/cmd/f77/pccdefs")
-	         b=$(sed -n "s/^#define $n[[:blank:]]*\([0-9]*\).*/\1/p" "$ROOT/shim/f1/f1.c")
+	    "$(for n in $(sed -n 's/^#define[[:blank:]]*\(P2[A-Z0-9]*\)[[:blank:]].*/\1/p' \
+	                    "$ROOT/shim/f1/f1.c"); do
+	         grep -q "^#define $n " "$ROOT/src/cmd/f77/pccdefs" || continue
+	         a=$(sed -n "s/^#define $n[[:blank:]][[:blank:]]*\([0-9]*\).*/\1/p" "$ROOT/src/cmd/f77/pccdefs")
+	         b=$(sed -n "s/^#define $n[[:blank:]][[:blank:]]*\([0-9]*\).*/\1/p" "$ROOT/shim/f1/f1.c")
 	         [ "$a" = "$b" ] || printf '%s(%s!=%s) ' "$n" "$a" "$b"
 	       done)"
+	# AND THE COUNT, because a derived list that derives NOTHING passes the
+	# case above without comparing anything -- 0 disagreements over 0 names
+	# reads exactly like a clean tree.  This is tests/cpp's `if [ -d ]' skip
+	# and cites.awk's 0-stale-over-0-checked, arriving in a sweep written
+	# three minutes ago.  The floor is well under the real number so that
+	# implementing an operator does not edit a test.
+	check 'f1: and that comparison was not vacuous' 'yes' \
+	    "$(n=$(sed -n 's/^#define[[:blank:]]*\(P2[A-Z0-9]*\)[[:blank:]].*/\1/p' \
+	              "$ROOT/shim/f1/f1.c" | wc -l)
+	       [ "$n" -ge 30 ] && echo yes)"
 
 	# WHERE THE PIPELINE STOPS.  With pass 1 present the driver gets one
 	# step further than it did before stage 3, and this case is what makes
@@ -3047,12 +3101,207 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
    10 format(1x,'sum = ',i2)
       end")"
 
+	# EVERYTHING ABOVE IS ONE PROCEDURE WITH NO SUBSCRIPT AND NO FLOAT, which
+	# is what the code generator could do when it was written.  The cases
+	# below are the rest of Fortran, and each one names a defect that was
+	# live when it was added -- none is a demonstration of something that
+	# already worked.
+	#
+	# THE FIRST TWO ARE ABOUT THE FRAME, and they fail in different halves.
+	# `mvarg' was an empty function while a comment in the same file said
+	# pass 2 spilled x0-x7; nothing did, so a parameter was read out of the
+	# saved frame pointer and `call greet(7)' compiled clean and SIGSEGV'd.
+	check 'f77: a subroutine with a by-reference parameter' ' 7|' \
+	    "$(f77run s '      program s
+      call greet(7)
+      end
+      subroutine greet(n)
+      integer n
+      write(6,*) n
+      end')"
+	# AND THIS ONE COULD NOT HAVE EXISTED BEFORE, which is why the defect
+	# survived: arm64defs gave AUTOREG and ARGREG the same register with no
+	# ARGOFFSET, so a parameter and a temporary both lived at [x29+0].  Only
+	# a procedure holding BOTH can show it -- measured, the dump had `OREG
+	# reg 29 offset 0 type int' and `OREG reg 29 offset 0 type int *' in one
+	# procedure, two objects at one address with nothing in the record to
+	# tell them apart.  A function call inside a WRITE is what forces the
+	# temporary, so the shape of this program is the assertion.
+	check 'f77: a parameter and a temporary do not share an address' ' 4 9|' \
+	    "$(f77run t '      program t
+      call two(2, 3)
+      end
+      subroutine two(p, q)
+      integer p, q, sq
+      write(6,*) sq(p), sq(q)
+      end
+      integer function sq(n)
+      integer n
+      sq = n * n
+      return
+      end')"
+	# ARRAYS, which needed three things at once: P2LSHIFT (the `operator 64'
+	# every array refused on -- a subscript is scaled by a shift), P2INDIRECT
+	# to reach the element, and a `PLUS type int *' computed in x rather than
+	# w.  The last is the port's dominant bug class arriving inside the code
+	# generator: a(i) is (&a - 4) + (i<<2), so a 32-bit add truncates the
+	# address.  Summed rather than printed elementwise so a single wrong
+	# element cannot hide.
+	check 'f77: an array, subscripted and summed' ' 385|' \
+	    "$(f77run r '      program r
+      integer a(10), i, s
+      s = 0
+      do 10 i = 1, 10
+         a(i) = i * i
+   10 continue
+      do 20 i = 1, 10
+         s = s + a(i)
+   20 continue
+      write(6,*) s
+      end')"
+	# A RECURSIVE FUNCTION, which is really a case about ASSIGN.  Fortran
+	# passes by reference, so an argument that is an expression needs
+	# storage, and f77 builds that as `(temp = n-1, &temp)' -- an ASSIGN
+	# with a COMOP over it, INSIDE a call's argument list.  Treating ASSIGN
+	# as a statement and clearing the stack after it threw away the callee
+	# and the half-built expression underneath it.
+	check 'f77: a recursive function' ' 120|' \
+	    "$(f77run f '      program f
+      integer n, fact
+      n = 5
+      write(6,*) fact(n)
+      end
+      integer function fact(n)
+      integer n
+      if (n .le. 1) then
+         fact = 1
+      else
+         fact = n * fact(n-1)
+      endif
+      return
+      end')"
+	# MIXED WIDTHS, and the half that is IMPLIED is the one that broke.  f77
+	# emits an explicit `CONV type double' over an INTEGER and emits NOTHING
+	# over a REAL -- pcc lets an operand be narrower than its operator -- so
+	# a pass honouring only the stated conversions read a single-precision
+	# bit pattern with `fadd d'.  2.5 + 1.5 came out 2.5 and the program
+	# printed 7.5 where it should print 12: a plausible number, from an
+	# expression in which every operator was one this pass knows.
+	check 'f77: mixed DOUBLE PRECISION, REAL and INTEGER' '  1.200000000e+01|' \
+	    "$(f77run w '      program w
+      double precision d
+      real r
+      integer i
+      d = 2.5d0
+      r = 1.5
+      i = 3
+      d = d + r
+      d = d * i
+      write(6,*) d
+      end')"
+	# AND THE OTHER DIRECTION, which a store rather than an operator takes:
+	# without it materas() handed back a FLOAT register and the integer
+	# store named the same NUMBER in the other bank -- so `i = r' would have
+	# stored whatever was in x8.
+	check 'f77: REAL to INTEGER and back' ' 7|  7.00000000|' \
+	    "$(f77run v '      program v
+      real r
+      integer i
+      r = 7.5
+      i = r
+      write(6,*) i
+      r = i
+      write(6,*) r
+      end')"
+	# .AND. AND .OR., which found a defect that predates them.  A comparison
+	# was left in the FLAGS for the branch to read, which is right until a
+	# second comparison arrives before the first has been used -- and
+	# `i .gt. 3 .and. j .lt. 4' is exactly that.  Nothing had produced two
+	# comparisons in one expression, so nothing could show it.
+	check 'f77: .AND. and .OR.' ' 1| 2|' \
+	    "$(f77run n '      program n
+      integer i, j
+      i = 17
+      j = 2
+      if (i .gt. 3 .and. j .lt. 4) write(6,*) 1
+      if (i .lt. 3 .or.  j .lt. 4) write(6,*) 2
+      end')"
+	# MOD has no arm64 instruction -- the VAX divide returned a remainder
+	# and this one does not -- so it is sdiv plus msub, and it needs a third
+	# register because both operands are still live at the multiply.
+	check 'f77: MOD and unary minus' ' 2| -17|' \
+	    "$(f77run o '      program o
+      integer i, j
+      i = 17
+      j = mod(i, 5)
+      write(6,*) j
+      write(6,*) -i
+      end')"
+	# A COMPUTED GOTO, which crashed f77pass1 itself.  prcmgoto() was
+	# written taking `struct Labelblock *labs[]' when putcmgo() passes `int
+	# labarray' -- the label of a table it has ALREADY emitted -- so the
+	# array subscript dereferenced a label number and pass 1 died at address
+	# 0x13, which was 19, which was the label.  Then the table it does emit
+	# is `.quad L16', an ADDRESS, and arm64 Mach-O refuses a relocation in
+	# __TEXT: the link failed and f77 reported success over the top of it.
+	# Three targets and a fall-through, so a table off by one is visible.
+	check 'f77: a computed GOTO' ' 11| 22| 33| 99|' \
+	    "$(f77run g '      program g
+      integer i
+      do 10 i = 1, 4
+         goto (1,2,3), i
+         write(6,*) 99
+         goto 10
+    1    write(6,*) 11
+         goto 10
+    2    write(6,*) 22
+         goto 10
+    3    write(6,*) 33
+   10 continue
+      end')"
+	# THE EXPONENT OF A LIST-DIRECTED REAL, which is libI77's defect and not
+	# the compiler's -- reproduced from C, with /lib/f1 nowhere in the
+	# picture, before it was fixed.  wrt_E chose its value by length and
+	# then asked `p->pf != 0', the FLOAT arm of the union, to decide whether
+	# to apply the scale.  On a VAX that is correct and only there:
+	# D_floating's first 32 bits have the identical layout to F_floating, so
+	# a double read as a float is the same value.  On IEEE little-endian
+	# those four bytes are the LOW mantissa bits.
+	#
+	# SO IT BROKE FOR TIDY NUMBERS AND WORKED FOR UNTIDY ONES, which is why
+	# these are TWO cases.  0.375 has 29 zero mantissa bits and printed
+	# e+00; 0.0375 does not and printed e-02 correctly.  A fix that simply
+	# always applied the scale would pass the first and fail the second, so
+	# the untidy value is the control rather than a duplicate.
+	check 'f77: a tidy REAL carries its exponent' '-01' \
+	    "$(f77run e '      program e
+      write(6,*) 0.375
+      end' | sed 's/.*e//; s/|//')"
+	check 'f77: and an untidy REAL still does' '-02' \
+	    "$(f77run u '      program u
+      write(6,*) 0.0375
+      end' | sed 's/.*e//; s/|//')"
+
+	# THE FRAME IS A RELATION, NOT A COUNT.  Every callee-saved pair the
+	# entry stub pushes must come back off in the epilogue: an unbalanced
+	# pair does not fail here, it corrupts the CALLER, which is the failure
+	# mode nothing downstream can attribute.  Stated as a set comparison so
+	# that adding or removing a saved register is covered without anyone
+	# editing a number -- the count of PASS records used to be asserted and
+	# went red for a frame change that was entirely correct.
+	check 'f1: the frame restores exactly the registers it saved' '' \
+	    "$(cd f77p1w && "$V8ROOT/lib/f1" h.x > b.s 2>/dev/null
+	       s=$(sed -n 's/.*stp	\([dx][0-9]*\), \([dx][0-9]*\), \[sp, #-16\]!.*/\1 \2/p' b.s | sort)
+	       r=$(sed -n 's/.*ldp	\([dx][0-9]*\), \([dx][0-9]*\), \[sp\], #16.*/\1 \2/p' b.s | sort)
+	       [ -n "$s" ] || echo 'no saves found'
+	       [ "$s" = "$r" ] || echo 'saved and restored sets differ')"
+
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
 	# tests/kmemu asserts that w(1) says `No mem'.
 
 else
-	fail=$((fail+17)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+29)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism

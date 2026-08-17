@@ -524,6 +524,38 @@ nodep 'pdp11x.c is not a build input'  src/cmd/f77/pdp11x.c  $B/bin/f77
 # asserts the value; this asserts the edge does not exist.
 nodep 'the checked-in machdefs is not an input' src/cmd/f77/machdefs $B/f77/driver.o
 
+# --- f77pass1 (stage 3) and /lib/f1 (stage 4) -------------------------------
+#
+# NEITHER HAD A SINGLE EDGE ASSERTED HERE, which is worth saying rather than
+# quietly fixing: the driver's block above was written when f77 was one program,
+# and two more arrived without anyone extending it.
+#
+# machdefs -> arm64.o IS THE LOAD-BEARING ONE, and it became so after the frame
+# was rewritten.  ARGOFFSET is now the SIZE OF THE AUTO AREA -- arm64.c derives
+# F77FRAME from it and prsave() spills x0-x7 above it, while putpcc.c addresses
+# every parameter as ARGOFFSET + memno.  So the two halves agree only because
+# they read one number, and a stale arm64.o would build a frame from the old
+# value while pass 1 addressed parameters with the new one: a prologue and a
+# body disagreeing about where the arguments are, which is not a build error and
+# not a wrong answer either -- it is a program that reads whatever is at the
+# wrong offset.
+dep 'arm64defs -> f77pass1 machdefs' src/cmd/f77/arm64defs $B/f77p1/machdefs
+dep 'machdefs -> arm64.o'            $B/f77p1/machdefs      $B/f77p1/arm64.o
+dep 'arm64.c -> arm64.o'             src/cmd/f77/arm64.c    $B/f77p1/arm64.o
+dep 'arm64.o -> f77pass1'            $B/f77p1/arm64.o       $B/f77p1/f77pass1
+dep 'f77pass1 -> installed'          $B/f77p1/f77pass1      rootfs/usr/lib/f77pass1
+# vax.c is the OTHER machine's answer to arm64.c.  Upstream's makefile picks one
+# per target; a dep on it would say this build compiles both.
+nodep 'vax.c is not an input to f77pass1'   src/cmd/f77/vax.c   $B/f77p1/f77pass1
+nodep 'pdp11.c is not an input to f77pass1' src/cmd/f77/pdp11.c $B/f77p1/f77pass1
+# /lib/f1 is layer 2 and includes NOTHING of f77's -- it respells pccdefs rather
+# than including it, so that the whole defs chain stays off its include path.
+# The nodep is that claim: tests/wavea compares the two lists of numbers, and
+# this says the build agrees they are separate files.
+dep 'f1.c -> f1'        shim/f1/f1.c   $B/f1/f1
+dep 'f1 -> installed'   $B/f1/f1       rootfs/lib/f1
+nodep 'f1 does not include f77s pccdefs' src/cmd/f77/pccdefs $B/f1/f1
+
 i77ours=$(i77nfile "")
 i77theirs=$(i77nfile "-I$ROOT/src/libI77")
 if [ "$i77ours" = "_iob[120]" ]; then

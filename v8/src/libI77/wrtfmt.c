@@ -248,7 +248,26 @@ nogood:
 		for(i=0;i<w;i++) (*putn)('*');
 		return(0);
 	}
-	if(p->pf != 0) dp -= scale;
+	/* PORT: upstream asks `p->pf != 0' -- the FLOAT arm of the union,
+	   whatever len said four lines above, where dd was chosen by length.
+	   That is correct on a VAX and only there: D_floating's first 32 bits
+	   have the identical layout to F_floating -- sign, 8-bit exponent, then
+	   fraction -- so reading a double's leading word as a float gives the
+	   same value, and it is zero exactly when the double is zero.
+
+	   On IEEE little-endian the first four bytes of a double are the LOW
+	   mantissa bits, which are zero for every value with 29 or fewer
+	   significant bits.  So the exponent was forced to 0 for tidy numbers
+	   and correct for untidy ones: measured, `write(6,*) 0.375' printed
+	   3.750000000e+00 and 0.0375 printed 3.750000149e-02, right beside it.
+	   That is the worst shape a numeric defect can have -- the values a test
+	   would be written with are exactly the ones it breaks, and 1e10 and
+	   1e-10 both come out perfect.
+
+	   Forced by the target, like values.h's IEEE arm and realcon[] in
+	   arm64.c: it is the floating-point FORMAT that changed, not the code's
+	   intent.  dd is the value the function already decided to format. */
+	if(dd != 0) dp -= scale;
 	else	dp = 0;
 	switch(e) {	/* grumph */
 	case 1:

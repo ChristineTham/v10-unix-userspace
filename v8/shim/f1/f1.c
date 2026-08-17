@@ -51,14 +51,25 @@
 #define P2NEG		10
 #define P2STAR		11
 #define P2INDIRECT	13
+#define P2BITAND	14
+#define P2BITOR		17
+#define P2BITXOR	19
+#define P2QUEST		21
+#define P2COLON		22
+#define P2ANDAND	23
+#define P2OROR		24
 #define P2GOTO		37
 #define P2LISTOP	56
 #define P2ASSIGN	58
 #define P2COMOP		59
 #define P2SLASH		60
 #define P2MOD		62
+#define P2LSHIFT	64
+#define P2RSHIFT	66
 #define P2CALL		70
 #define P2CALL0		72
+#define P2NOT		76
+#define P2BITNOT	77
 #define P2EQ		80
 #define P2NE		81
 #define P2LE		82
@@ -79,6 +90,12 @@
 #define P2EOF		205
 #define P2ARIF		206
 #define P2LABEL		207
+
+#define P2CHAR		2
+#define P2SHORT		3
+#define P2INT		4
+#define P2REAL		6
+#define P2DREAL		7
 
 #define P2PTR		020
 #define P2FUNCT		040
@@ -113,19 +130,39 @@
 #define V_REG	2		/* already in a register */
 #define V_MEM	3		/* offset(reg), an OREG -- a temporary */
 #define V_VAR	4		/* a named variable: its VALUE, not its address */
+#define V_CC	5		/* a comparison, waiting for the branch to read it */
 
 struct val {
 	int	kind;
-	long	con;		/* V_CON: the value.  V_ADDR: an offset */
-	char	name[72];	/* V_ADDR */
-	int	reg;		/* V_REG */
+	long	con;		/* V_CON: the value.  V_ADDR/V_MEM: an offset.
+				   V_CC: the comparison operator */
+	char	name[72];	/* V_ADDR, V_VAR */
+	int	reg;		/* V_REG: the register.  V_MEM: the base */
 	int	vtype;
+	int	owned;		/* this value allocated reg and must give it back */
 };
 
 static struct val vstack[NSTACK];
 static int	vsp;
-static int	stmtbase;	/* vsp at the last P2STMT: the expression's floor */
-static int	infunc;
+
+/*
+ * THE LOGICAL STACK, WHICH IS WHAT MAKES A CALL FIND ITS OWN CALLEE.  LISTOP
+ * carries no arity, so the first version took the callee to be the first value
+ * pushed since P2STMT.  That is true of a call STATEMENT and false of a call in
+ * an EXPRESSION: `write(6,*) sq(9)' pushes the result temporary FIRST, so the
+ * callee was read out of slot 0, came back a temporary rather than an address,
+ * and the refusal said `indirect call not implemented' -- naming a construct
+ * the program does not contain.  A wrong answer in a diagnostic is worse than
+ * none, because it sends the next reader after a feature instead of a bug.
+ *
+ * lstack[i] is the vstack index where logical value i begins.  A push starts a
+ * new one; an operator's pop ends one; LISTOP merges the top two into a single
+ * logical value covering both, which is exactly what it means.  CALL then takes
+ * the top logical value as its argument run and the one below it as the callee,
+ * needing no arity from the record and no assumption about statements.
+ */
+static int	lstack[NSTACK];
+static int	lsp;
 
 static FILE	*in;
 static int	dumping;	/* -d: report the stream instead of compiling */
@@ -192,29 +229,255 @@ getname(buf)
 
 /* ------------------------------------------------------- the emitters ---- */
 
+/* ---- the type word ------------------------------------------------------
+ *
+ * pcc1 stacks PTR and FUNCT four bits at a time above the base type, so a
+ * nonzero high field means "this is an address" whatever the base says.  Every
+ * width decision below asks these three and nothing else: getting a pointer's
+ * width from its BASE type is how `ldr w2, [x29, #1024]' came to load half of a
+ * char * and hand it to do_lio.
+ */
+static int
+isptr(t)
+	int t;
+{
+	return ((t >> BTSHIFT) != 0);
+}
+
+static int
+isflt(t)
+	int t;
+{
+	return (!isptr(t) &&
+	    ((t & BTMASK) == P2REAL || (t & BTMASK) == P2DREAL));
+}
+
+static int
+isdbl(t)
+	int t;
+{
+	return (!isptr(t) && (t & BTMASK) == P2DREAL);
+}
+
+
+/* ---- the registers ------------------------------------------------------
+ *
+ * TWO POOLS, AND THE CALLEE-SAVED ONE IS NOT AN OPTIMISATION.  `r = g(p) + g(q)'
+ * puts the first call's result on the stack and then makes a second call, so a
+ * materialised value has to survive a `bl'.  x9-x15 do not; x23-x27 do, and
+ * prsave() in src/cmd/f77/arm64.c saves them.  Pass 1 hands out x19-x22 as
+ * register variables (MAXREGVAR is 4 in arm64defs), so the pools start above
+ * them -- and the two files agree about that boundary by the same argument that
+ * makes AUTOREG and regnum[] agree, which is that arm64defs states it once.
+ *
+ * d8-d15 are the float half, and AAPCS64 requires their low 64 bits to be
+ * preserved across a call, which is the same property for the same reason.
+ * SCRATCH is for within one emission only and is never live across anything.
+ */
+/* TWO within-emission scratch registers, live for the length of one
+   instruction pair and never across anything.  There were five: SCRATCHA and
+   two float ones went unused the moment doassign() started materialising its
+   value AS the destination's type rather than into a fixed register, and an
+   unconsumed definition is the same claim as an unconsumed function -- it says
+   this pass needs a register it does not need.  Deleted rather than kept
+   against a future caller. */
+#define SCRATCHB	13
+#define SCRATCHC	14
+
+static int ipool[] = { 23, 24, 25, 26, 27 };
+static int fpool[] = { 8, 9, 10, 11, 12, 13, 14, 15 };
+static char ibusy[sizeof ipool / sizeof ipool[0]];
+static char fbusy[sizeof fpool / sizeof fpool[0]];
+
+static int
+ralloc(flt)
+	int flt;
+{
+	int i, n;
+
+	n = flt ? sizeof fpool / sizeof fpool[0]
+		: sizeof ipool / sizeof ipool[0];
+	for (i = 0; i < n; i++)
+		if (flt ? !fbusy[i] : !ibusy[i]) {
+			if (flt)
+				fbusy[i] = 1;
+			else
+				ibusy[i] = 1;
+			return (flt ? fpool[i] : ipool[i]);
+		}
+	/* REFUSED BY NAME rather than spilled.  A spill needs frame slots this
+	   pass does not own -- pass 1 allocated the autos and told us only how
+	   many -- so running out is a diagnostic.  Measured against real input
+	   rather than assumed sufficient: see the note in PORTING.md. */
+	fprintf(stderr,
+	    "f1: expression needs more %s registers than this pass allocates\n",
+	    flt ? "floating-point" : "integer");
+	exit(2);
+	/*NOTREACHED*/
+	return (0);
+}
+
+static void
+rfree(flt, r)
+	int flt, r;
+{
+	int i, n;
+
+	n = flt ? sizeof fpool / sizeof fpool[0]
+		: sizeof ipool / sizeof ipool[0];
+	for (i = 0; i < n; i++)
+		if ((flt ? fpool[i] : ipool[i]) == r) {
+			if (flt)
+				fbusy[i] = 0;
+			else
+				ibusy[i] = 0;
+			return;
+		}
+}
+
+/* Give back whatever a value was holding.  Called as each operand is consumed,
+   so an expression's registers are recycled down its own depth rather than
+   across the whole statement. */
+static void
+vfree(v)
+	struct val *v;
+{
+	if (v->owned) {
+		rfree(isflt(v->vtype), v->reg);
+		v->owned = 0;
+	}
+}
+
+static void
+regreset()
+{
+	int i;
+
+	for (i = 0; i < sizeof ibusy / sizeof ibusy[0]; i++)
+		ibusy[i] = 0;
+	for (i = 0; i < sizeof fbusy / sizeof fbusy[0]; i++)
+		fbusy[i] = 0;
+}
+
+
 static void
 vpush(v)
 	struct val *v;
 {
-	if (vsp >= NSTACK) {
+	if (vsp >= NSTACK || lsp >= NSTACK) {
 		fprintf(stderr, "f1: expression stack overflow\n");
 		exit(2);
 	}
+	lstack[lsp++] = vsp;
 	vstack[vsp++] = *v;
 }
 
 static struct val
 vpop()
 {
-	if (vsp <= 0) {
+	if (vsp <= 0 || lsp <= 0) {
 		fprintf(stderr, "f1: expression stack underflow\n");
 		exit(2);
 	}
+	lsp--;
 	return (vstack[--vsp]);
 }
 
+static void
+vreset()
+{
+	vsp = 0;
+	lsp = 0;
+	regreset();
+}
+
 /*
- * Materialise a value into a named register.  V_ADDR becomes the adrp/add pair
+ * THE LOAD AND STORE MNEMONICS COME FROM THE TYPE, and this is the whole of the
+ * width discipline.  A load is signed where the base type is signed, because
+ * this port keeps an int sign-extended in its x register -- the invariant
+ * arm64_trunc() in compiler/ccom-arm64/gencode.c exists to maintain -- and a
+ * comparison reads all 64 bits.  A POINTER is eight bytes whatever its base type
+ * says, which is the case the first version got wrong for every parameter of
+ * every subroutine.
+ */
+static char *
+ldop(t)
+	int t;
+{
+	if (isptr(t))
+		return ("ldr");			/* x: a whole address */
+	switch (t & BTMASK) {
+	case P2CHAR:	return ("ldrsb");
+	case P2SHORT:	return ("ldrsh");
+	default:	return ("ldrsw");	/* int/long: SZLONG is 4 here */
+	}
+}
+
+static char *
+stop(t)
+	int t;
+{
+	if (isptr(t))
+		return ("str");
+	switch (t & BTMASK) {
+	case P2CHAR:	return ("strb");
+	case P2SHORT:	return ("strh");
+	default:	return ("str");
+	}
+}
+
+/* The register letter a store reads from: an address is written whole out of x,
+   everything narrower out of the w half of the same register. */
+static int
+stwide(t)
+	int t;
+{
+	return (isptr(t));
+}
+
+
+/*
+ * Put a value's ADDRESS in integer register r.  Only a named object or an
+ * offset(reg) has one; a constant and a register do not, which is what makes
+ * `assignment to a constant' a real diagnostic rather than a defensive one.
+ */
+static void
+addrinto(v, r)
+	struct val *v;
+	int r;
+{
+	switch (v->kind) {
+	case V_ADDR:
+	case V_VAR:
+		printf("\tadrp\tx%d, %s@PAGE\n", r, v->name);
+		printf("\tadd\tx%d, x%d, %s@PAGEOFF\n", r, r, v->name);
+		/* AND THE OFFSET CAN BE NEGATIVE, which `add' cannot take.  A
+		   Fortran array subscript is one-based, so f77 addresses a(i) as
+		   (&a - elementsize) + i*elementsize and the base arrives as
+		   `ICON -4 type int * name "v.2"'.  `add x12, x12, #-4' is not an
+		   instruction, and the assembler names the operand rather than
+		   the sign. */
+		if (v->con > 0)
+			printf("\tadd\tx%d, x%d, #%ld\n", r, r, v->con);
+		else if (v->con < 0)
+			printf("\tsub\tx%d, x%d, #%ld\n", r, r, -v->con);
+		break;
+	case V_MEM:
+		if (v->con > 0)
+			printf("\tadd\tx%d, x%d, #%ld\n", r, v->reg, v->con);
+		else if (v->con < 0)
+			printf("\tsub\tx%d, x%d, #%ld\n", r, v->reg, -v->con);
+		else if (v->reg != r)
+			printf("\tmov\tx%d, x%d\n", r, v->reg);
+		break;
+	default:
+		fprintf(stderr, "f1: the address of a value that has none\n");
+		exit(2);
+	}
+}
+
+/*
+ * Materialise a value into integer register r.  V_ADDR becomes the adrp/add pair
  * Mach-O needs for a page-relative address; a V_CON small enough goes in one
  * mov and anything else through a literal pool.
  */
@@ -223,6 +486,19 @@ into(v, r)
 	struct val *v;
 	int r;
 {
+	if (isflt(v->vtype) && v->kind != V_CON) {
+		/* A FLOAT BY VALUE IN AN INTEGER REGISTER IS v8cc's CONVENTION,
+		   not AAPCS64's, and it is the right one here because everything
+		   f1 calls was compiled by v8cc: measured, `double twice(x)'
+		   reads its parameter from where x0 was spilled and returns it in
+		   d0.  The pair is asymmetric and neither half is a guess.
+		   Nothing in Fortran reaches this today -- every libF77 entry
+		   point takes pointers, because Fortran passes by reference -- so
+		   it is refused by name rather than written and never exercised. */
+		fprintf(stderr,
+		    "f1: a floating-point value passed by value is not implemented\n");
+		exit(2);
+	}
 	switch (v->kind) {
 	case V_CON:
 		if (v->con >= 0 && v->con < 65536)
@@ -233,20 +509,18 @@ into(v, r)
 			printf("\tldr\tx%d, =%ld\n", r, v->con);
 		break;
 	case V_ADDR:
-		printf("\tadrp\tx%d, %s@PAGE\n", r, v->name);
-		printf("\tadd\tx%d, x%d, %s@PAGEOFF\n", r, r, v->name);
-		if (v->con)
-			printf("\tadd\tx%d, x%d, #%ld\n", r, r, v->con);
+		addrinto(v, r);
 		break;
 	case V_REG:
 		if (v->reg != r)
 			printf("\tmov\tx%d, x%d\n", r, v->reg);
 		break;
 	case V_MEM:
-		/* An OREG is offset(reg) -- pass 1's temporaries, which it
-		   allocates in the frame it told us about at LBRACKET.  The
-		   register is AUTOREG from arm64defs, x29. */
-		printf("\tldr\tw%d, [x%d, #%ld]\n", r, v->reg, v->con);
+		/* An OREG is offset(reg) -- pass 1's temporaries and, above
+		   ARGOFFSET, its spilled parameters.  The register is AUTOREG
+		   from arm64defs, x29. */
+		printf("\t%s\tx%d, [x%d, #%ld]\n",
+		    ldop(v->vtype), r, v->reg, v->con);
 		break;
 	case V_VAR:
 		/* A NAME IS A VALUE AND AN ICON IS AN ADDRESS, and that is the
@@ -257,118 +531,345 @@ into(v, r)
 		   field-overflow marker rather than a wrong number, because the
 		   sum did not fit i2.  Measured in the emitted code: two
 		   adrp/add pairs and then `add w12, w12, w13'. */
-		printf("\tadrp\tx%d, %s@PAGE\n", r, v->name);
-		printf("\tadd\tx%d, x%d, %s@PAGEOFF\n", r, r, v->name);
-		printf("\tldr\tw%d, [x%d]\n", r, r);
+		addrinto(v, r);
+		printf("\t%s\tx%d, [x%d]\n", ldop(v->vtype), r, r);
 		break;
+	case V_CC:
+		fprintf(stderr, "f1: a comparison used as a value\n");
+		exit(2);
+	}
+}
+
+/* The same, into float register r.  The letter follows the type: a REAL is four
+   bytes and a DOUBLE PRECISION eight, which arm64defs pins through
+   typesize[TYREAL] being SZLONG and libF77's r_nint taking a float *. */
+static void
+finto(v, r)
+	struct val *v;
+	int r;
+{
+	int c = isdbl(v->vtype) ? 'd' : 's';
+
+	if (!isflt(v->vtype)) {
+		fprintf(stderr, "f1: an integer value where a float was wanted\n");
+		exit(2);
+	}
+	switch (v->kind) {
+	case V_REG:
+		if (v->reg != r)
+			printf("\tfmov\t%c%d, %c%d\n", c, r, c, v->reg);
+		break;
+	case V_MEM:
+		printf("\tldr\t%c%d, [x%d, #%ld]\n", c, r, v->reg, v->con);
+		break;
+	case V_VAR:
+		addrinto(v, SCRATCHC);
+		printf("\tldr\t%c%d, [x%d]\n", c, r, SCRATCHC);
+		break;
+	default:
+		fprintf(stderr, "f1: a floating-point constant with no storage\n");
+		exit(2);
 	}
 }
 
 /*
- * The prologue and epilogue.  A FIXED 256-byte frame, stated rather than
- * computed: LBRACKET does carry the auto size, but nothing here spills, and a
- * computed frame is what arm64_endfunction() does for C -- adopting it would
- * mean adopting its three-region layout too, which is the contract this design
- * exists to avoid needing.  256 covers the stack argument area AAPCS64 wants
- * beyond x0-x7 and costs one instruction.
+ * The condition a comparison stands for, in its TRUE sense.  CBRANCH wants the
+ * inverse and asks for it separately, because the two readings are different
+ * claims and writing one as `not the other' is how the sense got inverted twice
+ * while this pass was being written.
+ *
+ * The float comparisons use the same names, which is exact for every value
+ * Fortran 77 can produce and wrong only for a NaN: after `fcmp' an unordered
+ * result sets C and V, so `lt' -- which is N!=V -- reads true where IEEE says
+ * false.  1977 Fortran has no way to write a NaN and no intrinsic that returns
+ * one, so the distinction has no source-level spelling to be wrong about.
  */
-static void
-prologue()
+static char *
+ccname(o)
+	int o;
 {
-	printf("\tstp\tx29, x30, [sp, #-16]!\n");
-	printf("\tmov\tx29, sp\n");
-	printf("\tsub\tsp, sp, #256\n");
-}
-
-static void
-epilogue()
-{
-	printf("\tmov\tsp, x29\n");
-	printf("\tldp\tx29, x30, [sp], #16\n");
-	printf("\tret\n");
+	switch (o) {
+	case P2EQ: return ("eq");
+	case P2NE: return ("ne");
+	case P2LE: return ("le");
+	case P2LT: return ("lt");
+	case P2GE: return ("ge");
+	case P2GT: return ("gt");
+	}
+	fprintf(stderr, "f1: a branch on a value that is not a comparison\n");
+	exit(2);
+	/*NOTREACHED*/
+	return ("");
 }
 
 /*
- * CALL and CALL0.  Everything above stmtbase is this statement's expression, so
- * the callee is vstack[stmtbase] and the arguments are what follows it -- which
- * is exact, and needs no arity from the record.  AAPCS64 puts the first eight
- * in x0-x7; more than eight would need the stack area the prologue reserves,
- * and f77 does not emit one for the calls it makes, so that is a refusal rather
- * than a silent truncation.
+ * Materialise into a FRESH register of the right class and return a value that
+ * owns it.  This is what every operator uses for its operands, so an operand
+ * that is already in a register costs nothing and one that is a name costs the
+ * load it was always going to need.
+ */
+static struct val
+mater(v)
+	struct val *v;
+{
+	struct val r;
+	int flt;
+
+	if (v->kind == V_REG && v->owned)
+		return (*v);
+	/* A COMPARISON BECOMES A 0/1 VALUE HERE, and this is the only place it
+	   can: everywhere else it lives in the flags, which is what the hardware
+	   wants for the common `cmp' followed by `b.cc'.  See flushcc(). */
+	if (v->kind == V_CC) {
+		r.kind = V_REG;
+		r.con = 0;
+		r.name[0] = '\0';
+		r.vtype = P2INT;
+		r.reg = ralloc(0);
+		r.owned = 1;
+		printf("\tcset\tw%d, %s\n", r.reg, ccname((int) v->con));
+		return (r);
+	}
+	flt = isflt(v->vtype);
+	r.kind = V_REG;
+	r.con = 0;
+	r.name[0] = '\0';
+	r.vtype = v->vtype;
+	r.reg = ralloc(flt);
+	r.owned = 1;
+	if (flt)
+		finto(v, r.reg);
+	else
+		into(v, r.reg);
+	vfree(v);
+	return (r);
+}
+
+/*
+ * TURN EVERY PENDING COMPARISON INTO A VALUE, because the flags are a single
+ * global register and the next `cmp' destroys them.
+ *
+ * `if (i .gt. 3 .and. j .lt. 4)' emits GT, then LT, then ANDAND -- so the
+ * second comparison overwrites the first one's flags before anything has read
+ * them.  Called at the top of the comparison arms, which is the only thing that
+ * writes flags, so a comparison stays lazy in the common case where CBRANCH
+ * reads it immediately and is spilled to a register exactly when a second one
+ * is about to arrive.  This was wrong before ANDAND existed; nothing had
+ * produced two comparisons in one expression, so nothing could show it.
+ */
+static void
+flushcc()
+{
+	struct val t;
+	int i;
+
+	for (i = 0; i < vsp; i++)
+		if (vstack[i].kind == V_CC) {
+			t = mater(&vstack[i]);
+			vstack[i] = t;
+		}
+}
+
+
+/*
+ * Materialise a value AS a given type, which is not the same as materialising
+ * it: an operator's type in pcc is the type of its RESULT, and its operands are
+ * allowed to be narrower.  f77 leans on that for the float widths and not for
+ * the integer ones -- measured, `d = d + r' over a DOUBLE PRECISION and a REAL
+ * arrives as
+ *
+ *	NAME "v.1" type double / NAME "v.2" type real / PLUS type double
+ *
+ * with no CONV between them, while `d = d * i' over an INTEGER gets an explicit
+ * `CONV type double'.  So half the widening is stated and half is implied, and
+ * a pass that honours only the stated half reads a single-precision bit pattern
+ * with `fadd d' and gets a plausible number: 2.5 + 1.5 came out 2.5, and the
+ * program printed 7.5 where it should have printed 12.  Nothing refused,
+ * because every operator involved was one this pass knows.
+ */
+static struct val
+materas(v, t)
+	struct val *v;
+	int t;
+{
+	struct val r, s;
+
+	if (isflt(t) && isflt(v->vtype)) {
+		s = mater(v);
+		if (isdbl(t) == isdbl(s.vtype))
+			return (s);
+		r.kind = V_REG; r.con = 0; r.name[0] = '\0';
+		r.vtype = t; r.reg = ralloc(1); r.owned = 1;
+		printf("\tfcvt\t%c%d, %c%d\n",
+		    isdbl(t) ? 'd' : 's', r.reg,
+		    isdbl(s.vtype) ? 'd' : 's', s.reg);
+		vfree(&s);
+		return (r);
+	}
+	if (isflt(t) && !isflt(v->vtype)) {
+		s = mater(v);
+		r.kind = V_REG; r.con = 0; r.name[0] = '\0';
+		r.vtype = t; r.reg = ralloc(1); r.owned = 1;
+		printf("\tscvtf\t%c%d, w%d\n",
+		    isdbl(t) ? 'd' : 's', r.reg, s.reg);
+		vfree(&s);
+		return (r);
+	}
+	if (!isflt(t) && isflt(v->vtype)) {
+		/* The other direction, which `integer i; real r; i = r' takes.
+		   Without it mater() hands back a FLOAT register and the store
+		   names an integer one of the same number -- so `i = r' would
+		   have stored x8's contents, silently. */
+		s = mater(v);
+		r.kind = V_REG; r.con = 0; r.name[0] = '\0';
+		r.vtype = t; r.reg = ralloc(0); r.owned = 1;
+		printf("\tfcvtzs\tw%d, %c%d\n",
+		    r.reg, isdbl(s.vtype) ? 'd' : 's', s.reg);
+		printf("\tsxtw\tx%d, w%d\n", r.reg, r.reg);
+		vfree(&s);
+		return (r);
+	}
+	return (mater(v));
+}
+
+/*
+ * CALL and CALL0.  The callee and its arguments are the top two LOGICAL values
+ * -- see the note on lstack above -- so this needs no arity from the record and
+ * no assumption that a call is a whole statement.  AAPCS64 puts the first eight
+ * arguments in x0-x7; more would need the stack area, and f77 emits no call
+ * that wide here, so that is a refusal rather than a silent truncation.
  */
 static void
 docall(hasargs)
 	int hasargs;
 {
 	struct val f, r;
-	int n, i;
+	int n, i, base, fbase;
 
-	if (vsp <= stmtbase) {
+	if (lsp < (hasargs ? 2 : 1)) {
 		fprintf(stderr, "f1: call with no callee\n");
 		exit(2);
 	}
-	f = vstack[stmtbase];
-	n = hasargs ? vsp - stmtbase - 1 : 0;
+	if (hasargs) {
+		base = lstack[lsp - 1];		/* the argument run */
+		fbase = lstack[lsp - 2];	/* the callee */
+		n = vsp - base;
+	} else {
+		base = fbase = lstack[lsp - 1];
+		n = 0;
+	}
+	f = vstack[fbase];
 	if (n > 8) {
 		fprintf(stderr, "f1: %d arguments, more than AAPCS64 puts in registers\n", n);
 		exit(2);
 	}
 	for (i = 0; i < n; i++)
-		into(&vstack[stmtbase + 1 + i], i);
+		into(&vstack[base + i], i);
 	if (f.kind != V_ADDR) {
-		fprintf(stderr, "f1: indirect call not implemented\n");
+		fprintf(stderr, "f1: a call through a value rather than a name\n");
 		exit(2);
 	}
 	printf("\tbl\t%s\n", f.name);
 
-	vsp = stmtbase;
-	r.kind = V_REG; r.reg = 0; r.con = 0; r.vtype = 0; r.name[0] = '\0';
+	/* Give back everything the arguments were holding, then take the result
+	   OUT of x0 immediately.  A second call in the same expression -- which
+	   `g(p) + g(q)' is -- would otherwise overwrite it, and that is why the
+	   pool is callee-saved. */
+	for (i = 0; i < n; i++)
+		vfree(&vstack[base + i]);
+	vfree(&vstack[fbase]);
+	vsp = fbase;
+	lsp -= hasargs ? 2 : 1;
+
+	r.kind = V_REG;
+	r.con = 0;
+	r.name[0] = '\0';
+	r.vtype = type;
+	r.owned = 1;
+	if (isflt(type)) {
+		/* A v8cc-compiled function returns a float in s0 and a double in
+		   d0 -- AAPCS64's rule, measured, and the half of the convention
+		   that is NOT the one used for passing. */
+		r.reg = ralloc(1);
+		printf("\tfmov\t%c%d, %c0\n", isdbl(type) ? 'd' : 's', r.reg,
+		    isdbl(type) ? 'd' : 's');
+	} else {
+		r.reg = ralloc(0);
+		printf("\tmov\tx%d, x0\n", r.reg);
+	}
 	vpush(&r);
 }
 
 /*
- * ASSIGN.  The left operand is the object being stored into, which arrives as
- * a NAME -- an ADDRESS -- and the right is the value.  The store width comes
- * from the type word: an INTEGER is four bytes here, which is SZLONG in f77's
- * arm64defs, pinned there by typesize[TYREAL] and by lengtype()'s hardcoded
- * INTEGER*4.  Getting this from the type rather than assuming eight is what
- * keeps a Fortran INTEGER four bytes all the way to the store.
+ * ASSIGN.  The left operand is the object being stored into and the right is the
+ * value.  The store width comes from the type word: an INTEGER is four bytes
+ * here, which is SZLONG in f77's arm64defs, pinned there by typesize[TYREAL] and
+ * by lengtype()'s hardcoded INTEGER*4.  Getting this from the type rather than
+ * assuming eight is what keeps a Fortran INTEGER four bytes all the way to the
+ * store -- and what keeps a POINTER eight.
  */
-static void
+static struct val
 doassign()
 {
 	struct val rhs, lhs;
-	int r;
+	int flt, c, r;
 
 	rhs = vpop();
 	lhs = vpop();
-	r = 10;
-	into(&rhs, r);
-	if (lhs.kind == V_MEM) {
-		printf("\tstr\tw%d, [x%d, #%ld]\n", r, lhs.reg, lhs.con);
-		return;
-	}
+	flt = isflt(lhs.vtype);
+	c = isdbl(lhs.vtype) ? 'd' : 's';
+
+	/* AS the destination's type, not merely into a register: `d = r' and
+	   `i = r' both cross a width here, and the store below names a register
+	   NUMBER whose class comes from the destination. */
+	rhs = materas(&rhs, lhs.vtype);
+	r = rhs.reg;
+
+	switch (lhs.kind) {
+	case V_MEM:
+		if (flt)
+			printf("\tstr\t%c%d, [x%d, #%ld]\n", c, r, lhs.reg, lhs.con);
+		else
+			printf("\t%s\t%c%d, [x%d, #%ld]\n", stop(lhs.vtype),
+			    stwide(lhs.vtype) ? 'x' : 'w', r, lhs.reg, lhs.con);
+		break;
 	/* A DO loop assigns to its control variable, which pass 1 may have put
 	   in a register -- so a REG is a legitimate assignment target and the
-	   store is a move.  Kept as a w move: the value is a Fortran INTEGER. */
-	if (lhs.kind == V_REG) {
-		printf("\tmov\tw%d, w%d\n", lhs.reg, r);
-		printf("\tsxtw\tx%d, w%d\n", lhs.reg, lhs.reg);
-		return;
-	}
-	if (lhs.kind != V_VAR && lhs.kind != V_ADDR) {
+	   store is a move.  Kept sign-extended for the reason every other
+	   integer here is. */
+	case V_REG:
+		if (flt)
+			printf("\tfmov\t%c%d, %c%d\n", c, lhs.reg, c, r);
+		else {
+			printf("\tmov\tw%d, w%d\n", lhs.reg, r);
+			printf("\tsxtw\tx%d, w%d\n", lhs.reg, lhs.reg);
+		}
+		break;
+	case V_VAR:
+	case V_ADDR:
+		addrinto(&lhs, SCRATCHB);
+		if (flt)
+			printf("\tstr\t%c%d, [x%d]\n", c, r, SCRATCHB);
+		else
+			printf("\t%s\t%c%d, [x%d]\n", stop(lhs.vtype),
+			    stwide(lhs.vtype) ? 'x' : 'w', r, SCRATCHB);
+		break;
+	default:
 		fprintf(stderr, "f1: assignment to a %s, which is not an lvalue\n",
-			lhs.kind == V_CON ? "constant" : "temporary");
+			lhs.kind == V_CON ? "constant" : "comparison");
 		exit(2);
 	}
-	printf("\tadrp\tx11, %s@PAGE\n", lhs.name);
-	printf("\tadd\tx11, x11, %s@PAGEOFF\n", lhs.name);
-	if ((lhs.vtype & BTMASK) == 3)
-		printf("\tstrh\tw%d, [x11]\n", r);
-	else if ((lhs.vtype & BTMASK) == 2)
-		printf("\tstrb\tw%d, [x11]\n", r);
-	else
-		printf("\tstr\tw%d, [x11]\n", r);
+	vfree(&lhs);
+	/* AND IT HAS A VALUE, because an assignment is an EXPRESSION -- which is
+	   pcc's rule and not a convenience.  A Fortran argument that is not a
+	   variable has to be given storage to be passed by reference, and f77
+	   builds that as `(temp = n-1, &temp)': an ASSIGN with a COMOP over it,
+	   in the middle of a call's argument list.  Treating ASSIGN as a
+	   statement and clearing the stack after it threw away the callee and
+	   the half-built expression underneath, and the next record underflowed.
+	   The caller decides what to do with the value; the statement boundary
+	   is P2STMT, and that is the only thing that resets. */
+	return (rhs);
 }
 
 static char *
@@ -406,8 +907,21 @@ opname(o)
 	case P2PLUSEQ:	return ("PLUSEQ");
 	case P2STAREQ:	return ("STAREQ");
 	case P2MINUS:	return ("MINUS");
+	case P2NEG:	return ("NEG");
 	case P2STAR:	return ("STAR");
 	case P2SLASH:	return ("SLASH");
+	case P2MOD:	return ("MOD");
+	case P2LSHIFT:	return ("LSHIFT");
+	case P2RSHIFT:	return ("RSHIFT");
+	case P2BITAND:	return ("BITAND");
+	case P2BITOR:	return ("BITOR");
+	case P2BITXOR:	return ("BITXOR");
+	case P2BITNOT:	return ("BITNOT");
+	case P2NOT:	return ("NOT");
+	case P2ANDAND:	return ("ANDAND");
+	case P2OROR:	return ("OROR");
+	case P2QUEST:	return ("QUEST");
+	case P2COLON:	return ("COLON");
 	case P2INDIRECT:return ("INDIRECT");
 	case P2ASSIGN:	return ("ASSIGN");
 	case P2COMOP:	return ("COMOP");
@@ -434,7 +948,18 @@ opname(o)
 	case P2ARIF:	return ("ARIF");
 	case P2SWITCH:	return ("SWITCH");
 	case P2EOF:	return ("EOF");
-	default:	return ("?");
+	/* AN UNKNOWN OPERATOR NAMES ITS NUMBER, because `?' is what a survey of
+	   the stream cannot use.  Building a histogram over a corpus to find out
+	   which operators Fortran actually reaches reported six `?' -- silently
+	   merging LSHIFT, MOD and NEG, the three the survey existed to find.  An
+	   instrument that hides exactly the thing it is pointed at. */
+	default:
+		{
+		static char b[16];
+
+		sprintf(b, "op%d", o);
+		return (b);
+		}
 	}
 }
 
@@ -543,13 +1068,13 @@ genrec()
 	case P2STMT:
 		if (var)
 			getstr(buf, var);	/* the filename; consumed, not emitted */
-		vsp = 0;
-		stmtbase = 0;
+		vreset();
 		break;
 
 	case P2LBRACKET:
 		if (!getword(&w))
 			w = 0;
+		vreset();
 		break;
 
 	case P2RBRACKET:
@@ -557,17 +1082,18 @@ genrec()
 
 	case P2LABEL:
 		printf("L%d:\n", type);
-		vsp = 0; stmtbase = 0;
+		vreset();
 		break;
 
 	case P2GOTO:
 		printf("\tb\tL%d\n", type);
-		vsp = 0; stmtbase = 0;
+		vreset();
 		break;
 
 	case P2NAME:
 		getname(buf);
 		v.kind = V_VAR; v.con = 0; v.reg = -1; v.vtype = type;
+		v.owned = 0;
 		strncpy(v.name, buf, sizeof(v.name)-1);
 		v.name[sizeof(v.name)-1] = '\0';
 		vpush(&v);
@@ -589,52 +1115,348 @@ genrec()
 			v.kind = V_CON;
 			v.name[0] = '\0';
 		}
-		v.con = w; v.reg = -1; v.vtype = type;
+		v.con = w; v.reg = -1; v.vtype = type; v.owned = 0;
 		vpush(&v);
 		break;
 
 	/* LISTOP is structural: in postfix its two operands are already adjacent
-	   on the stack, so joining them is a no-op and the run of arguments is
-	   simply everything above the callee. */
+	   on the stack, so joining them is a no-op PHYSICALLY -- but it does
+	   merge two LOGICAL values into one, which is what tells CALL where its
+	   argument run begins.  See the note on lstack. */
 	case P2LISTOP:
+		if (lsp < 2) {
+			fprintf(stderr, "f1: a list of fewer than two things\n");
+			exit(2);
+		}
+		lsp--;
 		break;
 
-	/* The binary arithmetic.  Both operands are materialised into scratch
-	   registers and the result stays in one -- no attempt at a cost model,
-	   because f77 emits already-simple trees and this pass has no register
-	   pressure to speak of with x9..x15 free.
-	   THE OPERATION IS 32-BIT, on w registers, because a Fortran INTEGER is
-	   four bytes here: SZLONG in arm64defs, pinned by typesize[TYREAL] and
-	   by lengtype()'s hardcoded INTEGER*4.  Using x would compute in 64 and
-	   store 32, which is right until something compares the result. */
+	/*
+	 * THE BINARY ARITHMETIC, AND ITS WIDTH IS THREE CASES RATHER THAN ONE.
+	 * The first version emitted `add w12, w12, w13' for every PLUS whatever
+	 * the type said, which is right for exactly one of the three:
+	 *
+	 *   an INTEGER is four bytes -- SZLONG in arm64defs, pinned by
+	 *	typesize[TYREAL] and by lengtype()'s hardcoded INTEGER*4 -- so it
+	 *	computes in w and is sign-extended after, for the reason
+	 *	arm64_trunc() exists in compiler/ccom-arm64/gencode.c;
+	 *
+	 *   a POINTER is eight, and `PLUS type int *' is how an array subscript
+	 *	reaches its element: a(i) is (&a - 4) + (i<<2).  In w that
+	 *	truncates the address;
+	 *
+	 *   a REAL or a DOUBLE is not an integer at all, and `x + 2.25' in w
+	 *	adds the two BIT PATTERNS.  Measured: the program compiled, linked,
+	 *	ran, and hung inside libI77's formatter on the nonsense that came
+	 *	out.  The refusal-by-name design cannot see this class, because
+	 *	every operator involved is one this pass knows -- a guard on the
+	 *	vocabulary is not a guard on the grammar.
+	 */
 	case P2PLUS: case P2MINUS: case P2STAR: case P2SLASH:
 		{
 			struct val a, b, r;
+			char *o;
+			int c;
+
 			b = vpop(); a = vpop();
-			into(&a, 12); into(&b, 13);
-			printf("\t%s\tw12, w12, w13\n",
-			    op == P2PLUS  ? "add" :
+			if (isflt(type)) {
+				c = isdbl(type) ? 'd' : 's';
+				a = materas(&a, type); b = materas(&b, type);
+				o = op == P2PLUS  ? "fadd" :
+				    op == P2MINUS ? "fsub" :
+				    op == P2STAR  ? "fmul" : "fdiv";
+				printf("\t%s\t%c%d, %c%d, %c%d\n",
+				    o, c, a.reg, c, a.reg, c, b.reg);
+				vfree(&b);
+				r = a; r.vtype = type;
+				vpush(&r);
+				break;
+			}
+			a = mater(&a); b = mater(&b);
+			o = op == P2PLUS  ? "add" :
 			    op == P2MINUS ? "sub" :
-			    op == P2STAR  ? "mul" : "sdiv");
-			/* sign-extend, for the reason gencode.c's arm64_trunc
-			   exists: a w-register write zeroes bits 63:32 and this
-			   port keeps a signed int sign-extended. */
-			printf("\tsxtw\tx12, w12\n");
-			r.kind = V_REG; r.reg = 12; r.con = 0;
-			r.vtype = type; r.name[0] = '\0';
+			    op == P2STAR  ? "mul" : "sdiv";
+			if (isptr(type))
+				printf("\t%s\tx%d, x%d, x%d\n",
+				    o, a.reg, a.reg, b.reg);
+			else {
+				printf("\t%s\tw%d, w%d, w%d\n",
+				    o, a.reg, a.reg, b.reg);
+				printf("\tsxtw\tx%d, w%d\n", a.reg, a.reg);
+			}
+			vfree(&b);
+			r = a; r.vtype = type;
 			vpush(&r);
 		}
 		break;
 
-	/* OREG -- offset(reg), a temporary in pass 1's frame.  The record is
-	   the header, then the offset, then an empty name (p2name("")), and the
-	   empty name has to be CONSUMED or every record after it is misread. */
+	/* MOD has no instruction: arm64 dropped the divide-with-remainder the
+	   VAX had, so it is a divide and a multiply-subtract.  The scratch is a
+	   third register because both operands are still live at the msub. */
+	case P2MOD:
+		{
+			struct val a, b, r;
+
+			b = vpop(); a = vpop();
+			a = mater(&a); b = mater(&b);
+			printf("\tsdiv\tw%d, w%d, w%d\n", SCRATCHC, a.reg, b.reg);
+			printf("\tmsub\tw%d, w%d, w%d, w%d\n",
+			    a.reg, SCRATCHC, b.reg, a.reg);
+			printf("\tsxtw\tx%d, w%d\n", a.reg, a.reg);
+			vfree(&b);
+			r = a; r.vtype = type;
+			vpush(&r);
+		}
+		break;
+
+	/* The shifts, which is how an array subscript is scaled -- a(i) arrives
+	   as i<<2 for a four-byte element, and P2LSHIFT was the `operator 64' an
+	   array of any kind refused on.  Arithmetic right, because a Fortran
+	   INTEGER is signed. */
+	case P2LSHIFT: case P2RSHIFT:
+		{
+			struct val a, b, r;
+
+			b = vpop(); a = vpop();
+			a = mater(&a); b = mater(&b);
+			printf("\t%s\tw%d, w%d, w%d\n",
+			    op == P2LSHIFT ? "lsl" : "asr",
+			    a.reg, a.reg, b.reg);
+			printf("\tsxtw\tx%d, w%d\n", a.reg, a.reg);
+			vfree(&b);
+			r = a; r.vtype = type;
+			vpush(&r);
+		}
+		break;
+
+	/*
+	 * .AND. and .OR., WHICH DO NOT SHORT-CIRCUIT HERE AND MUST NOT.  The
+	 * stream is postfix, so both operands have already been evaluated by the
+	 * time this record is read -- there is nothing left to skip.  That is not
+	 * a limitation: Fortran 77 explicitly does NOT require short-circuit
+	 * evaluation of .AND./.OR. (unlike C's && and ||), so evaluating both is
+	 * a conforming implementation, and it is the one f77's own intermediate
+	 * commits to by emitting them as operators rather than as branches.
+	 *
+	 * Both operands are 0 or 1 by the time they get here -- a comparison
+	 * through cset, a LOGICAL variable by Fortran's own representation -- so
+	 * the bitwise instruction is the logical one.
+	 */
+	case P2ANDAND: case P2OROR:
+		{
+			struct val a, b, r;
+
+			b = vpop(); a = vpop();
+			a = mater(&a); b = mater(&b);
+			printf("\t%s\tw%d, w%d, w%d\n",
+			    op == P2ANDAND ? "and" : "orr",
+			    a.reg, a.reg, b.reg);
+			vfree(&b);
+			r = a; r.vtype = type;
+			vpush(&r);
+		}
+		break;
+
+	case P2BITAND: case P2BITOR: case P2BITXOR:
+		{
+			struct val a, b, r;
+
+			b = vpop(); a = vpop();
+			a = mater(&a); b = mater(&b);
+			printf("\t%s\tw%d, w%d, w%d\n",
+			    op == P2BITAND ? "and" :
+			    op == P2BITOR  ? "orr" : "eor",
+			    a.reg, a.reg, b.reg);
+			printf("\tsxtw\tx%d, w%d\n", a.reg, a.reg);
+			vfree(&b);
+			r = a; r.vtype = type;
+			vpush(&r);
+		}
+		break;
+
+	/* The unary operators.  NEG on a float is a sign flip rather than a
+	   subtract from zero, which matters for -0.0 and for a NaN. */
+	case P2NEG:
+		{
+			struct val a, r;
+
+			a = vpop();
+			a = mater(&a);
+			if (isflt(type))
+				printf("\tfneg\t%c%d, %c%d\n",
+				    isdbl(type) ? 'd' : 's', a.reg,
+				    isdbl(type) ? 'd' : 's', a.reg);
+			else {
+				printf("\tneg\tw%d, w%d\n", a.reg, a.reg);
+				printf("\tsxtw\tx%d, w%d\n", a.reg, a.reg);
+			}
+			r = a; r.vtype = type;
+			vpush(&r);
+		}
+		break;
+
+	case P2BITNOT:
+		{
+			struct val a, r;
+
+			a = vpop();
+			a = mater(&a);
+			printf("\tmvn\tw%d, w%d\n", a.reg, a.reg);
+			printf("\tsxtw\tx%d, w%d\n", a.reg, a.reg);
+			r = a; r.vtype = type;
+			vpush(&r);
+		}
+		break;
+
+	case P2NOT:
+		{
+			struct val a, r;
+
+			a = vpop();
+			a = mater(&a);
+			printf("\tcmp\tw%d, #0\n", a.reg);
+			printf("\tcset\tw%d, eq\n", a.reg);
+			r = a; r.vtype = type;
+			vpush(&r);
+		}
+		break;
+
+	/*
+	 * INDIRECT -- the operator that makes an array element addressable, and
+	 * the one a subroutine's own scalar parameter needs too, since a
+	 * parameter arrives as a pointer and every use of it is a load through
+	 * that pointer.
+	 *
+	 * A NAMED address stays named, so `*(&v.2 - 4)' keeps its adrp/add at
+	 * the point of use rather than burning one of five callee-saved
+	 * registers per subscript.  Anything computed is materialised once and
+	 * becomes offset(reg), which is the same shape an OREG already has --
+	 * so the store path in doassign() needs no new case and an array element
+	 * is an lvalue for free.
+	 */
+	case P2INDIRECT:
+		{
+			struct val a, r;
+
+			a = vpop();
+			if (a.kind == V_ADDR) {
+				r = a;
+				r.kind = V_VAR;
+				r.vtype = type;
+				vpush(&r);
+				break;
+			}
+			if (a.kind == V_VAR) {
+				/* the value of a pointer variable, then a load
+				   through it */
+				a = mater(&a);
+			} else
+				a = mater(&a);
+			r.kind = V_MEM;
+			r.reg = a.reg;
+			r.owned = a.owned;
+			r.con = 0;
+			r.vtype = type;
+			r.name[0] = '\0';
+			vpush(&r);
+		}
+		break;
+
+	/*
+	 * CONV -- a change of type, and the record's own type is the DESTINATION.
+	 * The source is whatever the operand says, which is the only place in
+	 * this file where two type words are in play at once.
+	 */
+	case P2CONV:
+		{
+			struct val a, r;
+			int st, dt, sc, dc;
+
+			a = vpop();
+			st = a.vtype;
+			dt = type;
+			if (isflt(st) && isflt(dt)) {
+				sc = isdbl(st) ? 'd' : 's';
+				dc = isdbl(dt) ? 'd' : 's';
+				a = mater(&a);
+				if (sc != dc) {
+					r.reg = ralloc(1);
+					printf("\tfcvt\t%c%d, %c%d\n",
+					    dc, r.reg, sc, a.reg);
+					vfree(&a);
+					r.owned = 1;
+				} else {
+					r.reg = a.reg;
+					r.owned = a.owned;
+				}
+				r.kind = V_REG; r.con = 0; r.name[0] = '\0';
+				r.vtype = dt;
+				vpush(&r);
+				break;
+			}
+			if (!isflt(st) && isflt(dt)) {
+				dc = isdbl(dt) ? 'd' : 's';
+				a = mater(&a);
+				r.reg = ralloc(1);
+				printf("\tscvtf\t%c%d, w%d\n", dc, r.reg, a.reg);
+				vfree(&a);
+				r.kind = V_REG; r.con = 0; r.name[0] = '\0';
+				r.vtype = dt; r.owned = 1;
+				vpush(&r);
+				break;
+			}
+			if (isflt(st) && !isflt(dt)) {
+				sc = isdbl(st) ? 'd' : 's';
+				a = mater(&a);
+				r.reg = ralloc(0);
+				printf("\tfcvtzs\tw%d, %c%d\n", r.reg, sc, a.reg);
+				/* AND RE-EXTEND, which is the sixth arm64_trunc
+				   site arriving here: fcvtzs writes a w register,
+				   any write to a w register zeroes bits 63:32,
+				   and this port keeps a signed int sign-extended.
+				   The same defect was found in v8cc itself when
+				   the Fortran INTEGER width was narrowed. */
+				printf("\tsxtw\tx%d, w%d\n", r.reg, r.reg);
+				vfree(&a);
+				r.kind = V_REG; r.con = 0; r.name[0] = '\0';
+				r.vtype = dt; r.owned = 1;
+				vpush(&r);
+				break;
+			}
+			/* integer to integer, or to and from a pointer.  A
+			   narrowing is the store's business and a widening is
+			   already done, because every integer here is held
+			   sign-extended; what changes is only the type carried
+			   forward. */
+			r = a;
+			r.vtype = dt;
+			vpush(&r);
+		}
+		break;
+
+	/* COMOP -- evaluate both, the value is the right one.  A lazy operand
+	   has no side effect to lose, and an eager one (a CALL, an ASSIGN) has
+	   already emitted its code by the time this record is read. */
+	case P2COMOP:
+		{
+			struct val a, b;
+
+			b = vpop(); a = vpop();
+			vfree(&a);
+			vpush(&b);
+		}
+		break;
+
+	/* OREG -- offset(reg), a temporary in pass 1's frame, and above
+	   ARGOFFSET one of its spilled parameters.  The record is the header,
+	   then the offset, then an empty name (p2name("")), and the empty name
+	   has to be CONSUMED or every record after it is misread. */
 	case P2OREG:
 		if (!getword(&w))
 			w = 0;
 		getname(buf);
 		v.kind = V_MEM; v.con = w; v.reg = var; v.vtype = type;
-		v.name[0] = '\0';
+		v.name[0] = '\0'; v.owned = 0;
 		vpush(&v);
 		break;
 
@@ -648,19 +1470,39 @@ genrec()
 	case P2REG:
 		v.kind = V_REG; v.reg = var;
 		v.con = 0; v.vtype = type; v.name[0] = '\0';
+		/* NOT OWNED: this is pass 1's register variable, or x29 itself,
+		   and handing it to the allocator would let a later value be
+		   given the loop counter. */
+		v.owned = 0;
 		vpush(&v);
 		break;
 
-	/* FORCE -- put the top of the stack where a result is expected, which
-	   is x0.  putforce() emits it before an arithmetic IF and a computed
-	   GOTO, both of which then read r0. */
+	/*
+	 * FORCE -- put the top of the stack where a result is expected.  It is
+	 * how prarif() and prcmgoto() stage their operand, and it is also HOW A
+	 * FUNCTION RETURNS: proc.c gives every non-subroutine a retslot auto,
+	 * and the exit label is followed by that slot and a FORCE.
+	 *
+	 * So the destination follows the type, and the two halves of v8cc's
+	 * convention part company here: a value PASSED goes in an x register and
+	 * a value RETURNED comes back in s0 or d0.  Measured on v8cc's own
+	 * output rather than assumed symmetric.
+	 */
 	case P2FORCE:
 		{
 			struct val a, r;
+
 			a = vpop();
-			into(&a, 0);
-			r.kind = V_REG; r.reg = 0; r.con = 0;
-			r.vtype = type; r.name[0] = '\0';
+			if (isflt(type)) {
+				finto(&a, 0);
+				r.reg = 0;
+			} else {
+				into(&a, 0);
+				r.reg = 0;
+			}
+			vfree(&a);
+			r.kind = V_REG; r.con = 0;
+			r.vtype = type; r.name[0] = '\0'; r.owned = 0;
 			vpush(&r);
 		}
 		break;
@@ -672,17 +1514,39 @@ genrec()
 	   work without three copies of the store. */
 	case P2PLUSEQ: case P2STAREQ:
 		{
-			struct val rhs, lhs, sum;
+			struct val rhs, lhs, cur, sum, keep;
+			int c;
+
 			rhs = vpop(); lhs = vpop();
-			into(&lhs, 12);
-			into(&rhs, 13);
-			printf("\t%s\tw12, w12, w13\n",
-			    op == P2PLUSEQ ? "add" : "mul");
-			printf("\tsxtw\tx12, w12\n");
-			sum.kind = V_REG; sum.reg = 12; sum.con = 0;
-			sum.vtype = type; sum.name[0] = '\0';
-			vpush(&lhs); vpush(&sum);
-			doassign();
+			cur = lhs;
+			cur.owned = 0;		/* read it without consuming it */
+			if (isflt(type)) {
+				c = isdbl(type) ? 'd' : 's';
+				sum = mater(&cur);
+				rhs = mater(&rhs);
+				printf("\t%s\t%c%d, %c%d, %c%d\n",
+				    op == P2PLUSEQ ? "fadd" : "fmul",
+				    c, sum.reg, c, sum.reg, c, rhs.reg);
+			} else {
+				sum = mater(&cur);
+				rhs = mater(&rhs);
+				printf("\t%s\tw%d, w%d, w%d\n",
+				    op == P2PLUSEQ ? "add" : "mul",
+				    sum.reg, sum.reg, rhs.reg);
+				printf("\tsxtw\tx%d, w%d\n", sum.reg, sum.reg);
+			}
+			vfree(&rhs);
+			sum.vtype = type;
+			/* THE STORE MUST NOT CONSUME THE REGISTER THE VALUE STAYS
+			   IN, so doassign() is handed a copy that owns nothing --
+			   `k += 1' is compared against the loop bound in the very
+			   next record, and giving the register back here would let
+			   the comparison's own operand be allocated on top of it. */
+			keep = sum;
+			keep.owned = 0;
+			vpush(&lhs); vpush(&keep);
+			keep = doassign();
+			vfree(&keep);	/* the store's own value is not wanted */
 			/* AND LEAVES ITS VALUE, because a compound assignment is
 			   an EXPRESSION here: a DO loop's `k += 1' is compared
 			   against the bound in the very next record.  Resetting
@@ -696,15 +1560,33 @@ genrec()
 	   tests its bound.  pcc emits the comparison and the branch as separate
 	   records, with CBRANCH carrying the label -- so the comparison leaves
 	   its OPERATOR on the stack for the branch to read rather than
-	   materialising a boolean, which is what the hardware wants anyway. */
+	   materialising a boolean, which is what the hardware wants anyway.
+	   A FLOAT COMPARISON IS fcmp AND NOT cmp, and the operand type is what
+	   says which -- the record's own type is the type of the RESULT, which
+	   is an integer for every comparison there is. */
 	case P2EQ: case P2NE: case P2LE: case P2LT: case P2GE: case P2GT:
 		{
 			struct val a, b, r;
+
 			b = vpop(); a = vpop();
-			into(&a, 12); into(&b, 13);
-			printf("\tcmp\tw12, w13\n");
-			r.kind = V_REG; r.reg = -1; r.con = op;
-			r.vtype = type; r.name[0] = '\0';
+			/* before this cmp writes the flags, give any earlier
+			   comparison a register of its own */
+			flushcc();
+			if (isflt(a.vtype) || isflt(b.vtype)) {
+				int c = (isdbl(a.vtype) || isdbl(b.vtype)) ? 'd' : 's';
+
+				a = mater(&a); b = mater(&b);
+				printf("\tfcmp\t%c%d, %c%d\n", c, a.reg, c, b.reg);
+			} else {
+				a = mater(&a); b = mater(&b);
+				if (isptr(a.vtype) || isptr(b.vtype))
+					printf("\tcmp\tx%d, x%d\n", a.reg, b.reg);
+				else
+					printf("\tcmp\tw%d, w%d\n", a.reg, b.reg);
+			}
+			vfree(&a); vfree(&b);
+			r.kind = V_CC; r.reg = -1; r.con = op;
+			r.vtype = type; r.name[0] = '\0'; r.owned = 0;
 			vpush(&r);
 		}
 		break;
@@ -720,6 +1602,18 @@ genrec()
 			   statement. */
 			lab = vpop();
 			c = vpop();
+			/* A CONDITION IS NOT ALWAYS A COMPARISON.  `.and.' and
+			   `.or.' produce a 0/1 VALUE in a register, and so does a
+			   LOGICAL variable used on its own -- the flags belong to
+			   whatever compared last, which by then is one of the
+			   operands.  Branch on the value, still inverted. */
+			if (c.kind != V_CC) {
+				c = mater(&c);
+				printf("\tcbz\tw%d, L%ld\n", c.reg, lab.con);
+				vfree(&c);
+				vreset();
+				break;
+			}
 			switch ((int) c.con) {
 			/* INVERTED, and this is pcc's rule rather than a choice:
 			   CBRANCH jumps when the condition is FALSE, so a DO
@@ -741,13 +1635,13 @@ genrec()
 			   CBRANCH jumps when the condition is FALSE, which is how a
 			   loop test falls through into its body. */
 			printf("\tb.%s\tL%ld\n", cc, lab.con);
-			vsp = stmtbase;
+			vreset();
 		}
 		break;
 
 	case P2ASSIGN:
-		doassign();
-		vsp = stmtbase;		/* a statement, so its value is discarded */
+		v = doassign();
+		vpush(&v);
 		break;
 
 	case P2CALL:

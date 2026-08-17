@@ -2444,6 +2444,123 @@ and returns `TYLONG`, `INTEGER*2` gives `TYSHORT`, `REAL*4` gives `TYREAL`. So
   thing an intermediate file is actually made of. Ask what the artefact crossing
   the seam consists of, and compare THAT.
 
+**AND f77 COMPILES THE REST OF FORTRAN NOW -- ARRAYS, SUBROUTINES, FUNCTIONS,
+RECURSION, FLOATING POINT, MIXED TYPES, .AND./.OR., MOD AND COMPUTED GOTOs --
+WHICH TOOK EIGHT DEFECTS IN FOUR COMPONENTS, AND ONLY TWO WERE IN THE CODE THE
+STEP SET OUT TO CHANGE.** `src/cmd/f77/PORTING.md` and `src/libI77/PORTING.md`
+have the accounts. Nine things generalise, and the first is a correction to the
+claim this file made for `/lib/f1`'s design:
+
+- **A GUARD ON THE VOCABULARY IS NOT A GUARD ON THE GRAMMAR.** `/lib/f1` refuses
+  an unimplemented operator BY NAME, and that was recorded here as what keeps an
+  unfinished code generator safe -- *"a code generator that silently skips an
+  operator emits a program that links and computes the wrong thing"*. True, and
+  it covers half the failures: the refusal is a `default:` arm, so it can only
+  fire on an operator the pass does not RECOGNISE. Measured on four probes, two
+  refused correctly and **two compiled, linked and produced a wrong binary** --
+  a subroutine call SIGSEGV'd and REAL arithmetic hung -- using only operators
+  it did recognise and mishandling them. Same family as *a guard on a seam is
+  not a guard on what crosses it*.
+- **AND A REFUSAL CAN NAME A FEATURE THE PROGRAM DOES NOT CONTAIN, which is
+  worse than no refusal.** `write(6,*) sq(9)` was rejected as `indirect call not
+  implemented`; there is no indirect call in it. `docall` took the callee to be
+  the first value pushed since `P2STMT` -- true of a call STATEMENT, false of a
+  call in an EXPRESSION, because the result temporary is pushed first. A wrong
+  diagnosis in a diagnostic sends the next reader after a missing feature
+  instead of a bug. The fix is a second, LOGICAL stack: `LISTOP` merges the top
+  two logical values, so CALL needs no arity from the record.
+- **A MACHINE DESCRIPTION CAN MAKE TWO OBJECTS INDISTINGUISHABLE DOWNSTREAM, and
+  only one SHAPE of program shows it.** `arm64defs` set `AUTOREG` and `ARGREG`
+  both to 29 with `ARGOFFSET 0`, marked "stated for completeness and NOT yet
+  exercised". `proc.c:806-814` gives autos positive offsets from AUTOREG on
+  every target but the VAX and PDP11, and `putpcc.c` addresses a parameter as
+  `ARGOFFSET + memno` from ARGREG -- so a parameter and a temporary landed at
+  the SAME ADDRESS, and the stream carries nothing else to tell them apart. It
+  takes a procedure holding BOTH to see it; nothing had had both. The
+  unexercised-rule shape, in a set of constants that were each right about the
+  machine and wrong about each other.
+- **AND THE FIX NEEDED NO SECOND REGISTER, BECAUSE THE MACHINE DIFFERENCE
+  REMOVES THE REQUIREMENT.** The VAX needs `ap` and `fp` because its `ap` points
+  into the CALLER's frame -- `proc.c:316` allocates an argvec only when
+  `nentry>1`, so an ordinary procedure never copies its arguments. arm64 passes
+  in x0-x7 and must spill them into its own frame regardless, and once both
+  regions are in one frame a CONSTANT separates them. Ask whether a second
+  machine's extra mechanism is solving a problem this machine still has.
+- **A 1985 UNION READ THROUGH THE WRONG ARM IS EXACT ON A VAX AND WRONG ON
+  IEEE.** `wrtfmt.c`'s `wrt_E` picks its value by length (`len == sizeof(float)
+  ? p->pf : p->pd`) and then asks `if(p->pf != 0)` -- the float arm,
+  unconditionally. VAX D_floating's leading 32 bits have the IDENTICAL layout to
+  F_floating, so a double read as a float is the same value and is nonzero
+  exactly when the double is. On IEEE little-endian those four bytes are the LOW
+  MANTISSA BITS. So **every tidy REAL printed a zero exponent and every untidy
+  one was perfect**: 0.375 gave `3.750000000e+00`, 0.0375 gave `3.750000149e-02`.
+  The worst shape a numeric defect can have, because the values a test would be
+  written with are exactly the ones it breaks. Predicted for all seven probe
+  values by asking whether the double's first four bytes are zero.
+- **AND ITS GUARD IS A PAIR, WHERE THE SECOND CASE IS THE CONTROL.** A "fix"
+  that simply always applied the scale passes the tidy value and breaks the
+  untidy one, so the two cases discriminate rather than duplicate.
+  Mutation-verified: reverting the line fires the tidy case and leaves the
+  untidy one GREEN. Same discipline as `%#g` being the negative control for the
+  `%g` trailing-zero fix.
+- **WHEN THERE IS NO NEIGHBOUR TO COPY, FIND THE OTHER MACHINE THAT HAS ONE.**
+  `prcmgoto` is not in `vax.c` at all -- `putcmgo` takes a `#if TARGET == VAX`
+  branch to `vaxgoto` -- so the signature was INVENTED, taking `struct
+  Labelblock *labs[]` where the caller passes `int labarray`, the label of a
+  table it has already emitted. The subscript dereferenced a label number and
+  pass 1 died at `0x13`, which is 19, which was the label. `pdp11.c` is the only
+  other implementation in the tree and spells it out. **The crash report named
+  `prcmgoto <- putcmgo <- yyparse` in five frames for one command**; reading the
+  caller's own argument list would have cost none.
+- **HALF THE TYPE CONVERSIONS ARE STATED AND HALF ARE IMPLIED, and honouring
+  only the stated half is silent.** f77 emits an explicit `CONV type double`
+  over an INTEGER and NOTHING over a REAL, because in pcc an operator's type is
+  its RESULT type and operands may be narrower. Reading a single-precision bit
+  pattern with `fadd d` made `2.5 + 1.5` come out 2.5 and the program print 7.5
+  where it should print 12 -- every operator in the expression one the pass
+  knows.
+- **v8cc's FLOAT CONVENTION IS ASYMMETRIC AND BOTH HALVES ARE IN THIS FILE, IN
+  DIFFERENT PARAGRAPHS.** A double is **passed in an x register** (the note
+  about libm reading the wrong register) and **returned in `d0`** (the note
+  about `float atof()` being s0 vs d0). Measured on v8cc's own output rather
+  than assumed symmetric: `double twice(x)` reads its parameter from where x0
+  was spilled and ends `fmov d0, d16`. Nothing had put the two side by side, and
+  a code generator calling libF77 needs both at once.
+
+**AND THREE OF THE INSTRUMENTS WERE WRONG BEFORE THE CODE WAS, WHICH IS THE
+STANDING RATE.** `opname()` returned `?` for every operator it did not name, so
+a histogram built over a corpus to find WHICH operators Fortran reaches reported
+six `?` -- silently merging LSHIFT, MOD and NEG, the three the survey existed to
+find. **An instrument that hides exactly the thing it is pointed at.** A probe
+calling `do_lio` by hand passed `TYREAL` as 3 when the emitted constants say 4,
+and printed seven integers. And a harness asserted `f77`'s exit STATUS, which
+this file already records as useless -- `doload` ends `await(waitpid)` with no
+`if` -- so a link that failed with `Found illegal text-relocations` was reported
+as a program that ran and printed nothing. Assert the ARTEFACT.
+
+- **AND WIDENING A TEST FOUND A BUG IN THE TEST'S OWN PARSER, third instance.**
+  `tests/wavea` compares f1.c's opcode numbers against `pccdefs`; the list was
+  thirteen hand-written names and is now DERIVED from f1.c. It went red
+  immediately: `sed -n "s/^#define $n[[:blank:]]*\([0-9]*\).*/\1/p"` for
+  `P2STAR` also matches the line defining **P2STAREQ**, because zero blanks and
+  zero digits both satisfy it, so the capture picked up an extra EMPTY line and
+  11 compared unequal to a two-line value. The thirteen names contained neither,
+  so no input it had ever been given could show it. Require the blank:
+  `[[:blank:]][[:blank:]]*`.
+- **AND A BACKQUOTE IN A COMMENT INSIDE `$( )` STOPS THE WHOLE FILE PARSING.**
+  This file records the apostrophe version -- an awk program inside `'...'` --
+  and the same hazard one character over cost a run: a comment written in the
+  Bell Labs quoting style opened a command substitution, and `sh` reported
+  `unexpected EOF while looking for matching backquote` **3400 lines away**.
+  Being a comment is no shelter from either. Put such a comment outside the
+  substitution.
+- **AND `/lib/f1` IS COMPILED BY v8cc, WHICH IS WORTH KNOWING BEFORE EDITING
+  IT.** `struct val keep = sum;` is an automatic aggregate initialisation, which
+  1985 C does not have, and the build says `no automatic aggregate
+  initialization` naming the line. A shim file is modern C only where the
+  Makefile compiles it with clang; this one is not.
+
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never

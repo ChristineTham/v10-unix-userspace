@@ -12,10 +12,18 @@
  *	.word LWM<procno>	the VAX register-save mask, read by calls/callg.
  *				arm64 has none, so prolog() does not emit one and
  *				fixlwm() has nothing to patch.
- *	movl n(ap),m(fp)	mvarg()'s argument copy.  AAPCS64 passes in x0-x7
- *				and this port's own prologue spills them, so the
- *				copy is pass 2's business.
- *	movl n(ap),m(fp)	mvarg()'s argument copy -- AAPCS64 has no ap.
+ *
+ * AND THE ARGUMENT COPY IS *NOT* ABSENT, WHICH IS WHAT THIS COMMENT SAID TWICE.
+ * It carried two entries for mvarg(), both claiming the copy was "pass 2's
+ * business" because "this port's own prologue spills x0-x7".  No prologue
+ * spilled anything: prsave() emitted three instructions and mvarg() was an
+ * empty function, so a subroutine's parameter was read out of the saved frame
+ * pointer.  `call greet(7)' compiled clean and SIGSEGV'd.  The claim was
+ * duplicated in the one file that could have refuted it, which is why neither
+ * copy read as wrong -- and it is this tree's most repeated shape, a comment
+ * asserting a contract the code beside it never implemented.  Both are deleted;
+ * prsave() does the spill now and the sentence describing it is below the code
+ * that does it.
  *
  * The mask is a HANDSHAKE on the VAX, not one line: pass 1 emits `.word LWM<n>'
  * as a forward reference and fixlwm() later emits `.set LWM<n>,0x<mask>' once
@@ -97,17 +105,60 @@ double realcon[6] =
  * put it before the label it belongs to.  prsave() is called from prolog(), at
  * exactly the right point, and the VAX did the same thing here with `subl2'.
  *
- * A FIXED 256-byte frame.  Nothing this pass emits spills, and computing one
- * would mean adopting arm64_endfunction()'s three-region layout -- the contract
- * this design avoids needing.  256 covers the stack argument area AAPCS64 wants
- * beyond x0-x7 and costs one instruction.
+ * THE FRAME HAS TWO REGIONS AND ONE BASE REGISTER, WHERE THE VAX HAD TWO
+ * REGISTERS.  proc.c:806-814 puts autos at POSITIVE offsets from AUTOREG for
+ * every target but the VAX and the PDP11 (`stack grows downward' guards the
+ * negative arm), and putpcc.c addresses a parameter as ARGOFFSET + memno from
+ * ARGREG.  arm64defs set both registers to 29, so a parameter and an auto both
+ * landed at [x29+0] -- measured: one `OREG reg 29 offset 0 type int' and one
+ * `OREG reg 29 offset 0 type int *' in the same procedure, indistinguishable in
+ * the stream because the record carries nothing else to tell them apart.
+ *
+ * The VAX needs two registers because its `ap' points into the CALLER's frame:
+ * arguments are never copied at all unless there are multiple ENTRY points, and
+ * proc.c:316 allocates argvec only when nentry>1.  arm64 passes in x0-x7, so
+ * they must be spilled into this frame whatever happens -- and once both regions
+ * are in one frame, a constant separates them.  ARGOFFSET is that constant, and
+ * its only live consumers are the four addressing sites in putpcc.c: proc.c's
+ * use is inside #ifdef SDB, which arm64defs leaves off.  So this is one number,
+ * declared once in arm64defs and read here rather than respelled.
+ *
+ *	[x29 + 0        .. ARGOFFSET)	autos, growing up, checked in prolog()
+ *	[x29 + ARGOFFSET .. +64)	x0-x7 spilled here, 8 bytes apart
+ *
+ * The callee-saved registers are saved unconditionally: x19-x22 because pass 1
+ * hands them out as register variables (MAXREGVAR is 4) and would otherwise
+ * clobber libF77's main, x23-x28 and d8-d15 because /lib/f1 materialises into
+ * them and AAPCS64 requires the low 64 bits of v8-v15 to be preserved.  Ten x
+ * registers is SAVESPACE, which arm64defs already said was 80 bytes.
  */
+#define F77FRAME (ARGOFFSET + 64)	/* autos, then the eight spilled arguments */
+
 prsave(proflab)
 int proflab;
 {
 p2pass("\tstp\tx29, x30, [sp, #-16]!");
+p2pass("\tstp\tx19, x20, [sp, #-16]!");
+p2pass("\tstp\tx21, x22, [sp, #-16]!");
+p2pass("\tstp\tx23, x24, [sp, #-16]!");
+p2pass("\tstp\tx25, x26, [sp, #-16]!");
+p2pass("\tstp\tx27, x28, [sp, #-16]!");
+p2pass("\tstp\td8, d9, [sp, #-16]!");
+p2pass("\tstp\td10, d11, [sp, #-16]!");
+p2pass("\tstp\td12, d13, [sp, #-16]!");
+p2pass("\tstp\td14, d15, [sp, #-16]!");
+p2pi("\tsub\tsp, sp, #%d", F77FRAME);
 p2pass("\tmov\tx29, sp");
-p2pass("\tsub\tsp, sp, #256");
+/* THE SPILL GOES THROUGH A SCRATCH REGISTER RATHER THAN DIRECTLY, because stp's
+   immediate is a signed 7-bit field scaled by 8 -- reaching only +504 -- and
+   ARGOFFSET is deliberately larger than that.  `stp x0, x1, [x29, #1024]' is
+   not a range error you can see by reading it; the assembler names the operand
+   and not the field width. */
+p2pi("\tadd\tx9, x29, #%d", ARGOFFSET);
+p2pass("\tstp\tx0, x1, [x9, #0]");
+p2pass("\tstp\tx2, x3, [x9, #16]");
+p2pass("\tstp\tx4, x5, [x9, #32]");
+p2pass("\tstp\tx6, x7, [x9, #48]");
 }
 
 
@@ -118,11 +169,25 @@ p2pass("\tsub\tsp, sp, #256");
  * the entry stub is emitted later still.  A /lib/f1 that emitted this at
  * RBRACKET put it after the stub's `b', where it is unreachable and the body
  * runs off the end -- measured, before this moved here.
+ *
+ * IT UNDOES THE FRAME FROM x29 RATHER THAN FROM sp, because this is the one
+ * quantity the two halves must agree about and x29 is the only thing still
+ * holding it: `mov sp, x29' was right when x29 pointed at the saved pair and is
+ * wrong now that it points at the bottom of the autos.
  */
 goret(type)
 int type;
 {
-p2pass("\tmov\tsp, x29");
+p2pi("\tadd\tsp, x29, #%d", F77FRAME);
+p2pass("\tldp\td14, d15, [sp], #16");
+p2pass("\tldp\td12, d13, [sp], #16");
+p2pass("\tldp\td10, d11, [sp], #16");
+p2pass("\tldp\td8, d9, [sp], #16");
+p2pass("\tldp\tx27, x28, [sp], #16");
+p2pass("\tldp\tx25, x26, [sp], #16");
+p2pass("\tldp\tx23, x24, [sp], #16");
+p2pass("\tldp\tx21, x22, [sp], #16");
+p2pass("\tldp\tx19, x20, [sp], #16");
 p2pass("\tldp\tx29, x30, [sp], #16");
 p2pass("\tret");
 }
@@ -130,9 +195,17 @@ p2pass("\tret");
 
 
 /*
- * mvarg -- the VAX copied argument slots from the ap frame to the fp frame.
- * AAPCS64 has no ap and this port's prologue spills x0-x7 itself, so the copy
- * is pass 2's.  Silent for the same reason goret() is.
+ * mvarg -- move one incoming argument slot into the frame slot ARGREG addresses.
+ * The VAX copied from its caller's list (`movl n(ap),m(fp)'); here the incoming
+ * arguments are in x0-x7 and prsave() has already put all eight where ARGREG
+ * addresses them, so for a single-entry procedure the copy has already happened
+ * and this is correctly silent.
+ *
+ * It is reached ONLY when proc.c allocated an argvec, and proc.c:316 does that
+ * only for nentry>1 -- so what it would have to implement is the multiple-ENTRY
+ * relocation, which prolog() refuses by name instead.  An empty body plus a
+ * refusal at the one call site that can reach it is the honest pair; an empty
+ * body alone is what let the missing spill above go unnoticed.
  */
 mvarg(type, arg1, arg2)
 int type, arg1, arg2;
@@ -259,32 +332,42 @@ fprintf(asmfile, "\t.p2align\t%d\n", lg);
 
 
 /*
- * prcmgoto -- Fortran's computed GOTO.  vax.c spells this vaxgoto() and reaches
- * it through a #define in pccdefs; the name putpcc.c calls is prcmgoto, which is
- * also what pdp11.c defines directly, so this file uses the callers' name.
+ * prcmgoto -- Fortran's computed GOTO.  vax.c does NOT define this: putcmgo()
+ * takes a `#if TARGET == VAX' branch to vaxgoto() and its `casel' instruction,
+ * so the VAX never reaches this entry point at all.  pdp11.c is the only other
+ * implementation in the tree, and it is the one to read.
+ *
+ * THE TABLE IS THE CALLER'S, WHICH IS WHAT THE FOURTH ARGUMENT SAYS.  This was
+ * first written taking `struct Labelblock *labs[]' and emitting the table
+ * itself, by analogy with nothing -- putcmgo() passes `int labarray', the LABEL
+ * of a table it has already written through preven()/prlabel()/prcona() four
+ * lines earlier.  So the array subscript dereferenced a label NUMBER: measured,
+ * f77pass1 died with SIGSEGV at address 0x13, which is 19, which was the label.
+ * The crash report named prcmgoto <- putcmgo <- yyparse in five frames and cost
+ * one command; reading the caller's own argument would have cost none.
+ *
+ * The entry at index 0 is skiplabel -- putcmgo emits it before the loop -- so a
+ * zero index lands on the skip and no bias is needed.  `b.hi' is UNSIGNED and
+ * that is load-bearing rather than incidental: an index this pass has
+ * sign-extended into x0 is a huge unsigned quantity when negative, so one
+ * comparison rejects both ends of the range, which is exactly what pdp11.c's
+ * `bhi' does with the same reasoning.
  *
  * The VAX had `casel', a one-instruction indexed branch against a table of
- * .word offsets.  arm64 has no such instruction, so this emits the comparison
- * and an indexed load from a table of addresses -- which is what a C switch
- * compiles to here.  NOT YET EXERCISED by anything that has run.
+ * .word offsets.  arm64 has none, so this is the comparison plus an indexed
+ * load from a table of addresses -- `lsl #3' because prcona() emits .quad.
  */
-prcmgoto(index, nlab, skiplabel, labs)
+prcmgoto(index, nlab, skiplabel, labarray)
 expptr index;
-int nlab, skiplabel;
-struct Labelblock *labs[];
+int nlab, skiplabel, labarray;
 {
-int i, arrlab;
-
-putforce(TYINT, index);
+putforce(index->headblock.vtype, index);
 p2pi("\tcmp\tx0, #%d", nlab);
 p2pi("\tb.hi\tL%d", skiplabel);
-p2pi("\tadrp\tx9, L%d@PAGE", arrlab = newlabel());
-p2pi("\tadd\tx9, x9, L%d@PAGEOFF", arrlab);
+p2pi("\tadrp\tx9, L%d@PAGE", labarray);
+p2pi("\tadd\tx9, x9, L%d@PAGEOFF", labarray);
 p2pass("\tldr\tx10, [x9, x0, lsl #3]");
 p2pass("\tbr\tx10");
-prlabel(asmfile, arrlab);
-for(i = 0; i < nlab; ++i)
-	fprintf(asmfile, "\t.quad\tL%d\n", labs[i]->labelno);
 }
 
 
@@ -451,8 +534,31 @@ else if(ep->entryname)
 if(procclass == CLBLOCK)
 	return;
 
-/* The VAX walked ep->arglist here copying each slot into the frame.  Nothing to
-   do: pass 2 spills x0-x7 and addresses the arguments where it put them. */
+/* THE VAX WALKED ep->arglist HERE COPYING EACH SLOT INTO THE FRAME, and this
+   file used to say there was nothing to do because pass 2 spilled x0-x7.  Pass
+   2 did not, and nothing said so; see the note above prsave().  prsave() does
+   the spill now, for all eight registers unconditionally, which is why there is
+   still no walk here -- but the reason is that the work is done rather than
+   that it is somebody else's.
+
+   TWO THINGS ARE REFUSED BY NAME RATHER THAN MISCOMPILED, both of them cases
+   this frame cannot express:
+
+   argvec is non-null exactly when proc.c:316 saw nentry>1, so it is the test
+   for multiple ENTRY points -- which need each entry's arguments relocated into
+   one shared slot layout, i.e. the mvarg() the VAX implements.  A frame that
+   spills x0-x7 at one fixed place cannot do that, and the failure would be a
+   subroutine reading another entry's arguments.
+
+   autoleng is the auto area pass 1 allocated, and ARGOFFSET is where the spilled
+   arguments start; an overrun would put a temporary on top of a parameter and
+   is invisible in the generated code.  Checked against the number that defines
+   the boundary rather than against a transcribed copy of it. */
+if(argvec || nentry > 1)
+	fatal("multiple ENTRY points are not implemented on this target");
+if(autoleng > ARGOFFSET)
+	fatali("procedure needs %d bytes of temporaries, more than the frame holds",
+		(int) autoleng);
 
 putgoto(ep->entrylabel);
 }

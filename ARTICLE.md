@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2612 tests across 17 suites** guard it.
+assembly. **2635 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5015,6 +5015,102 @@ so: they used an automatic, which is stored back through `str w` and re-narrowed
 by the store. Only `register` keeps the value in a register long enough to be
 wrong — which is why the four operator cases sitting immediately above them all
 say `register`, a detail I had read past twice.
+
+
+---
+
+## Stage 5: finishing the compiler, and what a refusal cannot see
+
+`/lib/f1` shipped implementing nineteen operators and **refusing everything else
+by name**. That was a deliberate design: a code generator that silently skips an
+operator emits a program that links and computes the wrong answer, so the
+`default:` arm errors out with the opcode in it. I described that as the thing
+keeping the gap safe.
+
+Four probes measured it. Arrays refused, naming `operator 64` — a left shift,
+which is how a subscript is scaled. An `INTEGER FUNCTION` refused. And then the
+other two:
+
+| a subroutine `CALL` | compiled, linked, **SIGSEGV** |
+| `REAL` arithmetic   | compiled, linked, **hung**    |
+
+**A guard on the vocabulary is not a guard on the grammar.** The refusal can only
+fire on an operator the pass does not *recognise*. Those two programs used only
+operators it did recognise, and it mishandled them — the exact failure mode the
+refusal existed to prevent, arriving through the door it does not watch.
+
+One of the refusals was worse than useless. `f(n)` in an expression was rejected
+as *"indirect call not implemented"*. There is no indirect call in that program.
+The callee was being read from the wrong stack slot, because a call in an
+expression pushes its result temporary first. **A wrong answer in a diagnostic is
+worse than none** — it sends the next reader after a missing feature instead of a
+bug.
+
+### The comment that described a contract nobody implemented
+
+The subroutine crash was two files agreeing with each other about nothing.
+`arm64.c`'s header said — twice, in two separate entries — that the argument copy
+was "pass 2's business" because "this port's own prologue spills x0-x7". No
+prologue spilled anything. `mvarg()` was an empty function, and the claim was
+duplicated in the one file that could have refuted it, which is why neither copy
+read as wrong.
+
+Underneath it was a second fault that only a particular *shape* of program can
+show: a parameter and a temporary at the same address. Upstream keeps two frame
+registers, `ap` and `fp`; I had set both to x29 with no bias between them. It
+takes a procedure holding **both** a parameter and a compiler temporary to make
+the two collide, and nothing had had both. The fix is one constant — and it needs
+no second register, because the machine difference *removes* the requirement:
+the VAX's `ap` points into the caller's frame and never copies arguments at all,
+while arm64 must spill its argument registers regardless. Once both regions are
+in one frame, arithmetic separates them.
+
+### Correct code on a VAX
+
+The best bug of the session was not in the compiler. `write(6,*) 0.375` printed
+`3.750000000e+00`. So did `37.5`. So did `375.0`. But `0.0375` printed perfectly,
+and so did `1e10` and `1e-10`.
+
+`wrtfmt.c` picks the value by length and then asks `if (p->pf != 0)` — the
+**float** arm of a union holding a double. On a VAX that is exact: D_floating's
+leading 32 bits have the identical layout to F_floating, so a double read as a
+float is the same value, nonzero exactly when the double is nonzero. On IEEE
+little-endian those four bytes are the **low mantissa bits**, which are zero for
+any round number.
+
+So it failed for tidy values and worked for untidy ones. That is the worst shape
+a numeric defect can have: the values anyone would write a test with are exactly
+the ones it breaks. It is Bell Labs' own line, it had been there since the
+runtime libraries landed, and nothing had noticed because nothing had ever
+printed a `REAL` through this port.
+
+The guard is two cases, and the untidy one is the control rather than a
+duplicate: a "fix" that simply always applied the scale would pass `0.375` and
+break `0.0375`. Reverting the line fires the first and leaves the second green.
+
+### Reading the caller instead of inventing it
+
+A computed `GOTO` crashed the compiler's own front end. `prcmgoto` had a
+signature I had made up, because `vax.c` does not define it at all — the VAX
+takes a different branch entirely, so there was no neighbour to copy. `pdp11.c`
+is the only other implementation in the tree and has it written out: the fourth
+argument is an `int` label for a table the caller has **already emitted**. Mine
+took an array of pointers and dereferenced the label number. Pass 1 died at
+address `0x13`, which is 19, which was the label.
+
+The macOS crash report named the three frames in one command. Reading the
+caller's own argument list would have cost none.
+
+And when that was fixed, the link failed instead — a jump table is a table of
+addresses, and arm64 Mach-O forbids a relocation in `__TEXT`. `f77` reported
+success over the top of it, because upstream's `doload` ends with a bare
+`await(waitpid)` and discards the status. The observable was a program that
+compiled, said nothing, and did not exist.
+
+Fortran now does arrays, subroutines, functions, recursion, `REAL` and
+`DOUBLE PRECISION` arithmetic, mixed-type expressions, `.AND.`/`.OR.`, `MOD`,
+and computed `GOTO`s. Eight defects, in four different components, and only two
+of them were in the code I set out to change.
 
 ---
 
