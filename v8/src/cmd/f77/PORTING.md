@@ -205,3 +205,48 @@ same routing.
   fails loudly at the link. Deliberate: silently profiling nothing is worse.
 - Stage 3 must use this same `arm64defs`, and the `SZLONG` note above is the
   first thing to reconcile — see task #12.
+
+## Stage 3 groundwork: `putpcc.c` was missing an `#endif`
+
+Measured while sizing `f77pass1`: **14 of its 15 objects compile under v8cc with
+nothing but `arm64defs`**, which is a far better starting point than the ~13000
+lines suggested. The one failure is `putpcc.c`, and it is an upstream defect that
+**only a non-VAX PCC target can find**.
+
+Counted over the whole file: **17 `#if` against 16 `#endif`**. The
+`#if TARGET == VAX` at `:49` never closes. With `TARGET==VAX` — the only value
+f77's makefile has ever been given — every line from there to EOF is *included*
+and nothing is wrong. With any other target cpp skips looking for the matching
+`#endif`, finds none, and swallows the rest of the file: the two braces closing
+`if(!headerdone)` and `puthead()` vanish, and ccom reports
+
+```
+"putpcc.c":75:syntax error
+"putpcc.c":75:saw EOF
+```
+
+fourteen lines later, at the next function. **The error names neither the
+conditional nor the flag.** The PDP11 arm ten lines above shows the shape
+intended: `#if`, the machine's two statements, `#endif`, all inside the
+`if(!headerdone)` block.
+
+### What `arm64.c` must supply, derived rather than estimated
+
+The 14 objects need 45 external names; subtracting libc leaves what `vax.c`
+provides:
+
+| kind | names |
+|---|---|
+| data | `intcon[]`, `realcon[][]`, `regnum[]`, `maxregvar` |
+| directives | `prlabel`, `prconi`, `prcona`, `prconr`, `praddr`, `preven`, `prlocvar`, `prext`, `prhead`, `prtail` |
+| control | `goret`, `prarif`, `prcmgoto`, `prendproc`, `fixlwm` |
+| the big one | `prolog` |
+
+Most are three to eight lines. `prolog` is ~150. The stab half of `vax.c` — 120
+lines across `prstab`, `prdbginfo`, `prstleng`, `stabtype`, `prcomssym` — reduces
+to a stub because `arm64defs` leaves `SDB` undefined.
+
+**And it cannot be verified without stage 4.** Whether the emitted intermediate
+is *correct* is only answerable by `/lib/f1` consuming it, so the two land
+together; `f77 hello.f` producing a working binary is the test, and nothing
+smaller is.

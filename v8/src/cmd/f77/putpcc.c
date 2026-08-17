@@ -56,7 +56,20 @@ if( ! headerdone )
 		prsave(proflab);
 		p2pi("\tjmp\tL%d", fudgelabel = newlabel());
 		}
-		
+/* PORT: THE MISSING #endif, AND ONLY A NON-VAX PCC TARGET CAN FIND IT.
+   Measured over the whole file: 17 #if against 16 #endif.  The conditional
+   opened four lines above never closes, so with TARGET==VAX -- the only value
+   f77's makefile has ever been given -- every line from here to EOF is INCLUDED
+   and nothing is wrong.  With any other target cpp skips to the matching
+   #endif, finds none, and swallows the rest of the file: the two braces below
+   vanish, puthead() is left unterminated, and ccom reports a syntax error 14
+   lines later at the next function with "saw EOF".  So the error names neither
+   the conditional nor the flag.
+   The PDP11 arm ten lines above is the shape intended -- #if, the machine's
+   two statements, #endif, all inside the if(!headerdone) block whose closing
+   brace follows.  src/cmd/f77/PORTING.md. */
+#endif
+
 	}
 }
 
