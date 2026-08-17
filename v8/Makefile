@@ -3014,8 +3014,27 @@ $(BUILD)/f77p1/f77pass1: $(F77P1_OBJ) $(V8DEPS)
 $(ROOTFS)/usr/lib/f77pass1: $(BUILD)/f77p1/f77pass1
 	@mkdir -p $(@D) && cp $< $@
 
-F77_BUILT   = $(BINDIR)/f77 $(BUILD)/f77p1/f77pass1
-F77_INSTALL = $(call v8install,f77) $(ROOTFS)/usr/lib/f77pass1
+# /lib/f1 -- the second pass, stage 4.  READS AND DOES NOT YET COMPILE: the
+# format decoder is written and verified, the code generator is not, so `f1 -d'
+# reports the record stream and a bare `f1' says so and exits 2.
+#
+# It is NOT pcc's second pass, which is what a VAX ran (pcc1/pcc/makefile's
+# install arm is `mv fort ${DESTDIR}/lib/f1').  That matches on shapes and
+# cookies; this port's back end is pcc2 and matches on types, with a different
+# node.  Measured, the intermediate f77 actually emits is a POSTFIX STREAM using
+# twelve operators for a whole program -- a stack machine, which is smaller than
+# the adapter would have been.  shim/f1/f1.c has the reasoning.
+#
+# It lives in shim/ because it is new code written for this port, not V8's.
+$(BUILD)/f1/f1: shim/f1/f1.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -o $@ $<
+
+$(ROOTFS)/lib/f1: $(BUILD)/f1/f1
+	@mkdir -p $(@D) && cp $< $@
+
+F77_BUILT   = $(BINDIR)/f77 $(BUILD)/f77p1/f77pass1 $(BUILD)/f1/f1
+F77_INSTALL = $(call v8install,f77) $(ROOTFS)/usr/lib/f77pass1 $(ROOTFS)/lib/f1
 
 # B2D_NAMES is the set whose destination $(call v8dest,...) derives, so it is
 # also what the $(ROOTFS)/etc/% generator further down has to iterate over --

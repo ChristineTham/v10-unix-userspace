@@ -2921,12 +2921,63 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	check 'f77pass1: writes a nonempty binary intermediate' 'yes' \
 	    "$(cd f77p1w && [ -s h.x ] && echo yes)"
 
+	# ---------------------------------------------------------------
+	# /lib/f1 -- stage 4.  It READS AND DOES NOT YET COMPILE, so what is
+	# asserted is the format decoder, which is the part that had to be
+	# right before anything else could be.
+	check 'f1: installed, and imports nothing from the host' 'yes' \
+	    "$([ -x "$V8ROOT/lib/f1" ] &&
+	       [ -z "$(nm -u "$V8ROOT/lib/f1" 2>/dev/null)" ] && echo yes)"
+
+	# THE DECODER, AGAINST AN INDEPENDENT DECODE.  This sequence was read
+	# out of a hexdump by hand before f1 existed -- p2triple encodes every
+	# record as op | var<<8 | type<<16 -- so the case compares a reader
+	# against a decode of the same bytes done a different way, rather than
+	# against itself.  You can read the Fortran back out of it: NAME/ICON/
+	# ASSIGN is `i = 2', and the three ICONs joined by two LISTOPs are
+	# do_fio's three arguments.
+	check 'f1: decodes the intermediate as an independent hand decode did' \
+	    'PASS LBRACKET STMT LABEL NAME ICON ASSIGN STMT ICON ICON CALL STMT ICON ICON ICON LISTOP ICON LISTOP CALL STMT ICON CALL0 STMT LABEL PASS PASS GOTO STMT RBRACKET PASS' \
+	    "$(cd f77p1w && "$V8ROOT/lib/f1" -d h.x | awk '{print $1}' |
+	       tr '\n' ' ' | sed 's/ $//')"
+	# The type word is pcc1's four-bits-per-level encoding, and a function
+	# address is the base type under PTR and FUNCT -- 148 for an int.  That
+	# is the one field an adapter to this port's pcc2 back end would have
+	# had to re-shift, so it is asserted rather than assumed.
+	check 'f1: reads pcc1s stacked type word, so a callee is int * ()' 'int * ()' \
+	    "$(cd f77p1w && "$V8ROOT/lib/f1" -d h.x |
+	       sed -n 's/.*type \(int \* ()\) name "_s_wsfe".*/\1/p' | head -1)"
+	# ...and it says so plainly that it cannot compile yet, so the code
+	# generator arriving is a decision rather than a discovery.
+	check 'f1: reports honestly that code generation is not written' '2 yes' \
+	    "$(cd f77p1w && "$V8ROOT/lib/f1" h.x >f1.out 2>&1; s=$?
+	       printf '%s %s' "$s" "$(grep -q 'not written yet' f1.out && echo yes)")"
+
+	# TWO COPIES OF ONE LIST, which is the trap this tree keeps finding.
+	# shim/f1/f1.c respells pccdefs rather than including it, because
+	# including f77's copy would put its whole defs chain on the include
+	# path -- so the values are DERIVED from src/cmd/f77/pccdefs here and
+	# compared, and a divergence is a failure rather than a silent
+	# disagreement about what an opcode means.
+	check 'f1: its opcode numbers agree with f77s pccdefs' '' \
+	    "$(for n in P2NAME P2ICON P2ASSIGN P2CALL P2CALL0 P2LISTOP P2GOTO \
+	               P2PASS P2STMT P2LBRACKET P2RBRACKET P2EOF P2LABEL; do
+	         a=$(sed -n "s/^#define $n[[:blank:]]*\([0-9]*\).*/\1/p" "$ROOT/src/cmd/f77/pccdefs")
+	         b=$(sed -n "s/^#define $n[[:blank:]]*\([0-9]*\).*/\1/p" "$ROOT/shim/f1/f1.c")
+	         [ "$a" = "$b" ] || printf '%s(%s!=%s) ' "$n" "$a" "$b"
+	       done)"
+
 	# WHERE THE PIPELINE STOPS.  With pass 1 present the driver gets one
 	# step further than it did before stage 3, and this case is what makes
 	# that visible: the message names /lib/f1 rather than /usr/lib/f77pass1.
-	check 'f77: the pipeline now stops at /lib/f1, not at pass 1' 'Cannot load /lib/f1' \
+	# ...and with f1 present it gets one step FURTHER: the driver now runs
+	# all four programs and stops inside the last one.  This case replaced
+	# `Cannot load /lib/f1' when f1 arrived, which replaced `Cannot load
+	# /usr/lib/f77pass1' when pass 1 did -- re-derive what a case
+	# discriminates each time the thing it names shows up.
+	check 'f77: the pipeline runs all four and stops inside f1' 'yes' \
 	    "$(cd f77p1w && "$V8ROOT/usr/bin/f77" h.f 2>&1 |
-	       sed -n 's/.*\(Cannot load .*\)/\1/p' | head -1)"
+	       grep -q 'code generation is not written' && echo yes)"
 
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
@@ -2937,7 +2988,7 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# discriminates when the thing it names arrives, rather than deleting
 	# it as stale or leaving it to pass for a new reason.
 else
-	fail=$((fail+12)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+17)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism
