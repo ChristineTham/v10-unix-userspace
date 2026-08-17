@@ -105,3 +105,4 @@ de3d7a3d2b12e127e707e558bf2e37e7959b82e1  v8/usr/src/cmd/xstr.c
 c5625265e032b2f7269f07fa0883015de6f1010c  v8/usr/src/cmd/uudecode.c
 46aa57e6de89f6933776562719212d583ca7d17b  v8/usr/src/cmd/stty.c
 60384b8b5c9a409161669b88321b745c83e1a935  v8/usr/src/cmd/mc.c
+379a4c986e3265e08e9da42c56ec747619c56a33  v8/usr/src/cmd/false.sh

@@ -380,6 +380,21 @@ nodep 'm4.h is not m4y.o edge' src/cmd/m4/m4.h                $B/m4/m4y.o
 dep 'diff3 source -> binary'   src/cmd/diff3/diff3.c          $B/diff3/diff3.o
 dep 'diff3 binary -> /usr/lib' $B/bin/diff3                   rootfs/usr/lib/diff3
 dep 'diff3 script -> /usr/bin' src/cmd/diff3/diff3.sh         rootfs/usr/bin/diff3
+# THE FIVE COMMANDS V8 SHIPPED AS SHELL SCRIPTS, diff3's shape without the
+# compiled half.  Their sources sit in TWO directories on purpose: false has
+# upstream source at usr/src/cmd/false.sh, the other four have no usr/src copy
+# at all and what was imported is the shipped artefact, which tools/import.sh
+# maps to src/bin.  Both spellings are asserted here so a future tidy-up that
+# moved one would go red.
+dep 'true script -> /bin'      src/bin/true                   rootfs/bin/true
+dep 'false script -> /bin'     src/cmd/false.sh               rootfs/bin/false
+dep 'nohup script -> /bin'     src/bin/nohup                  rootfs/bin/nohup
+dep 'dirname script -> /usr/bin' src/bin/dirname              rootfs/usr/bin/dirname
+dep 'whois script -> /usr/bin' src/bin/whois                  rootfs/usr/bin/whois
+# ed/e and compress/uncompress/zcat are HARD LINKS and deliberately have NO
+# case here, for the reason libtermlib's does not: the prerequisite and the
+# target are ONE INODE, so `touch' moves both mtimes and the target can never
+# be newer than itself.  They are asserted by inode in tests/wavea instead.
 # pack: two programs from one directory, and pcat is a HARD LINK to unpack.
 # The link is asserted by INODE in tests/wavea, not here -- tests/deps cannot
 # do it, for ex/vi's reason: the prerequisite IS the target, so it can never be

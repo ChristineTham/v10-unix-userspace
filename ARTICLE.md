@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2483 tests across 17 suites** guard it.
+assembly. **2500 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **166** of the 286 V8 shipped, and the ones still missing mostly
+port installs **171** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -4427,6 +4427,49 @@ a behavioural case, including that `zcat` leaves the `.Z` in place. `ed` reads
 `argv[0]` nowhere, so `e` is a pure alias and the inode *is* the claim.
 
 163 to 166, with nothing compiled.
+
+### And five more, where correctness became a property of $PATH
+
+The other cheap remainder was five commands V8 shipped as **shell scripts**, so
+there is nothing to compile and the installed file is the source: `true`,
+`false`, `dirname`, `nohup`, `whois`. Their whole dependency set — `expr`,
+`nice`, `test`, `grep`, `sh` — was already installed.
+
+`true` is worth a sentence. It is **zero bytes**: not a program that exits 0,
+but the original empty file, which is what an empty script does. That is
+upstream's, byte for byte.
+
+Where each one came from is recorded by where it sits. `false` has upstream
+source at `usr/src/cmd/false.sh` and lands in `src/cmd` like every other
+imported program; the other four have no `usr/src` copy at all, so what was
+imported is the shipped artefact itself and the import tool maps it to
+`src/bin`. That asymmetry is information rather than untidiness — it says at a
+glance which four are files Bell Labs shipped without shipping a source for.
+It is the `more`/`pg` situation with the opposite verdict: those are opaque
+binaries and stay out, these are readable text, so installing upstream's own
+bytes is strictly more faithful than writing a replacement.
+
+Then the part that was new. Every command installed before these is a
+self-contained binary whose behaviour is fixed at link time. **A script's
+correctness is a property of the PATH it runs under**, and the first test run
+proved it the hard way: invoked with a developer's host PATH, `whois root`
+resolved `grep` to a Homebrew binary the rootfs does not have. The jail lets
+that through by construction — a host binary is not jailed — so it grepped
+**macOS's** `/etc/passwd` and printed a completely plausible wrong answer,
+`System Administrator:/var/root` where the jail says `Superuser:/`. Nothing had
+escaped, and `V8JAIL=warn` correctly reported no escape: a host binary was
+asked, and host binaries see the host.
+
+The independent tell was the error text. Both runs complained about the missing
+`/usr/adm/usrlist`, but BSD grep says `No such file or directory` and V8's says
+`can't open` — the wording is what proves a different binary ran.
+
+So the cases run under the PATH `v8(1)` actually gives the world, and the
+`whois` case asserts its answer against a line **derived from the jail's own
+passwd** rather than a transcribed string: the host's root line is a property
+of whoever's Mac this is, and the jail's is a property of the port.
+
+166 to 171.
 
 ---
 

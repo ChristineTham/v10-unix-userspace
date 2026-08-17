@@ -1,0 +1,10 @@
+# Provenance for v8/src/bin
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+e69de29bb2d1d6434b8b29ae775ad8c2e48c5391  v8/bin/true
+d170b74a251436f2178e7fc5ea80d1e79744e164  v8/bin/nohup
+d9e64b127225f598ddffcd69c211603dc1a8a604  v8/usr/bin/dirname
+21dba5d24714d0449c519c409aa25e06f310d6e4  v8/usr/bin/whois

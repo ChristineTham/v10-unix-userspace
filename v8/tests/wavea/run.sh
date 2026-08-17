@@ -1823,6 +1823,81 @@ check 'e edits, so the link is executable' 'hello' \
     "$(cat ed.out 2>/dev/null)"
 
 # ---------------------------------------------------------------------------
+# THE FIVE COMMANDS V8 SHIPPED AS SHELL SCRIPTS, and they are the first thing
+# installed here whose CORRECTNESS IS A PROPERTY OF $PATH.  Every command
+# before them is a self-contained binary whose behaviour is fixed at link time;
+# a script is right or wrong depending on which other commands it finds, so
+# these run under the PATH v8(1) gives the world rather than the one the tester
+# happens to have.
+#
+# THAT IS NOT A PRECAUTION, IT IS A MEASURED FAULT.  Run with a developer's
+# host PATH, `whois root' resolves grep to a homebrew binary that the rootfs
+# does not have -- so the jail lets it through by construction, it is unjailed,
+# and it greps the MAC's /etc/passwd and prints a completely plausible wrong
+# answer (System Administrator:/var/root instead of Superuser:/).  V8JAIL=warn
+# reports no escape, correctly, because nothing escaped: a host binary was
+# asked and host binaries see the host.
+sh8=$(v8which sh)
+jail_sh() { PATH=/bin:/usr/bin:/etc "$sh8" -c "$1" 2>/dev/null; }
+
+# INSTALLED AT BELL LABS' OWN DESTINATION, and this case exists because the
+# behavioural ones below CANNOT SEE whether the port installed anything at all.
+# macOS has every one of these five names -- true, false, dirname, nohup and
+# whois are all in the host's /usr/bin -- and /bin and /usr/bin are UNION
+# mounts, so a name the rootfs lacks falls through to the host's copy, which
+# for four of the five behaves identically.  Measured: dropping
+# $(SCRIPT_INSTALL) left `true exits 0', `false exits 1', all four dirname
+# cases and both nohup cases GREEN, because the Mac answered them.
+#
+# So there are two properties and they need two cases: that the PORT INSTALLED
+# it (here, at the directory $(call v8dest,...) derives from Admin/binfiles),
+# and that it WORKS under the jail's PATH (below).  Neither implies the other.
+check 'the five scripts are installed where V8 put them' \
+    'bin/true bin/false bin/nohup usr/bin/dirname usr/bin/whois' \
+    "$(for n in true false nohup dirname whois; do
+         for d in bin usr/bin etc; do
+           [ -f "$V8ROOT/$d/$n" ] && { printf '%s/%s ' "$d" "$n"; break; }
+         done
+       done | sed 's/ $//')"
+
+# true is upstream's ZERO-BYTE file, not a program that exits 0, and the size
+# is asserted because "it exits 0" is also true of a broken copy -- and of the
+# HOST's true, which is what makes the plain exit-status case vacuous alone.
+check 'true is the empty file'  '0' "$(wc -c < "$V8ROOT/bin/true" | tr -d ' ')"
+jail_sh 'true'  >/dev/null 2>&1; check 'true exits 0'  '0' "$?"
+jail_sh 'false' >/dev/null 2>&1; check 'false exits 1' '1' "$?"
+
+# dirname is an `expr' one-liner, so these also prove expr's regex arms work.
+# The two that catch a naive implementation are the last two: a bare name is
+# `.' and the root is `/', neither of which is "everything before the last /".
+check 'dirname of a path'      '/usr/bin' "$(jail_sh 'dirname /usr/bin/cat')"
+check 'dirname is not recursive' '/a/b'   "$(jail_sh 'dirname /a/b/c')"
+check 'dirname of a bare name' '.'        "$(jail_sh 'dirname hello')"
+check 'dirname of the root'    '/'        "$(jail_sh 'dirname /')"
+
+# nohup redirects ONLY when the stream is a terminal -- `[ -t 1 ]' -- so with
+# stdout captured the right answer is that the output arrives on stdout and no
+# nohup.out is created at all.  Asserting the file's ABSENCE is the case that
+# would catch a nohup which redirects unconditionally.
+rm -f nohup.out
+check 'nohup passes output through when stdout is not a tty' 'hi' \
+    "$(jail_sh 'nohup echo hi' | tail -1)"
+check 'and it wrote no nohup.out' 'absent' \
+    "$([ -f nohup.out ] && echo present || echo absent)"
+
+# whois IS THE CONTAINMENT CASE, and it is asserted against a value DERIVED
+# from the jail's own passwd rather than a transcribed string -- the host's
+# root line is a property of whoever's Mac this is, and the jail's is a
+# property of the port.  Reading the host's file fails this.
+check 'whois reads the jail passwd, not the host' \
+    "$(grep '^root' "$V8ROOT/etc/passwd" 2>/dev/null | head -1)" \
+    "$(jail_sh 'whois root' | head -1)"
+# /usr/adm/usrlist is runtime state V8 never shipped, so both greps for it miss
+# and an unknown name falls all the way through -- upstream's own last arm.
+check 'whois falls through for an unknown name' 'who indeed is nosuchguy' \
+    "$(jail_sh 'whois nosuchguy' | tail -1)"
+
+# ---------------------------------------------------------------------------
 # Wave A2 batch 2d -- seven programs and a library.  The batch was scoped as
 # ten; graph, plot and prof turned out to share one blocker (usr/src/libplot,
 # task #89) and are not here.

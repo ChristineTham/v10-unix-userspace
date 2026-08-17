@@ -2155,6 +2155,94 @@ before at 1767. Two things, and the first is a correction to this file:
   costs the harness its exit status is worse than the stale number it fixes.**
   Task #7 carries it, with the mutation that matters named: not only that a
   wrong count fails, but that a FAILING SUITE still fails.
+- **AND IT WENT STALE AGAIN WITHIN THE HOUR, WHICH IS THE ARGUMENT FOR #7
+  MAKING ITSELF.** The number was corrected to 2483 and the very next batch of
+  cases took it to 2500, so the line was wrong again before the session that
+  fixed it had ended. Fourth event. Nothing is wrong with the fix; the point is
+  that a hand-maintained count is stale on the next commit BY CONSTRUCTION,
+  which is exactly what the command count stopped being the day it got a guard.
+
+**AND FIVE MORE COMMANDS WENT IN AS SHELL SCRIPTS, WHICH MADE CORRECTNESS A
+PROPERTY OF `$PATH` FOR THE FIRST TIME IN THIS PORT.** `true false dirname
+nohup whois`, 166 → 171, nothing compiled: V8 shipped them as scripts, so the
+installed file IS the source and their whole dependency set (`expr`, `nice`,
+`test`, `grep`, `sh`) was already installed. `true` is **zero bytes** — the
+original empty file rather than a program that exits 0, and `git hash-object`
+returns `e69de29b…`, git's universal empty-blob hash, which is what says the
+import did not truncate it. Four things:
+
+- **WHERE EACH ONE SITS RECORDS WHERE IT CAME FROM, so they are deliberately
+  not in one directory.** `false` has upstream source at `usr/src/cmd/false.sh`
+  and lands in `src/cmd`; the other four have NO `usr/src` copy at all, so what
+  was imported is the shipped artefact and `tools/import.sh` maps it to
+  `src/bin`. The split says at a glance which four Bell Labs shipped without
+  shipping a source for. It is the `more`/`pg` case with the opposite verdict:
+  those are opaque binaries and stay out, these are readable text, so
+  installing upstream's own bytes is strictly more faithful than writing a
+  replacement. All five hash to their recorded blobs — no local modification.
+- **A SCRIPT'S ANSWER DEPENDS ON WHICH OTHER COMMANDS IT FINDS, AND THE FIRST
+  TEST RUN PROVED IT THE HARD WAY.** Every command installed before these is a
+  self-contained binary fixed at link time. Run with a developer's host PATH,
+  `whois root` resolved `grep` to a homebrew binary the rootfs does not have —
+  so the union lets it through, it is unjailed by construction, and it grepped
+  the **Mac's** `/etc/passwd` and printed a completely plausible wrong answer
+  (`System Administrator:/var/root` for the jail's `Superuser:/`). `V8JAIL=warn`
+  reported no escape, **correctly**: nothing escaped, a host binary was asked.
+  The independent tell is the wording — BSD grep says `No such file or
+  directory` and V8's says `can't open`, so the error text is what proves a
+  different binary ran. The cases run under `/bin:/usr/bin:/etc` now, and the
+  `whois` one asserts a line DERIVED from the jail's own passwd, because the
+  host's root line is a property of whoever's Mac this is.
+- **AND THE UNION MAKES A BEHAVIOURAL CASE VACUOUS WHEN THE HOST HAS THE SAME
+  NAME.** Measured: dropping the install list left `true exits 0`, `false exits
+  1`, all four `dirname` cases and both `nohup` cases **GREEN**, because macOS
+  has all five names in its own `/usr/bin` and four of them behave identically.
+  Only `whois` discriminates, and it does it loudly — `got [% IANA WHOIS
+  server]`. So there are two properties needing two cases: that the PORT
+  INSTALLED it (a file at the directory `v8dest` derives) and that it WORKS
+  under the jail's PATH. Neither implies the other, and the mutation fires 5
+  instead of 4 once both exist. This is the inode vacuity one layer along, and
+  the mirror of the `tests/jail` case that named a program "host-only" and was
+  falsified by the port: there the host lacked the name, here it has it.
+- **THE LINKS AND THE SCRIPTS NEED DIFFERENT SUITES, and `tests/deps` can only
+  take one of them.** The five scripts get staleness edges (source → installed
+  copy, `diff3`'s shape); `e`/`ed` and the compress trio get **none**, because
+  prerequisite and target are ONE INODE so `touch` moves both and the target
+  can never be newer than itself — `libtermlib`'s documented impossibility.
+  They are asserted by inode in `tests/wavea` instead.
+
+**AND A DEADLINE IS A HOST PROPERTY TOO, WHICH IS A NEW MEMBER OF A FAMILIAR
+CLASS.** A full run came back `mkfs: 143 passed, 9 failed` while every other
+suite was green, and the nine were one cause: `Alarm clock: 14` in the log,
+i.e. **`fsck` killed by SIGALRM**, four separate invocations. The three cases
+that did produce output were downstream — an `fsck -y` killed before it could
+repair the image leaves the later cases correctly observing an unrepaired
+filesystem. Measured, in this order: no orphaned processes from two earlier
+killed runs (that hypothesis died first), load average **11.82** on 16 cores
+with `backupd` at **110%** — Time Machine mid-backup, and this tree lives on a
+secondary volume — and then `mkfs` alone came back **152 passed, 0 failed**.
+Three things:
+
+- **THE HEADROOM IS THE MEASUREMENT THAT SETTLES "flaky or one-off".** The
+  deadline is 25s; `fsck` on the test image takes **2.16s and 2.25s warm and
+  9.57s cold**, taken while load was still 7.55. So roughly 11× margin
+  normally, and the failing run exhausted it — which means the guard is sized
+  right and the event was extreme, rather than the test being marginal.
+  Without that number the only honest options are "raise the deadline" and
+  "hope", and raising it weakens the thing deadlines exist for.
+- **THE SYMPTOM IMITATES A DIFFERENT KNOWN BUG.** `got []` from a checker is
+  exactly task #4's recorded intermittent (*icheck produced no output at all*),
+  and the first reading here was that it had recurred. It had not: a checker
+  killed by its own deadline and a checker mysteriously silent are
+  indistinguishable in the `want`/`got` line, and **only the `Alarm clock`
+  line in the surrounding output separates them** — which a filtered capture
+  would have discarded. Third time in this file that capturing whole is what
+  preserved the diagnosis.
+- **AND AN EARLIER TIMEOUT OF MY OWN PRODUCED THE SAME FOUR FAILURES FOR THE
+  SAME REASON.** A `make -C v8 test-streams` killed at two minutes reported
+  four icheck failures with `got []`; that was SIGTERM to the process group,
+  not a finding. **A run you killed is not a measurement**, and the tell is
+  the same one — a signal named in the output beside the failure.
 
 ## Architecture: three layers, three different rules
 

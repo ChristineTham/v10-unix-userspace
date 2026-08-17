@@ -2016,6 +2016,46 @@ $(call v8install,uncompress zcat): $(call v8install,compress)
 	@rm -f $@ && ln $< $@
 LINKED_INSTALL = $(call v8install,e uncompress zcat)
 
+# FIVE COMMANDS V8 SHIPPED AS SHELL SCRIPTS, so there is nothing to compile and
+# the installed file IS the source.  They are the cheap half of the breadth
+# remainder: measured, their whole dependency set (expr, nice, test, grep, sh)
+# was already installed before this block existed.
+#
+# WHERE EACH ONE CAME FROM IS RECORDED BY WHERE IT SITS, which is why they are
+# not all in one directory.  `false' has upstream source at usr/src/cmd/false.sh
+# and lands in $(SRC)/cmd like every other imported program; the other four have
+# NO usr/src copy at all, so what was imported is the shipped artefact itself
+# and tools/import.sh maps it to $(SRC)/bin.  That asymmetry is information
+# rather than untidiness -- PROVENANCE names the exact upstream path either way,
+# and the split says at a glance which four are files Bell Labs shipped without
+# shipping a source for.  It is the more/pg situation with the opposite verdict:
+# those are opaque binaries and stay out, these are readable text, so installing
+# upstream's own bytes is strictly more faithful than writing a replacement.
+#
+# `true' IS ZERO BYTES -- the original empty file, not a program that exits 0 --
+# and that is upstream's, byte for byte, rather than an artefact of the import.
+#
+# Destinations are DERIVED, never spelled: $(call v8dest,...) reads Bell Labs'
+# tables, which put true/false/nohup in Admin/binfiles (so /bin) and let
+# dirname/whois fall through (so /usr/bin).  Checked against the shipped tree --
+# all five agree, so there is no cpp/dump-shaped disagreement here.
+V8SCRIPT          = true false nohup dirname whois
+scriptsrc_true    = $(SRC)/bin/true
+scriptsrc_false   = $(SRC)/cmd/false.sh
+scriptsrc_nohup   = $(SRC)/bin/nohup
+scriptsrc_dirname = $(SRC)/bin/dirname
+scriptsrc_whois   = $(SRC)/bin/whois
+
+# foreach/eval for $(V8DIRBIN)'s reason: a static pattern rule cannot expand a
+# per-name source path, and .SECONDEXPANSION is too large a blast radius.
+define script_rule
+$(ROOTFS)/$(call v8dest,$(1))/$(1): $(scriptsrc_$(1))
+	@mkdir -p $$(@D) && cp $$< $$@ && chmod +x $$@
+endef
+$(foreach p,$(V8SCRIPT),$(eval $(call script_rule,$(p))))
+
+SCRIPT_INSTALL = $(call v8install,$(V8SCRIPT))
+
 # ---------------------------------------------------------------------------
 # Wave A2 batch 2d -- seven directory programs and one LIBRARY.  The batch was
 # scoped as "ten, all pure computation"; three of the ten (graph, plot, prof)
@@ -2525,6 +2565,7 @@ v8bin: $(V8BIN_BUILT) $(V8BIN_INSTALL) $(V8LIBDATA) \
        $(V8DIRBIN_BUILT) $(V8DIRBIN_INSTALL) \
        $(BINDIR)/df $(BINDIR)/load $(BINDIR)/w $(BINDIR)/ps \
        $(call v8install,df load w ps) $(ROOTFS)/usr/bin/uptime \
+       $(SCRIPT_INSTALL) \
        imgbin
 
 # Without this make DELETES every binary in $(BINDIR) as soon as it has copied
