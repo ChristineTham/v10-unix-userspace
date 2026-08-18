@@ -137,10 +137,84 @@ double realcon[6] =
 #define F77CALL (SZADDR*(MAXARGSLOT-8))		/* outgoing slots nine and up */
 #define F77FRAME (ARGOFFSET + F77ARGS)	/* autos, then the spilled arguments */
 
-prsave(proflab)
-int proflab;
+/*
+ * argdest -- where each of THIS entry's incoming arguments belongs.
+ *
+ * With one entry the answer is the identity: nextarg() hands out slots in the
+ * order the caller passes them, so incoming position i belongs at SZADDR*i.
+ * With more than one, it is not.  doentry() gives a slot only to a parameter
+ * not already declared, so the layout is the UNION of every entry's parameters
+ * in first-appearance order -- and a later entry's first argument may therefore
+ * belong halfway up the area, or, if the two entries name the same parameters
+ * in a different order, at a LOWER slot than the one below it.
+ *
+ * This is vax.c:365-400's loop, and it is the same loop for the same reason.
+ * What differs is where the values are read from.  The VAX copies from the
+ * CALLER's frame through `ap' into an argvec and then repoints ap at it, which
+ * it must because its arguments are never in registers -- and which also makes
+ * source and destination disjoint, so `entry t(b,a)' against `subroutine s(a,b)'
+ * cannot make one copy clobber the next.  arm64 has no ap to repoint; if this
+ * relocated slot-to-slot after a blind spill, that swap would lose a.
+ *
+ * It does not have to.  The incoming values are still IN x0-x7 at this point,
+ * and a register is not one of the destinations, so spilling straight to the
+ * right slot needs no staging area and cannot alias.  A second machine's extra
+ * mechanism is solving a problem this machine does not have.
+ */
+LOCAL argdest(ep, dest)
+struct Entrypoint *ep;
+int dest[];
+{
+register chainp p;
+register Namep q;
+int n;
+
+n = 0;
+/* The hidden result arguments come first and are the caller's, not the
+   arglist's: a CHARACTER function is passed the place to put its answer and
+   how long it is, a COMPLEX one just the place. */
+if(proctype == TYCHAR)
+	{
+	dest[n++] = chslot;
+	dest[n++] = chlgslot;
+	}
+else if( ISCOMPLEX(proctype) )
+	dest[n++] = cxslot;
+
+for(p = ep->arglist ; p ; p = p->nextp)
+	{
+	q = (Namep) (p->datap);
+	if(n >= MAXARGSLOT)
+		fatali("entry has more than %d argument slots", MAXARGSLOT);
+	dest[n++] = q->vardesc.varno;
+	}
+/* Then the hidden CHARACTER lengths, in the same order.  A constant-length
+   argument still occupies an incoming position -- the caller passes it -- and
+   doentry() reserves no slot for it, so it is dropped rather than stored. */
+for(p = ep->arglist ; p ; p = p->nextp)
+	{
+	q = (Namep) (p->datap);
+	if(q->vtype==TYCHAR && q->vclass!=CLPROC)
+		{
+		if(n >= MAXARGSLOT)
+			fatali("entry has more than %d argument slots", MAXARGSLOT);
+		if(q->vleng && ! ISCONST(q->vleng) )
+			dest[n] = q->vleng->addrblock.memno;
+		else
+			dest[n] = -1;
+		++n;
+		}
+	}
+return(n);
+}
+
+
+
+prsave(ep)
+struct Entrypoint *ep;
 {
 int i, n;
+int dest[MAXARGSLOT];
 
 p2pass("\tstp\tx29, x30, [sp, #-16]!");
 p2pass("\tstp\tx19, x20, [sp, #-16]!");
@@ -186,14 +260,32 @@ p2pass("\tstp\tx6, x7, [x9, #48]");
    x9 already holds x29+ARGOFFSET; x10 and x11 are caller-saved and free, since
    the only live registers at this point are the arguments in x0-x7. */
 n = lastargslot / SZADDR;
+for(i = 0 ; i < n && i < MAXARGSLOT ; ++i)
+	dest[i] = SZADDR*i;
+
+/* AND WITH MORE THAN ONE ENTRY POINT THE IDENTITY IS WRONG, so this entry's
+   own list decides.  The four stp pairs above have already put x0-x7 at the
+   identity positions, which is why they are re-emitted here rather than
+   skipped: a store to the right slot is what makes the identity ones dead,
+   and leaving both is one instruction each against a special case in the
+   common path. */
+if(nentry > 1)
+	{
+	n = argdest(ep, dest);
+	for(i = 0 ; i < n && i < 8 ; ++i)
+		if(dest[i] >= 0)
+			p2pij("\tstr\tx%d, [x9, #%d]", i, dest[i]);
+	}
+
 if(n > 8)
 	{
 	p2pi("\tadd\tx10, x29, #%d", F77FRAME + F77SAVE);
 	for(i = 8 ; i < n ; ++i)
-		{
-		p2pi("\tldr\tx11, [x10, #%d]", SZADDR*(i-8));
-		p2pi("\tstr\tx11, [x9, #%d]", SZADDR*i);
-		}
+		if(dest[i] >= 0)
+			{
+			p2pi("\tldr\tx11, [x10, #%d]", SZADDR*(i-8));
+			p2pi("\tstr\tx11, [x9, #%d]", dest[i]);
+			}
 	}
 }
 
@@ -550,7 +642,7 @@ if(procclass == CLMAIN)
 		   prologue as any other -- measured: without this the entry stub
 		   was a bare `b L11' and the epilogue at L12 restored a frame
 		   nobody had made. */
-		prsave(0);
+		prsave(ep);
 		}
 	}
 else if(ep->entryname)
@@ -563,7 +655,7 @@ else if(ep->entryname)
 	else
 		{
 		p2ps("_%s:", varstr(XL, ep->entryname->extname));
-		prsave(0);
+		prsave(ep);
 		}
 	}
 
@@ -577,21 +669,20 @@ if(procclass == CLBLOCK)
    still no walk here -- but the reason is that the work is done rather than
    that it is somebody else's.
 
-   TWO THINGS ARE REFUSED BY NAME RATHER THAN MISCOMPILED, both of them cases
-   this frame cannot express:
-
-   argvec is non-null exactly when proc.c:316 saw nentry>1, so it is the test
-   for multiple ENTRY points -- which need each entry's arguments relocated into
-   one shared slot layout, i.e. the mvarg() the VAX implements.  A frame that
-   spills x0-x7 at one fixed place cannot do that, and the failure would be a
-   subroutine reading another entry's arguments.
+   MULTIPLE ENTRY POINTS ARE NOT REFUSED HERE ANY MORE, and the reason the
+   refusal gave was accurate: each entry's arguments must be relocated into one
+   shared slot layout, which is the mvarg() the VAX implements, and a frame that
+   spills x0-x7 at one fixed place cannot do it.  What it did not say is that
+   the spill does not have to be at one fixed place.  prsave() takes the entry
+   now and walks its own argument list, so the relocation happens AT the spill,
+   out of registers that are still live -- see argdest() above.  argvec is still
+   allocated by proc.c:316 and is still unused here; it is the VAX's staging
+   area, and this target needs none.
 
    autoleng is the auto area pass 1 allocated, and ARGOFFSET is where the spilled
    arguments start; an overrun would put a temporary on top of a parameter and
    is invisible in the generated code.  Checked against the number that defines
    the boundary rather than against a transcribed copy of it. */
-if(argvec || nentry > 1)
-	fatal("multiple ENTRY points are not implemented on this target");
 if(autoleng > ARGOFFSET)
 	fatali("procedure needs %d bytes of temporaries, more than the frame holds",
 		(int) autoleng);
@@ -604,6 +695,23 @@ if(autoleng > ARGOFFSET)
 if(lastargslot > SZADDR*MAXARGSLOT)
 	fatali("procedure has %d argument slots, more than the frame holds",
 		(int) (lastargslot/SZADDR));
+
+/* AND THE ENTRY MUST SAY WHICH EPILOGUE IT RETURNS THROUGH, which is vax.c:466
+   and was simply absent here.  A procedure with more than one ENTRY may have
+   entries of different types, so proc.c:383-385 gives each TYPE an epilogue
+   label and every RETURN branches to one common exit -- which then jumps
+   INDIRECTLY through this auto.  Without the store the auto is never written
+   and the exit branches through whatever the frame happened to hold.
+
+   Nothing had reached it: with one entry the exit is not indirect at all, so
+   `typeaddr' is null and this is a no-op.  The refusal above is what kept the
+   multiple-entry path from ever running, which is the same shape as the ninth
+   argument -- a guard at one end making the code at the other end untestable.
+
+   Measured before the fix: `integer function f(n) ... entry g(m,k)' compiled
+   clean, and the program printed NOTHING and exited 0. */
+if(typeaddr)
+	puteq( cpexpr(typeaddr), mkaddcon(ep->typelabel) );
 
 putgoto(ep->entrylabel);
 }

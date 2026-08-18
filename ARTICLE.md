@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2674 tests across 17 suites** guard it.
+assembly. **2679 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5188,6 +5188,52 @@ program was a syntax error and awk printed nothing. Empty output reads exactly
 like a compiler that produced nothing. What separated *my instrument is broken*
 from *the compiler is broken* was running the program by hand and watching it
 print the right answer.
+
+The third limit was a refusal about registers that had nothing to do with
+registers. A character concatenation of five pieces was rejected for want of an
+eleventh register, and the fix added none.
+
+Fortran builds `a//b//c` by writing a length and a pointer for each piece into
+two arrays and calling one library routine over them — so an *n*-way
+concatenation is one statement containing 2*n* assignments. The compiler's
+second pass returned, as the value of each assignment, the register the value
+had passed through, and nothing releases that until the statement ends. So it
+held two registers per operand and used none of them. An assignment's value can
+just as well be *the thing assigned to*: read back, it is the same number, and
+it holds no register. Measured, distinct registers used: 1, 6, 8, 10, refused —
+and afterwards a flat 2 at every width, out to eight pieces and beyond.
+
+The fourth limit — a second `ENTRY` point — turned out to be two mechanisms, and
+only one of them was the one the refusal named.
+
+`ENTRY` lets one Fortran procedure have several names with different argument
+lists. The compiler numbers the parameters as a union across all the entries, so
+a later entry's first argument may belong anywhere in the frame — and if two
+entries name the same parameters in a different order, the mapping is a
+permutation. The VAX version copies arguments through a staging area, which it
+must, because on a VAX they were never in registers. Here they still are when
+the prologue runs, and a register is not one of the destinations, so the
+prologue can simply store each one where that entry wants it. The extra
+mechanism was solving a problem this machine does not have.
+
+The other half was a line that was simply absent. Entries can differ in *type*,
+so each type gets its own epilogue and every `RETURN` jumps to a shared exit
+that branches indirectly to the right one — through a variable the entry is
+supposed to fill in. The VAX file fills it in; this one never had that line.
+With a single entry the exit is not indirect and the variable is unused, so
+nothing had ever reached it. An integer function with an entry compiled without
+a word, printed nothing, and exited 0.
+
+And that indirect exit is the assigned `GOTO` from the previous limit, arriving
+with a second producer one refusal later. My branch added the base offset
+unconditionally, which is right when the variable holds a distance and wrong
+when it holds a whole address. The two mutations are exact complements: forcing
+it on breaks the entry case alone, forcing it off breaks the assigned-`GOTO`
+cases alone.
+
+Three of the test programs were mine again, and all three were implicit typing —
+`entry g(...)` inside an integer function is a *real* function, because `g` is
+not in `I` through `N`. The standing rate is about three per corpus.
 
 ---
 

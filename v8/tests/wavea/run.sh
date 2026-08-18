@@ -3817,9 +3817,16 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
       write(6,*) a+b+c+d+e+f+g+h
       return
       end')"
-	check 'f77: a second ENTRY point is refused' \
-	    'multiple ENTRY points are not implemented on this target' \
+	# ---- MULTIPLE ENTRY POINTS, WHICH ARE THREE SEPARATE MECHANISMS.
+	# doentry() gives a slot only to a parameter not already declared, so
+	# the layout is the UNION of every entry in first-appearance order and a
+	# later entry's x0 belongs somewhere other than slot 0.  prsave() takes
+	# the entry now and spills straight to the right slot -- out of
+	# registers, which are still live and are not themselves destinations,
+	# so unlike the VAX it needs no staging area and cannot alias.
+	check 'f77: a second ENTRY point is called by its own name' 'RAN:  1| 2|' \
 	    "$(f77refuse e '      call one
+      call two
       end
       subroutine one
       write(6,*) 1
@@ -3828,17 +3835,119 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
       write(6,*) 2
       return
       end')"
-	# THE CONCATENATION BOUNDARY IS MEASURED, NOT CHOSEN: four-way needs all
-	# ten registers and works (above); five-way needs more and refuses.  The
-	# fix for it is not a bigger pool -- see the note in PORTING.md about
-	# doassign() holding a register per unconsumed assignment.
-	check 'f77: a five-way concatenation is refused, naming the registers' \
-	    'more integer registers than this pass allocates' \
+	# THE REORDERED ENTRY IS THE ONE THAT DISCRIMINATES.  `entry t(b,a)'
+	# maps incoming 0 to bs slot and incoming 1 to as, which is the
+	# IDENTITY REVERSED -- so a relocation that copied slot to slot after a
+	# blind spill would put a in both.  Nothing else in Fortran produces a
+	# permutation of one frame layout onto itself.
+	check 'f77: entries with reordered and disjoint argument lists' \
+	    'RAN:  sab 1 2| tba 4 3| ucde 5 6 7|' \
+	    "$(f77refuse er '      call s(1,2)
+      call t(3,4)
+      call u(5,6,7)
+      end
+      subroutine s(a,b)
+      integer a,b,c,d,e
+      write(6,*) "sab", a, b
+      return
+      entry t(b,a)
+      write(6,*) "tba", a, b
+      return
+      entry u(c,d,e)
+      write(6,*) "ucde", c, d, e
+      return
+      end')"
+	# AND ENTRIES OF DIFFERENT TYPES, which is what the indirect exit is
+	# FOR: proc.c gives each TYPE an epilogue label, every RETURN branches
+	# to one common exit, and that exit jumps through an auto naming the
+	# right epilogue.  vax.c:466 stores it and this file simply had no such
+	# line -- so the exit branched through whatever the frame held, and an
+	# INTEGER FUNCTION with an ENTRY printed nothing and exited 0.
+	check 'f77: an INTEGER FUNCTION and a REAL ENTRY, each through its own epilogue' \
+	    'RAN:  30  4.50000000|' \
+	    "$(f77refuse et '      integer f
+      real q
+      write(6,*) f(3), q(4,5)
+      end
+      integer function f(n)
+      integer n, m, k
+      real q
+      f = n * 10
+      return
+      entry q(m,k)
+      q = (m + k) / 2.0
+      return
+      end')"
+	# AND THE STRUCTURAL HALF, because a value case cannot say WHY a
+	# permutation came out right.  Each entry stub must spill its own x0 to
+	# its own slot, and for the reordered pair those two slots are swapped
+	# -- derived from the emitted code, so it cannot encode todays offsets.
+	check 'f77: each entry stub spills x0 to its own argument slot' 's 0 t 8' \
+	    "$(cd f77p1w && printf '%s\n' '      subroutine s(a,b)
+      integer a,b
+      a = b
+      return
+      entry t(b,a)
+      b = a
+      return
+      end' > xes.f && rm -f xes.s
+	       "$V8ROOT/usr/bin/f77" -S xes.f >/dev/null 2>&1
+	       awk '/^_s_:/ { e = "s" } /^_t_:/ { e = "t" }
+	            e != "" && /str[[:blank:]]+x0, \[x9, #/ {
+	                t = $0; sub(/.*#/, "", t); sub(/\].*/, "", t)
+	                printf "%s %s ", e, t; e = "" }
+	            END { printf "\n" }' xes.s | sed 's/ *$//')"
+	# THE CONCATENATION BOUNDARY IS GONE, AND IT WAS NEVER THE POOL SIZE.
+	# f77 builds a concatenation as an ASSIGN PER OPERAND -- a length and a
+	# pointer into the frame for each piece, then s_cat over the two arrays
+	# -- and doassign() returned the register the value passed through, which
+	# nothing pops until the statement ends.  So the pass held 2n registers
+	# and used none of them.  Returning the OBJECT ASSIGNED TO instead is the
+	# same number by a re-load and frees the register at once.
+	# Measured, distinct pool registers: 1/6/8/10/refused before, and a flat
+	# 2 at every width after.
+	check 'f77: a five-way concatenation, which used to need eleven registers' \
+	    'RAN:  11111                                   |' \
 	    "$(f77refuse 5 '      character*40 a, g
       a = "1"
       g = a(1:1)//a(1:1)//a(1:1)//a(1:1)//a(1:1)
       write(6,*) g
       end')"
+	# AND A TEN-WAY WITH DISTINCT PIECES, because five copies of one
+	# character cannot tell a dropped operand from a duplicated one, and
+	# cannot see an order the frame arrays got wrong.
+	check 'f77: a ten-way concatenation keeps its operands in order' \
+	    'RAN:  jaecbgabcdefghij                        |' \
+	    "$(f77refuse 10 '      character*40 a, g
+      a = "abcdefghij"
+      g = a(10:10)//a(1:1)//a(5:5)//a(3:3)//a(2:2)//a(7:7)//
+     *    a(1:1)//a(2:2)//a(3:3)//a(4:4)//a(5:5)//a(6:6)//a(7:7)//
+     *    a(8:8)//a(9:9)//a(10:10)
+      write(6,*) g
+      end')"
+	# AND THE STRUCTURAL HALF IS A RELATION RATHER THAN A NUMBER: the pass
+	# must use no more registers for a wide concatenation than for a narrow
+	# one.  A specific count would encode todays allocator; what changed is
+	# that the cost stopped growing with the width.
+	#
+	# The save/restore lines are excluded because prsave() names x19-x28 in
+	# its `stp' pairs whatever the body does -- a first draft counted those
+	# and reported all ten registers in use at every width, including one.
+	check 'f77: concatenation register pressure does not grow with width' 'equal' \
+	    "$(cd f77p1w && for n in 2 9; do
+	         { echo '      character*80 a, g'
+	           echo '      a = "1"'
+	           printf '      g = a(1:1)'
+	           i=1; while [ $i -lt $n ]; do printf '//a(1:1)'; i=$((i+1)); done
+	           echo; echo '      write(6,*) g'; echo '      end'; } > w$n.f
+	         rm -f w$n.s
+	         "$V8ROOT/usr/bin/f77" -S w$n.f >/dev/null 2>&1
+	         if [ -s w$n.s ]; then
+	           grep -vE 'stp|ldp' w$n.s | grep -oE 'x(19|2[0-8])' | sort -u | wc -l
+	         else echo "no-output-$n"; fi
+	       done | tr -d ' ' | tr '\012' ' ' |
+	       awk '{ if ($1 == $2 && $1 != "" && $1+0 > 0) print "equal"
+	              else print "narrow " $1 " wide " $2 }')"
 
 	# ---- THE ARGUMENT BOUND ITSELF, WHICH IS TWO REFUSALS AND NOT ONE.
 	# MAXARGSLOT is a property of the frame, so both ends have to state it:
@@ -3922,7 +4031,7 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# tests/kmemu asserts that w(1) says `No mem'.
 
 else
-	fail=$((fail+69)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+75)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism

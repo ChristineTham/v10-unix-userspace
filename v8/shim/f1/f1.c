@@ -1061,7 +1061,6 @@ doassign()
 			lhs.kind == V_CON ? "constant" : "comparison");
 		exit(2);
 	}
-	vfree(&lhs);
 	/* AND IT HAS A VALUE, because an assignment is an EXPRESSION -- which is
 	   pcc's rule and not a convenience.  A Fortran argument that is not a
 	   variable has to be given storage to be passed by reference, and f77
@@ -1070,8 +1069,43 @@ doassign()
 	   statement and clearing the stack after it threw away the callee and
 	   the half-built expression underneath, and the next record underflowed.
 	   The caller decides what to do with the value; the statement boundary
-	   is P2STMT, and that is the only thing that resets. */
-	return (rhs);
+	   is P2STMT, and that is the only thing that resets.
+
+	   THE VALUE IS THE OBJECT ASSIGNED TO, NOT THE REGISTER THE VALUE PASSED
+	   THROUGH, AND THAT IS WHERE THIS PASS'S REGISTER PRESSURE WAS.  Both
+	   answer the same number -- after the store, reading the destination
+	   yields exactly what was stored -- but the register form pins a pool
+	   register until something pops it, and the only two things that do are
+	   COMOP and the statement boundary.  A CHARACTER concatenation is one
+	   statement containing an ASSIGN PER OPERAND: f77 builds two arrays in
+	   the frame, a length and a pointer for each piece, and calls s_cat over
+	   them.  So the registers held were 2n and nothing was using them.
+
+	   Measured, distinct pool registers in the emitted code: one-way 1,
+	   two-way 6, three-way 8, four-way 10, five-way refused.  Returning the
+	   lvalue costs nothing anywhere else -- COMOP frees its left operand
+	   either way, and a consumer that reads this as a value re-loads from
+	   the destination, which is the same number and, where the destination
+	   is narrower, the same TRUNCATION the store just performed.
+
+	   V_ADDR becomes V_VAR because those two differ in exactly this: an ICON
+	   destination means `store to this address', so what it names as a VALUE
+	   is the object's contents rather than the address.  The other three
+	   kinds re-read correctly as they stand.
+
+	   THAT LINE IS DEFENSIVE RATHER THAN LOAD-BEARING, AND IT IS MEASURED
+	   RATHER THAN ASSUMED: an instrumented f1 reporting every V_ADDR
+	   destination found ZERO over the whole wavea suite and a sixty-program
+	   corpus -- f77 spells a destination as OREG, NAME, REG or a dereference
+	   and never as an ICON.  Kept because the store switch above already has
+	   a `case V_ADDR' and the returned value has to agree with it; a
+	   mutation of it therefore fires nothing, and writing a case for it
+	   would be manufacturing a vacuous one on purpose.  Same verdict as
+	   v8_bufend's NULL arm in shim/libI77/sysv.c. */
+	vfree(&rhs);
+	if (lhs.kind == V_ADDR)
+		lhs.kind = V_VAR;
+	return (lhs);
 }
 
 static char *
@@ -1355,16 +1389,35 @@ genrec()
 		if (var) {
 			printf("\tb\tL%d\n", type);
 		} else {
-			/* The value is the offset doassign() stored; add the
-			   base back and branch through it.  `br' rather than
-			   `blr': an assigned GOTO is a jump, not a call. */
+			/* AN INDIRECT GOTO HAS TWO PRODUCERS AND THE TYPE IS
+			   WHAT SEPARATES THEM.  Fortran's ASSIGN puts a label
+			   in an INTEGER, which is four bytes and cannot hold
+			   an address, so doassign() stores the distance from
+			   Lf1b<proc> and this adds it back.  f77's OWN use of
+			   the same record does not: a procedure with more than
+			   one ENTRY returns through `OREG reg 29 offset 8 type
+			   int *' -- eight bytes, holding the whole address of
+			   the typed epilogue -- and adding a base to that
+			   branches into nothing.
+
+			   When this was written the assigned GOTO was the only
+			   producer, which made `always add the base' a true and
+			   complete account of the code that existed; the second
+			   arrived one refusal later.  Measured: without the
+			   test, an INTEGER FUNCTION with an ENTRY printed
+			   nothing and exited 0.
+
+			   `br' rather than `blr' either way: a GOTO is a jump,
+			   not a call. */
 			struct val g;
 
 			g = vpop();
 			into(&g, SCRATCHB);
-			labelbase(SCRATCHC);
-			printf("\tadd\tx%d, x%d, x%d\n",
-			    SCRATCHB, SCRATCHB, SCRATCHC);
+			if (!isptr(g.vtype)) {
+				labelbase(SCRATCHC);
+				printf("\tadd\tx%d, x%d, x%d\n",
+				    SCRATCHB, SCRATCHB, SCRATCHC);
+			}
 			printf("\tbr\tx%d\n", SCRATCHB);
 			vfree(&g);
 		}

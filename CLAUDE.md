@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2674 cases, 2673 on a host whose $TMPDIR
+make test             # all 17 suites (2679 cases, 2678 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make -C v8 test-wavec # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -2787,6 +2787,73 @@ Four things:
   program by hand and watching it print the right answer. Add to the empty-output
   list beside a wrong path, a wrong PATH and a non-zero exit status: **a shell
   function called above its definition, and an awk built-in used as a variable.**
+
+**AND THE LAST TWO LIMITS WENT TOGETHER, WHICH IS HOW THE SECOND FOUND A BUG IN
+THE FIRST.** A five-way concatenation and a second ENTRY point both work; f77
+now compiles every construct this port has been able to write. Six things
+generalise, and the first is a refusal that named the wrong resource entirely:
+
+- **"NEEDS MORE REGISTERS" WAS TRUE AND THE POOL WAS NOT THE PROBLEM.** f77
+  builds `a//b//c` as an ASSIGN PER OPERAND -- a length and a pointer into the
+  frame for each piece, then one `s_cat` over them -- and `doassign()` returned
+  the REGISTER the value passed through, which nothing pops until the statement
+  ends. So the pass held 2n registers and used none. Returning the OBJECT
+  ASSIGNED TO is the same number by a re-load and frees it at once: measured,
+  1/6/8/10/refused became a flat **2** at every width out to eight. **Before
+  raising a resource limit, measure what is holding the resource** -- the fix
+  added no register.
+- **A REGISTER-PRESSURE SWEEP OVER A WHOLE .s FILE COUNTS THE PROLOGUE.**
+  `prsave()` names x19-x28 in its `stp` pairs whatever the body does, so the
+  first draft reported all ten in use at every width including ONE. Exclude
+  `stp`/`ldp`. Same family as the aborted-compile reading: a register
+  measurement has to name which instructions it is measuring.
+- **THE VAX'S EXTRA MECHANISM WAS SOLVING A PROBLEM THIS MACHINE DOES NOT
+  HAVE**, second instance after the two-register frame. `doentry()` slots the
+  UNION of every entry's parameters in first-appearance order, so a later
+  entry's x0 belongs elsewhere -- and `entry t(b,a)` against `subroutine s(a,b)`
+  is the identity REVERSED, which a slot-to-slot copy would clobber. `vax.c`
+  needs an argvec because its arguments were never in registers; here they still
+  are when the prologue runs, and a register is not one of the destinations, so
+  `prsave()` spills straight to the right slot. **Ask what makes the other
+  machine's answer necessary THERE before copying its shape.**
+- **AND THE OTHER HALF WAS A LINE THIS PORT SIMPLY DID NOT HAVE.** Entries may
+  differ in type, so each type gets an epilogue and every RETURN branches to one
+  exit that jumps INDIRECTLY through an auto naming it. `vax.c:466` stores that
+  auto and `arm64.c` had no such line, so the exit branched through whatever the
+  frame held: `integer function f(n) ... entry g(m,k)` compiled clean, printed
+  NOTHING and exited 0. Nothing had reached it because with one entry the exit
+  is not indirect at all -- the refusal is what kept the path from running, which
+  is the ninth argument's shape a second time in one session.
+- **AND THAT EXIT IS THE ASSIGNED GOTO, SO CLOSING ONE LIMIT GAVE THE PREVIOUS
+  ONE A SECOND PRODUCER AN HOUR LATER.** `/lib/f1` added the base label
+  unconditionally -- right for Fortran's ASSIGN, four bytes holding a distance;
+  wrong for this, `OREG reg 29 offset 8 type int *`, eight bytes holding the
+  whole address. The discriminator is `isptr`, which `doassign()` was ALREADY
+  using at the other end: the type test was on one side and not the line beside
+  it, because when it was written there was one producer. **The two mutations
+  are complements and fire DISJOINT sets** -- always-add breaks the entry case
+  alone, never-add breaks the two assigned-GOTO cases alone -- which is the
+  strongest form of "this test discriminates", and the same discipline as
+  `canread`/`canwrite` needing a refusal AND a success case each.
+- **AND THE INSTRUMENT RATE HELD AT THREE PER CORPUS, ALL THREE IMPLICIT
+  TYPING.** `entry g(m,k)` inside an INTEGER function is implicitly **REAL**,
+  because `g` is not in I-N -- so a main program declaring `integer g` printed
+  69845008 for a float. `entry cg(s)` in a CHARACTER function needs its own
+  CHARACTER declaration, and f77's `noncharacter entry of character function` is
+  correct. And a predicted `4.500000000e+00` was a guess: list-directed output
+  prints 4.5 as `4.50000000`. This file already records the denormal direction
+  of the same class; **implicit typing is easiest to get wrong in the DECLARATION
+  YOU WRITE ELSEWHERE**, since the two spellings are in different program units.
+
+**AND THE `V_ADDR` ARM IS THE FOURTH NON-FIRING-MUTATION CAUSE AGAIN, MEASURED
+RATHER THAN ARGUED.** `doassign()` converts a V_ADDR destination to V_VAR so the
+returned lvalue re-reads as a value; mutating it changes nothing. An instrumented
+f1 reporting every V_ADDR destination found **zero** over the whole suite and a
+sixty-program corpus -- f77 spells a destination as OREG, NAME, REG or a
+dereference, never as an ICON. Kept, because the store switch above already has
+a `case V_ADDR' and the returned value must agree with it; **writing a case
+would have been manufacturing a vacuous one on purpose**, which is `v8_bufend`'s
+verdict reached a second time.
 
 **AND THE THREE TEST-PROGRAM BUGS ARE WORTH KNOWING, because two of them look
 exactly like compiler defects.** A result of `2.101947696e-44` is the integer 15

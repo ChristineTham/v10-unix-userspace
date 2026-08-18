@@ -925,6 +925,11 @@ The mutations that validate them are the ones that make each **stop** refusing:
 raise the argument cap, raise the ENTRY cap, and make `ralloc()` reuse a
 register instead of exiting. Each fires on exactly the case written for it.
 
+> **All four are closed as of stage 7.** The sections below are the account of
+> each. The table is left standing because three of its four *reasons* were
+> accurate and still are — what was wrong in each case was the inference drawn
+> from them, and that is the interesting part.
+
 
 ## Stage 7: the ninth argument, and the silence the refusal was hiding
 
@@ -1067,3 +1072,116 @@ The three-target case is deliberately not a one-target case: with a single
 label, a branch that fell through to the next statement would land on it anyway,
 so the case could not tell a working branch from no branch. Reassignment is what
 makes it a branch on the *variable* rather than on the last `ASSIGN` seen.
+
+
+## Stage 7c: the concatenation limit, which was never the pool size
+
+The third of the four is gone, and no register was added. `ralloc()` still hands
+out the same ten.
+
+f77 builds `a//b//c` as an **ASSIGN per operand**: two arrays in the frame, a
+length and a pointer for each piece, then one call to `s_cat` over them. So a
+five-way concatenation is one statement containing ten assignments — and
+`doassign()` returned the *register the value passed through*, which nothing
+pops until the statement ends. The pass was holding 2n registers and using none
+of them.
+
+Returning the **object assigned to** is the same number by a re-load, and frees
+the register at once. Measured, distinct pool registers in the emitted code:
+
+| width | before | after |
+|---|---|---|
+| one | 1 | 1 |
+| two | 6 | 2 |
+| three | 8 | 2 |
+| four | 10 | 2 |
+| five | *refused* | 2 |
+| eight | *refused* | 2 |
+
+Three things:
+
+- **IT COSTS NOTHING ANYWHERE ELSE.** `COMOP` frees its left operand either way,
+  and a consumer that reads an assignment as a value re-loads from the
+  destination — which is the same number and, where the destination is narrower,
+  the same truncation the store just performed. The statement boundary was
+  already the only other thing that popped it.
+- **THE GUARD IS A RELATION, NOT A COUNT.** `tests/wavea` asserts that a nine-way
+  concatenation uses no *more* registers than a two-way. A specific number would
+  encode today's allocator; what changed is that the cost stopped growing with
+  the width.
+- **AND THE FIRST DRAFT OF THAT MEASUREMENT COUNTED THE PROLOGUE.** `prsave()`
+  names `x19`-`x28` in its `stp` pairs whatever the body does, so a sweep over
+  the whole file reported all ten registers in use at every width — including
+  one-way. Excluding `stp`/`ldp` is what makes it a measurement of the body.
+
+The `V_ADDR` → `V_VAR` line in `doassign()` is **defensive rather than
+load-bearing, and that is measured**: an instrumented `f1` reporting every
+`V_ADDR` destination found **zero** over the whole suite and a sixty-program
+corpus — f77 spells a destination as OREG, NAME, REG or a dereference and never
+as an ICON. Kept, because the store switch above it already has a `case V_ADDR`
+and the returned value has to agree with it; a mutation of it fires nothing, and
+writing a case would be manufacturing a vacuous one on purpose.
+
+
+## Stage 7d: multiple ENTRY points, and the two mechanisms behind them
+
+The fourth is gone. `entry` works for subroutines, for functions, for entries
+with reordered or disjoint argument lists, and for entries of *different types*.
+
+The refusal's reason was accurate: each entry's arguments must be relocated into
+one shared slot layout, and a frame that spills `x0`-`x7` at one fixed place
+cannot do it. **What it did not say is that the spill does not have to be at one
+fixed place.**
+
+- **doentry() gives a slot only to a parameter not already declared**, so the
+  layout is the union of every entry's parameters in first-appearance order. A
+  later entry's `x0` therefore belongs somewhere other than slot 0 — and if two
+  entries name the same parameters in a different order, at a *lower* slot than
+  the one below it. `subroutine s(a,b)` with `entry t(b,a)` is the identity
+  reversed.
+- **THE VAX NEEDS A STAGING AREA AND THIS TARGET DOES NOT.** `vax.c` copies from
+  the caller's frame through `ap` into an `argvec` and then repoints `ap` at it,
+  which it must, because its arguments are never in registers — and which
+  incidentally makes source and destination disjoint, so the swap cannot clobber.
+  Here the incoming values are still **in x0-x7** when the prologue runs, and a
+  register is not one of the destinations. So `prsave()` takes the entry and
+  spills straight to the right slot. Measured, the emitted stubs:
+
+  ```
+  _s_:  str x0, [x9, #0]    str x1, [x9, #8]     ; s(a,b)
+  _t_:  str x0, [x9, #8]    str x1, [x9, #0]     ; t(b,a) -- reversed
+  _u_:  str x0, [x9, #16]   str x1, [x9, #24]    str x2, [x9, #32]
+  ```
+
+  Ask whether a second machine's extra mechanism is solving a problem this
+  machine still has — the same question `prsave()`'s two-register frame answered
+  at stage 6.
+
+**AND THE SECOND MECHANISM WAS A LINE THIS FILE SIMPLY DID NOT HAVE.** Entries
+may differ in type, so `proc.c:383-385` gives each *type* an epilogue label, every
+`RETURN` branches to one common exit, and that exit jumps **indirectly** through
+an auto naming the right epilogue. `vax.c:466` stores it —
+`puteq(cpexpr(typeaddr), mkaddcon(ep->typelabel))` — and `arm64.c` had no such
+line. With one entry the exit is not indirect at all and `typeaddr` is null, so
+nothing had ever reached it: the refusal is what kept the path from running.
+Measured before the fix, `integer function f(n) ... entry g(m,k)` compiled clean,
+printed **nothing**, and exited 0.
+
+**AND THAT INDIRECT EXIT IS THE ASSIGNED GOTO, WHICH GAVE THE STAGE-7b WORK A
+SECOND PRODUCER ONE REFUSAL LATER.** `/lib/f1`'s indirect branch added the base
+label unconditionally, which is right for Fortran's `ASSIGN` — four bytes,
+holding a distance — and wrong for this, which is `OREG reg 29 offset 8 type
+int *`, eight bytes holding the whole address. The discriminator is the same one
+`doassign()` already used at the other end, `isptr`, and it was on one side and
+not the other because when it was written there was only one producer. The two
+mutations are complements and fire **disjoint** sets: always-add breaks the
+typed-entry case alone, never-add breaks the two assigned-GOTO cases alone.
+
+**AND THREE OF THE TEST PROGRAMS WERE MINE AGAIN, ALL THREE IMPLICIT TYPING.**
+`entry g(m,k)` inside an INTEGER function is implicitly **REAL** — `g` is not in
+`I`–`N` — so a main program declaring `integer g` reads a float as an integer and
+prints 69845008. `entry cg(s)` in a CHARACTER function needs its own CHARACTER
+declaration or f77 says *noncharacter entry of character function*, which is its
+own diagnostic and correct. And a predicted output of `4.500000000e+00` was a
+guess: list-directed output prints 4.5 as `4.50000000`. Correct the instrument
+before the code — the standing rate is three per corpus.
