@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2704 tests across 17 suites** guard it.
+assembly. **2705 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5671,6 +5671,35 @@ holding its ground, and the only reason it was caught is that the harness
 prints whether the build succeeded instead of assuming it. Widening the buffer
 instead compiles cleanly, fires the case, and moves the binary's checksum to
 prove the change actually reached it.
+
+### Aim the guard at the state, not at the cause
+
+The vendored archive of original source is the thing this project's central
+claim rests on, and for a long stretch a few lines in the ignore file were
+quietly keeping part of it out of the repository. The rules were there for
+build outputs — object files, archives, and so on — and they matched by
+extension anywhere, including inside the archive, where one library stores its
+C source *inside* an archive file. Ten bundles of original source, four test
+suites written by the programs' own authors, and every shipped library were
+present on the machine and absent from the repository. Everything passed,
+because everything was present locally; only a fresh checkout could have
+noticed.
+
+That was fixed a while ago, and the import tool now asks the version control
+system whether each file it copies would be ignored. What had not been done is
+the part that survives: the import check fires when something new arrives, and
+cannot see a rule added later that re-ignores files imported long before. So
+there is a standing check now, and getting it right took one wrong attempt.
+
+The obvious formulation asks which files are both untracked and matched by an
+ignore rule — the exact historical shape. It does not work. Putting the old
+rule back does not make it fail, because the files are already committed and a
+rule does not remove anything from the repository. Re-adding the rule harms
+nothing today; it harms the *next* import, which is the other check's job. The
+question worth asking is simply whether everything present in the archive is in
+the repository — the state a fresh clone would find. Aiming at the state
+catches the historical cause as a special case, and aiming at the cause misses
+the state entirely.
 
 ---
 

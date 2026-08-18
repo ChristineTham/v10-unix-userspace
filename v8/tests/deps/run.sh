@@ -1601,5 +1601,64 @@ else
 	echo "  if one of these is real, add it to \$allowed in this case."
 fi
 
+# --- nothing under third_party/ is ignored by git ----------------------------
+# THE FAILURE THIS CATCHES CAN ONLY HAPPEN ON CI, which is why it needs to run
+# everywhere.  .gitignore used to carry `*.o', `*.a', `*.i' and `*.out' for
+# build outputs, and those match by extension ANYWHERE -- including inside the
+# pristine vendored archive the whole fidelity claim rests on.  What they were
+# deleting: ten `.c.a' SOURCE bundles (usr/src/libplot stores each library's C
+# files inside an ar archive, so those are the only copy), four acceptance
+# suites written by the programs' own authors and already imported (eqn 37
+# cases, tbl 54, pic 36, hoc 10), and the shipped libraries several recorded
+# measurements cite -- "V8's libm.a is 216 bytes" is not reproducible from a
+# clone without it.  `git log --all -- '*.c.a'' was EMPTY: never tracked once.
+#
+# It stayed green here for the life of the project because the files are
+# PRESENT locally -- the build, all seventeen suites and a 7579-invocation
+# crash probe all passed against source that did not exist in the repository.
+# A runner is the only machine with no history, the same reason tests/jail's
+# /etc/utmp case could only fail there.
+#
+# tools/import.sh runs `git check-ignore --no-index' on each destination now,
+# which catches the NEXT import at the point of the mistake.  This is the
+# standing property, which that cannot be: a rule added to .gitignore later
+# re-ignores files imported long before, and nothing would speak.
+#
+# A MISSING INPUT IS A FAILURE, NOT A SKIP -- tests/cpp's `if [ -d ... ]'
+# reporting 12 passed is the precedent -- so no git, no third_party, or an
+# empty third_party all fail rather than quietly asserting nothing.
+if ! command -v git >/dev/null 2>&1; then
+	fail=$((fail+1)); echo "FAIL third_party is fully tracked: no git"
+elif [ ! -d "$REPO/third_party" ]; then
+	fail=$((fail+1)); echo "FAIL third_party is fully tracked: no third_party"
+else
+	tpn=$(git -C "$REPO" ls-files third_party | wc -l | tr -d ' ')
+	# EVERY untracked file, ignored or not.  `--others --ignored
+	# --exclude-standard' alone answers a NARROWER question -- untracked
+	# AND matched by a rule -- and measured, putting `*.a' back into
+	# .gitignore does not fire it, because those files are already tracked
+	# and a rule does not untrack anything.  Re-adding the rule damages
+	# nothing TODAY; what it damages is the next import, and import.sh
+	# catches that at the point of the mistake.  The standing property is
+	# the one a fresh clone would fail: is everything present here IN the
+	# repository.  Bare `--others' is that question.
+	tpi=$(git -C "$REPO" ls-files --others third_party 2>/dev/null | head -200)
+	if [ "${tpn:-0}" -lt 1000 ]; then
+		fail=$((fail+1))
+		echo "FAIL third_party is fully tracked: only $tpn files tracked,"
+		echo "  which is too few for the vendored archive -- the check"
+		echo "  would be vacuous."
+	elif [ -n "$tpi" ]; then
+		fail=$((fail+1))
+		echo "FAIL third_party is fully tracked: these are untracked"
+		printf '%s\n' "$tpi" | head -10 | sed 's/^/  /'
+		echo "  a fresh clone would not have them.  If .gitignore has"
+		echo "  grown an extension rule, anchor it under build/ or"
+		echo "  rootfs/; if they were simply never added, add them."
+	else
+		pass=$((pass+1))
+	fi
+fi
+
 echo "deps: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -3701,19 +3701,29 @@ any plot library at all, which is part of why that tree went unexamined.
   against source that did not exist in the repository. CI is the only machine
   with no history — same reason the `/etc/utmp` case in `tests/jail` could only
   fail there. **Ask of any new file: would a clone have it?**
-- **190 FILES AND 2.6 MB ARE STILL IGNORED IN `third_party/`** (66 `.a` — every
-  shipped library; 79 `.out` — the troff font tables; 26 `.i`; 19 `.o`). None
-  is a build input, which is why this stayed green for the life of the project.
-  What it costs is that **several measurements recorded here cite them and are
-  not reproducible from a clone** — "the shipped `libm.a` is 216 bytes, one
-  member whose whole symbol table is a row of underscores" among them. Task #90.
-- **THE RULES MEAN "under build/ and rootfs/" AND SHOULD SAY SO.** Anchoring
-  them is the real fix; matching by extension anywhere is what let a `.c.a`
-  source look like a `.a` output.
-- **AND `tools/import.sh` NEVER ASKS GIT**, which is why nothing spoke at import
-  time. It copies the file and records the hash; a `git check-ignore` on the
-  destination would have caught this at the point of the mistake rather than
-  five commits later on a runner.
+- **ALL THREE OF THE BULLETS THAT STOOD HERE ARE DONE, AND SAYING SO IS THE
+  POINT.** They read "190 files and 2.6 MB are still ignored in `third_party/`",
+  "the rules mean under build/ and rootfs/ and should say so", and
+  "`tools/import.sh` never asks git". Re-measured: the extension rules are
+  gone entirely, so the whole `.gitignore` is `build/` and `rootfs/` plus
+  root-anchored scratch; `import.sh:115` runs
+  `git check-ignore -q --no-index` on every destination; and
+  `git ls-files --others third_party` returns **0** against **8317** tracked
+  files. The `libm.a` measurement is reproducible from a clone.
+- **BUT NOTHING ASSERTED IT, WHICH IS THE HALF THAT WAS ACTUALLY MISSING.**
+  `import.sh`'s check fires at the point of a NEW import; it cannot see a rule
+  added to `.gitignore` later that re-ignores files imported long before, and
+  it is not run by CI at all. `tests/deps` asserts the standing property now:
+  every file present under `third_party/` is IN the repository.
+- **AND THE OBVIOUS FORM OF THAT CHECK IS THE WRONG QUESTION, MEASURED.**
+  `git ls-files --others --ignored --exclude-standard` asks *untracked AND
+  matched by a rule*, and putting `*.a` back into `.gitignore` **does not fire
+  it** -- those files are already tracked, and a rule untracks nothing. Adding
+  the rule back damages nothing today; it damages the next import, which is
+  `import.sh`'s job. What a fresh clone would fail is *is everything present
+  here in the repository*, and bare `--others` is that question. **A guard
+  aimed at the historical CAUSE can miss the property; aim it at the state a
+  clone would be in.**
 
 ### Where a command is INSTALLED is upstream's decision, and upstream wrote it down
 
