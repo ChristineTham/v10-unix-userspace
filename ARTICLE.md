@@ -5620,6 +5620,33 @@ carry their own private copy of the Berkeley formatter, and both of those
 *do* have the guard. It simply never reached the C library that everything
 else links.
 
+### Writing down what to capture is not the same as capturing it
+
+Three failures in this project's history happened exactly once and never came
+back. Each is recorded rather than fixed, on the principle that guessing at a
+cause you cannot reproduce and then changing code to match is how a real defect
+gets buried under a plausible story. Two of the three carried a careful note
+saying what evidence a future occurrence would need — and neither note was
+wired to anything, so the evidence would have been thrown away a second time.
+
+The one that had been wired up proved the point within hours. Its note said the
+same thing, someone implemented it that morning, and the very next occurrence
+named the cause outright: the checker was being killed by its own timeout, and
+the shell's message saying so had been going into a stream the test captured
+and discarded. Three sightings had produced nothing because the evidence was
+collected and then dropped on the floor.
+
+So the other one is wired up too now: when the dependency check fails, it prints
+the two timestamps to the second, the wall clock, and the build tool's own
+reasoning about why it thought the file was current. That is enough to settle
+the leading theory on sight — matching timestamps make it live, a clearly newer
+input kills it — and a passing run pays nothing for it.
+
+The third turned out to have been fixed already, and the note tracking it still
+described the old state. A record of a defect goes stale in exactly the way a
+comment does, and the only thing that catches it is re-reading the code it
+points at.
+
 ---
 
 *Source: [github.com/ChristineTham/v10-unix-userspace](https://github.com/ChristineTham/v10-unix-userspace).

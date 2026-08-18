@@ -127,6 +127,27 @@ dep() {
 		fail=$((fail+1))
 		echo "FAIL $desc"
 		echo "  touching $input did not make $target stale"
+		# THE CAPTURE THE NOTE ABOVE ASKS FOR, TAKEN AT THE MOMENT RATHER
+		# THAN PRESCRIBED FOR A FUTURE THAT NEVER ARRIVES.  That note ends
+		# "if it recurs, capture stat on the object and both headers AT
+		# THAT MOMENT, plus make -q -d ... without those it is not
+		# decidable after the fact" -- and then nothing collected it, so
+		# the one sighting is still undiagnosed.  tests/streams' icheck
+		# intermittent went three sightings the same way and was named on
+		# the first run after its evidence was captured instead of
+		# described.  Failure path only, so a green run pays nothing.
+		#
+		# The mtimes to the second are what would confirm or kill the
+		# whole-second story the note argues against: equal stamps make
+		# it live, an input newer than the target kills it outright.
+		# `make -q -d' is bounded and filtered because it is thousands of
+		# lines, and an unbounded capture around a verbose program is a
+		# hazard this tree has already paid for.
+		echo "  mtimes: $(stat -f '%Sm %N' -t '%H:%M:%S' "$input" "$target" 2>&1 | tr '\n' ' ')"
+		echo "  now:    $(date '+%H:%M:%S')"
+		$MAKE -q -d "$ROOT/$3" 2>&1 |
+			grep -E "$(basename "$input")|$(basename "$target")" |
+			head -8 | sed 's/^/  d: /'
 	fi
 	cp -p "$TMP/save" "$input"
 }

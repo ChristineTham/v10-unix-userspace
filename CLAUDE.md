@@ -3139,6 +3139,29 @@ would have reported a derived count of zero. `tests/cpp`'s anchor-to-`dirname`
 lesson, arriving in a case rather than in a suite.
 
 
+**AND THE OTHER TWO UNREPRODUCED INTERMITTENTS ARE INSTRUMENTED NOW, WHICH IS
+WHAT THE icheck ONE JUST DEMONSTRATED THE VALUE OF.** Three tasks recorded a
+one-off failure that never came back; in every case the run that saw it threw
+the evidence away, and in every case a note prescribed what to capture NEXT
+time and nothing implemented it. Two things generalise:
+
+- **A PRESCRIPTION IS NOT AN INSTRUMENT.** `tests/deps`' `dep()` carried a
+  paragraph ending *"if it recurs, capture `stat -f ...` on the object and both
+  headers AT THAT MOMENT, plus `make -q -d` ... without those it is not
+  decidable after the fact"* -- and collected none of it, so the sighting is
+  still undiagnosed a week later. It is in the FAILURE ARM now: both mtimes to
+  the second, the wall clock, and a bounded filtered `make -q -d`. A green run
+  pays nothing, and the capture decides the whole-second story on sight --
+  equal stamps make it live, an input visibly newer than the target kills it.
+  Validated by producing the condition rather than by reading the code.
+- **AND ONE OF THE THREE WAS ALREADY FIXED AND THE TASK DID NOT SAY SO.**
+  `tests/wavec`'s refer case had been changed from `wc -c < ref.err` to
+  `cat ref.err` -- content rather than count -- and the task still described
+  the old state, so it read as work outstanding. **A task that records a defect
+  goes stale exactly the way a comment does**, and re-reading the code it names
+  is the only thing that catches it.
+
+
 **AND `%s` OF A NULL POINTER IS THE EMPTY STRING NOW, WHICH IS THE ADDRESS-0
 RULE APPLIED TO OUR OWN LIBC.** `doprnt.c` printed `(null)`, and its own header
 promises *"the same observable output"* as `doprnt.S`. Measured: **doprnt.S has
