@@ -19,6 +19,19 @@
 ROOT    := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 REPO    := $(abspath $(ROOT)..)/
 BUILD   := $(ROOT)build/stage0
+
+# THE SEVENTEEN, NAMED ONCE.  `test' used to spell its prerequisites inline and
+# nothing else knew how many there were, so the number in ARTICLE.md's "N tests
+# across 17 suites" was transcribed twice over -- both the cases and the suites.
+# Both are derived now; tests/tcount.sh compares them and $(words ...) is what
+# it is told.  A suite added here is covered the day it is added.
+TESTSUITES := deps jail selfhost cpp v8ccom v8cc v8sys freestanding libv8c \
+              wavea waveb sh wavec kmemu streams mkfs hooks
+RUNSUITE    = $(ROOT)tests/runsuite.sh
+# Exported so runsuite.sh records each suite's count without every recipe
+# having to spell the path.  Running ONE suite writes its file and compares
+# nothing, which is what `make -C v8 test-wavea' should do.
+export V8_TCDIR := $(BUILD)/tc
 SRC     := $(ROOT)src
 # Defined up here, not beside the rootfs target: make expands variables in a
 # TARGET name as soon as it reads the rule, so any rule building something
@@ -299,7 +312,8 @@ stage0: cpp v8ccom v8cc libv8sys libv8kern v8fsd crt0 rootfs libv8c rootfs-libs 
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
 # driver for free because the library install rules said `| rootfs`.  Naming
 # $(V8CC_DEPS) is what keeps that true now the order-only prerequisite is gone.
-test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-mkfs test-hooks
+test: $(addprefix test-,$(TESTSUITES))
+	@$(ROOT)tests/tcount.sh $(V8_TCDIR) $(ROOT)../ARTICLE.md $(words $(TESTSUITES))
 	@mkdir -p $(BUILD) && : > $(BUILD)/.tests-passed
 # THE STAMP IS THE GREEN RUN, and it costs nothing to be sure of: make runs a
 # target's recipe only when every prerequisite has succeeded, so this line is
@@ -315,22 +329,22 @@ test: test-deps test-jail test-selfhost test-cpp test-v8ccom test-v8cc test-v8sy
 # prerequisites; $(MAKE) is passed through so the nested invocation shares this
 # one's jobserver.
 test-deps:
-	@MAKE="$(MAKE)" $(ROOT)tests/deps/run.sh
+	@MAKE="$(MAKE)" $(RUNSUITE) deps $(ROOT)tests/deps/run.sh
 # The chroot: that a build driven by V8 make runs entirely on V8 binaries.
 # Depends on the whole jail, since that is what it tests.
 test-jail: v8make v8bin $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex
-	@$(ROOT)tests/jail/run.sh
+	@$(RUNSUITE) jail $(ROOT)tests/jail/run.sh
 # The self-host boundary: every translation unit of cpp and ccom compiles under
 # v8cc and links freestanding.  Needs the driver, its passes, the headers, the
 # libraries it links, and V8's yacc for cpp's grammar.
 test-selfhost: $(V8CC_DEPS) $(ROOTFS_LIBS) $(YACC)
-	@$(ROOT)tests/selfhost/run.sh
+	@$(RUNSUITE) selfhost $(ROOT)tests/selfhost/run.sh
 test-cpp: $(BUILD)/cpp/cpp
-	@$(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
+	@$(RUNSUITE) cpp $(ROOT)tests/cpp/run.sh $(BUILD)/cpp/cpp
 test-v8ccom: $(A64BUILD)/v8ccom $(BUILD)/cpp/cpp
-	@$(ROOT)tests/v8ccom/run.sh $(A64BUILD)/v8ccom
+	@$(RUNSUITE) v8ccom $(ROOT)tests/v8ccom/run.sh $(A64BUILD)/v8ccom
 test-v8cc: $(V8CC_DEPS) $(ROOTFS_LIBS)
-	@$(ROOT)tests/v8cc/run.sh
+	@$(RUNSUITE) v8cc $(ROOT)tests/v8cc/run.sh
 # V8ROOT IS SET HERE, AND IT HAD NEVER BEEN.  This rule does not pass
 # $(SHIMFLAGS), so the test binary carries no -DV8ROOT_DEFAULT, so v8root()
 # returned 0 and -- in CLAUDE.md's own words about the shim -- "when unset it
@@ -342,26 +356,26 @@ test-v8cc: $(V8CC_DEPS) $(ROOTFS_LIBS)
 # The environment variable rather than the flag, because that is how every
 # other suite says it and because v8root() checks it first anyway.
 test-v8sys: $(BUILD)/v8sys/test
-	@V8ROOT=$(ROOTFS) $(BUILD)/v8sys/test
+	@V8ROOT=$(ROOTFS) $(RUNSUITE) v8sys $(BUILD)/v8sys/test
 test-freestanding: $(V8CC_DEPS) $(ROOTFS_LIBS)
-	@$(ROOT)tests/freestanding/run.sh
+	@$(RUNSUITE) freestanding $(ROOT)tests/freestanding/run.sh
 test-libv8c: $(V8CC_DEPS) $(ROOTFS_LIBS)
-	@$(ROOT)tests/libv8c/run.sh
+	@$(RUNSUITE) libv8c $(ROOT)tests/libv8c/run.sh
 test-wavea: $(V8CC_DEPS) $(ROOTFS_LIBS)
-	@$(ROOT)tests/wavea/run.sh
+	@$(RUNSUITE) wavea $(ROOT)tests/wavea/run.sh
 test-waveb: $(V8CC_DEPS) $(ROOTFS_LIBS)
-	@$(ROOT)tests/waveb/run.sh
+	@$(RUNSUITE) waveb $(ROOT)tests/waveb/run.sh
 test-sh: $(BUILD)/sh/sh
-	@$(ROOT)tests/sh/run.sh
+	@$(RUNSUITE) sh $(ROOT)tests/sh/run.sh
 # nroff opens /usr/lib/term/tab.37 and troff the dev202 font tables, both
 # resolved inside $V8ROOT.  They are inputs to the suite as much as the
 # binaries are, so the suite depends on them.
 test-wavec: nroff troff tbl eqn pic spell $(ROOTFS_TERM) $(ROOTFS_FONT)
-	@$(ROOT)tests/wavec/run.sh
+	@$(RUNSUITE) wavec $(ROOT)tests/wavec/run.sh
 # Every binary in the rootfs is swept for libc imports, so the suite depends on
 # all of them being built and installed, not just on who.
 test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
-	@$(ROOT)tests/kmemu/run.sh
+	@$(RUNSUITE) kmemu $(ROOT)tests/kmemu/run.sh
 # V8's stream machinery.  libv8c is a prerequisite because one case asserts that
 # the compiler-emitted memcpy in allocq() resolves to V8's own rather than
 # Apple's, and that is a fact about libv8c's symbol table.
@@ -378,7 +392,7 @@ test-kmemu: v8bin $(V8CC_DEPS) $(ROOTFS_LIBS)
 # $(BUILD) is defined at the top.
 test-streams: libv8kern libv8c imgbin v8fsd v8fsd-ubsan $(BUILD)/kern/imgdev.o \
 	     $(BUILD)/v8sys/p9clprobe
-	@$(ROOT)tests/streams/run.sh
+	@$(RUNSUITE) streams $(ROOT)tests/streams/run.sh
 # The on-disk formats, and the image mkfs writes from them.  It asserts widths
 # from the V8 side -- a _Static_assert in the shim would see only clang, and
 # these structures are read by v8cc, by clang, and in principle by a VAX.
@@ -389,11 +403,11 @@ test-streams: libv8kern libv8c imgbin v8fsd v8fsd-ubsan $(BUILD)/kern/imgdev.o \
 # was not there.  test-jail and test-kmemu already name v8make and v8bin the
 # same way.
 test-mkfs: imgbin $(V8CC_DEPS) $(ROOTFS_LIBS)
-	@$(ROOT)tests/mkfs/run.sh
+	@$(RUNSUITE) mkfs $(ROOT)tests/mkfs/run.sh
 # The .claude hooks.  No build prerequisites -- they are shell and python, and
 # the point is that they are code and rot like code.
 test-hooks:
-	@$(ROOT)tests/hooks/run.sh
+	@$(RUNSUITE) hooks $(ROOT)tests/hooks/run.sh
 
 # $(SHIM_ASM) is on this line for the signal-delivery cases: without the
 # trampoline linked in, v8s_signal installs a handler the kernel cannot enter,

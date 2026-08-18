@@ -45,7 +45,9 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 make -j8              # full build (~4s clean) -- dispatches to v8/
 make test             # all 17 suites (2701 cases, 2700 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
-                      # distinctness case).  NOT `make -j8 test': see below
+                      # distinctness case).  Ends by checking that total against
+                      # ARTICLE.md, so the number there cannot go stale again.
+                      # NOT `make -j8 test': see below
 make -C v8 test-wavec # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
                       #            libv8c wavea waveb sh wavec kmemu streams mkfs hooks
                       # -C v8 is REQUIRED: the root Makefile forwards only all,
@@ -3135,6 +3137,55 @@ relative path to nowhere. The suite already computes an absolute `ROOT` at line
 which is luck rather than design -- the other of the two has a vacuity guard and
 would have reported a derived count of zero. `tests/cpp`'s anchor-to-`dirname`
 lesson, arriving in a case rather than in a suite.
+
+
+**AND ARTICLE.md's TEST COUNT HAS A GUARD NOW, WHICH IS TASK #7 -- AND BOTH
+OBJECTIONS THAT HAD BLOCKED IT WERE TRUE AND NEITHER WAS FATAL.** It had gone
+stale FIVE times: 1767, 2222 against 2483, again within the hour of that fix,
+and 2691 against 2701 this session. `make test` ends with
+`tests: 2701 cases across 17 suites, and ARTICLE.md agrees`.
+`tests/runsuite.sh` and `tests/tcount.sh`. Five things generalise, and the
+fourth is the one worth carrying furthest:
+
+- **"CIRCULAR FROM INSIDE A SUITE" IS TRUE OF A SUITE AND FALSE OF `test:`.**
+  The recorded objection -- the total cannot be had without running every
+  suite -- is exact, and it is an argument against putting the check in one of
+  seventeen. make reaches `test:`'s own recipe only when every prerequisite has
+  succeeded, which is precisely the moment the total exists. **Ask what the
+  objection is an objection TO**, because a reason that rules out one location
+  may say nothing about another.
+- **THE STATUS COMES OUT ON A DESCRIPTOR, NOT THROUGH THE PIPE.** The other
+  recorded objection was that the obvious `suite | tee out` puts the pipeline's
+  status on `tee`, which always succeeds -- so a failing suite would stop
+  failing the build, and a guard that costs the harness its exit status is
+  worse than the stale number it fixes. `{ "$@" 2>&1 3>&-; echo $? >&3; } |
+  tee "$out"` keeps both, streams live, and needs neither `pipefail` nor bash.
+  Third instance of the pipeline-status hazard in this tree, after the
+  `make | grep; echo $?` note and the icheck capture whose status was head's.
+- **AND IT IS CHECKED TWICE, BECAUSE THEY ARE DIFFERENT CLAIMS.** A suite that
+  dies halfway exits non-zero AND prints no summary; one that runs to the end
+  and fails exits non-zero AND says `N failed`. Both are asserted, so a suite
+  that printed a clean summary while exiting non-zero, or exited 0 having
+  printed nothing, fails too. Mutation-verified on all four paths plus the one
+  that matters most -- a real suite made to fail still fails the build.
+- **AND A HARNESS THAT OPENS A SPARE DESCRIPTOR HANDS THE JAIL A TERMINAL,
+  WHICH NO SUITE COULD PREVIOUSLY HAVE SEEN.** V8's `/dev/tty` is not a device:
+  it is a hard link to `/dev/fd/3`, and opening anything under `/dev/fd` is a
+  `dup`. So `exec 3>"$st"` in the wrapper gave every suite a terminal it did
+  not have, and three wavea cases asserting there is NO terminal went red the
+  first time it ran -- `stty says it cannot open the terminal`, `p without
+  /dev/tty declines`, and the crash-probe floor, whose members include cpio's
+  unchecked `fopen("/dev/tty")`. **The instrument removing the condition it was
+  pointed at**, third instance after lldb hiding cpio's fault by leaving an fd 3
+  open and the deadline wrapper feeding `ex` its stdin from `/dev/null`. In this
+  world a spare file descriptor is not spare; the fix is `3>&-` on the child
+  alone, verified by a probe that reports whether `/dev/fd/3` exists.
+- **AND THE SENTENCE'S OTHER NUMBER IS DERIVED TOO.** "N tests across 17
+  suites" carries two claims four words apart, which is exactly how the command
+  count guard captured one of a pair and walked past the other. `TESTSUITES` is
+  named once in the Makefile, `$(words $(TESTSUITES))` is what tcount is told,
+  and both halves are compared -- so a suite added or removed moves the article
+  or fails the build.
 
 
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable

@@ -5514,6 +5514,42 @@ have found it either, because the sweep looks one directory deep and this is a
 bare file. That is the fourth time the same sweep has been too narrow, and the
 second time in its file set.
 
+### The number at the top of this page now has a test behind it
+
+Two sentences up there state counts: how many commands the port installs, and
+how many tests guard it. The first has been checked against the built tree for
+a long time and has never drifted. The second was a number a person updated
+when asked, and it went stale five times — 1767, then 2222 against a real 2483,
+then again within the hour of being fixed, and most recently 2691 against 2701.
+The asymmetry is the whole argument for mechanising it: a number with a test
+beside it stays current and a number in prose does not.
+
+The objection recorded against doing this was that the total cannot be had
+without running every suite, which is circular from inside one of seventeen.
+That is true of a suite and false of the target that depends on all of them:
+`make test` reaches its own recipe only when every suite has succeeded, so it
+can compare without circularity. The second objection was sharper — the obvious
+implementation pipes each suite through `tee` to capture its count, and a
+pipeline's exit status belongs to its *last* element, so a failing suite would
+stop failing the build. A guard that costs the harness its exit status is worse
+than the stale number it fixes.
+
+Both are avoidable. A small wrapper runs each suite, carries the exit status out
+of the pipeline on a spare file descriptor rather than through it, and records
+the count the suite already prints; the seventeen names live in one variable, so
+the "across 17 suites" half of the sentence is derived too rather than
+transcribed. A failing suite still fails, a suite that dies without printing a
+summary fails, and a suite that somehow reports success while exiting non-zero
+fails.
+
+And the wrapper immediately found something about this port that no suite could
+have. V8's `/dev/tty` is not a device at all — it is a hard link to `/dev/fd/3`,
+and opening anything under `/dev/fd` is a `dup`. So a harness that opens file
+descriptor 3 to carry a status hands every program it runs a terminal it did not
+have. Three cases that assert *there is no terminal here* went red the first
+time the wrapper ran. The fix is one token, closing the descriptor for the child
+alone; the lesson is that in this world a spare file descriptor is not spare.
+
 ---
 
 *Source: [github.com/ChristineTham/v10-unix-userspace](https://github.com/ChristineTham/v10-unix-userspace).
