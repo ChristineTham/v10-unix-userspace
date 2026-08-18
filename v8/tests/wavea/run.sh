@@ -3561,12 +3561,127 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
    40 continue
       end')"
 
+	# A SECOND CORPUS OF TEN FOUND FOUR MORE, so the first twenty were not
+	# exhaustive and this is where the sweep stopped rather than where the
+	# defects did.  Three are LP64 width arriving in a LAYOUT rather than in
+	# a value, and the fourth is a feature Fortran has had since 1966.
+
+	# I -- AN ARGUMENT OCCUPIES A SLOT, NOT ITS OWN WIDTH.  proc.c's
+	# nextarg() advanced by typesize[type], which is right when every
+	# argument type is the same size, and on a VAX they all were.  Here a
+	# pointer is 8 and a hidden character length is 4, so the two part
+	# company the first time a length PRECEDES a pointer -- which is what a
+	# CHARACTER FUNCTION is: result pointer, result length, then the
+	# argument.  f77 addressed the third at ARGOFFSET+12 where prsave()
+	# spills it at +16.
+	#
+	# THE ASSEMBLER CAUGHT IT, WHICH IS THE GOOD DIRECTION: an offset that
+	# is not a multiple of 8 has no scaled encoding, the unscaled form is
+	# limited to [-256,255], and clang refused the file.  A packed offset
+	# that happened to land 8-aligned would have read the wrong argument in
+	# silence.
+	check 'f77: a CHARACTER FUNCTION, whose hidden length precedes a pointer' ' abc   |' \
+	    "$(f77run cu '      program cu
+      character*6 up
+      write(6,*) up("abc")
+      end
+      character*6 function up(s)
+      character*(*) s
+      up = s
+      return
+      end')"
+	# the control: ONE character argument, where packed and slotted agree,
+	# and which therefore worked throughout
+	check 'f77: and one CHARACTER argument, where the two layouts agree' ' abcde|' \
+	    "$(f77run cv '      program cv
+      character*5 s
+      s = "abcde"
+      call show(s)
+      end
+      subroutine show(t)
+      character*(*) t
+      write(6,*) t
+      return
+      end')"
+
+	# J -- A DATA BLOCK'S ALIGNMENT CAME FROM ITS FIRST RECORD'S TYPE.
+	# dodata() decides on the first record it sees, and on a VAX that was
+	# always enough because ALIADDR, ALILONG and ALIINT were all 4.  Here a
+	# block whose first record is a .long gets 4, so a 12-byte DATA array
+	# put the next block at 12 and the one after at 36 -- and that one's
+	# format pointer, correctly at offset 16 WITHIN its block, landed at
+	# address 52.  `ld: pointer not aligned in v.1+0x34', naming the
+	# nearest preceding symbol rather than the block at fault.
+	check 'f77: an odd-sized DATA block before two FORMATs' '    1   2   3|' \
+	    "$(f77run cw '      program cw
+      integer a(3)
+      data a /1,2,3/
+      write(6,10) a
+   10 format(1x,3i4)
+      write(6,20) 1.5
+   20 format(1x,e12.4)
+      end' | sed 's/|.*/|/')"
+
+	# K -- A PROCEDURE PASSED AS AN ARGUMENT IS `blr'.  The callee arrives
+	# as an OREG -- a spilled parameter holding an address -- rather than
+	# as the ICON-with-a-name a direct call gives, and f1 refused it as "a
+	# call through a value rather than a name".  That was an accurate
+	# description of EXTERNAL, which Fortran has had since 1966.
+	check 'f77: a procedure passed as an argument' '  9.00000000|' \
+	    "$(f77run cy '      program cy
+      external sq
+      call apply(sq, 3.0)
+      end
+      subroutine apply(f, x)
+      external f
+      call f(x)
+      return
+      end
+      subroutine sq(x)
+      write(6,*) x*x
+      return
+      end')"
+
+	# L -- OPEN, CLOSE AND INQUIRE, whose deferral named the wrong
+	# instrument.  io.c said the first program to OPEN a file "will refuse
+	# to link"; it does not.  A READ/WRITE block is INITIALISED DATA, so
+	# its pointers are relocations and ld checks them -- but an OPEN block
+	# is filled in by ioset() at RUN TIME, so there is no relocation and
+	# nothing to check.  Measured: it linked cleanly and SIGSEGV'd.
+	check 'f77: OPEN, WRITE, CLOSE and READ round-trip a file' ' 1234|' \
+	    "$(f77run cz '      program cz
+      open(unit=9, file="wq.tmp", status="unknown")
+      write(9,*) 1234
+      close(9)
+      open(unit=9, file="wq.tmp", status="old")
+      read(9,*) n
+      close(9)
+      write(6,*) n
+      end')"
+	check 'f77: INQUIRE finds a file that exists' ' t|' \
+	    "$(f77run cA '      program cA
+      logical ex
+      inquire(file="/etc/passwd", exist=ex)
+      write(6,*) ex
+      end')"
+	# AND THE RELATION FOR THE RUN-TIME-FILLED BLOCK, which the init-record
+	# sweep above structurally cannot see: every POINTER field f77 stores
+	# into an I/O control block must sit on an eight-byte boundary, because
+	# that is where the C struct in src/libI77/fio.h reads it.  Derived
+	# from the intermediate, so OPEN, CLOSE and INQUIRE are all covered by
+	# one case and none of the offsets is transcribed here.
+	check 'f77: every pointer f77 stores in an OPEN block is 8-aligned' '' \
+	    "$(cd f77p1w && printf '      open(unit=9, file="z.tmp", status="unknown")\n      close(9)\n      end\n' > op.f
+	       "$V8ROOT/usr/lib/f77pass1" op.f op.s op.d op.x >/dev/null 2>&1
+	       "$V8ROOT/lib/f1" -d op.x 2>/dev/null |
+	       awk '/^OREG/ && /\*/ { for(i=1;i<=NF;i++) if($i=="offset") o=$(i+1)+0; if (o%8) print "offset", o }')"
+
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
 	# tests/kmemu asserts that w(1) says `No mem'.
 
 else
-	fail=$((fail+50)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+57)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism

@@ -128,11 +128,20 @@ LOCAL struct Ioclist
    had them, and IOALIGN becomes the identity and all six offsets collapse to
    exactly the expressions upstream wrote -- 4, 8, 12, 16, 20, 24.
 
-   THE OPEN, CLOSE AND INQUIRE LISTS BELOW STILL HAVE THE DEFECT and are
-   marked rather than fixed, on the same rule and with the same expiry
-   condition: the first program to OPEN a file will refuse to link, and its
-   struct (olist/cllist/inlist in src/libI77/fio.h) must be read alongside the
-   correction, exactly as icilist was here. */
+   THE OPEN, CLOSE AND INQUIRE LISTS ARE CORRECTED TOO, and the reason they
+   were deferred turned out to be wrong in a way worth recording.  The note
+   here said the first program to OPEN a file "will refuse to link".  It does
+   not: a READ/WRITE block is INITIALISED DATA, so its pointers are
+   relocations and ld checks their alignment, but an OPEN block is filled in
+   by ioset() at RUN TIME, so there is no relocation and nothing to check.
+   Measured: `open(unit=9,file=...,status=...)' linked cleanly and SIGSEGV'd,
+   because f77 stored osta at 20 where the C struct reads it at 24.  **An
+   expiry condition that names the wrong instrument is not a tripwire.**
+
+   Every offset below is checkable two ways: against the struct in
+   src/libI77/fio.h, and by setting SZADDR equal to SZIOINT -- as a VAX had
+   them -- whereupon IOALIGN becomes the identity and each one collapses to
+   the expression upstream wrote. */
 #define IOALIGN(n)	(((n) + SZADDR - 1) & ~(SZADDR - 1))
 
 /* offsets for external READ and WRITE statements */
@@ -157,44 +166,53 @@ LOCAL struct Ioclist
 
 /* offsets for OPEN statements */
 
-#define XFNAME	SZFLAG + SZIOINT
-#define XFNAMELEN	SZFLAG + SZIOINT + SZADDR
-#define XSTATUS	SZFLAG + 2*SZIOINT + SZADDR
-#define XACCESS	SZFLAG + 2*SZIOINT + 2*SZADDR
-#define XFORMATTED	SZFLAG + 2*SZIOINT + 3*SZADDR
-#define XRECLEN	SZFLAG + 2*SZIOINT + 4*SZADDR
-#define XBLANK	SZFLAG + 3*SZIOINT + 4*SZADDR
+#define XFNAME	IOALIGN(SZFLAG + SZIOINT)
+#define XFNAMELEN	XFNAME + SZADDR
+#define XSTATUS	IOALIGN(XFNAMELEN + SZIOINT)
+#define XACCESS	XSTATUS + SZADDR
+#define XFORMATTED	XACCESS + SZADDR
+#define XRECLEN	XFORMATTED + SZADDR
+#define XBLANK	IOALIGN(XRECLEN + SZIOINT)
 
 /* offset for CLOSE statement */
 
-#define XCLSTATUS	SZFLAG + SZIOINT
+#define XCLSTATUS	IOALIGN(SZFLAG + SZIOINT)
 
 /* offsets for INQUIRE statement */
 
-#define XFILE	SZFLAG + SZIOINT
-#define XFILELEN	SZFLAG + SZIOINT + SZADDR
-#define XEXISTS	SZFLAG + 2*SZIOINT + SZADDR
-#define XOPEN	SZFLAG + 2*SZIOINT + 2*SZADDR
-#define XNUMBER	SZFLAG + 2*SZIOINT + 3*SZADDR
-#define XNAMED	SZFLAG + 2*SZIOINT + 4*SZADDR
-#define XNAME	SZFLAG + 2*SZIOINT + 5*SZADDR
-#define XNAMELEN	SZFLAG + 2*SZIOINT + 6*SZADDR
-#define XQACCESS	SZFLAG + 3*SZIOINT + 6*SZADDR
-#define XQACCLEN	SZFLAG + 3*SZIOINT + 7*SZADDR
-#define XSEQ	SZFLAG + 4*SZIOINT + 7*SZADDR
-#define XSEQLEN	SZFLAG + 4*SZIOINT + 8*SZADDR
-#define XDIRECT	SZFLAG + 5*SZIOINT + 8*SZADDR
-#define XDIRLEN	SZFLAG + 5*SZIOINT + 9*SZADDR
-#define XFORM	SZFLAG + 6*SZIOINT + 9*SZADDR
-#define XFORMLEN	SZFLAG + 6*SZIOINT + 10*SZADDR
-#define XFMTED	SZFLAG + 7*SZIOINT + 10*SZADDR
-#define XFMTEDLEN	SZFLAG + 7*SZIOINT + 11*SZADDR
-#define XUNFMT	SZFLAG + 8*SZIOINT + 11*SZADDR
-#define XUNFMTLEN	SZFLAG + 8*SZIOINT + 12*SZADDR
-#define XQRECL	SZFLAG + 9*SZIOINT + 12*SZADDR
-#define XNEXTREC	SZFLAG + 9*SZIOINT + 13*SZADDR
-#define XQBLANK	SZFLAG + 9*SZIOINT + 14*SZADDR
-#define XQBLANKLEN	SZFLAG + 9*SZIOINT + 15*SZADDR
+#define XFILE	IOALIGN(SZFLAG + SZIOINT)
+#define XFILELEN	XFILE + SZADDR
+#define XEXISTS	IOALIGN(XFILELEN + SZIOINT)
+#define XOPEN	XEXISTS + SZADDR
+#define XNUMBER	XOPEN + SZADDR
+#define XNAMED	XNUMBER + SZADDR
+#define XNAME	XNAMED + SZADDR
+#define XNAMELEN	XNAME + SZADDR
+#define XQACCESS	IOALIGN(XNAMELEN + SZIOINT)
+#define XQACCLEN	XQACCESS + SZADDR
+#define XSEQ	IOALIGN(XQACCLEN + SZIOINT)
+#define XSEQLEN	XSEQ + SZADDR
+#define XDIRECT	IOALIGN(XSEQLEN + SZIOINT)
+#define XDIRLEN	XDIRECT + SZADDR
+#define XFORM	IOALIGN(XDIRLEN + SZIOINT)
+#define XFORMLEN	XFORM + SZADDR
+#define XFMTED	IOALIGN(XFORMLEN + SZIOINT)
+#define XFMTEDLEN	XFMTED + SZADDR
+#define XUNFMT	IOALIGN(XFMTEDLEN + SZIOINT)
+#define XUNFMTLEN	XUNFMT + SZADDR
+#define XQRECL	IOALIGN(XUNFMTLEN + SZIOINT)
+#define XNEXTREC	XQRECL + SZADDR
+#define XQBLANK	XNEXTREC + SZADDR
+#define XQBLANKLEN	XQBLANK + SZADDR
+
+/* PORT: MAXIO IS THE BIGGEST CONTROL BLOCK, AND IT MOVED WITH THEM.  Upstream
+   states it at the top as SZFLAG + 10*SZIOINT + 15*SZADDR, which is exactly
+   inlist's end on a VAX -- 104 -- and 164 here against a struct that now
+   reaches 196.  io.c allocates the block as an auto of that many words, so a
+   short MAXIO is an INQUIRE writing past its own frame slot.  Restated where
+   the last offset is known rather than recomputed from a member count. */
+#undef MAXIO
+#define MAXIO	XQBLANKLEN + SZIOINT
 
 fmtstmt(lp)
 register struct Labelblock *lp;

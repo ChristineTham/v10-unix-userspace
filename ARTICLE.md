@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2656 tests across 17 suites** guard it.
+assembly. **2663 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5202,6 +5202,26 @@ honest reading of the record it was already given: pass 1 announces how many
 registers it took, that number is zero in every program measured, and four
 callee-saved registers had been sitting idle in every procedure the pass had
 ever compiled while it refused `a // b` for want of a sixth.
+
+
+And the twenty were not exhaustive — they were where I stopped looking. Ten
+more programs found four further defects, three of which are the same width
+change arriving in a *layout* rather than in a value: an argument list that
+packs by size where the machine slots by register, a data block whose alignment
+is taken from its first member's type, and a control block whose fields f77 and
+its own runtime disagree about. The fourth was `EXTERNAL` — passing a procedure
+as an argument, which Fortran has had since 1966 — refused by a diagnostic that
+described it accurately as "a call through a value rather than a name".
+
+The one I keep thinking about is the deferral. `io.c` had a note saying the
+OPEN, CLOSE and INQUIRE control blocks still had the alignment defect, that
+fixing them unexercised would be a claim nothing could check, and that the first
+program to OPEN a file would refuse to link. Every clause of that was written in
+good faith and the last one was false: a READ/WRITE block is initialised data,
+so its pointers are relocations the linker checks, but an OPEN block is filled
+in at run time, so there is nothing to check and the program links cleanly and
+crashes. An expiry condition that names the wrong instrument is not a tripwire —
+it is a note that will never come due.
 
 
 The 1985 code, for its part, has been almost entirely correct. Where it was

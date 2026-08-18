@@ -800,6 +800,23 @@ docall(hasargs)
 		base = fbase = lstack[lsp - 1];
 		n = 0;
 	}
+	/* AN INDIRECT CALL IS `blr', AND IT IS WHAT PASSING A PROCEDURE MEANS.
+	 * `external sq / call apply(sq, x)' spills sq's address into apply's
+	 * parameter area, so at the call site the callee arrives as an OREG --
+	 * a VALUE -- rather than as the ICON-with-a-name every direct call
+	 * gives.  The refusal here named it "a call through a value rather
+	 * than a name", which was an accurate description of a construct
+	 * Fortran has had since 1966.
+	 *
+	 * Materialised BEFORE the arguments are placed, and into the pool,
+	 * which is callee-saved: x0-x7 are about to be written, and a callee
+	 * address sitting in one of them would be overwritten by the argument
+	 * that belongs there.  Done through the stack slot rather than through
+	 * the local copy, so the cleanup loop below frees the register exactly
+	 * once.
+	 */
+	if (vstack[fbase].kind != V_ADDR)
+		vstack[fbase] = mater(&vstack[fbase]);
 	f = vstack[fbase];
 	if (n > 8) {
 		fprintf(stderr, "f1: %d arguments, more than AAPCS64 puts in registers\n", n);
@@ -829,11 +846,10 @@ docall(hasargs)
 			vstack[base + i] = d;	/* freed by the loop below */
 		} else
 			into(&vstack[base + i], i);
-	if (f.kind != V_ADDR) {
-		fprintf(stderr, "f1: a call through a value rather than a name\n");
-		exit(2);
-	}
-	printf("\tbl\t%s\n", f.name);
+	if (f.kind == V_ADDR)
+		printf("\tbl\t%s\n", f.name);
+	else
+		printf("\tblr\tx%d\n", f.reg);
 
 	/* Give back everything the arguments were holding, then take the result
 	   OUT of x0 immediately.  A second call in the same expression -- which

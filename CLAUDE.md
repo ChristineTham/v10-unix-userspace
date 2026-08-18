@@ -2654,6 +2654,53 @@ non-zero exit status all produce empty output, and empty output reads as a
 finding.** Check the status and the path before believing a sweep that says
 "nothing".
 
+**AND THE TWENTY WERE NOT EXHAUSTIVE -- THEY WERE WHERE THE SWEEP STOPPED.**
+Ten more programs found four further defects, and three are the same width
+change arriving in a LAYOUT rather than in a value. Four things generalise:
+
+- **AN ARGUMENT OCCUPIES A SLOT, NOT ITS OWN WIDTH, and upstream said so in the
+  line that divides.** `proc.c`'s `nextarg()` sums `typesize[type]`, which is
+  right when every argument type is the same size -- and on a VAX they all were
+  -- while `lastargslot/SZADDR` at `proc.c:314-320` is upstream's own statement
+  that the total means a slot count. Here a pointer is 8 and a hidden character
+  length is 4, so they part company the first time a length PRECEDES a pointer,
+  which is exactly a CHARACTER FUNCTION. **The assembler caught it**, because
+  an offset that is not a multiple of 8 has no scaled encoding -- a packed
+  offset that happened to land 8-aligned would have read the wrong argument
+  silently.
+- **AN ALIGNMENT CHOSEN FROM A BLOCK'S FIRST MEMBER IS A VAX ASSUMPTION.**
+  `dodata()` decides on the first record it reads; on a VAX `ALIADDR`,
+  `ALILONG` and `ALIINT` were all 4, so the strictest thing a block could
+  contain was already what its first member asked for. The symptom names the
+  wrong symbol -- `ld` reports `v.1+0x34` for a pointer in `v.3`, because it
+  names the nearest preceding one.
+- **AN EXPIRY CONDITION THAT NAMES THE WRONG INSTRUMENT IS NOT A TRIPWIRE, AND
+  THAT IS A NEW FAILURE MODE FOR A GOOD HABIT.** `io.c` deferred the OPEN,
+  CLOSE and INQUIRE offsets and said the first program to OPEN a file "will
+  refuse to link". It does not: a READ/WRITE block is INITIALISED DATA, so its
+  pointers are relocations `ld` checks, but an OPEN block is filled in by
+  `ioset()` at RUN TIME, so there is no relocation and nothing to check --
+  measured, it linked cleanly and SIGSEGV'd. The entry above praises stating an
+  expiry condition, and it is still right; what this adds is that **the
+  condition has to name an instrument that can actually fire**, which means
+  knowing which of the two kinds of block you have.
+- **AND THE SHARPER HALF OF THAT ONE WAS A SIZE, NOT AN OFFSET.** `MAXIO` is
+  the size of the biggest control block and sizes the auto the block lives in.
+  Upstream's formula gives exactly `inlist`'s end on a VAX and **164 here
+  against a struct that reaches 196** -- so an INQUIRE writes past its own
+  frame slot, which no offset correction would have found. When a set of
+  offsets moves, re-derive anything computed FROM them.
+
+**AND MY OWN MUTATION HARNESS HAD THE `check the artefact the suite actually
+reads' BUG, THREE BINARIES IN.** It hashed `f1` and `f77pass1` to decide whether
+a mutation had been compiled, and `driver.c` builds a THIRD -- `/usr/bin/f77` --
+so a real mutation to it reported "artefact did not change" and measured
+nothing. Same shape as the harness that watched an object the suite does not
+link. **Enumerate every binary a file can reach before trusting a rebuild
+check**, and note that this is the second distinct way that check has been wrong
+in one session; the first was the baseline being observed rather than
+established.
+
 **AND THE THREE TEST-PROGRAM BUGS ARE WORTH KNOWING, because two of them look
 exactly like compiler defects.** A result of `2.101947696e-44` is the integer 15
 read through an implicitly-REAL declaration — **a denormal is almost always an

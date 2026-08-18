@@ -448,7 +448,28 @@ int type;
 {
 int k;
 k = lastargslot;
-lastargslot += typesize[type];
+/* PORT: AN ARGUMENT OCCUPIES A SLOT, NOT ITS OWN WIDTH.  Upstream advances by
+   typesize[type], which is right on a machine where every argument type is the
+   same size -- and on a VAX they were: SZADDR, SZLONG and TYLENG's width are
+   all 4, so summing sizes and counting slots gave the same answer, and
+   `lastargslot/SZADDR' at :314-320 is upstream's own statement that it means a
+   slot count.
+
+   Here a pointer is 8 and a hidden character length is 4, so the two part
+   company the first time a length precedes a pointer.  A CHARACTER FUNCTION is
+   exactly that shape -- result pointer, result length, then the argument
+   pointer -- and f77 addressed the third argument at ARGOFFSET+12 while
+   prsave() in arm64.c spills x0-x7 at an 8-byte stride, so it is at +16.
+
+   THE SYMPTOM WAS THE ASSEMBLER, NOT A WRONG VALUE, which is the good
+   direction: `ldr x1, [x29, #1036]' has an offset that is not a multiple of 8,
+   so the scaled form does not encode it, the unscaled one is limited to
+   [-256,255], and clang refused the file.  A packed offset that happened to be
+   8-aligned would have read the wrong argument silently.
+
+   `character*(*) t' as the only argument still worked throughout, because with
+   one pointer before the one length the packed and slotted layouts agree. */
+lastargslot += SZADDR;
 return(k);
 }
 

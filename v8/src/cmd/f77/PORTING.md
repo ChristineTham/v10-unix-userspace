@@ -795,3 +795,93 @@ the GOTO record's `var` flag was read, f1 emitted `b L4` for every assigned
 GOTO, because `p2op(P2GOTO, P2INT)` puts P2INT — which is 4 — in the type
 field. The assembler then reported an undefined label, naming something the
 program never had.
+
+## Stage 6b: a second corpus of ten, and four more
+
+The twenty programs above were not exhaustive — they were where the sweep
+stopped. Ten more (`.EQV.`, CHARACTER functions, EXTERNAL, FORMAT repeat
+counts, `LGE`/`LLT`, multiple RETURN, a REAL DO index, concatenation in an
+argument, OPEN/CLOSE, BLOCK DATA) found four further defects. Three are LP64
+width arriving in a **layout** rather than in a value, and the fourth is a
+feature Fortran has had since 1966.
+
+### An argument occupies a slot, not its own width
+
+`proc.c`'s `nextarg()` allocates argument offsets by summing `typesize[type]`.
+That is right on a machine where every argument type is the same size, and on a
+VAX they all were — `SZADDR`, `SZLONG` and `TYLENG`'s width are all 4 — so
+summing sizes and counting slots gave the same answer. Upstream says so itself:
+`lastargslot/SZADDR` at `proc.c:314-320` treats the running total as a slot
+count.
+
+Here a pointer is 8 and a hidden character length is 4, so the two part company
+the first time a **length precedes a pointer**. A CHARACTER FUNCTION is exactly
+that shape — result pointer, result length, then the argument pointer — so f77
+addressed the third argument at `ARGOFFSET+12` while `prsave()` spills it at
+`+16`.
+
+**The assembler caught it, which is the good direction.** `ldr x1, [x29, #1036]`
+has an offset that is not a multiple of 8, so the scaled form cannot encode it,
+the unscaled form is limited to ±256, and clang refused the file. A packed
+offset that happened to land 8-aligned would have read the wrong argument in
+silence. `character*(*) t` as the *only* argument worked throughout, because
+with one pointer before one length the two layouts agree — which is why it is
+the control.
+
+### A data block's alignment came from its first record's type
+
+`dodata()` picks a block's alignment from the first record it reads, and on a
+VAX that could not matter: `ALIADDR`, `ALILONG` and `ALIINT` were all 4, so the
+strictest thing a block could contain was already what its first member asked
+for. Here a block whose first record is a `.long` gets 4.
+
+Measured on a DATA array followed by two FORMATs: `v.1` is 12 bytes, so `v.2`
+began at 12 and `v.3` at 36 — putting `v.3`'s format pointer, **correctly** at
+offset 16 within its own block, at address 52. `ld: pointer not aligned in
+v.1+0x34`, naming the nearest preceding symbol rather than the block at fault.
+
+Raising the floor to `ALIADDR` rather than looking ahead: `dodata` sees records
+one at a time and decides on the first, so the alternative is a second pass over
+the sorted file. This costs a few bytes of padding, and `vargroup` 1 and 2
+already take `ALIDOUBLE`, which is the same 8 here.
+
+### A procedure passed as an argument is `blr`
+
+`external sq / call apply(sq, x)` spills sq's address into apply's parameter
+area, so at the call site the callee arrives as an **OREG** — a value — rather
+than as the ICON-with-a-name every direct call gives. f1 refused it as "a call
+through a value rather than a name", which is an accurate description of
+EXTERNAL.
+
+Materialised before the arguments are placed, and into the pool, which is
+callee-saved: x0–x7 are about to be written and a callee address in one of them
+would be overwritten by the argument that belongs there. Done through the stack
+slot rather than a local copy, so the cleanup loop frees the register once.
+
+### The OPEN deferral named the wrong instrument
+
+`io.c`'s note said the first program to OPEN a file "will refuse to link". It
+does not. A READ/WRITE control block is **initialised data**, so its pointers
+are relocations and `ld` checks their alignment — but an OPEN block is filled in
+by `ioset()` at **run time**, so there is no relocation and nothing to check.
+Measured: the program linked cleanly and SIGSEGV'd, because f77 stored `osta` at
+20 where the C struct reads it at 24.
+
+**An expiry condition that names the wrong instrument is not a tripwire.** The
+deferral was written in good faith, with a stated trigger, and the trigger could
+never fire.
+
+`MAXIO` moved with the offsets and is the sharper half: it is the size of the
+biggest control block, stated at the top as `SZFLAG + 10*SZIOINT + 15*SZADDR`.
+That is exactly `inlist`'s end on a VAX — 104 — and **164 here against a struct
+that now reaches 196**. `io.c` allocates the block as an auto of that many
+words, so a short MAXIO is an INQUIRE writing past its own frame slot. It is
+restated where the last offset is known rather than recomputed from a member
+count.
+
+Every offset is checkable two ways: against the struct in `src/libI77/fio.h`,
+and by setting `SZADDR` equal to `SZIOINT` — as a VAX had them — whereupon
+`IOALIGN` becomes the identity and each collapses to the expression upstream
+wrote. And the guard is a **relation over the intermediate**: every pointer f77
+stores into an I/O control block sits on an eight-byte boundary, derived rather
+than transcribed, so OPEN, CLOSE and INQUIRE are covered by one case.

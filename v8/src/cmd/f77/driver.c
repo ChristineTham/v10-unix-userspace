@@ -1239,8 +1239,35 @@ while( rdname(&vargroup, varname) && rdlong(&offset) && rdlong(&vlen) && rdlong(
 		totlen += ovlen;
 		ovlen = vlen;
 		if(vargroup == 0)
+			{
 			align = (type==TYCHAR || type==TYBLANK ?
 					SZLONG : typealign[type]);
+			/* PORT: A BLOCK'S ALIGNMENT IS TAKEN FROM ITS FIRST
+			   RECORD'S TYPE, AND A BLOCK CAN HOLD A POINTER LATER.
+			   On a VAX that could not matter -- ALIADDR, ALILONG
+			   and ALIINT were all 4, so the strictest thing any
+			   block could contain was already the alignment the
+			   first member asked for.  Here ALIADDR is 8 and a
+			   block whose first record is a .long gets 4.
+
+			   Measured on `write(6,10) a' with a DATA array and
+			   two FORMATs: v.1 is 12 bytes, so v.2 began at 12 and
+			   v.3 at 36, putting v.3's format pointer -- correctly
+			   at offset 16 WITHIN its block, which io.c's IOALIGN
+			   already guarantees -- at address 52.  ld refused the
+			   object: `pointer not aligned in v.1+0x34'.  The
+			   symbol it names is the nearest preceding one, not
+			   the block at fault.
+
+			   Raising the floor rather than looking ahead: dodata
+			   sees the records one at a time and decides on the
+			   first, so the alternative is a second pass over the
+			   sorted file.  This costs a few bytes of padding and
+			   nothing else, and vargroup 1 and 2 already take
+			   ALIDOUBLE, which is the same 8 here. */
+			if(align < ALIADDR)
+				align = ALIADDR;
+			}
 		else	align = ALIDOUBLE;
 		totlen = doeven(totlen, align);
 		if(vargroup == 2)
