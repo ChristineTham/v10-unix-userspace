@@ -885,3 +885,42 @@ and by setting `SZADDR` equal to `SZIOINT` — as a VAX had them — whereupon
 wrote. And the guard is a **relation over the intermediate**: every pointer f77
 stores into an I/O control block sits on an eight-byte boundary, derived rather
 than transcribed, so OPEN, CLOSE and INQUIRE are covered by one case.
+
+## Where the corpus stopped finding things
+
+Batches five and six — twenty more programs covering statement functions,
+substring assignment, `INTEGER*2` arrays, nested implied DO, `STOP`, `REWIND`,
+`BACKSPACE`, `ENDFILE`, COMPLEX, direct-access I/O, `T` editing, recursion over
+an array, DATA repeat counts, `IMPLICIT`, character arrays, and calls three deep
+— found **zero** defects. Batch six was aimed deliberately at the seams the
+earlier fixes touched: eight arguments, a mixed character/integer/character
+argument list, a character function returning a concatenation, and an indirect
+call used twice in one expression.
+
+Three of the sixty programs "failed" for reasons that were mine rather than
+f77's, and each is worth knowing because it imitates a compiler defect:
+
+- a result of `2.101947696e-44` is the integer 15 read through an implicitly
+  REAL declaration — **a denormal is almost always an integer read as a float**;
+- a result of exactly `0.000000000e+00` from an integer function is the same
+  mistake after the FORCE fix, because the integer comes back in `x0` and the
+  caller reads `d0`, which is untouched;
+- `unbalanced quotes` on a line that looks balanced is **column 72**, which
+  fixed-form Fortran truncates at. That line was 76 characters.
+
+### What is left, and it is asserted rather than written down
+
+Four boundaries remain, each refusing by name with an accurate reason, and each
+now has a case — because a refusal nothing tests is an unexercised rule whose
+failure mode is that it quietly stops refusing.
+
+| limit | why |
+|---|---|
+| a ninth argument | AAPCS64 puts arguments 9+ on the stack, and the callee half needs f77 to tell `prsave()` the count |
+| a second ENTRY point | `argvec` is allocated only when `nentry > 1`, and nothing here consumes it |
+| a five-way concatenation | register pressure, and the fix is not a bigger pool — see `doassign()` above |
+| an assigned GOTO | a code address does not fit in a four-byte Fortran INTEGER, and Mach-O loads text above 4GB |
+
+The mutations that validate them are the ones that make each **stop** refusing:
+raise the argument cap, raise the ENTRY cap, and make `ralloc()` reuse a
+register instead of exiting. Each fires on exactly the case written for it.

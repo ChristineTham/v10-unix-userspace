@@ -3676,12 +3676,67 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	       "$V8ROOT/lib/f1" -d op.x 2>/dev/null |
 	       awk '/^OREG/ && /\*/ { for(i=1;i<=NF;i++) if($i=="offset") o=$(i+1)+0; if (o%8) print "offset", o }')"
 
+	# THE THREE REMAINING LIMITS ARE ASSERTED, not merely written down.  A
+	# refusal nothing tests is an unexercised rule, and the failure mode is
+	# that it quietly stops refusing: `ralloc' handing back a bogus register
+	# instead of exiting, or a ninth argument going somewhere plausible.
+	# Same reason tests/kmemu asserts that w(1) says `No mem'.  Each names
+	# its own reason, so crossing one of these is a decision.
+	f77refuse() {	# $2 = source; prints the reason, or the output if it RAN
+		( cd f77p1w && printf '%s\n' "$2" > x$1.f && rm -f x$1
+		  e=$("$V8ROOT/usr/bin/f77" x$1.f -o x$1 2>&1)
+		  if [ -x x$1 ]; then echo "RAN: $(./x$1 2>&1 | tr '\n' '|')"
+		  else printf '%s\n' "$e" | grep -oE 'more than AAPCS64 puts in registers|multiple ENTRY points are not implemented on this target|more integer registers than this pass allocates' | head -1
+		  fi )
+	}
+	check 'f77: a ninth argument is refused, naming the register limit' \
+	    'more than AAPCS64 puts in registers' \
+	    "$(f77refuse 9 '      call s9(1,2,3,4,5,6,7,8,9)
+      end
+      subroutine s9(a,b,c,d,e,f,g,h,i)
+      integer a,b,c,d,e,f,g,h,i
+      write(6,*) a+i
+      return
+      end')"
+	# and the control: EIGHT arguments still go through
+	check 'f77: and eight arguments still pass' ' 36|' \
+	    "$(f77run c8 '      program c8
+      call s8(1,2,3,4,5,6,7,8)
+      end
+      subroutine s8(a,b,c,d,e,f,g,h)
+      integer a,b,c,d,e,f,g,h
+      write(6,*) a+b+c+d+e+f+g+h
+      return
+      end')"
+	check 'f77: a second ENTRY point is refused' \
+	    'multiple ENTRY points are not implemented on this target' \
+	    "$(f77refuse e '      call one
+      end
+      subroutine one
+      write(6,*) 1
+      return
+      entry two
+      write(6,*) 2
+      return
+      end')"
+	# THE CONCATENATION BOUNDARY IS MEASURED, NOT CHOSEN: four-way needs all
+	# ten registers and works (above); five-way needs more and refuses.  The
+	# fix for it is not a bigger pool -- see the note in PORTING.md about
+	# doassign() holding a register per unconsumed assignment.
+	check 'f77: a five-way concatenation is refused, naming the registers' \
+	    'more integer registers than this pass allocates' \
+	    "$(f77refuse 5 '      character*40 a, g
+      a = "1"
+      g = a(1:1)//a(1:1)//a(1:1)//a(1:1)//a(1:1)
+      write(6,*) g
+      end')"
+
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
 	# tests/kmemu asserts that w(1) says `No mem'.
 
 else
-	fail=$((fail+57)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+61)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism
