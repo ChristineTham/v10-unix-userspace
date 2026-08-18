@@ -123,8 +123,17 @@ double realcon[6] =
  * use is inside #ifdef SDB, which arm64defs leaves off.  So this is one number,
  * declared once in arm64defs and read here rather than respelled.
  *
- *	[x29 + 0        .. ARGOFFSET)	autos, growing up, checked in prolog()
- *	[x29 + ARGOFFSET .. +64)	x0-x7 spilled here, 8 bytes apart
+ *	[x29 - F77CALL   .. x29)		outgoing slots nine and up, for a call
+ *	[x29 + 0         .. ARGOFFSET)	autos, growing up, checked in prolog()
+ *	[x29 + ARGOFFSET .. +F77ARGS)	every parameter, 8 bytes apart: x0-x7
+ *					spilled, then slots nine and up copied
+ *					down from above by prsave()
+ *	[x29 + F77FRAME + F77SAVE ..)	the caller's stack arguments, where it
+ *					left them -- this is the entry sp
+ *
+ * The middle region was 64 bytes and held x0-x7 alone until a ninth argument
+ * had somewhere to go; the reason it says F77ARGS rather than a number is that
+ * believing it ended at +64 is what produced that defect.
  *
  * The callee-saved registers are saved unconditionally: x19-x22 because pass 1
  * hands them out as register variables (MAXREGVAR is 4) and would otherwise
@@ -167,18 +176,37 @@ int dest[];
 {
 register chainp p;
 register Namep q;
-int n;
+int n, etype;
 
 n = 0;
 /* The hidden result arguments come first and are the caller's, not the
    arglist's: a CHARACTER function is passed the place to put its answer and
-   how long it is, a COMPLEX one just the place. */
-if(proctype == TYCHAR)
+   how long it is, a COMPLEX one just the place.
+
+   PORT: THE TYPE IS THIS ENTRY'S, NOT THE PROCEDURE'S, and the two are the
+   same only when there is one entry.  `proctype' is set once from the FIRST
+   entry (proc.c:173) while doentry() -- which allocated the slots this
+   function is mapping onto -- reads `np->vtype' per entry (proc.c:367).  So
+   keying off the global crosses two operands in a procedure whose entries
+   differ in COMPLEX-ness: measured, `real function f(x)' with a `complex'
+   `entry g(y)' emitted `str x0, [x9, #16]', putting the hidden result
+   pointer into y's slot while cxslot kept &y from the identity spill and
+   the real &y was dropped -- printing (3.587324069e-43, 1.401298464e-45)
+   for (4.0, 6.0), exit 0, silent.  vax.c:369,375 has the same latent
+   defect; this file is not in PROVENANCE, so it is not bound to copy it.
+
+   Only the COMPLEX arm can reach it.  proc.c:372-380 refuses a CHARACTER
+   entry of a non-CHARACTER function outright, so when proctype is TYCHAR
+   every entry is TYCHAR and the two spellings agree identically -- which is
+   why the TYCHAR arm below is a correctness no-op and is changed anyway,
+   because a reader must not have to re-derive that argument. */
+etype = ep->enamep->vtype;
+if(etype == TYCHAR)
 	{
 	dest[n++] = chslot;
 	dest[n++] = chlgslot;
 	}
-else if( ISCOMPLEX(proctype) )
+else if( ISCOMPLEX(etype) )
 	dest[n++] = cxslot;
 
 for(p = ep->arglist ; p ; p = p->nextp)
@@ -260,6 +288,15 @@ p2pass("\tstp\tx6, x7, [x9, #48]");
    x9 already holds x29+ARGOFFSET; x10 and x11 are caller-saved and free, since
    the only live registers at this point are the arguments in x0-x7. */
 n = lastargslot / SZADDR;
+/* PORT: CLAMPED, BECAUSE THE BOUND THAT WOULD STOP IT RUNS AFTER THIS
+   FUNCTION.  prolog() refuses lastargslot > SZADDR*MAXARGSLOT, and calls
+   prsave() before it does -- so without this, `dest' is indexed past its
+   end by the copy loop below on the way to a diagnostic that does fire.
+   Measured on a 100-argument subroutine: `str x11, [x9, #1795217402]'.
+   The trigger is not exotic; 33 `character*(*)' arguments give 66 slots,
+   because each hidden length occupies one. */
+if(n > MAXARGSLOT)
+	n = MAXARGSLOT;
 for(i = 0 ; i < n && i < MAXARGSLOT ; ++i)
 	dest[i] = SZADDR*i;
 
@@ -329,11 +366,17 @@ p2pass("\tret");
  * addresses them, so for a single-entry procedure the copy has already happened
  * and this is correctly silent.
  *
- * It is reached ONLY when proc.c allocated an argvec, and proc.c:316 does that
- * only for nentry>1 -- so what it would have to implement is the multiple-ENTRY
- * relocation, which prolog() refuses by name instead.  An empty body plus a
- * refusal at the one call site that can reach it is the honest pair; an empty
- * body alone is what let the missing spill above go unnoticed.
+ * IT HAS NO CALLER ON THIS TARGET AT ALL, which is what the entry above it in
+ * the multiple-ENTRY note means in practice.  vax.c and pdp11.c call mvarg from
+ * their own prolog(); this file's prolog() does not, because prsave() performs
+ * the relocation AT the spill, out of registers that are still live, and needs
+ * no staging area to move things out of.  So the sequence is not "empty body
+ * plus a refusal", which is what this comment used to claim and what the
+ * deleted `multiple ENTRY points' fatal() used to make true -- it is an unused
+ * entry point kept because putpcc.c's machine-dependent interface names it.
+ *
+ * Anything looking for where an entry's arguments are relocated wants
+ * argdest() and prsave(), not this.
  */
 mvarg(type, arg1, arg2)
 int type, arg1, arg2;
@@ -620,6 +663,11 @@ prolog(ep, argvec)
 struct Entrypoint *ep;
 Addrp argvec;
 {
+register chainp p;
+register struct Dimblock *dp;
+int i;
+struct Constblock *mkaddcon();	/* returns a POINTER; defs does not declare it */
+
 p2pass("\t.p2align\t2");
 
 if(procclass == CLMAIN)
@@ -662,12 +710,13 @@ else if(ep->entryname)
 if(procclass == CLBLOCK)
 	return;
 
-/* THE VAX WALKED ep->arglist HERE COPYING EACH SLOT INTO THE FRAME, and this
-   file used to say there was nothing to do because pass 2 spilled x0-x7.  Pass
-   2 did not, and nothing said so; see the note above prsave().  prsave() does
-   the spill now, for all eight registers unconditionally, which is why there is
-   still no walk here -- but the reason is that the work is done rather than
-   that it is somebody else's.
+/* THE VAX WALKED ep->arglist HERE FOR TWO UNRELATED REASONS, AND SAYING ONE OF
+   THEM WAS DONE WAS READ AS SAYING BOTH WERE.  It copied each argument slot
+   into the frame -- that is prsave()'s job here, for all eight registers
+   unconditionally, and that much this file said correctly.  It ALSO evaluated
+   each dummy array's run-time dimension expressions, which is a different job
+   with a different owner, and this file simply had no such loop.  It is below;
+   see the PORT note above it.
 
    MULTIPLE ENTRY POINTS ARE NOT REFUSED HERE ANY MORE, and the reason the
    refusal gave was accurate: each entry's arguments must be relocated into one
@@ -710,6 +759,42 @@ if(lastargslot > SZADDR*MAXARGSLOT)
 
    Measured before the fix: `integer function f(n) ... entry g(m,k)' compiled
    clean, and the program printed NOTHING and exited 0. */
+/* AND EACH DUMMY ARRAY'S RUN-TIME DIMENSIONS MUST BE EVALUATED HERE, which is
+   pdp11.c:378-387 and vax.c:404-426 and was absent from this file entirely.
+   proc.c:1120 allocates a temporary per adjustable dimension
+   (`dims[i].dimsize = autovar(1, tyint, PNULL)') and leaves the machine file
+   to store the expression into it; nothing else in the tree does, and grep
+   finds the assignment in exactly two places, both of them the other two
+   targets.  So the temporary was read and never written.
+
+   Measured before this loop: `subroutine show(a,m,n)' with `integer a(m,n)'
+   compiled clean -- no diagnostic from f77pass1 or from /lib/f1 -- and
+   SIGSEGV'd, because the subscript arithmetic is `ldrsw x24, [x29, #0]' and
+   nothing in the procedure ever stores to [x29,#0].  Four shapes faulted;
+   a variable LOWER bound is the worse half, since the missing baseoffset
+   store gives exit 0 and a plausible wrong number (`22 33' for `11 22'),
+   and is right by coincidence for some bounds -- so a single-value case
+   cannot see it.
+
+   It is one dimension that needs it: a 1-D adjustable `a(n)' is correct
+   without this loop, because nothing multiplies by the first extent.  That
+   is why the gap survived a twenty-program corpus.  The VAX's zero-base
+   subscript fudge around `checksubs' is deliberately not copied -- it is an
+   addressing-mode optimisation for a machine with one, and pdp11.c omits it
+   too. */
+
+for(p = ep->arglist ; p ; p = p->nextp)
+	if( dp = ( (Namep) (p->datap) )->vdim )
+		{
+		for(i = 0 ; i < dp->ndim ; ++i)
+			if(dp->dims[i].dimexpr)
+				puteq( fixtype(cpexpr(dp->dims[i].dimsize)),
+					fixtype(cpexpr(dp->dims[i].dimexpr)) );
+		if(dp->basexpr)
+			puteq( cpexpr(fixtype(dp->baseoffset)),
+				cpexpr(fixtype(dp->basexpr)) );
+		}
+
 if(typeaddr)
 	puteq( cpexpr(typeaddr), mkaddcon(ep->typelabel) );
 

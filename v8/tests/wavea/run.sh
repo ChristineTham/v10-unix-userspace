@@ -3719,17 +3719,28 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	       "$V8ROOT/lib/f1" -d op.x 2>/dev/null |
 	       awk '/^OREG/ && /\*/ { for(i=1;i<=NF;i++) if($i=="offset") o=$(i+1)+0; if (o%8) print "offset", o }')"
 
-	# THE THREE REMAINING LIMITS ARE ASSERTED, not merely written down.  A
-	# refusal nothing tests is an unexercised rule, and the failure mode is
-	# that it quietly stops refusing: `ralloc' handing back a bogus register
-	# instead of exiting, or a ninth argument going somewhere plausible.
-	# Same reason tests/kmemu asserts that w(1) says `No mem'.  Each names
-	# its own reason, so crossing one of these is a decision.
+	# EVERY REFUSAL THE COMPILER CAN STILL MAKE IS ASSERTED, not merely
+	# written down.  A refusal nothing tests is an unexercised rule, and the
+	# failure mode is that it quietly stops refusing: `ralloc' handing back a
+	# bogus register instead of exiting, or a ninth argument going somewhere
+	# plausible.  Same reason tests/kmemu asserts that w(1) says `No mem'.
+	# Each names its own reason, so crossing one of these is a decision.
+	#
+	# THE ALTERNATION IS A SECOND COPY OF A LIST THAT LIVES IN arm64.c AND
+	# f1.c, so it goes stale in both directions and neither is loud.  It
+	# carried `multiple ENTRY points are not implemented on this target'
+	# for a step after that fatal() was deleted -- an arm that can never
+	# match, which reads as documentation that the refusal survives -- and
+	# it omitted argdest()'s, which fires BEFORE prolog()'s because argdest
+	# runs inside prsave().  A refusal with no arm here captures nothing and
+	# the case reports `got []', which is indistinguishable from a compiler
+	# that produced no output.  Checked against the sources by the
+	# `every refusal f77 can emit has an arm here' case below.
 	f77refuse() {	# $2 = source; prints the reason, or the output if it RAN
 		( cd f77p1w && printf '%s\n' "$2" > x$1.f && rm -f x$1
 		  e=$("$V8ROOT/usr/bin/f77" x$1.f -o x$1 2>&1)
 		  if [ -x x$1 ]; then echo "RAN: $(./x$1 2>&1 | tr '\n' '|')"
-		  else printf '%s\n' "$e" | grep -oE 'f1: [0-9]+ arguments, more than the frame holds|procedure has [0-9]+ argument slots, more than the frame holds|multiple ENTRY points are not implemented on this target|more integer registers than this pass allocates' | head -1
+		  else printf '%s\n' "$e" | grep -oE 'f1: [0-9]+ arguments, more than the frame holds|procedure has [0-9]+ argument slots, more than the frame holds|entry has more than [0-9]+ argument slots|procedure needs [0-9]+ bytes of temporaries, more than the frame holds|an ASSIGNed label needs a 4-byte INTEGER|more integer registers than this pass allocates' | head -1
 		  fi )
 	}
 
@@ -3860,7 +3871,7 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# AND ENTRIES OF DIFFERENT TYPES, which is what the indirect exit is
 	# FOR: proc.c gives each TYPE an epilogue label, every RETURN branches
 	# to one common exit, and that exit jumps through an auto naming the
-	# right epilogue.  vax.c:466 stores it and this file simply had no such
+	# right epilogue.  vax.c:466-467 stores it and this file had no such
 	# line -- so the exit branched through whatever the frame held, and an
 	# INTEGER FUNCTION with an ENTRY printed nothing and exited 0.
 	check 'f77: an INTEGER FUNCTION and a REAL ENTRY, each through its own epilogue' \
@@ -3937,9 +3948,12 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	    "$(cd f77p1w && for n in 2 9; do
 	         { echo '      character*80 a, g'
 	           echo '      a = "1"'
-	           printf '      g = a(1:1)'
-	           i=1; while [ $i -lt $n ]; do printf '//a(1:1)'; i=$((i+1)); done
-	           echo; echo '      write(6,*) g'; echo '      end'; } > w$n.f
+	           awk -v n="$n" 'BEGIN{ s = "      g = a(1:1)"
+	                for (i = 1; i < n; i++) s = s "//a(1:1)"
+	                while (length(s) > 66) {
+	                  print substr(s, 1, 66); s = "     *" substr(s, 67) }
+	                print s }'
+	           echo '      write(6,*) g'; echo '      end'; } > w$n.f
 	         rm -f w$n.s
 	         "$V8ROOT/usr/bin/f77" -S w$n.f >/dev/null 2>&1
 	         if [ -s w$n.s ]; then
@@ -4010,10 +4024,13 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	    "$(cd f77p1w && f77widecall 65 > xw65.f
 	       "$V8ROOT/usr/bin/f77" -c xw65.f 2>&1 |
 	       grep -oE 'f1: [0-9]+ arguments, more than the frame holds' | head -1)"
-	# AND THE TWO SPELLINGS OF THE NUMBER MUST AGREE.  f1.c is compiled by
-	# clang and f77pass1 by v8cc, and they share no header, so the frame
-	# constants are stated twice -- the same arrangement the opcode numbers
-	# have, and checked the same way.  The blank is required twice in the
+	# AND THE TWO SPELLINGS OF THE NUMBER MUST AGREE.  f1.c and f77pass1 are
+	# separate programs sharing no header -- including f77's copy would put
+	# its whole defs chain on f1's include path -- so the frame constants
+	# are stated twice: the same arrangement the opcode numbers have, and
+	# checked the same way.  (This said f1.c was compiled by clang.  Both
+	# are v8cc's; the Makefile is the authority and CLAUDE.md says to know
+	# it before editing f1.c.)  The blank is required twice in the
 	# pattern for the reason the opcode case records: with zero blanks and
 	# zero digits both allowed, MAXARGSLOT would also match a longer name
 	# beginning with it.
@@ -4026,12 +4043,225 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	       then echo agree
 	       else echo "MAXARGSLOT $a/$b SZADDR $c/$e"; fi)"
 
+	# AND f77refuse's ARM LIST IS CHECKED AGAINST THE SOURCES.  It is a
+	# second hand-written copy of a list that lives in arm64.c and f1.c, so
+	# it drifts in two directions and neither is loud.  Measured, both had
+	# happened: it kept `multiple ENTRY points' for a step after arm64.c
+	# stopped emitting it, and it omitted argdest()'s and prolog()'s
+	# temporaries bound the whole time.  The sources are the third thing
+	# that is neither copy.
+	#
+	# ONLY THE MISSING-ARM DIRECTION IS CHECKED, and the reason is worth
+	# stating rather than leaving as a gap.  A refusal with no arm captures
+	# nothing, so the case reports `got []' -- indistinguishable from a
+	# compiler that produced no output, which this project has paid for
+	# twice.  That direction is exact: every fatal()/fatali() string in the
+	# sources, with its %-conversions filled in, must match the alternation.
+	# The DEAD-arm direction cannot be written this simply, because an arm
+	# is deliberately a FRAGMENT of a message and may spell out a word the
+	# message leaves to a %s -- `more integer registers than this pass
+	# allocates' against `expression needs more %s registers ...'.  Testing
+	# it needs the substitution's possible values, which only the call site
+	# knows.  Its failure mode is a line that reads as documentation for a
+	# refusal that is gone, which is a worse comment rather than a worse
+	# test, so it is left to review.
+	check 'f77: every refusal in the sources has an arm in f77refuse' 'ok' \
+	    "$(alt=$(sed -n '/^	f77refuse() {/,/^	}$/p' "$0" |
+	                grep -oE "grep -oE '[^']*'" | sed "s/grep -oE '//; s/'$//")
+	       [ -n "$alt" ] || { echo 'no alternation extracted'; exit; }
+	       miss=$(cat "$ROOT/src/cmd/f77/arm64.c" "$ROOT/shim/f1/f1.c" |
+	         grep -oE '(fatali?|fprintf)\([^"]*"[^"]*"' |
+	         sed -e 's/.*"//' -e 's/"$//' |
+	         grep -E 'more than|allocates|needs a' |
+	         sed -e 's/%[a-z]*/7/g' -e 's/\\n$//' |
+	         sort -u | while read -r m; do
+	           printf '%s\n' "$m" | grep -qE "$alt" || printf 'no-arm{%s}' "$m"
+	         done)
+	       [ -z "$miss" ] && echo ok || echo "$miss")"
+
+	# ---- ADJUSTABLE DIMENSIONS, WHICH prolog() HAD NEVER EVALUATED.
+	# proc.c:1120 allocates a temporary per run-time dimension and leaves
+	# the machine file to store the expression into it; arm64.c had no such
+	# loop, so the temporary was read and never written.  pdp11.c:378-388
+	# is the loop, and this file transcribed only its last two statements.
+	#
+	# TWO CASES BECAUSE THERE ARE TWO STORES AND THEY FAIL DIFFERENTLY.  A
+	# missing dimsize store faults -- an extent read out of a stale frame
+	# slot -- and a missing baseoffset store does not: it gives exit 0 and
+	# a plausible wrong number, and is right by coincidence for some
+	# bounds, so only a case that names the values can see it.  A 1-D
+	# adjustable array is correct without either, because nothing
+	# multiplies by the first extent; that is why a twenty-program corpus
+	# walked past this.
+	check 'f77: a 2-D adjustable dummy array addresses correctly' \
+	    '11 21 31 12 22 32 13 23 33 14 24 34' \
+	    "$(cd f77p1w && { echo '      program main'
+	         echo '      integer q(3,4)'
+	         echo '      integer i, j'
+	         echo '      do 10 j = 1, 4'
+	         echo '        do 20 i = 1, 3'
+	         echo '          q(i,j) = i*10 + j'
+	         echo '   20   continue'
+	         echo '   10 continue'
+	         echo '      call show(q,3,4)'
+	         echo '      end'
+	         echo '      subroutine show(a,m,n)'
+	         echo '      integer m, n'
+	         echo '      integer a(m,n)'
+	         echo '      integer i, j'
+	         echo '      do 30 j = 1, n'
+	         echo '        do 40 i = 1, m'
+	         echo '          write(6,*) a(i,j)'
+	         echo '   40   continue'
+	         echo '   30 continue'
+	         echo '      end'; } > xdim.f
+	       rm -f xdim
+	       "$V8ROOT/usr/bin/f77" xdim.f -o xdim >/dev/null 2>&1
+	       [ -x xdim ] && ./xdim 2>&1 | tr -d ' ' | tr '\012' ' ' |
+	         sed 's/ $//' || echo 'did not build')"
+
+	check 'f77: an adjustable LOWER bound offsets correctly' '33 44' \
+	    "$(cd f77p1w && { echo '      program main'
+	         echo '      integer q(10)'
+	         echo '      integer i'
+	         echo '      do 10 i = 1, 10'
+	         echo '        q(i) = i*11'
+	         echo '   10 continue'
+	         echo '      call lo(q(3),3)'
+	         echo '      end'
+	         echo '      subroutine lo(a,k)'
+	         echo '      integer k'
+	         echo '      integer a(k:10)'
+	         echo '      write(6,*) a(k), a(k+1)'
+	         echo '      end'; } > xlb.f
+	       rm -f xlb
+	       "$V8ROOT/usr/bin/f77" xlb.f -o xlb >/dev/null 2>&1
+	       [ -x xlb ] && ./xlb 2>&1 | tr -s ' ' | sed 's/^ //;s/ $//' ||
+	         echo 'did not build')"
+
+	# ---- AN ENTRY'S HIDDEN RESULT SLOT IS ITS OWN TYPE'S, NOT THE
+	# PROCEDURE'S.  argdest() keyed off the global `proctype', which is set
+	# from the FIRST entry (proc.c:173), while doentry() -- which allocated
+	# the slots argdest maps onto -- reads each entry's own (proc.c:367).
+	# Only COMPLEX-ness can differ: proc.c:372-380 refuses a CHARACTER
+	# entry of a non-CHARACTER function outright, so the TYCHAR arm agrees
+	# identically and is a correctness no-op.
+	#
+	# THE CASE MUST NAME THE VALUES, because the broken form exits 0.  It
+	# crossed two operands -- the hidden result pointer went into y's slot
+	# and the real &y was dropped -- and printed a pair of denormals.
+	check 'f77: a COMPLEX ENTRY of a REAL function gets its own slots' \
+	    '6.00000000 8.00000000' \
+	    "$(cd f77p1w && { echo '      program main'
+	         echo '      complex r, g'
+	         echo '      real f'
+	         echo '      complex y'
+	         echo '      r = g((3.0,4.0))'
+	         echo '      write(6,*) real(r), aimag(r)'
+	         echo '      end'
+	         echo '      real function f(x)'
+	         echo '      real x'
+	         echo '      complex g, y'
+	         echo '      f = x'
+	         echo '      return'
+	         echo '      entry g(y)'
+	         echo '      g = y + y'
+	         echo '      return'
+	         echo '      end'; } > xcx.f
+	       rm -f xcx
+	       "$V8ROOT/usr/bin/f77" xcx.f -o xcx >/dev/null 2>&1
+	       [ -x xcx ] && ./xcx 2>&1 | tr -s ' ' | sed 's/^ //;s/ $//' ||
+	         echo 'did not build')"
+
+	# ---- A V_MEM's REGISTER IS A BASE, SO ITS POOL IS THE INTEGER ONE
+	# WHATEVER IT POINTS AT.  vfree() chose the pool from `vtype', so a
+	# float-typed V_MEM sent its integer base to rfree(1, ...), which
+	# searches fpool, does not find it -- the pools are disjoint by
+	# register number -- and returns silently, because rfree has no
+	# not-found arm.  One register leaked per subscripted REAL reference,
+	# so ten of them exhausted the ten-entry pool and f1 REFUSED A LEGAL
+	# PROGRAM.  Thirty terms is three times the pool, and the INTEGER
+	# control is what says the leak is on the float path.
+	#
+	# THE SUBSCRIPT MUST BE A VARIABLE, which a first draft got wrong and
+	# only mutation said so: with a CONSTANT subscript f1 addresses the
+	# element as an OREG at a constant offset and materialises no base at
+	# all, so there is no owned V_MEM to mis-free and the case passed
+	# against the leak it was written for.
+	#
+	# AND `i' IS SET EXPLICITLY rather than left where the DO loop put it,
+	# which is 41 -- a(41) is past the end of a(40), and an out-of-bounds
+	# read would have made the answer a property of the frame rather than
+	# of the pool.  The terms are a(1)..a(30), so the sum is 465.
+	check 'f77: many subscripted REAL references do not exhaust the pool' \
+	    'real 465 int 465' \
+	    "$(cd f77p1w && for t in real int; do
+	         { echo '      program main'
+	           if [ $t = real ]; then echo '      real a(40), s'
+	           else echo '      integer a(40), s'; fi
+	           echo '      integer i'
+	           echo '      do 10 i = 1, 40'
+	           echo '        a(i) = i'
+	           echo '   10 continue'
+	           echo '      i = 1'
+	           awk 'BEGIN{ s = "      s = a(i)"
+	                for (i = 1; i <= 29; i++) s = s " + a(i+" i ")"
+	                while (length(s) > 66) {
+	                  print substr(s, 1, 66); s = "     *" substr(s, 67) }
+	                print s }'
+	           echo '      write(6,*) s'; echo '      end'; } > xp$t.f
+	         rm -f xp$t
+	         "$V8ROOT/usr/bin/f77" xp$t.f -o xp$t >/dev/null 2>&1
+	         if [ -x xp$t ]; then
+	           printf '%s %d ' "$t" "$(./xp$t 2>&1 |
+	             awk '{ printf "%d", $1 + 0.5 }')"
+	         else printf '%s refused ' "$t"; fi
+	       done | sed 's/ $//')"
+
+	# ---- AND AN ASSIGNed LABEL NEEDS A FOUR-BYTE INTEGER.  exec.c gates
+	# ASSIGN on MSKINT, which admits TYSHORT, so `integer*2 lbl' reached
+	# f1 and the store was `strh' -- sixteen bits of a thirty-two-bit
+	# distance, read back through `ldrsh'.  It is right until the procedure
+	# grows: measured, 28880 bytes away it printed the right answer and
+	# 108080 bytes away it SIGSEGV'd, with no diagnostic at either end.
+	#
+	# THE PAIR IS THE GUARD.  A refusal alone passes against an f1 that
+	# refuses every ASSIGN, so the plain INTEGER control is what says the
+	# discriminator is the width.
+	check 'f77: an INTEGER*2 ASSIGN is refused' \
+	    'an ASSIGNed label needs a 4-byte INTEGER' \
+	    "$(f77refuse i2 '      program main
+      integer*2 lbl
+      assign 20 to lbl
+      goto lbl
+   20 write(6,*) 1
+      end')"
+	check 'f77: a plain INTEGER ASSIGN still branches' 'RAN:  1|' \
+	    "$(f77refuse i4 '      program main
+      integer lbl
+      assign 20 to lbl
+      goto lbl
+   20 write(6,*) 1
+      end')"
+
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
 	# tests/kmemu asserts that w(1) says `No mem'.
 
 else
-	fail=$((fail+75)); echo "FAIL f77 driver is not installed"
+	# DERIVED, NOT TRANSCRIBED.  This number stands for the cases the block
+	# above would have run, so that a missing prerequisite costs the same as
+	# a failure -- and a hand-maintained copy of a count has never once been
+	# right here: it read 61 against 67, then 68/73, then 69/74, then 75/79,
+	# drifting silently every time a case was added.  Counting the `check'
+	# lines between the `if' and this `else' in $0 is the same discipline as
+	# deriving the command count from the rootfs rather than from prose.
+	n=$(awk '/^if \[ -x "\$V8ROOT\/usr\/bin\/f77" \]; then$/ { i = 1; next }
+	         i && /^else$/ { exit }
+	         i && /^	check / { c++ }
+	         END { print c+0 }' "$0")
+	[ "$n" -gt 0 ] || n=1	# a zero here would silently report nothing
+	fail=$((fail+n)); echo "FAIL f77 driver is not installed ($n cases)"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism

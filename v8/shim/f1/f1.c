@@ -108,9 +108,12 @@
  * own parameters and SZADDR*(MAXARGSLOT-8) BELOW x29 for the arguments of the
  * calls it makes.  This pass writes that second area, so the two files have to
  * agree about its size; respelled here rather than included, for the reason the
- * opcode numbers are -- f1 is compiled by clang and f77pass1 by v8cc, and they
- * share no header -- and tests/wavea compares the two spellings, which is what
- * it already does for the opcodes.
+ * opcode numbers are: including f77's copy would put its whole defs chain on
+ * this file's include path, and they share no header -- and tests/wavea
+ * compares the two spellings, which is what it already does for the opcodes.
+ * (Both programs are built by v8cc; see the Makefile.  An earlier draft of
+ * this sentence said f1 was clang's, which is the one fact about this file
+ * CLAUDE.md tells you to know before editing it, stated backwards.)
  */
 #define MAXARGSLOT	64	/* == arm64defs' MAXARGSLOT */
 #define ARGSLOT		8	/* == arm64defs' SZADDR */
@@ -394,7 +397,20 @@ vfree(v)
 	struct val *v;
 {
 	if (v->owned) {
-		rfree(isflt(v->vtype), v->reg);
+		/* THE POOL COMES FROM THE KIND, NOT THE TYPE, and the two agree
+		   for every kind but one.  A V_MEM's `reg' is its BASE -- an
+		   ADDRESS, so always from the integer pool, whatever it points
+		   at -- while `vtype' is the type of the object AT that address.
+		   P2INDIRECT builds exactly that mismatch: it keeps the integer
+		   base it materialised and takes the loaded type.  Deriving the
+		   pool from vtype then sent a float-typed V_MEM's integer base
+		   to rfree(1, ...), which searches fpool, does not find it (the
+		   pools are disjoint by register number) and returns silently,
+		   because rfree has no not-found arm.  One register leaked per
+		   subscripted REAL reference: measured, `real a(20)' summed over
+		   ten elements exhausted the ten-entry integer pool and f1
+		   refused a legal program.  The integer control never fails. */
+		rfree(v->kind == V_MEM ? 0 : isflt(v->vtype), v->reg);
 		v->owned = 0;
 	}
 }
@@ -1005,9 +1021,45 @@ doassign()
 	   assignment has a source at least as wide as its destination.  Without
 	   this the store below is `str w', which keeps the low half of a text
 	   address and discards the half that says which 4GB it was in.  See
-	   labelbase() above for why an offset is stored instead. */
+	   labelbase() above for why an offset is stored instead.
+
+	   THE PRODUCER IS UNIQUE AND THE CONSUMER IS NOT, which is a separate
+	   claim and the sentence above does not make it.  Fortran 77 lets an
+	   ASSIGNed variable be a FORMAT specifier as well as a branch target,
+	   and io.c:691 -- the arm f77's own front end labels `ASSIGNed label'
+	   -- hands its value to libI77 as a char * with nothing adding a base
+	   back.
+	   That program compiles clean and SIGSEGVs -- and did so before this
+	   encoding existed too, by truncation instead, so it is a standing gap
+	   rather than one this created.  Closing it means the FRONT END saying
+	   which statement an ASSIGN is instead of this pass inferring it from
+	   the node shape; src/cmd/f77/PORTING.md carries the costing. */
 	if (!flt && isptr(rhs.vtype) && !isptr(lhs.vtype)) {
 		struct val o;
+
+		/* AND THE DESTINATION HAS TO BE ABLE TO HOLD THE DISTANCE.
+		   exec.c gates ASSIGN on MSKINT, which admits TYSHORT, so
+		   `integer*2 lbl' reaches here and the store below is `strh'
+		   -- sixteen bits of a thirty-two-bit difference, with the
+		   branch reading it back through `ldrsh'.  It is right until
+		   the procedure grows: measured, the same source at a distance
+		   of 28880 bytes printed the right answer and at 108080 bytes
+		   SIGSEGV'd, with no diagnostic at either end.  A refusal is
+		   the honest answer, because the alternative is a program that
+		   works only while it is small.
+
+		   Spelled as stop()'s own switch rather than as a compare
+		   against what stop() returns: <string.h> is not included
+		   here and an undeclared strcmp() is the truncated-pointer
+		   class this port keeps finding. */
+		if ((lhs.vtype & BTMASK) == P2CHAR ||
+		    (lhs.vtype & BTMASK) == P2SHORT) {
+			fprintf(stderr,
+			    "f1: an ASSIGNed label needs a 4-byte INTEGER;\n");
+			fprintf(stderr,
+			    "    a narrower one cannot hold the distance\n");
+			exit(2);
+		}
 
 		o.kind = V_REG; o.con = 0; o.name[0] = '\0';
 		o.vtype = P2INT; o.owned = 1; o.reg = ralloc(0);
@@ -1373,17 +1425,14 @@ genrec()
 	 * an undefined local symbol: a diagnostic naming a label the program
 	 * never had.
 	 *
-	 * AND THE INDIRECT FORM CANNOT WORK ON THIS TARGET, which is a
-	 * property of the address space rather than of this pass.  `assign 20
-	 * to lbl' stores a CODE ADDRESS into a Fortran INTEGER; exec.c:554
-	 * requires that variable to be an integer, INTEGER is four bytes here
-	 * (SZLONG, pinned by typesize[TYREAL] and by lengtype), and Mach-O
-	 * loads text above 4GB -- measured, `str w23, [x13]' drops the 1 in
-	 * bit 32 of 0x10001f140.  On a VAX an address and an INTEGER were both
-	 * four bytes and it fit exactly.  Nothing downstream can recover the
-	 * half that was never stored, so this is refused with the reason
-	 * rather than branched into the weeds.  ASSIGN itself works: it is
-	 * only the branch that has nowhere to put the address.
+	 * THE INDIRECT FORM IS IMPLEMENTED BELOW; what an INTEGER holds is not
+	 * the address.  See labelbase() and doassign() above for the encoding
+	 * and the measurement behind it -- this paragraph used to argue that
+	 * the form could not work at all, which was the right diagnosis
+	 * (four bytes cannot hold a Mach-O text address) attached to an
+	 * inference nobody had stated out loud, that the four bytes had to
+	 * hold the address rather than something the branch can turn back
+	 * into one.
 	 */
 	case P2GOTO:
 		if (var) {

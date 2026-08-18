@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2679 cases, 2678 on a host whose $TMPDIR
+make test             # all 17 suites (2686 cases, 2685 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make -C v8 test-wavec # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -2871,6 +2871,80 @@ integer read as a float**, and implicit typing makes it easy to write by
 accident. `name counter too long, truncated to 6` is F77's own six-character
 identifier limit, not a port defect. **Correct the instrument before the code**:
 of twenty programs that "failed", three were mine.
+
+**AND A REVIEW OF THE FINISHED COMPILER FOUND THE LARGEST DEFECT OF ALL, INSIDE
+A SENTENCE THAT WAS TRUE.** `prolog()` said the VAX walked its argument list
+here to copy each slot into the frame, that `prsave()` does that now, and so
+"there is still no walk here". Every clause correct. The VAX walks that list for
+**two unrelated reasons**, and the second -- evaluating each dummy array's
+run-time dimension expressions -- had never existed in this file at all. So
+`integer a(m,n)`, the standard way to pass a matrix in Fortran 77 and the shape
+all of LINPACK is written in, compiled with no diagnostic and **SIGSEGV'd**.
+`src/cmd/f77/PORTING.md`. Six things generalise:
+
+- **A COMMENT THAT IS TRUE ABOUT ONE OF TWO THINGS READS AS TRUE ABOUT BOTH,
+  and the tell is the word "the".** "The walk" named one job in a place doing
+  two. This is the recorded-diagnosis family with the error being **scope**
+  rather than conclusion: not a wrong mechanism, not a wrong inference, an
+  unstated quantifier. Ask of any "X is handled elsewhere" whether X is one
+  thing.
+- **WHEN A FIX IS TRANSCRIBED FROM A SIBLING TARGET, READ THE WHOLE FUNCTION IT
+  CAME FROM.** The step before this one copied `pdp11.c`'s last two statements
+  into `prolog()`; the dimension loop is **twelve lines above them in the same
+  function**. Going to a file for one statement and taking exactly that
+  statement is how the second half of a pair gets left behind.
+- **THE ALLOCATING SIDE GIVES NO SIGNAL THAT THE WRITING SIDE DID NOT HAPPEN.**
+  `proc.c:1120` allocates a temporary per adjustable dimension and leaves the
+  machine file to store into it. A temporary that is read and never written is
+  invisible to every instrument here: it compiles, it links, and the value is
+  whatever the frame held. Grep for the *store* across all targets when a
+  machine file is new -- it was in exactly two of three.
+- **AND THE SILENT HALF IS THE ONE WITHOUT A FAULT.** A missing extent faults; a
+  missing base offset gives **exit 0 and a plausible wrong number**, right by
+  coincidence for some bounds. Two stores, two failure modes, so two cases --
+  and only the one naming values can see the second.
+- **CLOSING A LIMIT REMOVES THE GUARD STANDING IN FRONT OF THE CODE BEHIND IT,
+  SECOND INSTANCE IN ONE SESSION.** Deleting the multiple-ENTRY refusal made
+  reachable an `argdest()` that asked the PROCEDURE's type where `doentry()`
+  asks the ENTRY's -- one word apart, identical whenever there is one entry or
+  the entries agree, and a `real function` with a `complex entry` printed a pair
+  of denormals at **exit 0**. The ninth argument taught this about a callee; this
+  is the same thing about a caller's own next line.
+- **AND A ONE-DIMENSIONAL PROBE CANNOT SEE A TWO-DIMENSIONAL DEFECT.** A 1-D
+  adjustable array is correct without the loop, because nothing multiplies by
+  the first extent. Thirty corpus programs walked past this, all of them using
+  the shape that works. **Ask what the smallest input is that makes a feature's
+  machinery run**, not the smallest that uses the feature.
+
+**AND THE NON-FIRING MUTATION HAS A SIXTH CAUSE: THE INPUT SHAPE DOES NOT
+PRODUCE THE OBJECT THE DEFECT IS IN.** A case guarding a register-pool leak
+summed thirty array elements at **constant** subscripts -- and a constant
+subscript is an OREG at a constant offset, so f1 materialises no base register,
+so there is no owned `V_MEM` to mis-free. The case passed against the bug it was
+written for; `a(1)` to `a(i)` is the entire difference. Distinct from the five
+already recorded (dead code, vacuous assertion, missing consumer, defensive
+code, a clamp defeating the mutation): here the code is live, the assertion is a
+relation, the consumer exists, and the input simply never builds the thing.
+
+**AND THE COMMENT NAMING THE DISCREPANCY WAS BESIDE THE BUG THE WHOLE TIME.**
+`f1.c`'s `struct val` says `reg` is *"V_REG: the register. V_MEM: the base"* --
+and `vfree()` chose the register pool from `vtype`, which for a V_MEM describes
+the object POINTED AT rather than the base. `rfree()` has no not-found arm, so a
+float-typed V_MEM's integer base was searched for in `fpool` and silently not
+freed: **one register leaked per subscripted REAL reference**, ten exhausted the
+pool, and f1 refused a legal program. A field comment that lists two meanings is
+a statement that every consumer must switch on the kind; nobody had.
+
+**AND THE DEAD-ARM DIRECTION OF A TWO-COPY SWEEP CANNOT ALWAYS BE WRITTEN, SO
+SAY SO WHERE THE CHECK IS.** `f77refuse`'s message list is a second copy of one
+that lives in two source files, and it had drifted **both** ways -- an arm no
+source could emit, and two refusals with no arm. The missing-arm direction is
+exact and mechanical (fill in the `%` conversions, require a match) and is now a
+case. The dead-arm direction is not: an arm is deliberately a **fragment** of a
+message and may spell out a word the message leaves to a `%s`, so testing it
+needs the substitution's possible values, which only the call site knows.
+Recorded next to the check rather than left as a silent gap -- the same
+discipline as `cites.awk` printing what it cannot see.
 
 
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable

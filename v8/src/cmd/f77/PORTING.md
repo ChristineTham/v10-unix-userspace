@@ -1185,3 +1185,128 @@ declaration or f77 says *noncharacter entry of character function*, which is its
 own diagnostic and correct. And a predicted output of `4.500000000e+00` was a
 guess: list-directed output prints 4.5 as `4.50000000`. Correct the instrument
 before the code — the standing rate is three per corpus.
+
+## Stage 7e -- what a review of the finished compiler found
+
+Four defects, three of them live, and the largest was hiding inside an accurate
+sentence. Every measurement below is from the built compiler.
+
+**AND THE LARGEST WAS A WALK THAT HAD NEVER EXISTED, DESCRIBED BY A COMMENT
+THAT WAS TRUE ABOUT A DIFFERENT WALK.** `prolog()` carried: *"THE VAX WALKED
+`ep->arglist` HERE COPYING EACH SLOT INTO THE FRAME ... which is why there is
+still no walk here -- but the reason is that the work is done rather than that
+it is somebody else's."* Correct about the argument copy, which `prsave()` does.
+The VAX walks that list for **two unrelated reasons**, and the second is
+evaluating each dummy array's run-time dimension expressions -- `pdp11.c:378-387`
+and `vax.c:404-426`. `arm64.c` had no such loop and contained **zero**
+occurrences of `dimsize`, `basexpr`, `baseoffset` or `vdim`.
+
+- **`proc.c:1120` ALLOCATES THE TEMPORARY AND LEAVES THE MACHINE FILE TO WRITE
+  IT**, so the allocating side gives no signal that the writing side did not
+  happen. Grep finds the store in exactly two places, both of them the other two
+  targets. The temporary was read and never written.
+- **MEASURED: `integer a(m,n)` COMPILED CLEAN AND SIGSEGV'd.** The subscript
+  arithmetic is `ldrsw x24, [x29, #0]` and nothing in the procedure ever stores
+  to `[x29,#0]` -- the only x29-relative stores are the loop variables, and the
+  prologue writes only `[x9,#0..48]` where `x9 = x29+1024`. Four shapes faulted:
+  2-D INTEGER, 2-D REAL, 2-D in a FUNCTION, and bounds from COMMON.
+- **THE VARIABLE LOWER BOUND IS THE WORSE HALF.** The missing `baseoffset` store
+  gives **exit 0 and a plausible wrong number** -- `22 33` where `11 22` is right
+  -- and is right by coincidence for some bounds, so a single-value case cannot
+  see it. Two cases, because the two stores fail differently.
+- **A 1-D ADJUSTABLE ARRAY IS CORRECT WITHOUT EITHER**, because nothing
+  multiplies by the first extent. That is why a thirty-program corpus walked
+  past it: the shape that fails is the one with a second dimension, and every
+  probe written for "does an adjustable array work" used one dimension.
+- **AND THE TRANSCRIPTION STOPPED TWELVE LINES SHORT.** Stage 7d copied
+  `pdp11.c`'s last two statements (`if(typeaddr)` and `putgoto`) into this file.
+  The dimension loop is immediately above them in the same function. **When a
+  fix is transcribed from a sibling target, read the whole function it came
+  from, not the statement you went there for.**
+
+**AND `argdest()` ASKED THE PROCEDURE'S TYPE WHERE `doentry()` ASKS THE
+ENTRY'S -- the same question one word apart, and a silent wrong answer.**
+`proctype` is set once from the **first** entry (`proc.c:173`); `doentry()`,
+which allocated the slots `argdest()` maps onto, reads `np->vtype` per entry
+(`proc.c:367`). Measured: `real function f(x)` with a `complex` `entry g(y)`
+emitted `str x0, [x9, #16]` -- the hidden complex-result pointer into `y`'s
+slot, `cxslot` left holding `&y` from the identity spill, and the real `&y`
+dropped -- printing `(3.587324069e-43, 1.401298464e-45)` for `(4.0, 6.0)`,
+**exit 0**.
+
+- **EXACTLY ONE CELL OF THE MATRIX IS SILENT.** COMPLEX function with a REAL
+  entry kills pass 1 loudly; a CHARACTER mismatch is refused outright by
+  `proc.c:372-380` (*character entry of noncharacter function*), which is also
+  why the TYCHAR arm is a correctness no-op -- when `proctype` is TYCHAR every
+  entry is TYCHAR. It was changed anyway, so nobody has to re-derive that.
+- **WHAT HAD BEEN CATCHING IT IS THE REFUSAL STAGE 7d DELETED.** Pre-7d this
+  program was refused by name. Closing a limit removes the thing standing in
+  front of the code behind it -- the ninth argument's lesson, one step along,
+  and the same session.
+- **`vax.c:369,375` HAS THE IDENTICAL LATENT DEFECT.** This file is not in
+  `PROVENANCE`, so S1 does not bind it to copy upstream's bug.
+
+**AND `prsave()` INDEXED `dest[]` PAST ITS END, BECAUSE THE BOUND RUNS AFTER
+THE FUNCTION IT BOUNDS.** `int dest[MAXARGSLOT]` is 64; `n = lastargslot/SZADDR`
+was unclamped; the identity fill was clamped (`i < n && i < MAXARGSLOT`) and the
+copy loop was not. `prolog()` calls `prsave(ep)` and only refuses afterwards.
+Measured on a 100-argument subroutine: `str x11, [x9, #1795217402]`. **The
+trigger is ordinary Fortran** -- 33 `character*(*)` arguments give 66 slots,
+because each hidden length occupies one.
+
+**AND `vfree()` CHOSE THE REGISTER POOL FROM THE TYPE WHERE ONE KIND MAKES THEM
+DISAGREE.** A `V_MEM`'s `reg` is its **base** -- an address, always integer --
+while `vtype` is the type of the object at that address, and `P2INDIRECT` builds
+exactly that pair. `rfree()` has no not-found arm and the pools are disjoint by
+register number, so a float-typed `V_MEM` sent its integer base to `rfree(1,..)`,
+which searched `fpool`, found nothing and returned silently. **One register
+leaked per subscripted REAL reference**: ten exhausted the ten-entry pool and f1
+**refused a legal program**. `f1.c:169`'s own comment states the discrepancy --
+*"V_REG: the register. V_MEM: the base"* -- and nobody had drawn the consequence.
+Predates stage 7 entirely; it is the invariant stage 7c's register work rests on.
+
+**AND AN `ASSIGNed` LABEL IN AN `INTEGER*2` WAS ACCEPTED AND SILENTLY
+TRUNCATED.** `exec.c` gates ASSIGN on `MSKINT`, which admits `TYSHORT`, and the
+7b interception tests only that the destination is **not a pointer** -- never
+that it is wide enough for the distance. The store is then `strh` and the branch
+reads `ldrsh`. Measured on two 3008-line sources differing in one token: at
+28880 bytes it printed the right answer, at 108080 bytes it SIGSEGV'd, no
+diagnostic at either end. Refused now, and the plain-INTEGER control is what
+says the discriminator is the width rather than ASSIGN itself.
+
+**AND THE CONSUMER SET WAS NEVER ENUMERATED, WHICH IS A STANDING GAP RATHER
+THAN A NEW ONE.** `f1.c` says `ASSIGN` "IS THE ONLY THING IN FORTRAN THAT
+PRODUCES THIS SHAPE", and that is a claim about **producers**. Fortran 77 lets
+an ASSIGNed variable be a FORMAT specifier too, and `io.c:691` -- the arm f77's
+own front end labels *ASSIGNed label* -- hands its value to libI77 as a `char *`
+with nothing adding the base back. `assign 100 to nf / write(6,nf) 42` compiles
+clean and SIGSEGVs. **It did so before the offset encoding existed too**, by
+truncation instead, so the encoding changed the crash's cause and not its
+symptom. Closing it means the FRONT END marking the ASSIGN store rather than
+pass 2 inferring it from the node shape: one opcode number, one emit site in
+`arm64.c`, one read site in `f1.c`, plus an add at the io path. Not done here --
+it is a design decision, and the comment now states the gap instead of the
+false claim.
+
+### Three things about the instruments
+
+- **THE CASE FOR THE POOL FIX WAS VACUOUS AND ONLY MUTATION SAID SO.** It summed
+  thirty elements at **constant** subscripts, and a constant subscript is an
+  OREG at a constant offset -- f1 materialises no base, so there is no owned
+  `V_MEM` to mis-free. The case passed against the bug it was written for.
+  `a(1)` to `a(i)` is the whole difference. Sixth cause for a non-firing
+  mutation: **the input shape does not produce the object the defect is in.**
+- **THE DEAD-ARM DIRECTION OF THE REFUSAL SWEEP CANNOT BE WRITTEN SIMPLY, AND
+  THE SUITE SAYS SO RATHER THAN OMITTING IT SILENTLY.** An arm is deliberately a
+  **fragment** of a message and may spell out a word the message leaves to a
+  `%s` -- `more integer registers than this pass allocates` against
+  `expression needs more %s registers ...`. Testing it needs the substitution's
+  possible values, which only the call site knows. The missing-arm direction is
+  exact and is checked; the other is left to review, with the reason written
+  where the check is.
+- **AND THE FOUR MUTATIONS FIRE 2, 1, 1 AND 1 CASES -- ALL AIMED.** Dropping the
+  dimension walk fires exactly the two dimension cases, `proctype` fires exactly
+  the COMPLEX-entry case, the pool fires exactly the pool case (`real refused
+  int 465`, the INTEGER control discriminating), and dropping the INTEGER*2
+  refusal fires exactly its own. A suite where every mutation fires a dozen
+  cases cannot tell you which guard is load-bearing.

@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2679 tests across 17 suites** guard it.
+assembly. **2686 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5346,6 +5346,46 @@ in at run time, so there is nothing to check and the program links cleanly and
 crashes. An expiry condition that names the wrong instrument is not a tripwire —
 it is a note that will never come due.
 
+
+And then a review of the finished thing found the largest gap of the lot, in a
+sentence rather than in code. `prolog()` — the entry sequence — carried a
+comment saying that the VAX walked its argument list here and that this target
+did not need to, because the register spill had moved elsewhere. That was true.
+What it missed is that the VAX walked that list for *two* unrelated reasons:
+copying arguments into the frame, and evaluating each dummy array's run-time
+dimensions. The first had indeed moved. The second had never existed here at
+all. `proc.c` allocates a temporary per adjustable dimension and leaves the
+machine-dependent file to store the expression into it; ours stored nothing, so
+the temporary was read and never written, and `integer a(m,n)` — the standard
+way to pass a matrix in Fortran 77, the shape all of LINPACK is written in —
+compiled without a diagnostic and died. A one-dimensional adjustable array
+works fine, because nothing multiplies by the first extent, which is why a
+thirty-program corpus walked past it. The fix is eight lines transcribed from
+`pdp11.c`, which had them all along, twelve lines above the two statements this
+file *did* transcribe.
+
+The variable lower bound is the worse half of that one. A missing extent faults;
+a missing base offset does not. It gives exit 0 and a plausible wrong number,
+and it is right by coincidence for some bounds — so only a case that names the
+values can see it at all.
+
+The same review found a silent wrong answer in the multiple-`ENTRY` work
+finished the day before. Deciding which hidden result slots an entry gets, the
+new code asked the *procedure's* type where the allocator had asked each
+*entry's* — the same question, one word apart, indistinguishable in every
+program with one entry and in every program whose entries agree. A `REAL`
+function with a `COMPLEX` entry crossed two operands and printed a pair of
+denormals, exit 0. What had been catching it was the refusal deleted to make
+multiple entries work in the first place: closing a limit removes the thing that
+was standing in front of the code behind it, which is the same shape as the
+ninth argument, one step along.
+
+And one of the cases written to guard the register-pool fix was itself vacuous,
+which only mutation said. It summed thirty array elements at *constant*
+subscripts — and a constant subscript needs no computed base register, so the
+leak it was written for could not occur in it. The program passed against the
+bug. One character, `a(1)` to `a(i)`, is the difference between a test and a
+decoration.
 
 The 1985 code, for its part, has been almost entirely correct. Where it was
 wrong, it was wrong about the machine — that address 0 is readable, that a
