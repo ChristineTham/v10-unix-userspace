@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2703 tests across 17 suites** guard it.
+assembly. **2704 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5646,6 +5646,31 @@ The third turned out to have been fixed already, and the note tracking it still
 described the old state. A record of a defect goes stale in exactly the way a
 comment does, and the only thing that catches it is re-reading the code it
 points at.
+
+### A test whose purpose is to assert that a bug is still there
+
+One of the calendar helpers is four lines long, and the middle one reads a
+filename with a function that has no idea how big the buffer is. A path longer
+than a hundred characters walks off the end of it. That was found by accident,
+when a probe happened to run with a home directory buried deep under a
+temporary path.
+
+It is not this port's bug — the same four lines overran the same hundred bytes
+on the original hardware — and the rule here is that a defect belonging to 1985
+stays. But "stays" is a decision that has to survive the next person who reads
+the file and reaches for the obvious modern fix, so the defect now has a test
+asserting that it is still present. Repairing it becomes a deliberate change
+with a red test attached, rather than a tidy-up nobody notices.
+
+Verifying that test taught something in its own right. The natural way to break
+it is to swap in the bounded read — and that does not compile, because the file
+includes no headers at all and the symbol it would need is undefined. The build
+failed, the suite ran against the binary from before, and reported everything
+passing. A mutation that never got compiled looks exactly like a test correctly
+holding its ground, and the only reason it was caught is that the harness
+prints whether the build succeeded instead of assuming it. Widening the buffer
+instead compiles cleanly, fires the case, and moves the binary's checksum to
+prove the change actually reached it.
 
 ---
 

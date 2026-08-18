@@ -3139,6 +3139,20 @@ would have reported a derived count of zero. `tests/cpp`'s anchor-to-`dirname`
 lesson, arriving in a case rather than in a suite.
 
 
+**AND A MUTATION THAT DOES NOT COMPILE READS AS A GUARD THAT DID NOT FIRE,
+WHICH IS A NEW CAUSE FOR AN OLD SIGNATURE.** `calendar4`'s new case asserts that
+upstream's `gets()` into `char s[100]` STILL overruns -- cb's precedent, so that
+tidying it must be a decision. The obvious mutation is `fgets(s, sizeof s,
+stdin)`, and it does not build: `calendar4.c` includes nothing, so `stdin` is
+undefined. `make` failed, `wavea` ran against the STALE binary, and reported
+449 passed -- a textbook false "the mutation was too weak". The recorded causes
+are the same-second trap and watching the wrong artefact; this is a third, and
+the only thing that caught it was the harness printing the build result rather
+than assuming it. **Check that the mutation BUILT, not merely that the sources
+changed** -- and prefer a mutation that compiles: widening the buffer to 4096
+fires the case cleanly, with the artefact hash moving to prove it.
+
+
 **AND THE OTHER TWO UNREPRODUCED INTERMITTENTS ARE INSTRUMENTED NOW, WHICH IS
 WHAT THE icheck ONE JUST DEMONSTRATED THE VALUE OF.** Three tasks recorded a
 one-off failure that never came back; in every case the run that saw it threw

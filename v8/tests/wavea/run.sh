@@ -2202,6 +2202,34 @@ check 'and not a date months away' 'no' \
 # which is the access(2) pair.  The negative half is what discriminates.
 check 'calendar4 keeps a readable file' '/etc/passwd' \
     "$(printf '/etc/passwd\n/nonexistent\n' | "$V8ROOT/usr/lib/calendar4" 2>&1)"
+# AND IT STILL OVERRUNS ITS 100-BYTE BUFFER, WHICH IS ASSERTED SO THAT FIXING
+# IT MUST BE A DECISION.  calendar4 is four lines and the middle one is
+# `while(gets(s))' into `char s[100]' -- gets(3) has no bound, so a path longer
+# than the buffer walks off it.  Measured, with no file involved at all because
+# the overrun happens in the READ: 85, 95, 100 and 105 characters exit 0; 115
+# and 135 die on signal 10, SIGBUS.  205 here, comfortably past any stack
+# slack.
+#
+# UPSTREAM'S OWN ON UPSTREAM'S HARDWARE, so S1 says record rather than repair:
+# a VAX overran the same 100 bytes for the same input, and 100 is a bare number
+# rather than arithmetic on DIRSIZ, so raising DIRSIZ did not create it.  Nor
+# is it reachable in the world this port ships, where v8launch.sh gives every
+# user a home of /usr/<name> -- it was found only because a probe put $HOME
+# under the session scratchpad, which is 130 characters.
+#
+# cb's precedent: a case whose whole purpose is to assert that a bug is STILL
+# THERE, so that tidying `gets' into `fgets' has to be a deliberate change to
+# authentic source rather than a drive-by.  THE SIGNAL RATHER THAN THE STATUS,
+# because a program may exit(138) itself -- the crash probe's own lesson -- and
+# `died on a signal' rather than `died on 10', because the claim is that the
+# overrun is still there and not which fault the stack layout produces.  The
+# case above is the control: a short path must still work, or a calendar4 that
+# crashed on everything would pass this one.
+check 'calendar4 still overruns its 100-byte buffer' 'signal' \
+    "$(long=$(awk 'BEGIN{s="/tmp/"; while(length(s)<205) s=s "c"; print s}')
+       ( printf '%s\n' "$long" | "$V8ROOT/usr/lib/calendar4" >/dev/null 2>&1 )
+       st=$?
+       if [ $((st & 127)) -ne 0 ]; then echo signal; else echo "exited $st"; fi)"
 
 # newgrp, showq, dmesg: the three that install OUTSIDE /usr/bin.  Their
 # destinations are DERIVED from Bell Labs' tables (newgrp in Admin/binfiles,
