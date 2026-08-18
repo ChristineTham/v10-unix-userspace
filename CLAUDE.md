@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2673 cases, 2672 on a host whose $TMPDIR
+make test             # all 17 suites (2674 cases, 2673 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make -C v8 test-wavec # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -2749,6 +2749,44 @@ different messages. `src/cmd/f77/PORTING.md`. Four things generalise:
   the three cases written for the argument area, and `F77FRAME` fires exactly
   one. **A suite where every mutation fires a dozen cases cannot tell you which
   guard is load-bearing.**
+
+**AND THE SECOND LIMIT WENT THE SAME WAY, BY FINDING THE ASSUMPTION INSIDE A
+REFUSAL THAT WAS OTHERWISE ACCURATE.** An assigned GOTO works now. The refusal
+said a code address does not fit in a four-byte Fortran INTEGER, which is true
+and measured (`str w23, [x13]` drops the 1 in bit 32 of `0x10001f140`) -- and it
+**assumed the four bytes had to hold the ADDRESS**. They only have to hold
+something the branch can turn back into one, so they hold `target - Lf1b<proc>`,
+a label `/lib/f1` emits at the head of each procedure. `src/cmd/f77/PORTING.md`.
+Four things:
+
+- **A REFUSAL'S DIAGNOSIS AND ITS CONCLUSION ARE TWO CLAIMS, AND ONLY ONE OF
+  THEM WAS CHECKED.** This is the compensating-error shape (`Tunlink`, 5h) with
+  the error being an omission rather than a workaround: every clause was true,
+  and the inference from them was never stated out loud, so nothing invited
+  re-reading it. Third member of the family after the `ttldioc` comment that got
+  the mechanism right and called the consequence "politeness", and `link` being
+  refused on a reason the same file had already overruled twice.
+- **COMPUTE THE DIFFERENCE AT RUN TIME, NOT IN THE ASSEMBLER.** `L13 - Lf1b1` is
+  a constant only if the two labels share a section, and `f77pass1` writes its
+  constant pool into `__DATA,__const` interleaved with this pass's text -- so
+  that is a question rather than a fact. Two `adrp`/`add` pairs and a `sub` ask
+  the assembler nothing. The tidier-looking spelling is the one that breaks.
+- **THE DISCRIMINATOR IS THE SHAPE, NOT THE NAME.** A label address is `ICON 0
+  type int * name "L13"` and so is a FORMAT string (`L14`/`L15` are `do_lio`
+  arguments in the same dump), so matching `L` plus digits does not separate code
+  from data. What does is that the destination is NARROWER than the source: every
+  other Fortran assignment has a source at least as wide as its destination, so
+  a pointer going into a four-byte integer is ASSIGN and nothing else.
+- **AND TWO INSTRUMENTS WERE WRONG BEFORE THE CODE WAS, BOTH SILENT AND BOTH
+  PRINTING AN EMPTY STRING** -- the standing rate, and the standing failure
+  direction. A case called `f77refuse`, which is defined LATER IN THE SAME FILE,
+  so the call expanded to nothing; and an awk counted into a variable named
+  `sub`, which is **awk's own substitution function**, making the program a
+  syntax error that prints nothing at all. `got []` reads exactly like a compiler
+  that produced no output. Both were separated from real defects by running the
+  program by hand and watching it print the right answer. Add to the empty-output
+  list beside a wrong path, a wrong PATH and a non-zero exit status: **a shell
+  function called above its definition, and an awk built-in used as a variable.**
 
 **AND THE THREE TEST-PROGRAM BUGS ARE WORTH KNOWING, because two of them look
 exactly like compiler defects.** A result of `2.101947696e-44` is the integer 15

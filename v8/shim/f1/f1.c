@@ -190,6 +190,10 @@ static int	vsp;
 static int	lstack[NSTACK];
 static int	lsp;
 
+/* THE PROCEDURE NUMBER, FROM LBRACKET, WHICH NAMES THE BASE LABEL AN ASSIGNED
+   GOTO MEASURES FROM.  See labelbase() below. */
+static int	curproc;
+
 static FILE	*in;
 static int	dumping;	/* -d: report the stream instead of compiling */
 static long	word;
@@ -954,6 +958,37 @@ docall(hasargs)
  * assuming eight is what keeps a Fortran INTEGER four bytes all the way to the
  * store -- and what keeps a POINTER eight.
  */
+/*
+ * `ASSIGN 20 TO lbl' STORES A CODE ADDRESS IN A FOUR-BYTE INTEGER, AND THE WAY
+ * TO MAKE THAT FIT IS TO STORE AN OFFSET RATHER THAN AN ADDRESS.
+ *
+ * exec.c:554 requires the ASSIGN variable to be an integer, INTEGER is four
+ * bytes here (SZLONG, pinned by typesize[TYREAL] and by lengtype), and Mach-O
+ * loads text above 4GB -- measured, `str w23, [x13]' drops the 1 in bit 32 of
+ * 0x10001f140.  On a VAX an address and an INTEGER were both four bytes and it
+ * fit exactly, which is why upstream needs no mechanism here at all.
+ *
+ * So the four bytes hold `target - Lf1b<proc>', the distance from a label this
+ * pass emits at the head of each procedure, and the branch adds it back.  Two
+ * properties make that exact rather than approximate: the difference of two
+ * addresses in one image fits in 32 bits by construction (a Mach-O image is far
+ * below 2GB), and BOTH ENDS COMPUTE IT AT RUN TIME from adrp/add pairs -- so it
+ * does not depend on the two labels sharing a section, which f77pass1's
+ * interleaved constant pool would otherwise make a question.
+ *
+ * The alternative was an index into a table of `.quad L13', which is what the
+ * computed GOTO does.  It needs per-procedure state (the set of labels ASSIGNed
+ * to, collected until RBRACKET) and a second relocation-bearing table in
+ * __DATA,__const.  This needs neither, and no state beyond the procedure number.
+ */
+static void
+labelbase(r)
+	int r;
+{
+	printf("\tadrp\tx%d, Lf1b%d@PAGE\n", r, curproc);
+	printf("\tadd\tx%d, x%d, Lf1b%d@PAGEOFF\n", r, r, curproc);
+}
+
 static struct val
 doassign()
 {
@@ -964,6 +999,27 @@ doassign()
 	lhs = vpop();
 	flt = isflt(lhs.vtype);
 	c = isdbl(lhs.vtype) ? 'd' : 's';
+
+	/* AN ADDRESS GOING INTO A NARROWER INTEGER IS `ASSIGN n TO v', AND IT IS
+	   THE ONLY THING IN FORTRAN THAT PRODUCES THIS SHAPE -- every other
+	   assignment has a source at least as wide as its destination.  Without
+	   this the store below is `str w', which keeps the low half of a text
+	   address and discards the half that says which 4GB it was in.  See
+	   labelbase() above for why an offset is stored instead. */
+	if (!flt && isptr(rhs.vtype) && !isptr(lhs.vtype)) {
+		struct val o;
+
+		o.kind = V_REG; o.con = 0; o.name[0] = '\0';
+		o.vtype = P2INT; o.owned = 1; o.reg = ralloc(0);
+		addrinto(&rhs, o.reg);
+		labelbase(SCRATCHC);
+		printf("\tsub\tx%d, x%d, x%d\n", o.reg, o.reg, SCRATCHC);
+		/* Kept sign-extended, which is what every other int here is and
+		   what the `ldrsw' at the branch expects to read back. */
+		printf("\tsxtw\tx%d, w%d\n", o.reg, o.reg);
+		vfree(&rhs);
+		rhs = o;
+	}
 
 	/* AS the destination's type, not merely into a register: `d = r' and
 	   `i = r' both cross a width here, and the store below names a register
@@ -1237,6 +1293,16 @@ genrec()
 	case P2LBRACKET:
 		if (!getword(&w))
 			w = 0;
+		/* THE BASE AN ASSIGNED GOTO MEASURES FROM.  Emitted here because
+		   this record is the head of the procedure -- the stream opens
+		   `PASS ".text"' then LBRACKET -- so the label lands in the text
+		   section ahead of the body.  One local label per procedure,
+		   whether or not anything ASSIGNs: naming it from the procedure
+		   number is what lets the two USE sites agree without either
+		   knowing the other exists.  `Lf1b' cannot collide with pass 1,
+		   whose labels are L followed by digits. */
+		curproc = type;
+		printf("Lf1b%d:\n", curproc);
 		/* `var' IS THE NUMBER OF REGISTER VARIABLES PASS 1 TOOK, and it
 		   opens every procedure, so the pool is sized per procedure
 		   rather than at the worst case.  Clamped rather than trusted:
@@ -1288,14 +1354,21 @@ genrec()
 	case P2GOTO:
 		if (var) {
 			printf("\tb\tL%d\n", type);
-			vreset();
 		} else {
-			fprintf(stderr,
-    "f1: an assigned GOTO needs a code address in a Fortran INTEGER,\n");
-			fprintf(stderr,
-    "    which is 4 bytes here while this target's text is above 4GB\n");
-			exit(2);
+			/* The value is the offset doassign() stored; add the
+			   base back and branch through it.  `br' rather than
+			   `blr': an assigned GOTO is a jump, not a call. */
+			struct val g;
+
+			g = vpop();
+			into(&g, SCRATCHB);
+			labelbase(SCRATCHC);
+			printf("\tadd\tx%d, x%d, x%d\n",
+			    SCRATCHB, SCRATCHB, SCRATCHC);
+			printf("\tbr\tx%d\n", SCRATCHB);
+			vfree(&g);
 		}
+		vreset();
 		break;
 
 	/* A NAME'S `var' FIELD IS A FLAG, NOT A REGISTER NUMBER, AND WHEN IT IS

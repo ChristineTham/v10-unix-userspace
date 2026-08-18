@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2673 tests across 17 suites** guard it.
+assembly. **2674 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5154,6 +5154,40 @@ value cases and left the structural one green. The two check different things.
 The values check that the arguments are *placed*; the structure checks that the
 frame is *big enough to hold them*. Both are needed, and my explanation had
 credited one with the other's job. The comment now says what was measured.
+
+The second limit went the same way — by noticing that the refusal contained an
+assumption nobody had examined.
+
+Fortran's `ASSIGN 20 TO lbl` puts a code address into an integer variable, and
+then `GOTO lbl` branches to it. On a VAX an address and an `INTEGER` were both
+four bytes, so this cost nothing and needed no mechanism. Here `INTEGER` is
+still four bytes — it has to be, for reasons pinned three ways — and macOS loads
+program text above the 4GB line. The address does not fit. I had written the
+refusal myself, and it is accurate: measured, storing one drops the `1` in bit
+32 of `0x10001f140`.
+
+What it assumed is that the four bytes had to hold *the address*. They only have
+to hold something the branch can turn back into one. So the compiler now emits a
+label at the head of each procedure, stores the **distance** from it, and adds
+it back at the branch. Both ends compute that distance at run time from two
+address-forming instruction pairs, which means it does not depend on the two
+labels living in the same section — and they might not, because the front end
+interleaves its constant pool with the code the second pass produces.
+
+There is a tidier-looking version where the assembler computes the difference,
+and it is the one that would have broken. There is also a heavier version — an
+index into a table of addresses, which is what the *computed* `GOTO` already
+does — and it needs per-procedure bookkeeping and a second relocatable table.
+The subtraction needs neither.
+
+Then two of my own test instruments were wrong before any of the code was, and
+both failed by printing nothing. One case called a shell function defined later
+in the same file, so the call expanded to the empty string. The other counted
+into an awk variable named `sub` — awk's own substitution function — so the
+program was a syntax error and awk printed nothing. Empty output reads exactly
+like a compiler that produced nothing. What separated *my instrument is broken*
+from *the compiler is broken* was running the program by hand and watching it
+print the right answer.
 
 ---
 

@@ -3530,16 +3530,59 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
       write(6,*) "ok"
    20 continue
       end')"
-	# AND THE BRANCH IS REFUSED WITH ITS REAL REASON.  An assigned GOTO
-	# needs a code address in a Fortran INTEGER; that is four bytes here
-	# and Mach-O loads text above 4GB, so the address cannot be stored.
-	# Before the GOTO record's `var' flag was read this emitted `b L4' --
-	# P2INT is 4 -- and the assembler reported an undefined label, naming
-	# something the program never had.
-	check 'f77: an assigned GOTO is refused, naming the address width' 'yes' \
-	    "$(cd f77p1w && printf '      program ch\n      assign 20 to lbl\n      goto lbl\n   20 continue\n      end\n' > ch.f
-	       "$V8ROOT/usr/bin/f77" ch.f -o ch 2>&1 |
-	       grep -q 'code address in a Fortran INTEGER' && echo yes)"
+	# THE ASSIGNED GOTO BRANCHES, AND WHAT IT STORES IS NOT AN ADDRESS.  It
+	# needs a code address in a Fortran INTEGER; that is four bytes here and
+	# Mach-O loads text above 4GB, so what the variable holds is the
+	# DISTANCE from a label /lib/f1 emits at the head of each procedure, and
+	# the branch adds it back.  Both ends compute it at run time from
+	# adrp/add pairs, so it does not depend on the two labels sharing a
+	# section.  Before the GOTO record's `var' flag was read this emitted
+	# `b L4' -- P2INT is 4 -- and the assembler reported an undefined label,
+	# naming something the program never had.
+	#
+	# THREE TARGETS AND NOT ONE, because a single-target case cannot tell a
+	# working branch from one that falls through to the next statement --
+	# which is where the only label is.  Reassignment is what makes it a
+	# branch on the VARIABLE rather than on the last ASSIGN seen.
+	check 'f77: an assigned GOTO branches, to each of three targets' ' 1 1| 2 2| 3 3|' \
+	    "$(f77run ag '      do 5 i = 1,3
+         call hop(i)
+    5 continue
+      end
+      subroutine hop(k)
+      integer lbl, k, n
+      assign 30 to lbl
+      if (k .eq. 1) assign 10 to lbl
+      if (k .eq. 2) assign 20 to lbl
+      goto lbl, (10,20,30)
+   10 n = 1
+      goto 40
+   20 n = 2
+      goto 40
+   30 n = 3
+   40 write(6,*) k, n
+      return
+      end')"
+	# AND THE STRUCTURAL HALF: what reaches the variable must not be an
+	# address.  The value case above cannot see a truncating store -- a
+	# `str w' of a text address keeps the low half, and if the branch added
+	# the base to THAT it would still be wrong by a whole 4GB, which faults
+	# rather than printing a wrong number, so a green value case and a
+	# crash are the only two outcomes and the case cannot distinguish the
+	# mechanism.  What discriminates is that the difference is taken at all:
+	# a `sub' of two run-time addresses must precede the store, and the
+	# branch must add one back.  Derived from the emitted code.
+	check 'f77: the assigned label is stored as a difference, not an address' 'sub 1 add 1 br 1' \
+	    "$(cd f77p1w && printf '      integer lbl\n      assign 20 to lbl\n      goto lbl\n   20 continue\n      end\n' > chs.f
+	       rm -f chs.s
+	       "$V8ROOT/usr/bin/f77" -S chs.f >/dev/null 2>&1
+	       awk '/^Lf1b[0-9]+:/ { b = 1 }
+	            /adrp[[:blank:]]+x[0-9]+, Lf1b[0-9]+@PAGE/ { seen = 1; next }
+	            seen && /sub[[:blank:]]+x[0-9]+, x[0-9]+, x[0-9]+/ { nsub++; seen = 0; next }
+	            seen && /add[[:blank:]]+x[0-9]+, x[0-9]+, x[0-9]+/ { nadd++; seen = 0; next }
+	            /br[[:blank:]]+x[0-9]+/ { nbr++ }
+	            END { if (!b) print "no base label emitted"
+	                  else printf "sub %d add %d br %d\n", nsub+0, nadd+0, nbr+0 }' chs.s)"
 	# the two controls: the direct and computed forms still branch
 	check 'f77: a direct GOTO still works' ' right|' \
 	    "$(f77run cj '      program cj
@@ -3879,7 +3922,7 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# tests/kmemu asserts that w(1) says `No mem'.
 
 else
-	fail=$((fail+68)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+69)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism

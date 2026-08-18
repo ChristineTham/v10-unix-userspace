@@ -988,3 +988,82 @@ Four more things:
   to hold them* — and the mutation that fires the second is shrinking `F77FRAME`
   back to the eight-slot size, which fires it and one other case and nothing
   else.
+
+
+## Stage 7b: the assigned GOTO, where the stored value stopped being an address
+
+The second of the four is gone. `ASSIGN 20 TO lbl` stores a **distance** rather
+than an address, and the branch adds it back.
+
+The obstacle was real and the old refusal states it correctly: `exec.c:554`
+requires the ASSIGN variable to be an integer, INTEGER is four bytes here, and
+Mach-O loads text above 4GB — measured, `str w23, [x13]` drops the 1 in bit 32
+of `0x10001f140`. On a VAX an address and an INTEGER were both four bytes and it
+fit exactly, which is why upstream needs no mechanism at all.
+
+**WHAT THE REFUSAL ASSUMED IS THAT THE FOUR BYTES HAD TO HOLD THE ADDRESS.** They
+only have to hold something the branch can turn back into one. `/lib/f1` emits
+`Lf1b<proc>` at the head of each procedure — the stream opens `PASS ".text"` and
+then LBRACKET, so the label lands in the text section ahead of the body — and
+the four bytes hold `target - Lf1b<proc>`:
+
+```
+	adrp	x23, L13@PAGE		; the target
+	add	x23, x23, L13@PAGEOFF
+	adrp	x14, Lf1b1@PAGE		; the base
+	add	x14, x14, Lf1b1@PAGEOFF
+	sub	x23, x23, x14		; a distance, which fits
+	sxtw	x23, w23
+...
+	ldrsw	x13, [x13]		; and the branch adds it back
+	adrp	x14, Lf1b1@PAGE
+	add	x14, x14, Lf1b1@PAGEOFF
+	add	x13, x13, x14
+	br	x13
+```
+
+Four things:
+
+- **BOTH ENDS COMPUTE THE DIFFERENCE AT RUN TIME, which is what makes it
+  independent of sections.** The alternative spelling is an assembler expression
+  `L13 - Lf1b1`, which is a constant only if the two labels are in the same
+  section — and `f77pass1` writes its constant pool into `__DATA,__const`
+  directly, interleaved with the text this pass produces, so that is a question
+  rather than a fact. Two `adrp`/`add` pairs and a `sub` ask nothing of the
+  assembler.
+- **THE ALTERNATIVE WAS AN INDEX INTO A TABLE, which is what the computed GOTO
+  does, and it costs more.** It needs per-procedure state — the set of labels
+  ASSIGNed to, collected until RBRACKET — and a second relocation-bearing table
+  in `__DATA,__const`. The difference needs neither, and no state beyond the
+  procedure number LBRACKET already carries.
+- **THE DISCRIMINATOR AT THE ASSIGN IS THE SHAPE, NOT THE NAME.** A label
+  address arrives as `ICON 0 type int * name "L13"`, and so does a FORMAT
+  string — `L14`/`L15` in the same dump are `do_lio` arguments — so matching `L`
+  followed by digits would not separate code from data. What does is that the
+  destination is *narrower than the source*: an address going into a four-byte
+  integer is `ASSIGN` and nothing else in Fortran, because every other
+  assignment has a source at least as wide as its destination.
+- **AND THE VALUE CASE CANNOT SEE THE MECHANISM.** A truncating store followed by
+  adding the base gives an address wrong by a whole 4GB, which faults rather than
+  printing a wrong number — so a green value case and a crash are the only two
+  outcomes and neither names the cause. The structural case asserts that the
+  difference is *taken*: a `sub` of two run-time addresses before the store, an
+  `add` of one back before the `br`, derived from the emitted code. Measured:
+  reverting either the store or the add fires both cases; dropping the base label
+  fires those two and the pre-existing bare-`ASSIGN` case, because nothing links.
+
+**AND TWO INSTRUMENTS WERE WRONG BEFORE THE CODE WAS, BOTH FAILING SILENT AND
+BOTH PRODUCING AN EMPTY STRING.** The value case called `f77refuse`, which is
+defined **later in the same file** — a shell function must be defined before it
+is called, so the call expanded to nothing and the case reported `got []`, which
+reads exactly like a compiler that produced no output. And the structural case's
+awk counted into a variable named `sub`, which is **awk's own substitution
+function**, so `sub++` is a syntax error and awk printed nothing at all. Both
+were found by running the program by hand and getting the right answer, which is
+the only thing that separates *my instrument is broken* from *the compiler is
+broken*.
+
+The three-target case is deliberately not a one-target case: with a single
+label, a branch that fell through to the next statement would land on it anyway,
+so the case could not tell a working branch from no branch. Reassignment is what
+makes it a branch on the *variable* rather than on the last `ASSIGN` seen.
