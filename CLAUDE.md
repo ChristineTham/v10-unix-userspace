@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2222 cases, 2221 on a host whose $TMPDIR
+make test             # all 17 suites (2673 cases, 2672 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make -C v8 test-wavec # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -2700,6 +2700,55 @@ link. **Enumerate every binary a file can reach before trusting a rebuild
 check**, and note that this is the second distinct way that check has been wrong
 in one session; the first was the baseline being observed rather than
 established.
+
+**AND THE FIRST OF THE FOUR REMAINING LIMITS IS GONE, WHICH IS WHERE THE
+INTERESTING FINDING WAS: A REFUSAL AT ONE END WAS THE ONLY THING KEEPING THE
+OTHER END'S SILENCE INVISIBLE.** A ninth argument now passes; `MAXARGSLOT` is 64
+slots, `prsave()` reserves a call area below `x29` and copies the incoming
+arguments down beside the register ones, and 65 is refused at BOTH ends with two
+different messages. `src/cmd/f77/PORTING.md`. Four things generalise:
+
+- **A GUARD ON THE CALLER IS NOT A GUARD ON THE CALLEE, AND IT MADE THE CALLEE
+  UNTESTABLE.** `putpcc.c` addresses parameter *n* at `ARGOFFSET + n` for every
+  *n*; `prsave()` spilled `x0`-`x7` and stopped. So a nine-parameter subroutine
+  read its ninth parameter's ADDRESS at `ARGOFFSET+64` — which, with the old
+  frame, was the same number the epilogue unwinds with, i.e. **the slot holding
+  the saved `d14`/`d15`** — and stored through it. It compiled clean and nothing
+  could reach it, because `/lib/f1` would not emit a call that wide. This is the
+  seam rule (*a guard on a seam is not a guard on what crosses it*) with the two
+  ends being two PROGRAMS, and with the sharper consequence that **the guard is
+  what removed the only input that could have exercised the defect**. Ask of any
+  refusal what it makes unreachable.
+- **TWO BOUNDS THAT HAPPEN TO BE EQUAL ARE NOT A RELATION, AND THE DIAGNOSTIC
+  NAMES THE WRONG RESOURCE WHEN ONE MOVES.** `NSTACK` was a bare 64 and
+  `MAXARGSLOT` is 64. A call occupies one value-stack slot per argument plus one
+  for the callee, so the widest call the frame can express needed 65 — and
+  raising the argument bound made the value stack the binding limit, reporting
+  `expression stack overflow` for a program whose expressions are all one term.
+  Written as `(MAXARGSLOT + 64)` now. Same family as `sys/fblk.h` measuring 716
+  by coincidence and `struct(1)`'s `after` being declared two ways while `VERT`
+  was `int`: **right by an accident of two numbers coinciding, and invisible
+  until one of them moves.**
+- **AND THE NEW STRUCTURAL CASE GUARDS A DIFFERENT PROPERTY FROM THE ONE ITS
+  COMMENT CLAIMED, WHICH ONLY MUTATION SAID.** The case asserts that no
+  `[x29,#M]` the body emits reaches the `add sp, x29, #N` the epilogue unwinds
+  with — nothing transcribed, both numbers read out of the emitted code. Its
+  comment justified it by saying the value cases could not see the defect,
+  because a wild pointer faults rather than computing a wrong number. Measured:
+  dropping the copy loop fires **all three value cases and leaves the structural
+  one green**, because with the frame now large enough the ninth parameter is
+  inside it whether or not anything wrote there. So the two are *the arguments
+  are placed* and *the frame is big enough to hold them*, and the mutation that
+  fires the second is shrinking `F77FRAME` back — which fires it and one other
+  and nothing else. **A guard whose stated reason is another guard's job is one
+  nobody will re-aim when that other guard changes.**
+- **A MUTATION THAT FIRES 43 CASES AND ONE THAT FIRES 3 ARE DIFFERENT
+  MEASUREMENTS, AND THE FRAME MUTATION SHOWED WHY.** Putting `x29` back at `sp`
+  broke `goret`'s unwind and took out 43 of 422 — which says the code matters
+  and nothing about aim. The copy loop and the caller's `str` each fire exactly
+  the three cases written for the argument area, and `F77FRAME` fires exactly
+  one. **A suite where every mutation fires a dozen cases cannot tell you which
+  guard is load-bearing.**
 
 **AND THE THREE TEST-PROGRAM BUGS ARE WORTH KNOWING, because two of them look
 exactly like compiler defects.** A result of `2.101947696e-44` is the integer 15

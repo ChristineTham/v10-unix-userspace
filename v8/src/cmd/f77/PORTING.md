@@ -924,3 +924,67 @@ failure mode is that it quietly stops refusing.
 The mutations that validate them are the ones that make each **stop** refusing:
 raise the argument cap, raise the ENTRY cap, and make `ralloc()` reuse a
 register instead of exiting. Each fires on exactly the case written for it.
+
+
+## Stage 7: the ninth argument, and the silence the refusal was hiding
+
+The first of the four is gone. `MAXARGSLOT` in `arm64defs` is 64 argument slots,
+`prsave()` reserves a call area below `x29` for the outgoing half and copies the
+incoming half down beside the register arguments, and `/lib/f1` writes the slots
+past the eighth. A 64-argument subroutine runs; a 65th slot is refused at both
+ends, with two different messages.
+
+**AND THE CALLEE HALF WAS SILENTLY WRONG, WITH THE CALLER'S REFUSAL THE ONLY
+THING KEEPING IT INVISIBLE.** `putpcc.c` addresses parameter *n* at
+`ARGOFFSET + n` from `ARGREG` for **every** *n*; `prsave()` spilled `x0`-`x7`
+and stopped. So the ninth parameter was read at `ARGOFFSET+64`, which with the
+old `F77FRAME` was `ARGOFFSET+64` exactly — the same number the epilogue unwinds
+with, i.e. `entry_sp-160`, **the slot the last `stp` wrote `d14`/`d15` into**.
+Measured on `subroutine s9(a,b,c,d,e,f,g,h,i)` compiled alone:
+
+```
+	ldr	x23, [x29, #1088]	; the address of i, out of the saved d14
+	...
+	str	w26, [x23, #0]		; and a store through it
+	...
+	add	sp, x29, #1088		; the same 1088 -- this IS the frame top
+```
+
+It compiled clean and no test could reach it, because nothing could emit a call
+with nine arguments. **A guard on the caller is not a guard on the callee**, and
+here it was what made the callee untestable — the same shape as a guard on a
+seam not being a guard on what crosses it, with the two ends being two programs.
+
+Four more things:
+
+- **THE VALUE STACK WAS A BARE 64 AND `MAXARGSLOT` IS 64, WHICH WAS A
+  COINCIDENCE RATHER THAN A RELATION.** A call occupies one `vstack` slot per
+  argument plus one for the callee, so the widest call the frame can express
+  needs 65 and `NSTACK` was one short. Raising the argument bound made *this*
+  the binding limit and the diagnostic then named the wrong resource:
+  `expression stack overflow` for a program whose expressions are all one term.
+  `NSTACK` is `(MAXARGSLOT + 64)` now, so the two move together. Same family as
+  `sys/fblk.h` measuring 716 by coincidence — right until one of the two numbers
+  moves.
+- **THE CALL AREA GOES BELOW `x29`, NOT AT IT.** AAPCS64 states a call's ninth
+  argument at `[sp,#0]`, and `mov x29, sp` made that address the **first auto**.
+  So the frame is enlarged by `F77CALL` and `x29` lifted off the bottom with
+  `add x29, sp, #F77CALL`; everything else is stated from `x29` and does not
+  move, and `goret()` needed no change at all. `f1.c` never names `sp`, measured,
+  so the caller half cost one `str` per slot.
+- **THE COUNT IS UPSTREAM'S OWN SPELLING.** `lastargslot/SZADDR` is what
+  `vax.c`'s `prolog()` already stores at `(ap)`, and `nextarg()` has finished by
+  the time `procode()` calls `prolog()`. So `prsave()` reads the global rather
+  than growing a parameter.
+- **AND THE STRUCTURAL CASE DOES NOT GUARD WHAT ITS FIRST COMMENT CLAIMED.** It
+  asserts that no `[x29,#M]` the body emits reaches the `add sp, x29, #N` the
+  epilogue unwinds with — two numbers read out of the emitted code, nothing
+  transcribed. The comment said the value cases could not see the defect because
+  a wild pointer faults rather than computing a wrong number. **Mutation says
+  otherwise**: dropping the copy loop fires all three value cases and leaves the
+  structural one green, because with the frame now large enough the ninth
+  parameter is inside it whether or not anything wrote there. The two guard
+  different properties — *the arguments are placed* and *the frame is big enough
+  to hold them* — and the mutation that fires the second is shrinking `F77FRAME`
+  back to the eight-slot size, which fires it and one other case and nothing
+  else.

@@ -132,11 +132,16 @@ double realcon[6] =
  * them and AAPCS64 requires the low 64 bits of v8-v15 to be preserved.  Ten x
  * registers is SAVESPACE, which arm64defs already said was 80 bytes.
  */
-#define F77FRAME (ARGOFFSET + 64)	/* autos, then the eight spilled arguments */
+#define F77SAVE 160	/* the ten stp pairs below, sixteen bytes each */
+#define F77ARGS (SZADDR*MAXARGSLOT)		/* the spilled-argument area */
+#define F77CALL (SZADDR*(MAXARGSLOT-8))		/* outgoing slots nine and up */
+#define F77FRAME (ARGOFFSET + F77ARGS)	/* autos, then the spilled arguments */
 
 prsave(proflab)
 int proflab;
 {
+int i, n;
+
 p2pass("\tstp\tx29, x30, [sp, #-16]!");
 p2pass("\tstp\tx19, x20, [sp, #-16]!");
 p2pass("\tstp\tx21, x22, [sp, #-16]!");
@@ -147,8 +152,15 @@ p2pass("\tstp\td8, d9, [sp, #-16]!");
 p2pass("\tstp\td10, d11, [sp, #-16]!");
 p2pass("\tstp\td12, d13, [sp, #-16]!");
 p2pass("\tstp\td14, d15, [sp, #-16]!");
-p2pi("\tsub\tsp, sp, #%d", F77FRAME);
-p2pass("\tmov\tx29, sp");
+/* THE CALL AREA SITS BELOW x29 RATHER THAN AT IT, which is the whole of the
+   outgoing half.  AAPCS64 puts a call's ninth and later arguments at [sp,#0],
+   and with `mov x29, sp' that address was [x29,#0] -- the first auto.  So
+   /lib/f1 could not have written one without destroying a temporary, and the
+   frame is enlarged by F77CALL with x29 lifted off the bottom instead.
+   Everything else here is stated from x29 and does not move; goret() reads
+   F77FRAME from x29 and needs no change at all. */
+p2pi("\tsub\tsp, sp, #%d", F77FRAME + F77CALL);
+p2pi("\tadd\tx29, sp, #%d", F77CALL);
 /* THE SPILL GOES THROUGH A SCRATCH REGISTER RATHER THAN DIRECTLY, because stp's
    immediate is a signed 7-bit field scaled by 8 -- reaching only +504 -- and
    ARGOFFSET is deliberately larger than that.  `stp x0, x1, [x29, #1024]' is
@@ -159,6 +171,30 @@ p2pass("\tstp\tx0, x1, [x9, #0]");
 p2pass("\tstp\tx2, x3, [x9, #16]");
 p2pass("\tstp\tx4, x5, [x9, #32]");
 p2pass("\tstp\tx6, x7, [x9, #48]");
+
+/* AND THE NINTH ARGUMENT ONWARD IS COPIED DOWN BESIDE THEM, so that putpcc.c's
+   single rule -- parameter n lives at ARGOFFSET + n from ARGREG -- is true of
+   every parameter rather than of the first eight.  Without this the ninth was
+   read at ARGOFFSET+64, which is entry_sp-F77SAVE, the slot holding the saved
+   d14/d15: measured, `subroutine s9(a,b,c,d,e,f,g,h,i)' loaded a callee-saved
+   floating-point register as the address of `i' and stored through it.
+
+   The count is lastargslot/SZADDR, which is upstream's own spelling of it --
+   vax.c's prolog() stores exactly that number at (ap).  nextarg() has finished
+   by the time procode() calls prolog(), so it is final here.
+
+   x9 already holds x29+ARGOFFSET; x10 and x11 are caller-saved and free, since
+   the only live registers at this point are the arguments in x0-x7. */
+n = lastargslot / SZADDR;
+if(n > 8)
+	{
+	p2pi("\tadd\tx10, x29, #%d", F77FRAME + F77SAVE);
+	for(i = 8 ; i < n ; ++i)
+		{
+		p2pi("\tldr\tx11, [x10, #%d]", SZADDR*(i-8));
+		p2pi("\tstr\tx11, [x9, #%d]", SZADDR*i);
+		}
+	}
 }
 
 
@@ -559,6 +595,15 @@ if(argvec || nentry > 1)
 if(autoleng > ARGOFFSET)
 	fatali("procedure needs %d bytes of temporaries, more than the frame holds",
 		(int) autoleng);
+
+/* AND THE ARGUMENT AREA IS BOUNDED THE SAME WAY, at the same place, for the
+   same reason: past MAXARGSLOT a parameter would be spilled outside the region
+   prsave() reserves, which is invisible in the generated code.  The caller's
+   half of this bound is in /lib/f1, which refuses a call it cannot place; both
+   ends are needed, because either alone leaves the other silently wrong. */
+if(lastargslot > SZADDR*MAXARGSLOT)
+	fatali("procedure has %d argument slots, more than the frame holds",
+		(int) (lastargslot/SZADDR));
 
 putgoto(ep->entrylabel);
 }

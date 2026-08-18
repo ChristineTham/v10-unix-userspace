@@ -106,6 +106,37 @@ Family = FAMILY OUT OF RANGE
 #define ARGREG 29	/* no separate argument pointer on arm64; see ARGOFFSET */
 #define CARGREG 29
 #define ARGOFFSET 1024	/* the auto area, which the spilled arguments sit above */
+
+/*
+ * MAXARGSLOT -- how many argument slots one procedure may have, and it is a
+ * property of THE FRAME rather than of AAPCS64.  arm64 passes the first eight
+ * arguments in x0-x7 and the rest on the stack; putpcc.c does not know that,
+ * and addresses parameter n at ARGOFFSET + n from ARGREG for every n.  So the
+ * ninth parameter of a nine-parameter subroutine was read at ARGOFFSET+64,
+ * which prsave() had not written -- measured, that address is entry_sp-160,
+ * the slot the last `stp' put d14/d15 in, so `subroutine s9(a..i)' loaded a
+ * saved floating-point register AS A POINTER and stored through it.
+ *
+ * IT COMPILED CLEAN, AND THE ONLY THING HIDING IT WAS THE REFUSAL AT THE OTHER
+ * END: /lib/f1 would not emit a call with nine arguments, so nothing could
+ * reach a procedure that had nine parameters.  A guard on the caller is not a
+ * guard on the callee, and here it was what made the callee untestable.
+ *
+ * prsave() copies slots 8.. down into the same area the first eight are
+ * spilled into, so putpcc.c's one addressing rule stays true for all of them
+ * and nothing above pass 2 has to know where an argument arrived.  That costs
+ * SZADDR*MAXARGSLOT of frame plus a call area for the outgoing half, and stack
+ * is the cheap resource here for the same reason ARGOFFSET says so.
+ *
+ * 64 is stated rather than derived because a fixed frame has to bound it
+ * somewhere; prolog() refuses past it and /lib/f1 refuses past it, which makes
+ * an overrun a diagnostic at both ends rather than a temporary landing on a
+ * parameter.  It is generous against what Fortran produces: a CHARACTER
+ * argument costs two slots (address and hidden length), so 64 slots is a
+ * 32-argument character subroutine.
+ */
+#define MAXARGSLOT 64	/* argument slots one procedure may have */
+
 #define SAVESPACE 80
 
 #define FUDGEOFFSET 1

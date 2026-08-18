@@ -3686,16 +3686,82 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 		( cd f77p1w && printf '%s\n' "$2" > x$1.f && rm -f x$1
 		  e=$("$V8ROOT/usr/bin/f77" x$1.f -o x$1 2>&1)
 		  if [ -x x$1 ]; then echo "RAN: $(./x$1 2>&1 | tr '\n' '|')"
-		  else printf '%s\n' "$e" | grep -oE 'more than AAPCS64 puts in registers|multiple ENTRY points are not implemented on this target|more integer registers than this pass allocates' | head -1
+		  else printf '%s\n' "$e" | grep -oE 'f1: [0-9]+ arguments, more than the frame holds|procedure has [0-9]+ argument slots, more than the frame holds|multiple ENTRY points are not implemented on this target|more integer registers than this pass allocates' | head -1
 		  fi )
 	}
-	check 'f77: a ninth argument is refused, naming the register limit' \
-	    'more than AAPCS64 puts in registers' \
+
+	# ---- the argument area, whose bound is the FRAME's and not AAPCS64's.
+	# A ninth argument used to be refused here.  Both ends had to move: the
+	# caller writes the slots past the eighth into the call area prsave()
+	# reserves below x29, and prsave() copies the incoming ones back down
+	# beside the register arguments so that putpcc.c's single rule --
+	# parameter n at ARGOFFSET+n -- stays true of all of them.
+	#
+	# THE CALLEE HALF WAS SILENTLY WRONG AND THE CALLER'S REFUSAL IS WHAT
+	# HID IT.  f77pass1 addressed the ninth parameter at ARGOFFSET+64 and
+	# prsave() wrote only eight slots, so `subroutine s9(a..i)' compiled
+	# clean and read its ninth parameter's ADDRESS out of entry_sp-160 --
+	# the slot holding the saved d14/d15 -- then stored through it.  A guard
+	# on the caller is not a guard on the callee.
+	check 'f77: a ninth argument is passed and received' 'RAN:  45|' \
 	    "$(f77refuse 9 '      call s9(1,2,3,4,5,6,7,8,9)
       end
       subroutine s9(a,b,c,d,e,f,g,h,i)
       integer a,b,c,d,e,f,g,h,i
-      write(6,*) a+i
+      write(6,*) a+b+c+d+e+f+g+h+i
+      return
+      end')"
+	# AND THE STRUCTURAL HALF, WHICH GUARDS A DIFFERENT PROPERTY FROM THE
+	# VALUE CASES -- measured, not assumed.  The first draft of this comment
+	# said the value cases could not see the defect because a wild pointer
+	# faults rather than computing a wrong number.  Mutation says otherwise:
+	# dropping the copy loop fires all three value cases and leaves THIS one
+	# green, because with the frame now large enough the ninth parameter sits
+	# INSIDE it whether or not anything wrote there.
+	#
+	# So the two halves are: the arguments are actually placed (the value
+	# cases), and the frame is big enough to hold them (this one).  The
+	# second is what the original defect violated -- the ninth parameter was
+	# addressed at exactly the offset goret unwinds from, which is why it
+	# read the saved d14/d15 -- and the mutation that fires it is shrinking
+	# F77FRAME back to the eight-slot size, which fires this case and one
+	# other and nothing else.
+	#
+	# Nothing is transcribed: goret() unwinds with `add sp, x29, #N', so N is
+	# the top of this frame BY CONSTRUCTION, and no reference the body makes
+	# may reach it.  Both numbers move together if the frame changes.
+	check 'f77: no parameter is addressed above the frame goret unwinds' 'ok' \
+	    "$(cd f77p1w && printf '%s\n' '      subroutine s9(a,b,c,d,e,f,g,h,i)
+      integer a,b,c,d,e,f,g,h,i
+      i = a + i
+      return
+      end' > x9s.f && rm -f x9s.s
+	       "$V8ROOT/usr/bin/f77" -S x9s.f >/dev/null 2>&1
+	       awk '/add[[:blank:]]+sp, x29, #/ { t=$0; sub(/.*#/,"",t); n=t+0 }
+	            { s=$0
+	              while (match(s, /\[x29, #-?[0-9]+\]/)) {
+	                t=substr(s,RSTART,RLENGTH); sub(/\[x29, #/,"",t); sub(/\]/,"",t)
+	                if (t+0 > m) m=t+0
+	                s=substr(s,RSTART+RLENGTH) } }
+	            END { if (n==0) print "no epilogue found"
+	                  else if (m >= n) print "parameter at", m, ">= frame top", n
+	                  else print "ok" }' x9s.s)"
+	# CHARACTER arguments are the shape that makes the slot rule bite: each
+	# costs TWO slots, an address and a hidden length, so six arguments are
+	# eleven slots and five of them arrive on the stack.
+	check 'f77: CHARACTER arguments past the eighth slot' 'RAN:  aaaa bbbb cccc dddd eeee 7|' \
+	    "$(f77refuse c '      character*4 p,q,r,s,t
+      p = "aaaa"
+      q = "bbbb"
+      r = "cccc"
+      s = "dddd"
+      t = "eeee"
+      call sc(p,q,r,s,t,7)
+      end
+      subroutine sc(a,b,c,d,e,n)
+      character*(*) a,b,c,d,e
+      integer n
+      write(6,*) a, b, c, d, e, n
       return
       end')"
 	# and the control: EIGHT arguments still go through
@@ -3731,12 +3797,89 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
       write(6,*) g
       end')"
 
+	# ---- THE ARGUMENT BOUND ITSELF, WHICH IS TWO REFUSALS AND NOT ONE.
+	# MAXARGSLOT is a property of the frame, so both ends have to state it:
+	# /lib/f1 refuses a CALL it cannot place and prolog() refuses a
+	# PROCEDURE it cannot spill.  They are separate programs reached by
+	# separate inputs -- a call to an external the file does not define
+	# reaches only the first -- so each needs its own case, and the two
+	# messages are deliberately distinguishable.
+	f77wide() {	# $1 = n: a program calling an n-argument subroutine
+		awk -v n="$1" '
+		function emit(s,   first, ch) {
+			first = 1
+			while (length(s) > 0) {
+				ch = substr(s, 1, 66); s = substr(s, 67)
+				printf "%s%s\n", (first ? "      " : "     *"), ch
+				first = 0
+			}
+		}
+		BEGIN {
+			for (i = 1; i <= n; i++) {
+				a = a (i > 1 ? "," : "") "a" i
+				v = v (i > 1 ? "+" : "") "a" i
+				c = c (i > 1 ? "," : "") i
+			}
+			emit("subroutine s" n "(" a ")")
+			emit("integer " a)
+			emit("write(6,*) " v)
+			print "      return"
+			print "      end"
+			emit("call s" n "(" c ")")
+			print "      end"
+		}'
+	}
+	f77widecall() {	# $1 = n: a call to an external, so only the CALLER is reached
+		awk -v n="$1" '
+		function emit(s,   first, ch) {
+			first = 1
+			while (length(s) > 0) {
+				ch = substr(s, 1, 66); s = substr(s, 67)
+				printf "%s%s\n", (first ? "      " : "     *"), ch
+				first = 0
+			}
+		}
+		BEGIN {
+			for (i = 1; i <= n; i++) c = c (i > 1 ? "," : "") i
+			emit("call ext(" c ")")
+			print "      end"
+		}'
+	}
+	# The boundary is RUN rather than merely compiled, and the expected
+	# value is the sum 1..64, which no partial placement can produce: an
+	# argument written to the wrong slot changes the total.
+	check 'f77: sixty-four argument slots, the frame bound, runs' 'RAN:  2080|' \
+	    "$(f77refuse 64 "$(f77wide 64)")"
+	check 'f77: a sixty-fifth slot is refused at the callee' \
+	    'procedure has 65 argument slots, more than the frame holds' \
+	    "$(f77refuse 65 "$(f77wide 65)")"
+	check 'f77: a sixty-fifth argument is refused at the caller' \
+	    'f1: 65 arguments, more than the frame holds' \
+	    "$(cd f77p1w && f77widecall 65 > xw65.f
+	       "$V8ROOT/usr/bin/f77" -c xw65.f 2>&1 |
+	       grep -oE 'f1: [0-9]+ arguments, more than the frame holds' | head -1)"
+	# AND THE TWO SPELLINGS OF THE NUMBER MUST AGREE.  f1.c is compiled by
+	# clang and f77pass1 by v8cc, and they share no header, so the frame
+	# constants are stated twice -- the same arrangement the opcode numbers
+	# have, and checked the same way.  The blank is required twice in the
+	# pattern for the reason the opcode case records: with zero blanks and
+	# zero digits both allowed, MAXARGSLOT would also match a longer name
+	# beginning with it.
+	check 'f77: f1.c and arm64defs state the same argument area' 'agree' \
+	    "$(d=$ROOT/src/cmd/f77/arm64defs; f=$ROOT/shim/f1/f1.c
+	       g() { sed -n "s/^#define $2[[:blank:]][[:blank:]]*\([0-9]*\).*/\1/p" "$1"; }
+	       a=$(g "$d" MAXARGSLOT); b=$(g "$f" MAXARGSLOT)
+	       c=$(g "$d" SZADDR);     e=$(g "$f" ARGSLOT)
+	       if [ -n "$a" ] && [ "$a" = "$b" ] && [ -n "$c" ] && [ "$c" = "$e" ]
+	       then echo agree
+	       else echo "MAXARGSLOT $a/$b SZADDR $c/$e"; fi)"
+
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
 	# tests/kmemu asserts that w(1) says `No mem'.
 
 else
-	fail=$((fail+61)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+68)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism

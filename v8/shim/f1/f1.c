@@ -102,6 +102,19 @@
 #define BTSHIFT		4
 #define BTMASK		017
 
+/*
+ * THE FRAME'S ARGUMENT AREA, WHICH IS arm64defs' NUMBER AND NOT THIS FILE'S.
+ * prsave() in src/cmd/f77/arm64.c reserves SZADDR*MAXARGSLOT for a procedure's
+ * own parameters and SZADDR*(MAXARGSLOT-8) BELOW x29 for the arguments of the
+ * calls it makes.  This pass writes that second area, so the two files have to
+ * agree about its size; respelled here rather than included, for the reason the
+ * opcode numbers are -- f1 is compiled by clang and f77pass1 by v8cc, and they
+ * share no header -- and tests/wavea compares the two spellings, which is what
+ * it already does for the opcodes.
+ */
+#define MAXARGSLOT	64	/* == arm64defs' MAXARGSLOT */
+#define ARGSLOT		8	/* == arm64defs' SZADDR */
+
 
 /* ------------------------------------------------------------ code -------
  *
@@ -123,7 +136,20 @@
  * postfix the three values are simply adjacent, so LISTOP itself does nothing.
  */
 
-#define NSTACK	64
+/*
+ * THE VALUE STACK HAS TO HOLD A WHOLE CALL, and it was a bare 64 -- the same
+ * number MAXARGSLOT happens to be, which is a coincidence rather than a
+ * relation.  A call occupies one slot per argument plus one for the callee, so
+ * the widest call the frame can express needs MAXARGSLOT+1 and 64 was one
+ * short: raising the argument bound made THIS the binding limit, and the
+ * diagnostic then named the wrong resource -- `expression stack overflow' for a
+ * program whose expressions are all one term.
+ *
+ * Stated as a relation so the two move together.  The headroom is for the
+ * expression a call sits inside, which is a separate quantity: `f(...) + g(...)'
+ * holds one call's result while building the next.
+ */
+#define NSTACK	(MAXARGSLOT + 64)
 
 #define V_CON	0		/* a literal */
 #define V_ADDR	1		/* the address of a named object */
@@ -757,8 +783,9 @@ materas(v, t)
  * CALL and CALL0.  The callee and its arguments are the top two LOGICAL values
  * -- see the note on lstack above -- so this needs no arity from the record and
  * no assumption that a call is a whole statement.  AAPCS64 puts the first eight
- * arguments in x0-x7; more would need the stack area, and f77 emits no call
- * that wide here, so that is a refusal rather than a silent truncation.
+ * arguments in x0-x7 and the rest at [sp,#0] upward, which is the call area
+ * prsave() reserves below x29; past MAXARGSLOT the frame has no room and this
+ * refuses rather than truncating.
  */
 static void
 docall(hasargs)
@@ -818,8 +845,9 @@ docall(hasargs)
 	if (vstack[fbase].kind != V_ADDR)
 		vstack[fbase] = mater(&vstack[fbase]);
 	f = vstack[fbase];
-	if (n > 8) {
-		fprintf(stderr, "f1: %d arguments, more than AAPCS64 puts in registers\n", n);
+	if (n > MAXARGSLOT) {
+		fprintf(stderr,
+		    "f1: %d arguments, more than the frame holds\n", n);
 		exit(2);
 	}
 
@@ -833,7 +861,21 @@ docall(hasargs)
 	 * what src/libc/math/sqrt.c declares.  The promotion is what a K&R C
 	 * compiler would have emitted at that call.
 	 */
-	for (i = 0; i < n; i++)
+	for (i = 0; i < n; i++) {
+		/* THE NINTH ARGUMENT ONWARD GOES TO MEMORY, and it is staged
+		   through a scratch register rather than placed directly
+		   because there is no register to place it in -- that is the
+		   whole of what "beyond x0-x7" means.  SCRATCHB is caller-saved
+		   and dead here: the values being placed live in the pool
+		   (x19-x28) or in x29-relative memory, and nothing this loop
+		   writes is read by a later iteration.
+
+		   sp is the base rather than x29 because AAPCS64 states the
+		   outgoing area from sp and the CALLEE has no x29 of its own
+		   yet.  sp does not move inside a procedure -- prsave() sets it
+		   once -- so the two ends meet at exactly one address. */
+		int r = i < 8 ? i : SCRATCHB;
+
 		if (isflt(vstack[base + i].vtype)) {
 			struct val d;
 
@@ -842,10 +884,14 @@ docall(hasargs)
 			   convention, not AAPCS64's, and the half of the pair
 			   that differs from the return.  The note in into()
 			   has the measurement. */
-			printf("\tfmov\tx%d, d%d\n", i, d.reg);
+			printf("\tfmov\tx%d, d%d\n", r, d.reg);
 			vstack[base + i] = d;	/* freed by the loop below */
 		} else
-			into(&vstack[base + i], i);
+			into(&vstack[base + i], r);
+		if (i >= 8)
+			printf("\tstr\tx%d, [sp, #%d]\n",
+			    SCRATCHB, ARGSLOT * (i - 8));
+	}
 	if (f.kind == V_ADDR)
 		printf("\tbl\t%s\n", f.name);
 	else

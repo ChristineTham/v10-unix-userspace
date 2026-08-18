@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2667 tests across 17 suites** guard it.
+assembly. **2673 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5111,6 +5111,49 @@ Fortran now does arrays, subroutines, functions, recursion, `REAL` and
 `DOUBLE PRECISION` arithmetic, mixed-type expressions, `.AND.`/`.OR.`, `MOD`,
 and computed `GOTO`s. Eight defects, in four different components, and only two
 of them were in the code I set out to change.
+
+---
+
+## The ninth argument, and the silence a refusal was hiding
+
+Four limits were left, each refusing by name. The first was the ninth argument:
+arm64 passes eight in registers and the rest on the stack, and `/lib/f1` would
+not emit a call that wide. A subroutine with nine parameters is not exotic
+Fortran, so this was the one worth closing.
+
+The interesting part was not the fix. It was what the refusal had been hiding.
+
+f77's front end addresses parameter *n* at a fixed stride from the frame
+pointer, for every *n*. The prologue spilled the eight register arguments and
+stopped. So a nine-parameter subroutine addressed its ninth parameter at an
+offset nothing had written — and that offset, measured, was exactly the one the
+epilogue unwinds the frame with. It was the slot holding a saved
+floating-point register. The subroutine loaded `d14` as a pointer and stored
+through it.
+
+That compiled without a warning, and no test could reach it, because nothing in
+the world could emit a call with nine arguments. A guard on the caller is not a
+guard on the callee. The refusal at one end was the only reason the other end's
+silence had never been observed — and closing the first is what made the second
+observable at all.
+
+Then raising the bound made a second one bind. The value stack in `/lib/f1` was
+`64`, and the new argument limit was `64` — the same number by coincidence, not
+by relation. A call needs one slot per argument plus one for the callee, so 64
+arguments needed 65 and the compiler refused with `expression stack overflow`
+for a program whose expressions are all single terms. The diagnostic named the
+wrong resource because the two numbers had never been connected. They are now:
+one is written in terms of the other, so they move together.
+
+And a case I wrote to guard the fix turned out to guard something else. I had
+added a structural check — no parameter may be addressed above the offset the
+epilogue unwinds from — and explained it by saying the value cases could not
+see the defect, since a wild pointer crashes rather than computing a wrong
+number. Mutation testing disagreed: deleting the argument copy fired all three
+value cases and left the structural one green. The two check different things.
+The values check that the arguments are *placed*; the structure checks that the
+frame is *big enough to hold them*. Both are needed, and my explanation had
+credited one with the other's job. The comment now says what was measured.
 
 ---
 
