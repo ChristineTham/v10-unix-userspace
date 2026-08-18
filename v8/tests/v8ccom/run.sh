@@ -1124,7 +1124,18 @@ INTFNS='_strlen _dysize _slength _maplow _length _width _sgn _roman _decml
         _column _tabcol _lineDOT _lineDOL
         _getnum _getsigned
         _blklen
-        _conval'
+        _conval
+        _f77args _f77frame'
+# `_f77args' and `_f77frame' are src/cmd/f77/arm64.c -- the spilled-argument
+# area and the frame, in BYTES, sized to the procedure being compiled.  They
+# were constants until the frame stopped being the worst case, and turning a
+# `#define' into a function is what put them in front of this sweep: nothing
+# about the arithmetic changed.  Both are small positive counts by
+# construction -- f77args() clamps to F77ARGSMAX, which is SZADDR*MAXARGSLOT,
+# 512 -- so there is no pointer here to truncate.  The sweep cannot tell a
+# count from a narrowed pointer and is not supposed to; it reports every
+# narrowed result and asks a human to classify it, which is why this comment
+# exists rather than a wider filter.
 # `_conval' is efl's misc.c:105 -- `int val; if(isicon(p,&val)) return(val);
 # fatal("bad conval");' -- the integer VALUE of a constant expression node, so
 # narrowing it is right.  It is worth saying why efl produced exactly one entry

@@ -1310,3 +1310,94 @@ false claim.
   int 465`, the INTEGER control discriminating), and dropping the INTEGER*2
   refusal fires exactly its own. A suite where every mutation fires a dozen
   cases cannot tell you which guard is load-bearing.
+
+
+## Stage 7f -- the two findings the review recorded rather than fixed
+
+### The ASSIGNed FORMAT specifier: one four-byte field, two consumers that want opposite things
+
+Fortran 77 lets an ASSIGNed variable be a FORMAT specifier as well as a branch
+target, and `exassign` (`exec.c`) emits the same thing for both: `puteq(p,
+mkaddcon(labelval->labelno))`.  So the two uses are indistinguishable at the
+store, and they need opposite things from the four bytes.
+
+- The **assigned GOTO** never needs a pointer.  `/lib/f1` stores `target -
+  Lf1b<proc>` and `P2GOTO`'s indirect arm adds the base back, so the distance
+  is only ever a distance.
+- The **FORMAT specifier** does: `io.c`'s ASSIGNed-label arm sets `varfmt = NO`
+  and reaches `ioset(TYADDR, XFMT, fmtp)`, so the integer's VALUE becomes the
+  io block's format field and `libI77` dereferences it.
+
+Exact on a VAX, where an address and an INTEGER are both four bytes.  Here
+`SZLONG` is 4 and a Mach-O data address is 64 bits above 4GB, so the four bytes
+cannot name the string whatever is written into them.
+
+**PASS 2 CANNOT MAKE THE DECISION, AND THAT IS MEASURED RATHER THAN ARGUED.**
+The format string is emitted into the ASSEMBLY file pass 1 writes -- the driver
+hands `f77pass1` an asmfname and a textfname, the string lands in the former as
+`L14: .byte 0x28,0x31,...` and the intermediate carries only a reference.  So
+`/lib/f1` sees `L14` referenced and never defined, and has nothing whatever to
+tell a data label from a code label.  The obvious discriminator that had been
+recorded -- *the destination is NARROWER than the source, so a pointer going
+into a four-byte integer is ASSIGN and nothing else* -- is refuted by this:
+both uses have exactly that shape.
+
+**AND THE OTHER END CANNOT EITHER, FOR A DIFFERENT REASON.**  Making the io
+path add the base back is the right fix in principle, and `Lf1b<proc>` is a
+name **pass 2 invents**; pass 1 does not know it.  So the real fix is a
+distinguished opcode from `exassign` through `pccdefs`, read by `/lib/f1`, which
+is a change to three files and a new wire contract.
+
+So the arm refuses, and the refusal is in `io.c` because that is the only place
+that knows.  The expiry condition is stated at the guard.
+
+**BOTH SOURCE ORDERINGS CRASH, AND THE SECOND IS THE CONTROL.**  `fmtstmt()`
+reallocates `labelno` the first time it learns a label is a FORMAT, so with the
+FORMAT statement written BELOW the ASSIGN the front end captures a code label --
+measured, an empty `L13` sitting between the last statement and the exit label.
+That is upstream's own latent defect and it is machine-independent: a VAX stored
+the address of that empty label too.  Writing the FORMAT statement ABOVE the
+ASSIGN makes the front end pick the format string correctly, and it **still
+crashed**, because the encoding is what breaks it.  A fix that only handled the
+forward reference would have passed the first case and failed the second, which
+is why both are cases.
+
+### The frame is sized per procedure
+
+`F77ARGS` was `SZADDR*MAXARGSLOT` for every procedure, so `subroutine nop` --
+no arguments, no calls, an empty body -- carried 512 bytes of spilled-argument
+area it could not name.  Measured on an 8176 KiB stack:
+
+| | frame | recursion depth |
+|---|---|---|
+| before the ninth-argument work | 1248 | 6699 |
+| stage 7d | 2144 | 3899 |
+| now | 1696 | **4930** |
+
+4930 is 3899 x 2144/1696 to within one frame, which is what says the frame is
+the whole of the difference.
+
+`lastargslot` is final at `prolog()` by the call order rather than by
+assumption: `proc.c` calls `epicode()` and then `procode()`, both after the
+whole body is parsed, and `procode()` is what reaches `prolog()`.
+
+**THE FLOOR IS EIGHT SLOTS AND ITS FAILURE MODE IS SILENT.**  `prsave()` spills
+x0-x7 unconditionally -- four `stp` pairs with no test on `lastargslot` -- so a
+frame sized from `lastargslot` alone gives a no-argument procedure a top of
+exactly x9, and the spill writes 64 bytes ABOVE its own frame, over the
+caller's saved registers.  The structural case that guards the ninth argument
+cannot see it: that case reads `[x29, #N]` references and the spill is written
+through x9.  It needed a case of its own, and the mutation dropping the floor
+fires exactly that one.
+
+**AND THE ROUNDING TO SIXTEEN IS NOT COSMETIC.**  AAPCS64 requires sp 16-byte
+aligned at every instruction boundary; `ARGOFFSET` and `F77CALL` are multiples
+of 16 already, and `lastargslot` is a multiple of SZADDR, which is EIGHT.  A
+nine-slot procedure would otherwise emit `sub sp, sp, #1544`.
+
+**WHAT IS NOT DONE**: `F77CALL` is still the worst case, 448 bytes of outgoing
+argument area carried by leaf procedures that make no call.  Sizing it needs a
+running maximum of the outgoing slot count, which `putpcc.c` already computes
+per call for its own `P2CALL`/`P2CALL0` choice -- one line in authentic source.
+That is a separate decision and it is the remaining 448 of the 896 that
+separates 4930 from 6699.

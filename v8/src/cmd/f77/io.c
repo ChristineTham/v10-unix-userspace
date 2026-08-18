@@ -690,6 +690,39 @@ if(p = V(IOSFMT))
 			}
 		if( ISINT(np->vtype) )	/* ASSIGNed label */
 			{
+/* PORT: REFUSED HERE, BECAUSE A FORTRAN INTEGER ON THIS TARGET CANNOT HOLD THE
+   POINTER libI77 IS ABOUT TO DEREFERENCE.  This arm takes the VALUE of an
+   integer variable and hands it to s_wsfe as the address of a format string.
+   That is exact on a VAX, where an address and an INTEGER are both four bytes.
+   Here SZLONG is 4 -- pinned twice, by typesize[TYREAL] against r_nint's
+   `float *' and again by lengtype()'s INTEGER*4 constant -- while a Mach-O
+   data address is 64 bits and lies above 4GB, so the four bytes cannot name
+   the string whatever is written into them.
+
+   AND THE OFFSET ENCODING THAT RESCUED THE ASSIGNED GOTO CANNOT RESCUE THIS.
+   /lib/f1 stores `target - Lf1b<proc>' for an ASSIGN and P2GOTO's indirect arm
+   adds the base back, so the distance never has to be a pointer.  A FORMAT
+   specifier has no such arm: libI77 dereferences the field, so the CONSUMER
+   would have to add the base, and the consumer is generated from this file
+   while `Lf1b<proc>' is emitted by pass 2 and is not a name pass 1 knows.
+   Pass 2 cannot make the decision either -- measured: the format string is
+   defined in the ASSEMBLY file pass 1 writes, not in the intermediate, so
+   /lib/f1 sees `L14' referenced and never defined and has nothing to tell a
+   data label from a code label.  Only this arm knows, which is why the
+   refusal is here rather than beside the encoding it belongs to.
+
+   A DIAGNOSTIC IS THE POINT: without it this compiles clean, links, and
+   SIGSEGVs, and the same construct with the FORMAT statement written ABOVE the
+   ASSIGN crashes identically -- so nothing about the source order warns anyone.
+
+   EXPIRY: removable the day pass 1 states the ASSIGN rather than pass 2
+   inferring it -- a distinguished opcode from exassign() through pccdefs, and
+   an add of the procedure base emitted by /lib/f1 at this path.  Until then,
+   note what this refusal costs: it makes the io path unreachable and therefore
+   untestable, which is the lesson the ninth argument taught, so it should not
+   stand indefinitely.  src/cmd/f77/PORTING.md. */
+			err("ASSIGNed FORMAT specifier: an INTEGER cannot hold a format address on this target");
+			ok = NO;
 			statstruct = NO;
 			varfmt = NO;
 			fmtp = (Addrp) fixtype(p);

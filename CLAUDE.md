@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2686 cases, 2685 on a host whose $TMPDIR
+make test             # all 17 suites (2691 cases, 2690 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make -C v8 test-wavec # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -2945,6 +2945,86 @@ message and may spell out a word the message leaves to a `%s`, so testing it
 needs the substitution's possible values, which only the call site knows.
 Recorded next to the check rather than left as a silent gap -- the same
 discipline as `cites.awk` printing what it cannot see.
+
+
+**AND THE TWO FINDINGS THE REVIEW RECORDED RATHER THAN FIXED ARE CLOSED -- ONE
+OF THEM BY REFUSING IT -- AND THE MOST IMPORTANT THING FOUND ON THE WAY IS THAT
+A GUARD SHIPPED THE PREVIOUS DAY WAS VACUOUS.** `src/cmd/f77/PORTING.md`. Seven
+things generalise, and the first three are about instruments:
+
+- **A CHECK CAN BE VACUOUS IN ONE HALF WHILE ITS VACUITY GUARD WATCHES THE
+  OTHER.** `f77: every refusal in the sources has an arm in f77refuse` extracts
+  an alternation from the suite and a message list from the sources, and
+  compares them. It had a guard on the alternation (`no alternation extracted`)
+  which had fired for real, and NONE on the messages -- and the message half was
+  extracting **nothing at all**, because `sed 's/.*"//'` is greedy and ate
+  `fatal("MSG"` down to the empty string. So the check reported `ok` over zero
+  messages, every run, and the half that had a guard is the half that made it
+  look tested. **Ask of a check with two inputs whether BOTH have a vacuity
+  guard**, and note that the greedy-`sed` half is exactly the shape this file
+  already records for `tests/cpp`'s skip and for `cites.awk` reporting 0 stale
+  over 0 checked.
+- **A LINE-BASED GREP CANNOT SEE A MULTI-LINE CALL, AND THAT WAS 4 OF 7
+  MESSAGES.** The extraction was anchored on the function name
+  (`(fatali?|fprintf)\(...`), and **every one of `/lib/f1`'s refusals** spells
+  its string on the continuation line. So even with the `sed` fixed it would
+  have seen only f77pass1's three. Keying on the STRING instead of the function
+  removes both faults at once -- and removes the function-name list, which is
+  itself a thing that goes stale (it did not name `err`, which is what `io.c`
+  uses).
+- **`case ... )` INSIDE `$( )` TERMINATES THE SUBSTITUTION.** A substring test
+  written `case "$m" in *"$a"*) hit=yes ;; esac` inside a `"$(...)"` check
+  argument made the suite print a fragment of its own source as the result --
+  `got [ [ -z  ] && echo ok]`. Function definitions inside `$( )` are fine here
+  and are already used; the unbalanced `)` of a case pattern is not. Use
+  `grep -qF`. Add it beside the apostrophe and the backquote: **the shell's
+  quoting hazards in this tree are now three, and all three present as the
+  suite reporting something that is not a measurement.**
+- **A RECORDED DISCRIMINATOR HELD ONLY WHILE THERE WAS ONE CONSUMER.** This
+  file states that what separates an ASSIGN from every other Fortran assignment
+  is that *the destination is NARROWER than the source*, so a pointer going
+  into a four-byte integer is ASSIGN and nothing else. True of the producer and
+  false of the meaning: an ASSIGNed FORMAT specifier has exactly that shape and
+  needs the opposite treatment -- the GOTO consumer adds the procedure base
+  back, `libI77` dereferences the field. Same family as the `var` flag being
+  read three ways: **ask which end of the wire states a field before deriving
+  it**, and the corollary here is that a shape shared by two consumers
+  discriminates neither.
+- **AND PASS 2 STRUCTURALLY COULD NOT DECIDE, WHICH IS A MEASUREMENT AND NOT A
+  JUDGEMENT.** The format string is emitted into the ASSEMBLY file pass 1
+  writes, not into the intermediate, so `/lib/f1` sees the label referenced and
+  **never defined** and cannot tell data from code. The refusal therefore lives
+  in `io.c` -- the only arm that knows -- with its expiry condition stated, and
+  the cost named: it makes the io path unreachable and therefore untestable,
+  which is the ninth argument's lesson about what a refusal buys and what it
+  hides.
+- **A FLOOR AND A CEILING ARE TWO PROPERTIES AND ONLY ONE HAD A CASE.** Sizing
+  the frame per procedure needs `max(lastargslot, 8 slots)`, because `prsave()`
+  spills x0-x7 unconditionally. Drop the floor and a no-argument procedure gets
+  a frame top of exactly x9, so the spill writes 64 bytes over the CALLER --
+  and the structural case guarding the ninth argument cannot see it, because
+  that case reads `[x29, #N]` and the spill goes through x9. Two cases, and
+  each mutation fires exactly its own.
+- **AND THREE INSTRUMENTS WERE WRONG BEFORE ANY CODE WAS, ALL THREE ALREADY IN
+  THIS FILE.** A depth probe reported its own lower bound because `cd` had
+  drifted between calls and `$PWD/v8/rootfs` was wrong, so every compile failed
+  into `/dev/null`. An object-hash determinism check printed `DETERMINISTIC`
+  from comparing **two empty strings**, because the objects are at
+  `build/stage0/f77p1/` and not `build/f77p1/` -- the `size`-on-the-wrong-path
+  shape exactly. And a `for f in $O` existence loop passed a single unsplit
+  string, because **zsh does not word-split**. Wrong cwd, wrong path, no
+  word-splitting: the standing rate is three per session and the standing
+  failure direction is silence.
+- **AND THE TEST COUNT WAS PREDICTED RATHER THAN MEASURED, WHICH IS THIS
+  FILE'S OWN STANDING RULE.** The arithmetic was 2686 + 5 (wavea) + 1
+  (v8ccom) = 2692, written into ARTICLE.md and CLAUDE.md before the run
+  finished; the run said **2691**. The v8ccom increment was not a new case at
+  all -- the suite has had 121 cases throughout, and what the aborted run
+  reported as 120 passed and 1 failed was one of them FAILING against this
+  step's own new code. Repairing a case you broke does not add a case. So
+  *re-measure, do not increment* has a companion: **a delta counted from your
+  own diff is a prediction**, and the two increments that look identical in a
+  diff -- a case added and a case restored -- are not the same number.
 
 
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable

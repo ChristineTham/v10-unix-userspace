@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2686 tests across 17 suites** guard it.
+assembly. **2691 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5386,6 +5386,71 @@ subscripts — and a constant subscript needs no computed base register, so the
 leak it was written for could not occur in it. The program passed against the
 bug. One character, `a(1)` to `a(i)`, is the difference between a test and a
 decoration.
+
+Two things were left open when the review ended, and closing them produced a
+better finding than either.
+
+The first was a crash. Fortran 77 lets a variable hold a statement label —
+`assign 100 to nf` — and then lets you use it two ways: branch to it, or pass
+it as the format of a `write`. Those look like one feature and they are two,
+because the four bytes have to mean different things. The assigned GOTO never
+needs a real pointer: the second pass stores the distance from the head of the
+procedure and adds it back at the branch, which is how a code address was made
+to fit in a 32-bit Fortran INTEGER on a machine that loads text above 4GB. A
+format specifier does need a real pointer, because the runtime library
+dereferences it. So the same store had to be two different things, and it was
+one — and a program using the second form compiled cleanly, linked, and died.
+
+The interesting part is where the decision could be made. The obvious place is
+the second pass, which is ours and which already recognises this store. It
+cannot: the format string is written into the *assembly* file the first pass
+emits, not into the intermediate the second pass reads, so the second pass sees
+the label referenced and never defined and has no way at all to tell a string
+from a code label. The rule that had been written down — that a pointer going
+into a four-byte integer is an assigned label and nothing else — was true about
+the shape and false about the meaning, because two consumers share the shape.
+Only the front end knows, and so the refusal lives there, with a note saying
+exactly what would remove it.
+
+Writing the test for it turned up the other half. The construct crashes whether
+the FORMAT statement is written above or below the ASSIGN, but for two
+different reasons: below, the front end captures the wrong label entirely,
+because it allocates a fresh one the moment it learns a label is a format —
+which is Bell Labs' own bug and would have done the same on a VAX. Above, the
+front end is right and the encoding is what breaks it. A fix aimed at the first
+would have passed a test and left the crash. Both orderings are cases now.
+
+The second open item was cheaper and more embarrassing. Making a ninth argument
+work had sized every Fortran stack frame to the widest procedure the compiler
+allows, so a subroutine with no arguments, no calls and an empty body carried
+half a kilobyte it could not name. Recursion had gone from 6699 frames deep to
+3899. Sizing the frame to the procedure — the argument count is final by the
+time the prologue is emitted — brought it back to 4930, and the arithmetic
+matches the frame sizes to within one frame, which is what says nothing else
+was going on.
+
+But the guard that mattered was for the *floor*. The prologue spills the first
+eight argument registers whether or not the procedure declared eight, so a
+frame sized purely from the declared count gives a no-argument procedure a frame
+that ends exactly where the spill begins — and the spill then writes sixty-four
+bytes over its own caller. The existing structural test could not see it,
+because it inspects references made through the frame pointer and the spill goes
+through a scratch register. It took a second test, and the mutation that drops
+the floor fires exactly that one.
+
+And then the check written the day before turned out to be checking nothing. It
+compares the list of refusals the compiler can emit against the list the test
+harness knows how to capture, so that a refusal added without a matching entry
+shows up as a test reporting an empty string. It extracted the messages with a
+greedy substitution that ate each one down to nothing, so it had been comparing
+an empty list, every run, and reporting success. It had a vacuity guard — on the
+other input. Two inputs, one guard, and the guarded one is what made it look
+tested. Fixing it also revealed that the extraction was anchored on the function
+name and so could not see a message written on a continuation line, which is
+four of the seven. That is the whole argument for mutation testing in one
+artefact: the check was green, it was new, it was written carefully, and it was
+inert.
+
 
 The 1985 code, for its part, has been almost entirely correct. Where it was
 wrong, it was wrong about the machine — that address 0 is readable, that a

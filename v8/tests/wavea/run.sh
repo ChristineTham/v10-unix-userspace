@@ -3740,7 +3740,7 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 		( cd f77p1w && printf '%s\n' "$2" > x$1.f && rm -f x$1
 		  e=$("$V8ROOT/usr/bin/f77" x$1.f -o x$1 2>&1)
 		  if [ -x x$1 ]; then echo "RAN: $(./x$1 2>&1 | tr '\n' '|')"
-		  else printf '%s\n' "$e" | grep -oE 'f1: [0-9]+ arguments, more than the frame holds|procedure has [0-9]+ argument slots, more than the frame holds|entry has more than [0-9]+ argument slots|procedure needs [0-9]+ bytes of temporaries, more than the frame holds|an ASSIGNed label needs a 4-byte INTEGER|more integer registers than this pass allocates' | head -1
+		  else printf '%s\n' "$e" | grep -oE 'f1: [0-9]+ arguments, more than the frame holds|procedure has [0-9]+ argument slots, more than the frame holds|entry has more than [0-9]+ argument slots|procedure needs [0-9]+ bytes of temporaries, more than the frame holds|an ASSIGNed label needs a 4-byte INTEGER|more integer registers than this pass allocates|ASSIGNed FORMAT specifier' | head -1
 		  fi )
 	}
 
@@ -4065,19 +4065,104 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# knows.  Its failure mode is a line that reads as documentation for a
 	# refusal that is gone, which is a worse comment rather than a worse
 	# test, so it is left to review.
-	check 'f77: every refusal in the sources has an arm in f77refuse' 'ok' \
+	check 'f77: every refusal in the sources has an arm in f77refuse' 'ok 1 skipped' \
 	    "$(alt=$(sed -n '/^	f77refuse() {/,/^	}$/p' "$0" |
 	                grep -oE "grep -oE '[^']*'" | sed "s/grep -oE '//; s/'$//")
 	       [ -n "$alt" ] || { echo 'no alternation extracted'; exit; }
-	       miss=$(cat "$ROOT/src/cmd/f77/arm64.c" "$ROOT/shim/f1/f1.c" |
-	         grep -oE '(fatali?|fprintf)\([^"]*"[^"]*"' |
-	         sed -e 's/.*"//' -e 's/"$//' |
-	         grep -E 'more than|allocates|needs a' |
-	         sed -e 's/%[a-z]*/7/g' -e 's/\\n$//' |
-	         sort -u | while read -r m; do
-	           printf '%s\n' "$m" | grep -qE "$alt" || printf 'no-arm{%s}' "$m"
+	       msgs=$(cat "$ROOT/src/cmd/f77/arm64.c" "$ROOT/shim/f1/f1.c" \
+	                  "$ROOT/src/cmd/f77/io.c" |
+	         grep -ohE '"[^"]*(more than|allocates|needs a|on this target)[^"]*"' |
+	         sed -e 's/^"//' -e 's/"$//' -e 's/\\n$//' | sort -u)
+	       [ -n "$msgs" ] || { echo 'no messages extracted'; exit; }
+	       skip=$(printf '%s\n' "$msgs" | grep -c '%s')
+	       miss=$(printf '%s\n' "$msgs" | grep -v '%s' |
+	         sed 's/%[a-z]/[0-9]+/g' | while read -r m; do
+	           hit=no; OI=$IFS; IFS='|'
+	           for a in $alt; do
+	             printf '%s\n' "$m" | grep -qF "$a" && hit=yes
+	           done
+	           IFS=$OI
+	           [ "$hit" = yes ] || printf 'no-arm{%s}' "$m"
 	         done)
-	       [ -z "$miss" ] && echo ok || echo "$miss")"
+	       [ -z "$miss" ] && echo "ok $skip skipped" || echo "$miss")"
+
+	# ---- THE ASSIGNed FORMAT SPECIFIER, WHICH IS REFUSED RATHER THAN
+	# MISCOMPILED.  Fortran 77 lets an ASSIGNed variable be a FORMAT as well
+	# as a branch target, and the two need opposite things from the four
+	# bytes.  /lib/f1 stores `target - Lf1b<proc>' and P2GOTO adds the base
+	# back, so a GOTO never needs the distance to be a pointer; libI77
+	# DEREFERENCES the format field, and no consumer adds anything.  So this
+	# compiled clean and SIGSEGVd.
+	#
+	# THE SECOND CASE IS NOT A DUPLICATE -- it is the control that says this
+	# is not a source-ORDER bug.  fmtstmt() reallocates the label number when
+	# it first learns the label is a FORMAT, so writing the FORMAT statement
+	# above the ASSIGN makes the front end pick the right object; measured, it
+	# crashed anyway, because the encoding is what breaks it.  A fix that only
+	# handled the forward reference would pass the first case and fail this.
+	check 'f77: an ASSIGNed FORMAT specifier is refused' 'ASSIGNed FORMAT specifier' \
+	    "$(f77refuse afmt '      program afmt
+      assign 100 to nf
+      write(6,nf) 42
+      stop
+  100 format(1x,i5)
+      end')"
+	check 'f77: and refused with the FORMAT statement written first' 'ASSIGNed FORMAT specifier' \
+	    "$(f77refuse bfmt '      program bfmt
+  100 format(1x,i5)
+      assign 100 to nf
+      write(6,nf) 42
+      stop
+      end')"
+	# and the control: an ordinary FORMAT label is untouched.  Without it a
+	# refusal that fired on every FORMAT would pass both cases above.
+	check 'f77: an ordinary FORMAT label still works' '    42|' \
+	    "$(f77run ofmt '      program ofmt
+      write(6,100) 42
+  100 format(1x,i5)
+      end')"
+
+	# ---- THE FRAME IS SIZED PER PROCEDURE.  It was SZADDR*MAXARGSLOT for
+	# every procedure, so `subroutine nop' carried 512 bytes of spilled-
+	# argument area it could not name and 2144 bytes of frame; measured,
+	# recursion reached 3899 frames where the pre-ninth-argument compiler
+	# reached 6699.
+	#
+	# THE ASSERTION IS A RELATION AND BOTH NUMBERS ARE READ OUT OF THE
+	# EMITTED CODE, because a transcribed frame size is a constant that goes
+	# stale the next time the layout moves.  goret unwinds with
+	# `add sp, x29, #N', so N is this procedure's frame top by construction.
+	check 'f77: the frame is sized per procedure, not to the worst case' 'ok' \
+	    "$(cd f77p1w && rm -f xnop.s xw12.s
+	       printf '%s\n' '      subroutine xnop' '      end' > xnop.f
+	       printf '%s\n' '      subroutine xw12(a,b,c,d,e,f,g,h,i,j,k,l)' \
+	           '      integer a,b,c,d,e,f,g,h,i,j,k,l' '      l = a + l' \
+	           '      return' '      end' > xw12.f
+	       "$V8ROOT/usr/bin/f77" -S xnop.f >/dev/null 2>&1
+	       "$V8ROOT/usr/bin/f77" -S xw12.f >/dev/null 2>&1
+	       top() { grep -oE 'add[[:blank:]]+sp, x29, #[0-9]+' "$1" |
+	               head -1 | grep -oE '[0-9]+$'; }
+	       n=$(top xnop.s); w=$(top xw12.s)
+	       if [ -z "$n" ] || [ -z "$w" ]; then echo "no epilogue n=[$n] w=[$w]"
+	       elif [ "$n" -lt "$w" ]; then echo ok
+	       else echo "leaf frame $n is not smaller than the 12-argument frame $w"; fi)"
+	# AND THE FLOOR, WHICH IS A DIFFERENT PROPERTY AND FAILS SILENTLY.
+	# prsave() spills x0-x7 unconditionally, four stp pairs at x9 = x29 +
+	# ARGOFFSET, whatever the procedure declared -- so a frame sized from
+	# lastargslot ALONE gives a no-argument procedure a top of x9 exactly,
+	# and the spill writes 64 bytes above its own frame, over the caller.
+	# The structural case beside this one cannot see it: it reads [x29, #N]
+	# references and the spill is written through x9.
+	check 'f77: and a leaf frame still covers the unconditional x0-x7 spill' 'ok' \
+	    "$(cd f77p1w && rm -f xnop.s
+	       printf '%s\n' '      subroutine xnop' '      end' > xnop.f
+	       "$V8ROOT/usr/bin/f77" -S xnop.f >/dev/null 2>&1
+	       g() { grep -oE "add[[:blank:]]+$1, x29, #[0-9]+" xnop.s |
+	             head -1 | grep -oE '[0-9]+$'; }
+	       a=$(g x9); n=$(g sp)
+	       if [ -z "$a" ] || [ -z "$n" ]; then echo "not found a=[$a] n=[$n]"
+	       elif [ "$n" -ge $((a + 64)) ]; then echo ok
+	       else echo "frame top $n is below the spill area end $((a + 64))"; fi)"
 
 	# ---- ADJUSTABLE DIMENSIONS, WHICH prolog() HAD NEVER EVALUATED.
 	# proc.c:1120 allocates a temporary per run-time dimension and leaves

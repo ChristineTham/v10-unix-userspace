@@ -125,15 +125,17 @@ double realcon[6] =
  *
  *	[x29 - F77CALL   .. x29)		outgoing slots nine and up, for a call
  *	[x29 + 0         .. ARGOFFSET)	autos, growing up, checked in prolog()
- *	[x29 + ARGOFFSET .. +F77ARGS)	every parameter, 8 bytes apart: x0-x7
+ *	[x29 + ARGOFFSET .. +f77args())	every parameter, 8 bytes apart: x0-x7
  *					spilled, then slots nine and up copied
  *					down from above by prsave()
- *	[x29 + F77FRAME + F77SAVE ..)	the caller's stack arguments, where it
+ *	[x29 + f77frame() + F77SAVE ..)	the caller's stack arguments, where it
  *					left them -- this is the entry sp
  *
  * The middle region was 64 bytes and held x0-x7 alone until a ninth argument
- * had somewhere to go; the reason it says F77ARGS rather than a number is that
- * believing it ended at +64 is what produced that defect.
+ * had somewhere to go; the reason it says f77args() rather than a number is
+ * that believing it ended at +64 is what produced that defect.  It is a CALL
+ * rather than a constant because the fix for that then went the other way and
+ * gave every procedure the widest area MAXARGSLOT allows -- see f77args().
  *
  * The callee-saved registers are saved unconditionally: x19-x22 because pass 1
  * hands them out as register variables (MAXREGVAR is 4) and would otherwise
@@ -142,9 +144,58 @@ double realcon[6] =
  * registers is SAVESPACE, which arm64defs already said was 80 bytes.
  */
 #define F77SAVE 160	/* the ten stp pairs below, sixteen bytes each */
-#define F77ARGS (SZADDR*MAXARGSLOT)		/* the spilled-argument area */
+#define F77ARGSMAX (SZADDR*MAXARGSLOT)		/* the widest spilled-argument area */
 #define F77CALL (SZADDR*(MAXARGSLOT-8))		/* outgoing slots nine and up */
-#define F77FRAME (ARGOFFSET + F77ARGS)	/* autos, then the spilled arguments */
+
+/*
+ * f77args, f77frame -- the spilled-argument area and the frame, sized to THIS
+ * procedure rather than to the widest one MAXARGSLOT allows.
+ *
+ * THESE WERE CONSTANTS, AND A CONSTANT HERE IS A WORST CASE THAT EVERY
+ * PROCEDURE PAYS FOR.  At SZADDR*MAXARGSLOT the area was 512 bytes under
+ * `subroutine nop' -- no arguments, no calls, an empty body.  Measured on an
+ * 8176 KiB stack, recursion reached 3899 frames against 6699 before the
+ * ninth-argument work, and 6699/3899 is 2144/1248 to four figures, which is
+ * what says the frame is the whole of the difference rather than a part of it.
+ *
+ * lastargslot IS FINAL HERE, and that is a property of the call order rather
+ * than an assumption: proc.c:46-47 calls epicode() and then procode(), both
+ * after the entire procedure body has been parsed, and procode() is what
+ * reaches prolog() and prsave().  nextarg() has stopped growing it by then.
+ *
+ * THE FLOOR IS EIGHT SLOTS BECAUSE prsave() SPILLS x0-x7 UNCONDITIONALLY --
+ * four `stp' pairs with no test on lastargslot, since the registers are live
+ * whatever the procedure declared.  The ceiling is the clamp prsave() already
+ * applies and for the same reason: prolog() refuses past MAXARGSLOT but calls
+ * prsave() before it does.
+ *
+ * AND IT IS ROUNDED UP TO SIXTEEN, WHICH IS NOT COSMETIC.  AAPCS64 requires sp
+ * 16-byte aligned at every instruction boundary, ARGOFFSET and F77CALL are
+ * both multiples of 16 already, so this is the one term that can break it --
+ * and lastargslot is a multiple of SZADDR, which is EIGHT.  A nine-slot
+ * procedure would otherwise emit `sub sp, sp, #1544' and misalign every frame
+ * beneath it.
+ *
+ * The three sites that spend it -- prsave's `sub sp' and `add x10', goret's
+ * `add sp' -- all read f77frame(), so they cannot disagree about it; the
+ * entry sp stays f77frame()+F77SAVE above x29 by construction at any size.
+ */
+f77args()
+{
+int n;
+
+n = lastargslot;
+if(n < SZADDR*8)
+	n = SZADDR*8;
+if(n > F77ARGSMAX)
+	n = F77ARGSMAX;
+return( (n + 15) & ~15 );
+}
+
+f77frame()
+{
+return( ARGOFFSET + f77args() );
+}
 
 /*
  * argdest -- where each of THIS entry's incoming arguments belongs.
@@ -260,8 +311,8 @@ p2pass("\tstp\td14, d15, [sp, #-16]!");
    /lib/f1 could not have written one without destroying a temporary, and the
    frame is enlarged by F77CALL with x29 lifted off the bottom instead.
    Everything else here is stated from x29 and does not move; goret() reads
-   F77FRAME from x29 and needs no change at all. */
-p2pi("\tsub\tsp, sp, #%d", F77FRAME + F77CALL);
+   f77frame() from x29 and needs no change at all. */
+p2pi("\tsub\tsp, sp, #%d", f77frame() + F77CALL);
 p2pi("\tadd\tx29, sp, #%d", F77CALL);
 /* THE SPILL GOES THROUGH A SCRATCH REGISTER RATHER THAN DIRECTLY, because stp's
    immediate is a signed 7-bit field scaled by 8 -- reaching only +504 -- and
@@ -316,7 +367,7 @@ if(nentry > 1)
 
 if(n > 8)
 	{
-	p2pi("\tadd\tx10, x29, #%d", F77FRAME + F77SAVE);
+	p2pi("\tadd\tx10, x29, #%d", f77frame() + F77SAVE);
 	for(i = 8 ; i < n ; ++i)
 		if(dest[i] >= 0)
 			{
@@ -343,7 +394,7 @@ if(n > 8)
 goret(type)
 int type;
 {
-p2pi("\tadd\tsp, x29, #%d", F77FRAME);
+p2pi("\tadd\tsp, x29, #%d", f77frame());
 p2pass("\tldp\td14, d15, [sp], #16");
 p2pass("\tldp\td12, d13, [sp], #16");
 p2pass("\tldp\td10, d11, [sp], #16");
