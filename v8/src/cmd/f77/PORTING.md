@@ -688,7 +688,7 @@ handled a negative one — so nothing downstream needed changing.
 
 `abs`, `iabs`, `dabs`, `min` and `max` were all refused with `operator 22
 (COLON)`. Fortran has no conditional operator; f77 builds one. `intr.c:672`
-expands ABS as `0 <= t ? t : -t` and `putpcc.c:1382-1383` expands MIN/MAX the
+expands ABS as `0 <= t ? t : -t` and `putpcc.c:1395-1396` expands MIN/MAX the
 same way, so the commonest intrinsic in the language is a QUEST/COLON tree.
 
 The stream decides the implementation. Measured on `j = iabs(i)`, both arms are
@@ -1401,3 +1401,97 @@ running maximum of the outgoing slot count, which `putpcc.c` already computes
 per call for its own `P2CALL`/`P2CALL0` choice -- one line in authentic source.
 That is a separate decision and it is the remaining 448 of the 896 that
 separates 4930 from 6699.
+
+## Stage 7g — the outgoing call area, sized per procedure
+
+Stage 7f made the *incoming* half of the frame per-procedure and left the
+outgoing half at its worst case: `SZADDR*(MAXARGSLOT-8)` — **448 bytes** — on
+every procedure, including a leaf that makes no call at all. This is the other
+half, and it is the half with no VAX counterpart whatever: AAPCS64 requires a
+call's ninth and later arguments to be at `[sp,#0]` upward when the `bl`
+executes, so the **caller** reserves room for them, where a VAX pushes.
+
+Measured, on an 8176 KiB stack:
+
+| | before 7f | after 7f | after 7g |
+|---|---|---|---|
+| `subroutine nop` frame | 2144 | 1696 | **1248** |
+| leaf recursion depth | 3899 | 4929 | **6699** |
+
+6699/4929 is 1.3591 and 1696/1248 is 1.3590 — the frame is the whole of the
+difference, and 6699 is exactly the depth this compiler reached before the
+ninth-argument work enlarged the frame at all.
+
+### The count comes from pass 1, and one line of authentic source records it
+
+`putpcc.c`'s `putcall()` computes the outgoing slot count as `n` — it already
+branches on it to choose `P2CALL` against `P2CALL0` — so recording it is a
+single guarded call, in upstream's own `#if TARGET ==` idiom:
+
+```c
+#if TARGET == ARM64
+f77call(n);
+#endif
+p2op(n>0 ? P2CALL : P2CALL0 , ctype);
+```
+
+`/lib/f1` recomputes the same number as `vsp - base` when it places the
+arguments, and cannot help: by then pass 1 has already written the prologue.
+Everything else lives in `arm64.c`, which is this port's file.
+
+### Verifying the producer set found a near-miss the note had not mentioned
+
+The costing named one live `P2CALL` emitter and gave its line number, which
+this step's own edit has since moved -- so it is left in words here rather
+than in the matchable form, because a quoted citation and a stale one are
+indistinguishable to `cites.awk`. Re-deriving it turned up a sixth reference
+nobody had named. `grep P2CALL` over
+the f77 sources gives:
+
+| | |
+|---|---|
+| `putpcc.c` (the emit) | live |
+| `putdmr.c`, `putscj.c` | the dmr and scj back ends, not in `F77P1_NAME` |
+| `dmrdefs`, `scjdefs`, `pccdefs` | `#define`s |
+| **`put.c:34`'s `ops2[]`** | **holds `P2CALL` twice**, at the `OPCALL` and `OPCCALL` positions |
+
+`ops2[]` is a translation table read by `putop()`'s generic tail
+(`putpcc.c:533-538`), which emits `ops2[opcode]` for any node it did not
+special-case. So on the face of it there is a second emitter. There is not:
+**all four routes to an `OPCALL` node** — `putpcc.c:283`, `:450`, `:716`,
+`:883` — go to `putcall()` first, so the tail never sees one. A missed producer
+here undersizes the area and corrupts the callee's stack silently, which is why
+`tests/wavea` reads the emitted `str x11, [sp, #K]` offsets back rather than
+trusting that paragraph.
+
+### The reset is keyed on `procno`, and both functions test it
+
+`prolog()` is called **once per ENTRY point** (`proc.c:333-334`), and it calls
+`prsave()`. So a maximum reset at the end of `prsave()` gives the second entry a
+different frame from the first — and both stubs branch into **one** body, which
+stores its outgoing arguments at one set of sp-relative addresses. `f77args()`
+is safe from this only because `lastargslot` is a single per-procedure global.
+
+Keying on `procno` — bumped once per procedure by `init.c:182` — costs nothing
+and keeps the authentic-source change to the one line above. **Both** functions
+test it, and only one of the two tests is visible in ordinary running:
+
+- `f77call()` tests it so a new procedure starts from zero;
+- `f77calls()` tests it so a procedure that makes **no call at all** reads zero
+  rather than the previous procedure's maximum. Without this a leaf following a
+  wide call inherits its area, which is exactly the case the guard is aimed at.
+
+The ceiling is `MAXARGSLOT` slots, which is the old constant exactly
+(`(64-8)*8 == 448`), so the change is **monotone**: no procedure gets a larger
+area than it had. The rounding to sixteen is not cosmetic — AAPCS64 wants `sp`
+16-byte aligned and `(n-8)*SZADDR` is only a multiple of eight.
+
+### What the corpus says
+
+19 procedures over 15 programs covering character arguments (hidden lengths),
+complex and double arguments, character and complex function results, multiple
+ENTRY points, adjustable dimensions, list-directed I/O and nested calls in
+expressions: **0 overruns**, with several tight — a 14-argument call reserves
+exactly the 48 bytes it stores, and the two ENTRY stubs of one procedure emit
+identical `sub sp` and `add x29`. Behaviourally, a 14-argument call between two
+leaf calls returns 91 and a five-way `character*(*)` call returns `abcd`.

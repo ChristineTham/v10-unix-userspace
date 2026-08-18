@@ -1730,7 +1730,13 @@ check "and the run wrote something overall"	"1"	"$(f w-writes-total-positive)"
 # On a healthy image they print six lines and finish instantly.
 fsdeadline() { perl -e 'alarm 40; exec @ARGV' env V8ROOT=$ROOT/rootfs "$@"; }
 
-icout=$(fsdeadline "$ROOT/rootfs/etc/icheck" "$FSTMP/img" 2>&1 | head -200)
+# THROUGH A FILE, SO THE EXIT STATUS SURVIVES.  A pipeline hands back its LAST
+# element's status, so `... | head -200' reports head -- and head always
+# succeeds.  That is this tree's most-cited shell hazard arriving in the one
+# place where the status is the missing evidence.
+fsdeadline "$ROOT/rootfs/etc/icheck" "$FSTMP/img" > "$FSTMP/ic.raw" 2>&1
+icstatus=$?
+icout=$(head -200 "$FSTMP/ic.raw")
 # A POSITIVE CONTROL, AND IT WAS MISSING FROM THE ONE BLOCK OF THE THREE THAT
 # NEEDED IT MOST.  The dcheck block below argues at length that a silence case
 # needs one, because a checker that failed to run at all is also silent -- and
@@ -1751,6 +1757,24 @@ if [ -z "$icout" ]; then
 else
 	check "icheck ran on the image" "1" \
 	    "$(printf '%s\n' "$icout" | grep -c "^$FSTMP/img")"
+fi
+# AND WHEN IT RAN BUT DID NOT LOOK RIGHT, SAY WHAT IT SAID.  Third sighting,
+# 19 August 2026, and the first two left nothing to work from: the control
+# above separates empty from non-empty and stops there, so all four failures
+# read `want [1] got [0]' and `want [0] got []' with the actual output
+# discarded.  This run was NOT empty -- the arm above did not fire -- so
+# whatever icheck printed is the whole of the evidence and it went nowhere.
+#
+# THE IMAGE WAS FINE, WHICH IS WHAT NARROWS IT.  fsck on the same file in the
+# same run answered `5 files 35 blocks 1882 free', and 35 + 1882 is exactly the
+# 1917 the used+free case wanted -- so this is icheck's OUTPUT and not the
+# filesystem.  And it reproduces under `make test' and not under
+# `make -C v8 test-streams' alone: 658/0 in isolation, minutes apart, same
+# tree.  Newlines are folded to `|' so one FAIL block stays one line.
+if [ -n "$icout" ] && ! printf '%s
+' "$icout" | grep -q "^$FSTMP/img"; then
+	echo "  (icheck exited $icstatus, $(wc -c < "$FSTMP/ic.raw" | tr -d ' ') bytes:" \
+	     "[$(printf '%s' "$icout" | tr '\n' '|' | cut -c1-300)])"
 fi
 # `missing' is icheck's count of blocks that are in neither a file nor the free
 # list -- exactly what a leak in alloc/free/itrunc produces, and the reason this

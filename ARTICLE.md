@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2691 tests across 17 suites** guard it.
+assembly. **2701 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **174** of the 286 V8 shipped, and the ones still missing mostly
+port installs **175** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -5456,6 +5456,63 @@ The 1985 code, for its part, has been almost entirely correct. Where it was
 wrong, it was wrong about the machine — that address 0 is readable, that a
 pointer fits in an `int`, that a `long` is four bytes. It was right about
 everything it could control.
+
+### The other half of the frame, and a program that was never imported
+
+Two things landed together, and only one of them was planned.
+
+**The planned one.** The previous step sized a Fortran procedure's *incoming*
+argument area to the procedure rather than to the widest one the compiler
+allows. The *outgoing* area stayed at its worst case — 448 bytes on every
+procedure, including a leaf that makes no call at all — because the number that
+would size it lives in a different pass. AAPCS64 requires a call's ninth and
+later arguments to sit at `[sp,#0]` when the branch executes, so the caller
+reserves the room; a VAX simply pushed, and has no counterpart region at all.
+The count exists in exactly one place, `putcall()` in pass 1, where it is
+already computed to decide which of two call opcodes to emit, so recording it
+is one guarded line of Bell Labs' source and everything else is ours. A leaf's
+frame went 1696 bytes to 1248 and recursion on an 8176 KiB stack went 4929
+frames to 6699 — which is 1696/1248 to four figures, and is exactly the depth
+this compiler reached before any of the ninth-argument work began.
+
+Re-deriving the "only one place emits this opcode" claim, rather than trusting
+it, turned up a table nobody had mentioned: `ops2[]` holds that opcode twice,
+and the generic tail of `putop()` emits `ops2[opcode]` for anything it did not
+special-case. It is not a second producer — all four routes to a call node go
+somewhere else first — but the difference between "one site, measured" and "one
+site, measured, and here is the near-miss" is the difference between a note and
+a guard. A missed producer would undersize the area and corrupt the callee's
+stack with nothing to say so, so the test reads the emitted store offsets back
+out of the assembly instead of believing the paragraph.
+
+**The unplanned one.** A test that had been green for months went red, and it
+went red because of the date. `calendar2` writes the pattern of dates worth
+looking for; when the window needs two day ranges — the 19th and the 20th do
+not merge into one character class — it puts the alternatives on separate lines
+with the parentheses spanning the newline. That is legal for V8's own egrep and
+for nothing else: egrep's *lexer* returns the alternation token for a newline,
+so a `-f` file is one regular expression rather than a list of them. The host's
+grep reads each line as a complete pattern and answers `parentheses not
+balanced`.
+
+The port had no egrep. V8 shipped one; it had simply never been imported, so
+`calendar(1)` inside the jail was broken on every date whose window spans two
+ranges, and the suite could only notice on those dates. It is one yacc grammar
+and a bare file in `cmd/` — no directory, no makefile — so its build
+description upstream is Bell Labs' `Admin/Mk` script and its destination falls
+through their tables to `/usr/bin`, which is where the shipped tree has it.
+
+It needed exactly one change, and that change announced itself. Upstream
+declares the parser's semantic-value variable `int`; this port's yacc emits
+`long` for it, a fix made years ago for a different bug. In awk and in ratfor
+the same mismatch sat in a separate lexer file where nothing could speak, and
+both programs ran wrong for months. Here yacc writes the declaration and the
+definition into one file, so the compiler refused outright — and, unlike those
+two, nothing was silently wrong beneath it: no pointer ever passes through the
+variable in egrep. The sweep this project keeps for that exact class could not
+have found it either, because the sweep looks one directory deep and this is a
+bare file. That is the fourth time the same sweep has been too narrow, and the
+second time in its file set.
 
 ---
 

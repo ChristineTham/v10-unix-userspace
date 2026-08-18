@@ -123,7 +123,7 @@ double realcon[6] =
  * use is inside #ifdef SDB, which arm64defs leaves off.  So this is one number,
  * declared once in arm64defs and read here rather than respelled.
  *
- *	[x29 - F77CALL   .. x29)		outgoing slots nine and up, for a call
+ *	[x29 - f77calls().. x29)		outgoing slots nine and up, for a call
  *	[x29 + 0         .. ARGOFFSET)	autos, growing up, checked in prolog()
  *	[x29 + ARGOFFSET .. +f77args())	every parameter, 8 bytes apart: x0-x7
  *					spilled, then slots nine and up copied
@@ -145,7 +145,6 @@ double realcon[6] =
  */
 #define F77SAVE 160	/* the ten stp pairs below, sixteen bytes each */
 #define F77ARGSMAX (SZADDR*MAXARGSLOT)		/* the widest spilled-argument area */
-#define F77CALL (SZADDR*(MAXARGSLOT-8))		/* outgoing slots nine and up */
 
 /*
  * f77args, f77frame -- the spilled-argument area and the frame, sized to THIS
@@ -170,11 +169,11 @@ double realcon[6] =
  * prsave() before it does.
  *
  * AND IT IS ROUNDED UP TO SIXTEEN, WHICH IS NOT COSMETIC.  AAPCS64 requires sp
- * 16-byte aligned at every instruction boundary, ARGOFFSET and F77CALL are
- * both multiples of 16 already, so this is the one term that can break it --
- * and lastargslot is a multiple of SZADDR, which is EIGHT.  A nine-slot
- * procedure would otherwise emit `sub sp, sp, #1544' and misalign every frame
- * beneath it.
+ * 16-byte aligned at every instruction boundary and ARGOFFSET is a multiple
+ * of 16 already, so the two terms that can break it are this one and
+ * f77calls(), which rounds for the same reason -- and both are built from a
+ * slot count times SZADDR, which is EIGHT.  A nine-slot procedure would
+ * otherwise emit `sub sp, sp, #1544' and misalign every frame beneath it.
  *
  * The three sites that spend it -- prsave's `sub sp' and `add x10', goret's
  * `add sp' -- all read f77frame(), so they cannot disagree about it; the
@@ -195,6 +194,74 @@ return( (n + 15) & ~15 );
 f77frame()
 {
 return( ARGOFFSET + f77args() );
+}
+
+/*
+ * f77call, f77calls -- the OUTGOING call area, sized to the widest call this
+ * procedure makes.  f77args() above is the incoming half; this is the other
+ * 448 bytes, and every procedure carried them, including a leaf that makes no
+ * call at all.  It is a region with no VAX counterpart whatever -- a VAX
+ * pushes its arguments -- so both the region and its size are target-forced.
+ *
+ * THE COUNT COMES FROM PASS 1 BECAUSE THAT IS THE ONLY PLACE IT EXISTS.
+ * putpcc.c's putcall() has the outgoing slot count as `n' and already branches
+ * on it to choose P2CALL against P2CALL0, so recording it is one line there.
+ * /lib/f1 recomputes the same number as `vsp - base' when it places the
+ * arguments -- and by then this prologue has been written and cannot change.
+ *
+ * ONE PRODUCER, VERIFIED RATHER THAN RECALLED, because a missed one undersizes
+ * the area and corrupts the callee's stack silently.  P2CALL is emitted at
+ * putpcc.c:1368 and nowhere else that this program builds: putdmr.c and
+ * putscj.c are the dmr and scj back ends and are not in the Makefile's
+ * F77P1_NAME, and put.c's ops2[] -- which does hold P2CALL, twice, at the
+ * OPCALL and OPCCALL positions -- is a translation table read by putop()'s
+ * generic tail, which an OPCALL node never reaches: all four routes to one
+ * (putpcc.c:283, :450, :716, :883) go to putcall() first.  The guard in
+ * tests/wavea reads the emitted `str x11, [sp, #K]' back rather than trusting
+ * that paragraph.
+ *
+ * IT RESETS ITSELF ON procno RATHER THAN IN procinit(), which is what keeps
+ * the change to authentic source down to the single call site.  init.c:182
+ * bumps procno once per procedure and BOTH functions test it -- f77call so a
+ * new procedure starts from zero, f77calls so a procedure that makes no call
+ * at all reads zero rather than the previous procedure's maximum.  Only the
+ * second is invisible in ordinary running, and it is the one that decides a
+ * leaf: without it a leaf following a wide call inherits its area.
+ *
+ * AND THE RESET MUST NOT BE IN prsave(), WHICH IS WHERE IT FIRST WENT.
+ * proc.c:333-334 calls prolog() once per ENTRY point and prolog() calls
+ * prsave(), so a reset there gives the second entry a different frame from the
+ * first -- and both prologues branch into ONE body, which stores its outgoing
+ * arguments at one set of sp-relative addresses.  f77args() is safe from this
+ * only because lastargslot is a single per-procedure global.
+ */
+LOCAL int callproc = -1;	/* the procno the maximum below describes */
+LOCAL int callmax;		/* outgoing argument slots, widest call in it */
+
+f77call(n)
+int n;
+{
+if(callproc != procno)
+	{
+	callproc = procno;
+	callmax = 0;
+	}
+if(n > callmax)
+	callmax = n;
+}
+
+f77calls()
+{
+int n;
+
+if(callproc != procno)		/* this procedure makes no call at all */
+	return(0);
+n = callmax;
+if(n > MAXARGSLOT)		/* prolog() and /lib/f1 both refuse past here */
+	n = MAXARGSLOT;
+if(n <= 8)			/* x0-x7 take the first eight; nothing spills */
+	return(0);
+return( ((n - 8) * SZADDR + 15) & ~15 );
 }
 
 /*
@@ -309,11 +376,12 @@ p2pass("\tstp\td14, d15, [sp, #-16]!");
    outgoing half.  AAPCS64 puts a call's ninth and later arguments at [sp,#0],
    and with `mov x29, sp' that address was [x29,#0] -- the first auto.  So
    /lib/f1 could not have written one without destroying a temporary, and the
-   frame is enlarged by F77CALL with x29 lifted off the bottom instead.
+   frame is enlarged by f77calls() with x29 lifted off the bottom instead.
    Everything else here is stated from x29 and does not move; goret() reads
-   f77frame() from x29 and needs no change at all. */
-p2pi("\tsub\tsp, sp, #%d", f77frame() + F77CALL);
-p2pi("\tadd\tx29, sp, #%d", F77CALL);
+   f77frame() from x29 and needs no change at all -- which is why sizing this
+   region per procedure touches these two lines and nothing else. */
+p2pi("\tsub\tsp, sp, #%d", f77frame() + f77calls());
+p2pi("\tadd\tx29, sp, #%d", f77calls());
 /* THE SPILL GOES THROUGH A SCRATCH REGISTER RATHER THAN DIRECTLY, because stp's
    immediate is a signed 7-bit field scaled by 8 -- reaching only +504 -- and
    ARGOFFSET is deliberately larger than that.  `stp x0, x1, [x29, #1024]' is

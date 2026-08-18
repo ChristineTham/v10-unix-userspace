@@ -6,6 +6,14 @@
 # synthetic tests do not, so this suite leads with real programs by design.
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)	# the release tree, v8/
+# AND THE SCRIPT ITSELF, ABSOLUTE, because two cases READ THIS FILE and the
+# suite cd's to $TMP below -- so `"$0"' is a relative path to nowhere the
+# moment the suite is invoked as `v8/tests/wavea/run.sh' from the repo root,
+# which CLAUDE.md documents as a supported way to run one.  Measured: the
+# f77refuse coverage case then reports `no alternation extracted'.  It fails
+# LOUDLY, which is luck -- the other reader has a vacuity guard and would have
+# derived a count of zero.  tests/cpp's anchor-to-dirname lesson, in a case.
+SELF=$ROOT/tests/wavea/run.sh
 REPO=$(cd "$ROOT/.." && pwd)			# the repository above it
 CC=$ROOT/rootfs/bin/cc
 V8ROOT=$ROOT/rootfs
@@ -1827,6 +1835,34 @@ check 'expr multiplies'      '70' "$("$exprbin" 10 '*' 7)"
 check 'expr compares'        '1'  "$("$exprbin" 2 '<' 3)"
 check 'expr : yields a length' '3' "$("$exprbin" abcdef : abc)"
 
+# egrep: expr's shape one step smaller and the FIRST BARE *.y imported -- a
+# single file in cmd/ with no directory and no makefile, so Admin/Mk's `*.y'
+# arm is its build description and Admin/dest answers /usr/bin by
+# FALL-THROUGH, egrep being in none of the four tables.  Asserted as the
+# DIRECTORY rather than through v8which, because the fall-through is the claim.
+check 'egrep installs to /usr/bin' 'yes' \
+    "$([ -x "$V8ROOT/usr/bin/egrep" ] && echo yes)"
+egrepbin=$V8ROOT/usr/bin/egrep
+check 'egrep matches an alternation' 'alpha gamma' \
+    "$(printf 'alpha\nbeta\ngamma\n' | "$egrepbin" 'a(l|m)' | tr '\n' ' ' | sed 's/ $//')"
+check 'egrep -v inverts'             'beta' \
+    "$(printf 'alpha\nbeta\n' | "$egrepbin" -v 'a(l|m)')"
+# The status contract is in egrep.y's own header: 0 matched, 1 ran but did not,
+# 2 error.  The middle one is the half a match-only case cannot see, and it is
+# what `if egrep ...' in a shell script depends on.
+check 'egrep exits 1 having matched nothing' '1' \
+    "$(printf 'alpha\n' | "$egrepbin" zzz >/dev/null 2>&1; echo $?)"
+# AND THE PROPERTY THAT MADE IT WORTH PORTING: a newline inside a -f pattern is
+# an ALTERNATION IN THE GRAMMAR, not a pattern separator, so parentheses may
+# span it.  egrep.y:26 defines RIGHT as the newline and :157 is `case RIGHT:
+# return (OR);'.  That is what calendar2 emits and what POSIX grep -f refuses.
+# Two halves, because an egrep that matched every line would pass the first.
+check 'egrep reads a newline in a -f pattern as an alternation' 'yes no' \
+    "$(printf '(one\ntwo)\n' > eg.pat
+       a=$(printf 'xxtwoxx\n' | "$egrepbin" -f eg.pat >/dev/null 2>&1 && echo yes || echo no)
+       b=$(printf 'xxthreexx\n' | "$egrepbin" -f eg.pat >/dev/null 2>&1 && echo yes || echo no)
+       echo "$a $b")"
+
 # m4: define and expand, then a macro with an argument, which is the only case
 # that proves the argument stack rather than the symbol table.
 m4bin=$(v8which m4)
@@ -2143,12 +2179,25 @@ check 'and the command is in /usr/bin' 'script' \
 # pattern would freeze today's date into the suite, so what is checked is the
 # RELATION: the pattern must match a line naming today and must not match one
 # naming a date three months out.  Both months are computed here.
+#
+# THE CONSUMER IS V8's OWN egrep, WHICH IS WHAT calendar3 RUNS, and reaching
+# for the host's grep instead is what made this case go red on 19 August 2026
+# after months of passing.  When the window needs more than one day RANGE --
+# 19 and 20 do not merge into one character class -- calendar2 puts the
+# alternatives on separate LINES with the parentheses spanning the newline,
+# which is legal only because egrep's LEXER returns the token OR for a newline
+# (egrep.y:26 defines RIGHT as the newline, :157 is `case RIGHT: return
+# (OR);').  POSIX grep -f reads each line as a complete pattern and answers
+# `parentheses not balanced'.  So the case was right, calendar2 was right, and
+# the tool it was measured with was the host's -- the whois shape exactly.
 today=$(date '+%b %-d'); far=$(date -v+95d '+%b %-d' 2>/dev/null || echo 'Xxx 1')
 "$V8ROOT/usr/lib/calendar2" </dev/null > cal.pat 2>&1
 check 'calendar2 matches today' 'yes' \
-    "$(printf '%s something\n' "$today" | grep -Ei -f cal.pat >/dev/null && echo yes || echo no)"
+    "$(printf '%s something\n' "$today" |
+       "$V8ROOT/usr/bin/egrep" -i -f cal.pat >/dev/null && echo yes || echo no)"
 check 'and not a date months away' 'no' \
-    "$(printf '%s something\n' "$far" | grep -Ei -f cal.pat >/dev/null && echo yes || echo no)"
+    "$(printf '%s something\n' "$far" |
+       "$V8ROOT/usr/bin/egrep" -i -f cal.pat >/dev/null && echo yes || echo no)"
 # calendar4 filters a list of paths down to the readable-but-not-writable ones,
 # which is the access(2) pair.  The negative half is what discriminates.
 check 'calendar4 keeps a readable file' '/etc/passwd' \
@@ -4066,7 +4115,7 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	# refusal that is gone, which is a worse comment rather than a worse
 	# test, so it is left to review.
 	check 'f77: every refusal in the sources has an arm in f77refuse' 'ok 1 skipped' \
-	    "$(alt=$(sed -n '/^	f77refuse() {/,/^	}$/p' "$0" |
+	    "$(alt=$(sed -n '/^	f77refuse() {/,/^	}$/p' "$SELF" |
 	                grep -oE "grep -oE '[^']*'" | sed "s/grep -oE '//; s/'$//")
 	       [ -n "$alt" ] || { echo 'no alternation extracted'; exit; }
 	       msgs=$(cat "$ROOT/src/cmd/f77/arm64.c" "$ROOT/shim/f1/f1.c" \
@@ -4163,6 +4212,90 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	       if [ -z "$a" ] || [ -z "$n" ]; then echo "not found a=[$a] n=[$n]"
 	       elif [ "$n" -ge $((a + 64)) ]; then echo ok
 	       else echo "frame top $n is below the spill area end $((a + 64))"; fi)"
+
+	# ---- AND THE OUTGOING CALL AREA IS SIZED PER PROCEDURE TOO, which is
+	# the other half of the frame and the half with no VAX counterpart at
+	# all: AAPCS64 puts a call's ninth and later arguments at [sp,#0], so
+	# the CALLER reserves room for them where a VAX simply pushes.  It was
+	# SZADDR*(MAXARGSLOT-8) -- 448 bytes -- on every procedure including a
+	# leaf that makes no call.  Measured: `subroutine nop' went from 1536
+	# bytes of frame to 1088, and leaf recursion on an 8176 KiB stack from
+	# 4929 frames to 6699, which is 1696/1248 to four figures.
+	#
+	# THREE PROPERTIES THAT FAIL DIFFERENTLY, SO THREE CASES.  The count
+	# comes from pass 1 -- putpcc.c's putcall() is the only place that
+	# knows how wide a call is -- and arm64.c's f77call() keeps the running
+	# maximum, resetting on procno.
+	#
+	# ONE: nothing is reserved by a procedure that makes no call, or one
+	# whose widest call fits in x0-x7.  All three areas are read out of
+	# `add x29, sp, #C' in each procedure's own entry stub, in source
+	# order, and all three procedures are in ONE compilation deliberately:
+	# what this discriminates is a maximum left over from the procedure
+	# before, which cannot happen across files because each f77pass1 run
+	# starts clean.  Names are five characters because F77 truncates an
+	# identifier at six and says so, which is not a port defect.
+	check 'f77: the outgoing call area is sized per procedure' 'ok' \
+	    "$(cd f77p1w && rm -f xthr.s
+	       printf '%s\n' '      subroutine xwide(a,b,c,d,e,f,g,h,i,j,k,l)' \
+	           '      integer a,b,c,d,e,f,g,h,i,j,k,l' \
+	           '      call xsink(a,b,c,d,e,f,g,h,i,j,k,l)' '      end' \
+	           '      subroutine xleaf' '      end' \
+	           '      subroutine xnarr(a)' '      integer a' \
+	           '      call xone(a)' '      end' > xthr.f
+	       "$V8ROOT/usr/bin/f77" -S xthr.f >/dev/null 2>&1
+	       set -- $(awk '/^Lf1b[0-9]*:/ { if (seen) printf "%s ", area
+	                                      seen = 1; area = "none" }
+	                     /add[[:blank:]]+x29, sp, #/ {
+	                         if (area == "none") { area = $0; sub(/.*#/, "", area) } }
+	                     END { if (seen) printf "%s\n", area }' xthr.s)
+	       if [ $# -ne 3 ]; then echo "want three areas, got [$*]"
+	       elif [ "$1" -gt 0 ] && [ "$2" = 0 ] && [ "$3" = 0 ]; then echo ok
+	       else echo "areas [$*], want wide>0 then leaf=0 then narrow=0"; fi)"
+	# TWO: and it is big enough, which is the half that corrupts the
+	# CALLEE'S stack rather than merely wasting space.  /lib/f1 stages the
+	# ninth argument onward through `str x11, [sp, #K]' and that is the
+	# only variable sp-relative store either half of the compiler emits --
+	# arm64.c's are all [sp, #-16]! and [sp], #16 -- so K + SZADDR <= C is
+	# exact, with both numbers read back out of the emitted code.  A
+	# fourteen-argument call is six slots past x0-x7, and requiring K to be
+	# found is what stops the case passing on a program that never stores.
+	check 'f77: and the outgoing area covers every store into it' 'ok' \
+	    "$(cd f77p1w && rm -f xw14.s
+	       printf '%s\n' '      subroutine xw14(a,b,c,d,e,f,g,h,i,j,k,l,m,n)' \
+	           '      integer a,b,c,d,e,f,g,h,i,j,k,l,m,n' \
+	           '      call xs14(a,b,c,d,e,f,g,h,i,j,k,l,m,n)' '      end' > xw14.f
+	       "$V8ROOT/usr/bin/f77" -S xw14.f >/dev/null 2>&1
+	       c=$(grep -oE 'add[[:blank:]]+x29, sp, #[0-9]+' xw14.s |
+	           head -1 | grep -oE '[0-9]+$')
+	       k=$(grep -oE 'sp, #[0-9]+\]' xw14.s | grep -oE '[0-9]+' |
+	           sort -n | tail -1)
+	       if [ -z "$c" ] || [ -z "$k" ]; then echo "not found c=[$c] k=[$k]"
+	       elif [ $((k + 8)) -le "$c" ]; then echo ok
+	       else echo "stores reach $((k + 8)), area is $c"; fi)"
+	# THREE: AND EVERY ENTRY POINT OF ONE PROCEDURE MUST AGREE ABOUT IT,
+	# which is why the reset is keyed on procno and not done in prsave().
+	# proc.c:333-334 calls prolog() once per ENTRY and prolog() calls
+	# prsave(), so a reset there leaves the second entry with a different
+	# frame from the first -- and both stubs branch into ONE body, which
+	# stores its outgoing arguments at one set of sp-relative addresses.
+	# Requiring two stubs and a non-zero area is what keeps the case from
+	# passing on a procedure that has neither.
+	check 'f77: and every ENTRY point of a procedure agrees about it' 'ok' \
+	    "$(cd f77p1w && rm -f xent.s
+	       printf '%s\n' '      subroutine xent1(a,b)' '      integer a,b' \
+	           '      call xz2(a,b)' '      return' \
+	           '      entry xent2(b,a)' \
+	           '      call xz12(a,b,a,b,a,b,a,b,a,b,a,b)' '      end' > xent.f
+	       "$V8ROOT/usr/bin/f77" -S xent.f >/dev/null 2>&1
+	       n=$(grep -cE 'add[[:blank:]]+x29, sp, #[0-9]+' xent.s)
+	       u=$(grep -oE 'add[[:blank:]]+x29, sp, #[0-9]+' xent.s |
+	           grep -oE '[0-9]+$' | sort -u | tr '\n' ' ')
+	       set -- $u
+	       if [ "$n" -ne 2 ]; then echo "want two entry stubs, got $n"
+	       elif [ $# -ne 1 ]; then echo "the two entries disagree: [$u]"
+	       elif [ "$1" -le 0 ]; then echo "both entries reserve nothing"
+	       else echo ok; fi)"
 
 	# ---- ADJUSTABLE DIMENSIONS, WHICH prolog() HAD NEVER EVALUATED.
 	# proc.c:1120 allocates a temporary per run-time dimension and leaves
@@ -4344,7 +4477,7 @@ else
 	n=$(awk '/^if \[ -x "\$V8ROOT\/usr\/bin\/f77" \]; then$/ { i = 1; next }
 	         i && /^else$/ { exit }
 	         i && /^	check / { c++ }
-	         END { print c+0 }' "$0")
+	         END { print c+0 }' "$SELF")
 	[ "$n" -gt 0 ] || n=1	# a zero here would silently report nothing
 	fail=$((fail+n)); echo "FAIL f77 driver is not installed ($n cases)"
 fi

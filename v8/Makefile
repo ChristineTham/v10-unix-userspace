@@ -1922,6 +1922,30 @@ $(BINDIR)/expr: $(BUILD)/expr/expr.o $(V8DEPS)
 	@mkdir -p $(@D)
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/expr/expr.o $(V8LIBS)
 
+# egrep -- expr's shape one step smaller, and the FIRST BARE *.y this port has
+# imported: it sits in cmd/ as a single file with no directory and no makefile,
+# so its build description upstream is Admin/Mk's `*.y' arm (yacc, cc -ly,
+# install) and Admin/dest answers /usr/bin by FALL-THROUGH, since egrep is in
+# none of binfiles, etcfiles, libfiles or ulibfiles.  The shipped tree agrees:
+# v8/usr/bin/egrep, 14336 bytes.  No -ly here -- liby supplies main() and
+# yyerror(), and egrep.y defines both itself.
+#
+# IT IS HERE BECAUSE calendar(1) NEEDS IT AND THE HOST'S CANNOT DO THE JOB.
+# calendar2 writes a pattern whose alternatives are on separate LINES with the
+# parentheses spanning the newline, which is legal only for an egrep whose
+# LEXER turns a newline into `|' inside the grammar -- egrep.y:26 defines RIGHT
+# as '\n' and :157 is `case RIGHT: return (OR);'.  POSIX grep -f reads each
+# line as a complete pattern and answers `parentheses not balanced'.
+EGREPSRC = $(SRC)/cmd
+$(BUILD)/egrep/y.tab.c: $(EGREPSRC)/egrep.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/egrep
+	cd $(BUILD)/egrep && V8ROOT=$(ROOTFS) $(YACC) $(EGREPSRC)/egrep.y
+$(BUILD)/egrep/egrep.o: $(BUILD)/egrep/y.tab.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/egrep -c -o $@ $(BUILD)/egrep/y.tab.c
+$(BINDIR)/egrep: $(BUILD)/egrep/egrep.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/egrep/egrep.o $(V8LIBS)
+
 M4SRC = $(SRC)/cmd/m4
 M4_NAMES = m4 m4ext m4macs
 M4_OBJ = $(patsubst %,$(BUILD)/m4/%.o,$(M4_NAMES)) $(BUILD)/m4/m4y.o
@@ -3049,12 +3073,13 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
               $(ROOTFS)/usr/lib/libl.a
 
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
-                   $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/m4 $(BINDIR)/diff3 \
+                   $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/egrep \
+                   $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
                    $(F77LIB_BUILT) $(F77_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
-                   $(EX_INSTALL) $(call v8install,awk expr m4) \
+                   $(EX_INSTALL) $(call v8install,awk expr egrep m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
                    $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \

@@ -1670,7 +1670,7 @@ genrec()
 	 * QUEST AND COLON -- AND IN A POSTFIX STREAM THAT IS `csel', NOT A
 	 * BRANCH.  Fortran has no conditional operator, so these arrive only
 	 * from three places f77 builds them in: intr.c:672 expands ABS as
-	 * `0 <= t ? t : -t', putpcc.c:1382-1383 expands MIN and MAX the same
+	 * `0 <= t ? t : -t', putpcc.c:1395-1396 expands MIN and MAX the same
 	 * way, and expr.c:1183-1184 is the -C subscript range check.  That is
 	 * why `abs' refused with `operator 22 (COLON)' -- the commonest
 	 * intrinsic in Fortran is a conditional expression, not a call.

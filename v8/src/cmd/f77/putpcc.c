@@ -1352,6 +1352,19 @@ for(cp = charsp ; cp ; cp = cp->nextp)
 	p2op(P2LISTOP, type2);
 	}
 frchain(&charsp);
+#if TARGET == ARM64
+/* PORT: THE FRAME HAS TO KNOW HOW WIDE THIS CALL IS, AND THIS IS THE ONLY
+   PLACE THAT DOES.  AAPCS64 puts a call's ninth and later arguments at [sp,#0]
+   upward, so the CALLER reserves room for them -- a region a VAX has no
+   counterpart for at all, because a VAX pushes.  arm64.c's prsave() sizes it
+   and runs after the whole body (proc.c:333-334 calls prolog() from procode()),
+   so a running maximum recorded here is final by the time it is read; `n' is
+   the outgoing slot count and is already computed for the P2CALL/P2CALL0 choice
+   on the next line.  Without it every procedure carried the widest area
+   MAXARGSLOT allows -- 448 bytes, on a leaf that makes no call.  f77call() in
+   arm64.c has the whole account, including why this is the only producer. */
+f77call(n);
+#endif
 p2op(n>0 ? P2CALL : P2CALL0 , ctype);
 free( (charptr) p );
 return(fval);

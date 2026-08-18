@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2691 cases, 2690 on a host whose $TMPDIR
+make test             # all 17 suites (2701 cases, 2700 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  NOT `make -j8 test': see below
 make -C v8 test-wavec # one suite: deps jail selfhost cpp v8ccom v8cc v8sys freestanding
@@ -1541,9 +1541,16 @@ Nine translation units, one of which does not exist until the build makes it.
 
   ```bash
   grep -rnE '(extern|static)?[[:blank:]]*(int|short)[[:blank:]]+(yylval|yyval)\b' \
-       src/cmd/*/*.l src/cmd/*/*.c src/cmd/*/*.h src/cmd/*/*.y src/cmd/*/*.g |
+       src/cmd/*.[chly] src/cmd/*/*.[chly] src/cmd/*/*.g |
        grep -vE '^\s*\*|PORT:'
   ```
+
+  **AND THE FILE SET WAS STILL TOO NARROW, A FOURTH TIME.** The glob read
+  `src/cmd/*/*` only -- ONE DIRECTORY DEEP -- and `egrep.y` is a BARE `.y` in
+  `cmd/`, so the class's third live instance was invisible to it as well.
+  `src/cmd/*.[chly]` is in the command above now. Ask of any glob whether every
+  program it means to cover actually has a directory: `egrep`, `find`, `mc` and
+  the other bare `cmd/*.c` programs do not.
 - **AND A POINTER CAN ROUND-TRIP THROUGH A STRUCT FIELD, WHICH THE FILE'S OWN
   COMMENT ANNOUNCES.** `struct rrow`'s `int lval` is written `(long) right(v)`
   and read back `(char *) f->re[i].lval`; `b.c`'s header comment says *"right
@@ -3025,6 +3032,109 @@ things generalise, and the first three are about instruments:
   *re-measure, do not increment* has a companion: **a delta counted from your
   own diff is a prediction**, and the two increments that look identical in a
   diff -- a case added and a case restored -- are not the same number.
+
+
+
+**AND THE OTHER HALF OF THE FRAME WENT THE SAME WAY, WHICH TOOK ONE GUARDED
+LINE OF AUTHENTIC SOURCE AND FOUND A NEAR-MISS IN THE SURVEY THAT JUSTIFIED
+IT.** §7g: the OUTGOING call area -- `SZADDR*(MAXARGSLOT-8)`, 448 bytes, carried
+by every procedure including a leaf that makes no call -- is now sized per
+procedure. Leaf frame 1696 -> **1248**, recursion depth on an 8176 KiB stack
+4929 -> **6699**, and 6699/4929 is 1696/1248 to four figures, which is what says
+the frame is the whole of the difference. `src/cmd/f77/PORTING.md`. Six things
+generalise:
+
+- **A SURVEY THAT ENUMERATES *EMITTERS* MUST ALSO ENUMERATE *TABLES*.** The
+  costing said one live `P2CALL` site, measured. Re-deriving it found a sixth
+  reference the note had not mentioned: `put.c:34`'s `ops2[]` holds `P2CALL`
+  **twice**, at the OPCALL and OPCCALL positions, and `putop()`'s generic tail
+  emits `ops2[opcode]` for anything it did not special-case. It is not a second
+  producer -- all four routes to an OPCALL node (`putpcc.c:283`, `:450`,
+  `:716`, `:883`) go to `putcall()` first -- but nothing in the note said so,
+  and a missed producer here undersizes the area and corrupts the CALLEE's
+  stack silently. Same family as the sleeper survey that listed every caller
+  except the reachable one, with the missing entry being a table rather than a
+  call.
+- **THE RESET MUST NOT GO WHERE THE READ GOES, AND prolog() IS WHY.**
+  `proc.c:333-334` calls `prolog()` once per ENTRY point and `prolog()` calls
+  `prsave()`, so a per-procedure maximum reset at the end of `prsave()` gives
+  the second entry a different frame from the first -- and both stubs branch
+  into ONE body, which stores its outgoing arguments at one set of sp-relative
+  addresses. `f77args()` is safe from this only by the accident that
+  `lastargslot` is a single global. Keying the reset on `procno` costs nothing,
+  needs no second edit to authentic source, and is sound because `fileinit()`
+  zeroes it once at `main.c:178`, straight-line and not in a loop.
+- **AND THE READING SIDE NEEDS THE SAME TEST, WHICH IS THE HALF THAT IS
+  INVISIBLE.** A procedure that makes NO call never calls the recorder at all,
+  so without a staleness test in the *reader* a leaf inherits the previous
+  procedure's area. Two tests in two functions, and only the first is exercised
+  by ordinary running -- the second is what the guard is aimed at.
+- **A CEILING THAT EQUALS THE OLD CONSTANT MAKES THE CHANGE MONOTONE**, which
+  is what bounds it: clamping the slot count at `MAXARGSLOT` gives exactly
+  `(64-8)*8 == 448`, so no procedure can come out LARGER than before. Same
+  discipline as `rootpath()`'s access-to-lstat fix and 5h's dot arm.
+- **THE GUARD READS THE EMITTED STORE OFFSETS BACK**, because `str x11, [sp,
+  #K]` is the only variable sp-relative store either half of the compiler emits
+  -- arm64.c's are all `[sp, #-16]!` and `[sp], #16` -- so `K + SZADDR <= C`
+  against the `add x29, sp, #C` of the same procedure is exact, with both
+  numbers out of the assembly and nothing transcribed.
+- **AND THE THREE PROPERTIES FAIL DIFFERENTLY, SO THERE ARE THREE CASES**: the
+  area is sized per procedure (a leaf and a narrow caller both reserve nothing,
+  in ONE compilation, because a stale maximum cannot cross files); it is big
+  enough; and every ENTRY point of one procedure agrees about it. Each mutation
+  fires its own.
+
+**AND A CASE GREEN FOR MONTHS WENT RED BECAUSE OF THE DATE, WHICH IS THE
+HOST-PROPERTY CLASS IN THE ONE FORM NO RERUN CAN REPRODUCE.**
+`FAIL calendar2 matches today / grep: parentheses not balanced`. `calendar2`
+writes the egrep pattern for the next N days, and when the window needs more
+than one day RANGE -- 19 and 20 do not merge into one character class -- it puts
+the alternatives on separate LINES with the parentheses spanning the newline.
+That is legal for V8's own egrep and nothing else: `egrep.y:26` defines `RIGHT`
+as the newline and `:157` is `case RIGHT: return (OR);`, so the LEXER makes a
+`-f` file ONE regular expression rather than a list of them. POSIX `grep -f`
+reads each line as a complete pattern and refuses. Five things:
+
+- **THE TEST WAS RIGHT, THE PROGRAM WAS RIGHT, AND THE TOOL THE TEST MEASURED
+  WITH WAS THE HOST'S.** Third instance of the `whois` shape, where a case
+  resolved `grep` to a homebrew binary and read the Mac's `/etc/passwd`. The
+  consumer is `$V8ROOT/usr/bin/egrep` now, which is what `calendar3:18` runs.
+- **THE PORT HAD NO egrep AT ALL**, so `calendar(1)` in the jail was broken on
+  every such date and the suite could only see it on those dates. It is in now
+  -- one yacc grammar, `nm -u` empty, `/usr/bin` by fall-through from Bell Labs'
+  own tables, matching the shipped tree -- and calendar works end to end.
+  **The FIRST BARE `.y` this port has imported**: a single file in `cmd/` with
+  no directory and no makefile, so its build description upstream is
+  `Admin/Mk`'s `*.y` arm.
+- **THE ONE FORCED CHANGE IS THE `yylval` CLASS'S THIRD INSTANCE, AND THE FIRST
+  THAT ANNOUNCED ITSELF.** `extern int yylval` against this port's
+  `#define YYSTYPE long`. In awk and ratfor the lexer is a separate file and
+  nothing could speak; here yacc writes declaration and definition into ONE
+  translation unit and v8cc refuses with `redeclaration of yylval`. And nothing
+  was silently wrong beneath it -- the only store is `yylval = c` and every
+  semantic value is a character or a node index -- so the change is forced by
+  the BUILD rather than by a wrong answer. **A bug class can have a failure
+  mode that is loud in one program and silent in the next; which one you get is
+  a property of the file layout, not of the bug.**
+- **AND THE DOCUMENTED SWEEP FOR THAT CLASS COULD NOT HAVE FOUND IT.** It globs
+  `src/cmd/*/*.l src/cmd/*/*.c src/cmd/*/*.h src/cmd/*/*.y` -- ONE DIRECTORY
+  DEEP -- and `egrep.y` is a bare file in `cmd/`. Fourth narrowing of the same
+  sweep and the second in its file set, after the `.h`-and-`.g` one ratfor
+  exposed. Add `src/cmd/*.[chly]` to it.
+- **`calendar4` IS RECORDED RATHER THAN FIXED**: four lines, `gets(s)` into
+  `char s[100]`, SIGBUS above about 100 characters of path (measured: 45, 65,
+  85, 105 exit 0; 125 and 145 exit 138). Upstream's own on upstream's hardware
+  and not the DIRSIZ-derived class -- 100 is a bare number -- and unreachable in
+  the world this port ships, where every home is `/usr/<name>`.
+
+**AND RUNNING A SUITE BY ITS RELATIVE PATH BREAKS A CASE THAT READS ITS OWN
+SOURCE.** `v8/tests/wavea/run.sh` from the repo root reports `no alternation
+extracted`, because the suite `cd`s to `$TMP` at line 77 and `"$0"` is then a
+relative path to nowhere. The suite already computes an absolute `ROOT` at line
+8 for exactly this reason; two cases were still reading `"$0"`. It fails LOUDLY,
+which is luck rather than design -- the other of the two has a vacuity guard and
+would have reported a derived count of zero. `tests/cpp`'s anchor-to-`dirname`
+lesson, arriving in a case rather than in a suite.
 
 
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable

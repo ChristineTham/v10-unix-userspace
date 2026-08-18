@@ -366,6 +366,14 @@ dep 'rootfs headers -> mc'     rootfs/usr/include/.stamp      $B/bin/mc
 # reached with -I, so it is a real edge and not a system header.
 dep 'expr grammar -> tables'   src/cmd/expr/expr.y            $B/expr/y.tab.c
 dep 'expr regexp.h -> object'  src/cmd/expr/regexp.h          $B/expr/expr.o
+# egrep is expr's shape one step smaller and the first BARE .y in this tree:
+# no directory, no header of its own, and the whole program is the grammar
+# file.  Two edges rather than expr's two, because the object edge runs
+# through the GENERATED source and there is no third file to name -- which is
+# also why the object case is the one that would catch a rule that compiled a
+# stale y.tab.c.
+dep 'egrep grammar -> tables'  src/cmd/egrep.y                $B/egrep/y.tab.c
+dep 'egrep tables -> object'   $B/egrep/y.tab.c               $B/egrep/egrep.o
 # m4 is grap's shape without a lexer.  Upstream says `m4.o m4ext.o m4macs.o :
 # m4.h' and deliberately LEAVES m4y.o OUT; m4y.y does not include the header,
 # so the nodep is what keeps this tree from widening a claim upstream did not
