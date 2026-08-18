@@ -456,6 +456,32 @@ switch(p->exprblock.opcode)	/* check for special cases and rewrite */
 			free( (charptr) p );
 			p = lp;
 			pt = lt;
+			/* PORT: THE LOOP REFRESHES lp AND lt BEFORE RE-TESTING
+			   p's TAG, so when the descent reaches a LEAF it reads
+			   leftp -- offset 24 -- out of a Constblock, whose
+			   union Constant ends there.  On a VAX that offset was
+			   past the end of a 24-byte block and the byte came
+			   from the next heap object: garbage into lt, which is
+			   dead once the while condition fails, so the loop
+			   simply exited.  Here the block is 32 bytes, offset 24
+			   is cd[1], ALLOC leaves it zero, and `lp->vtype' reads
+			   ADDRESS 1 -- the address-0 class again, this time
+			   inside f77pass1 itself.
+
+			   REACHABLE ONLY BECAUSE SZADDR STOPPED EQUALLING
+			   SZLONG.  `assign 20 to lbl' assigns a TYADDR constant
+			   to an INTEGER, and expr.c:477 skips the
+			   conversion when typesize[ltype] >= typesize[rtype].
+			   Both were 4 on a VAX so it broke out and no OPCONV
+			   was ever built; here they are 4 and 8, so the test
+			   fails and this loop gets a conversion over a leaf
+			   constant for the first time.
+
+			   Breaking here is exactly what the VAX did next: the
+			   while condition tests p->tag==TEXPR, which a leaf
+			   fails, and lt is not read again afterwards. */
+			if(p->tag != TEXPR)
+				break;
 			lp = p->exprblock.leftp;
 			lt = lp->headblock.vtype;
 			}

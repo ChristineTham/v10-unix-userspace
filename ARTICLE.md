@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2635 tests across 17 suites** guard it.
+assembly. **2656 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5152,6 +5152,57 @@ note tells you something is impossible, go and read the thing it cites. And when
 you write a second instance of anything — a second function beside an existing
 one, a second filesystem type, a second checker — expect it to expose that the
 first one's stated reasons were wrong. It did here, every time.
+
+### Stage 6: what twenty ordinary programs found
+
+Stage 5 ended with a claim I had written carefully and still got wrong: that
+`/lib/f1` refuses by name anything it cannot do, so an unfinished pass is a safe
+one. A guard on the vocabulary is not a guard on the grammar, and I had already
+recorded that once. Twenty ordinary Fortran programs — character variables,
+FORMAT, DATA, COMMON, EQUIVALENCE, SAVE, arithmetic IF, internal I/O — found
+eight more defects, and only one of them announced itself.
+
+The worst was silent. `flushcc()` spills a pending comparison into a register,
+and its comment said it runs at "the only thing that writes flags". That was a
+true and complete survey of the code that existed when it was written; a `bl`
+writes the flags too, and calls arrived later. So `if (i .lt. 3 .and. fn(i) .gt.
+1)` compared, called, and then ran `cset` on flags the callee had overwritten —
+and `.FALSE. .AND. .TRUE.` came out **TRUE**. Nothing crashed. The value tests
+for it are not the guard, because they depend on what the callee happens to
+leave behind; the guard is structural, that between a `cmp` and the `bl` that
+destroys it there must be a `cset`, which is true at every callee.
+
+Two more were the same fact wearing different clothes. `abs` — the commonest
+intrinsic in the language — was refused as "operator 22 (COLON)", because f77
+expands it as `0 <= t ? t : -t` and Fortran's conditional lives in the compiler
+rather than in the language. And `x ** 0.5` printed `3.01e+23` for the square
+root of two, because K&R C has no float return: every one of the 66 typed
+functions in the Fortran runtime returns `double`, f77's own table calls those
+results `real`, and on a VAX that disagreement cost nothing — D_floating's
+leading word has F_floating's exact layout, so reading the first half of a
+returned double as a float is the same number. On IEEE it is the low mantissa.
+That is the second time this port has been bitten by that one coincidence, in a
+second component.
+
+My favourite is the one that took two ports of a single fact to reach. `assign
+20 to lbl`, with no GOTO at all, crashed the front end at address 1. `putop`
+walks a chain of type conversions and refreshes its operand pointer before
+re-checking what it is looking at, so at a leaf it read a pointer field off the
+end of a constant block — on a VAX, a garbage byte from the next heap object,
+into a variable the loop then stopped using. Here the block is eight bytes
+longer, the field is real and zero, and the read faults. And it was reachable
+only because `SZADDR` stopped equalling `SZLONG`: assigning a label to an
+INTEGER skips its conversion when the destination is no narrower, which was `4
+>= 4` on a VAX and is `4 >= 8` here, so the node that trips the walk had never
+been built. Two consequences of one width change, meeting in a function neither
+of them is about.
+
+The register allocator turned out not to need a bigger pool so much as an
+honest reading of the record it was already given: pass 1 announces how many
+registers it took, that number is zero in every program measured, and four
+callee-saved registers had been sitting idle in every procedure the pass had
+ever compiled while it refused `a // b` for want of a sixth.
+
 
 The 1985 code, for its part, has been almost entirely correct. Where it was
 wrong, it was wrong about the machine — that address 0 is readable, that a

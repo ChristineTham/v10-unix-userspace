@@ -3296,12 +3296,277 @@ if [ -x "$V8ROOT/usr/bin/f77" ]; then
 	       [ -n "$s" ] || echo 'no saves found'
 	       [ "$s" = "$r" ] || echo 'saved and restored sets differ')"
 
+	# ---------------------------------------------------------------
+	# STAGE 6.  A twenty-program corpus of ordinary Fortran found eight
+	# more defects, and only ONE of them announced itself the way stage 5's
+	# did -- the rest were a wrong answer, a desynchronised reader, or a
+	# refusal naming a construct the program did not contain.  Each case
+	# below is aimed at exactly one of them, with a control wherever a
+	# one-sided fix would have passed.
+
+	# A -- THE FLAGS DO NOT SURVIVE A CALL.  flushcc()'s survey said only
+	# comparisons write NZCV, which was true of the code that existed when
+	# it was written; `bl' arrived later.  So the first comparison's cset
+	# ran on flags the CALLEE had left.  The value case needs a callee that
+	# leaves LT set on the way out, or the wrong answer happens to be right
+	# -- measured, an ordinary callee gave `false' either way.
+	check 'f77: FALSE .and. a call is false, whatever the callee left in NZCV' ' right|' \
+	    "$(f77run cc '      program cc
+      integer fn
+      i = 5
+      if (i .lt. 3 .and. fn(i) .gt. 1) then
+         write(6,*) "wrong"
+      else
+         write(6,*) "right"
+      endif
+      end
+      integer function fn(k)
+      integer m
+      m = 1
+      if (m .lt. 999) m = m + 1
+      fn = k * 10
+      return
+      end')"
+	# and the control, so a fix that simply always said false is caught
+	check 'f77: TRUE .and. a call is still true' ' right|' \
+	    "$(f77run cd '      program cd
+      integer fn
+      i = 5
+      if (i .gt. 3 .and. fn(i) .gt. 1) then
+         write(6,*) "right"
+      else
+         write(6,*) "wrong"
+      endif
+      end
+      integer function fn(k)
+      integer m
+      m = 1
+      if (m .lt. 999) m = m + 1
+      fn = k * 10
+      return
+      end')"
+	# THE STRUCTURAL CASE IS THE ONE THAT IS TRUE AT EVERY CALLEE.  The two
+	# above depend on what fn happens to leave in the flags; this one does
+	# not.  Between a `cmp' and the `bl' that destroys it there must be a
+	# cset, or the comparison is being read after the call.
+	check 'f77: a pending comparison is materialised before the bl' 'cmp cset bl' \
+	    "$(cd f77p1w && printf '      program cs\n      integer fn\n      i = 5\n      if (i .lt. 3 .and. fn(i) .gt. 1) i = 9\n      end\n      integer function fn(k)\n      fn = k\n      return\n      end\n' > cs.f
+	       "$V8ROOT/usr/lib/f77pass1" cs.f cs.s cs.d cs.x >/dev/null 2>&1
+	       "$V8ROOT/lib/f1" cs.x 2>/dev/null |
+	       grep -E '^	(cmp|cset|bl)	' | awk '{print $1}' |
+	       head -3 | tr '\n' ' ' | sed 's/ $//')"
+
+	# B -- A NAME'S OFFSET WORD.  putpcc.c:1232-1235 writes an extra word
+	# before the name when the offset is nonzero, and the reader went
+	# straight for the name -- so it read the offset's four bytes as the
+	# head of the string and the stream desynchronised.  The first thing
+	# the misalignment produced was opcode 0, which is not an operator, so
+	# the diagnostic named a construct no program contains.
+	#
+	# THE TRIGGER IS ANY CONSTANT SUBSCRIPT PAST THE FIRST, in a plain
+	# local array -- a(1) has offset 0 and set no flag, which is why it
+	# worked throughout and is the control here.
+	check 'f77: a constant subscript past the first' ' 22 44|' \
+	    "$(f77run cb '      program cb
+      integer a(4)
+      a(2) = 22
+      a(4) = 44
+      write(6,*) a(2), a(4)
+      end')"
+	check 'f77: and element one, whose offset is zero, still works' ' 11|' \
+	    "$(f77run cn '      program cn
+      integer a(4)
+      a(1) = 11
+      write(6,*) a(1)
+      end')"
+	check 'f77: a COMMON variable at a nonzero offset' '  1.00000000  2.00000000|' \
+	    "$(f77run cm '      program cm
+      common /c/ p, q
+      p = 1.0
+      q = 2.0
+      write(6,*) p, q
+      end')"
+
+	# C -- QUEST AND COLON, which Fortran reaches through ABS and MIN/MAX
+	# rather than through any operator a programmer writes.  intr.c:672
+	# expands ABS as `0 <= t ? t : -t', so the commonest intrinsic in the
+	# language was refused with `operator 22 (COLON)'.  In a postfix stream
+	# both arms are already evaluated when COLON arrives, so this is csel.
+	#
+	# BOTH SIGNS, because each selects a different arm of the one csel.
+	check 'f77: IABS of a negative and a positive' ' 3 7|' \
+	    "$(f77run ca '      program ca
+      i = -3
+      j = 7
+      write(6,*) iabs(i), iabs(j)
+      end')"
+	check 'f77: MAX0 and MIN0' ' 9 3|' \
+	    "$(f77run cx '      program cx
+      write(6,*) max0(3,9), min0(3,9)
+      end')"
+	# the float arm is fcsel and not csel, so it is a separate case
+	check 'f77: ABS of a REAL, which is fcsel' '  3.50000000|' \
+	    "$(f77run cr '      program cr
+      x = -3.5
+      write(6,*) abs(x)
+      end')"
+
+	# D -- A FLOATING VALUE CROSSING A CALL IS ALWAYS A DOUBLE, which is
+	# K&R's `no float return' rule.  Not one of the typed functions in
+	# libF77, libI77 or libc/math returns `float'; putpcc.c:551-552 forces
+	# a TYREAL result as P2DREAL too.  f77's own table calls these results
+	# real anyway, and on a VAX that cost nothing because D_floating's
+	# leading word has F_floating's layout -- the same coincidence that
+	# broke wrt_E, meeting IEEE a second time.
+	#
+	# THE PRECISION IS THE DISCRIMINATOR, not the value: a single and a
+	# double of the same quantity must DIFFER, and both must be right.  A
+	# pass that read s0 got neither.
+	check 'f77: SQRT single and double, each right for its width' '  1.41421354   1.41421356' \
+	    "$(f77run cq '      program cq
+      double precision d
+      x = 2.0
+      d = 2.0d0
+      write(6,*) sqrt(x)
+      write(6,*) dsqrt(d)
+      end' | tr '|' ' ' | sed 's/  *$//')"
+	# the by-REFERENCE half: pow_dd is called with two double * and still
+	# returns a double.  `x ** 0.5' printed 3.01e+23 before this.
+	check 'f77: REAL ** REAL, whose callee takes pointers and returns a double' '  1.41421354|' \
+	    "$(f77run cp '      program cp
+      x = 2.0
+      write(6,*) x ** 0.5
+      end')"
+	# the FORCE half: a Fortran REAL FUNCTION must return a double too
+	check 'f77: a REAL FUNCTIONs own result' '  9.00000000|' \
+	    "$(f77run cf '      program cf
+      real sq
+      x = 3.0
+      write(6,*) sq(x)
+      end
+      real function sq(y)
+      sq = y * y
+      return
+      end')"
+
+	# E -- THE INTEGER POOL IS SIZED FROM WHAT PASS 1 SAYS IT TOOK.  Five
+	# registers was the worst case assumed for every procedure, while the
+	# LBRACKET record states the real number and it is 0 in every program
+	# measured -- so four callee-saved registers sat idle while expressions
+	# were refused for want of a fifth.  Character concatenation is what
+	# found it.
+	check 'f77: character concatenation, which needs six live values' ' foobar    |' \
+	    "$(f77run cc2 '      program cc2
+      character*10 a, b, c
+      a = "foo"
+      b = "bar"
+      c = a(1:3) // b(1:3)
+      write(6,*) c
+      end')"
+	# AND A FOUR-WAY ONE REACHES THE FOUR THAT PASS 1 DECLARED IT DID NOT
+	# TAKE, which is what makes the regvars half of the change exercised
+	# rather than merely written.  Measured, in registers live at once:
+	# one-way 1, two-way 6, three-way 8, four-way 10, five-way refuses.
+	# The old fixed pool was five, so it could not do a two-way -- `a // b',
+	# the simplest concatenation there is.
+	check 'f77: a four-way concatenation, which needs all ten' ' abcd      |' \
+	    "$(f77run c4 '      program c4
+      character*10 a, b, c, d, e
+      a = "a"
+      b = "b"
+      c = "c"
+      d = "d"
+      e = a(1:1) // b(1:1) // c(1:1) // d(1:1)
+      write(6,*) e
+      end')"
+
+	# AND THE POOL MUST NOT OUTGROW THE PROLOGUE.  A relation rather than a
+	# list: every x register f1 materialises into has to be one the entry
+	# stub saved, or the pass corrupts its caller.  This is what bounds
+	# widening the pool, and it needs no number in the case.
+	check 'f1: every register it allocates is one the prologue saves' '' \
+	    "$(cd f77p1w && "$V8ROOT/lib/f1" cs.x > p.s 2>/dev/null
+	       sed -n 's/.*stp	x\([0-9]*\), x\([0-9]*\), \[sp, #-16\]!.*/\1 \2/p' p.s |
+	         tr ' ' '\n' | sort -u > sv.txt
+	       grep -v -E '^	(stp|ldp)	' p.s |
+	         sed -n 's/^	[a-z][a-z]*	x\([0-9]*\),.*/\1/p' | sort -u |
+	         awk '$1 >= 19 && $1 <= 28' > us.txt
+	       comm -23 us.txt sv.txt)"
+
+	# G -- THE INTERNAL-I/O CONTROL BLOCK.  io.c already carried IOALIGN
+	# and a comment deferring the internal list because nothing had reached
+	# it; `read(buf,...)' reached it, and ld refused the object outright.
+	check 'f77: an internal READ from a CHARACTER buffer' ' 2468|' \
+	    "$(f77run cI '      program cI
+      character*20 buf
+      buf = "  1234"
+      read(buf,"(i6)") n
+      write(6,*) n*2
+      end')"
+	# STATED AS A RELATION OVER THE INIT RECORDS, so the OPEN and INQUIRE
+	# lists are covered the day they are corrected and nobody edits this
+	# case: every pointer f77 places in a control block must sit on an
+	# eight-byte boundary, because that is what the linker requires and
+	# what the C struct does.
+	check 'f77: every pointer in an I/O control block is 8-aligned' '' \
+	    "$(cd f77p1w && printf '      program ci\n      character*20 b\n      b = "  12"\n      read(b,"(i4)") n\n      write(6,*) n\n      end\n' > ci.f
+	       "$V8ROOT/usr/lib/f77pass1" ci.f ci.s ci.d ci.x >/dev/null 2>&1
+	       grep '\.quad' ci.d | awk '{ off = $2 + 0; if (off % 8) print off }')"
+
+	# H -- ASSIGN.  f77pass1 SIGSEGV'd on `assign 20 to lbl' alone, before
+	# any GOTO: putop descends a conversion chain and refreshes lp before
+	# re-testing p's tag, so at a leaf it read leftp out of a Constblock.
+	# On a VAX that offset was past a 24-byte block and the garbage byte
+	# went into a variable the loop then stopped using; here it is a NULL
+	# field and `lp->vtype' reads address 1.
+	#
+	# REACHABLE ONLY BECAUSE SZADDR STOPPED EQUALLING SZLONG -- expr.c
+	# skips the conversion when typesize[ltype] >= typesize[rtype], which
+	# was 4 >= 4 on a VAX and is 4 >= 8 here, so the OPCONV that trips the
+	# loop was never built before.
+	check 'f77: ASSIGN alone compiles and runs' ' ok|' \
+	    "$(f77run cg '      program cg
+      assign 20 to lbl
+      write(6,*) "ok"
+   20 continue
+      end')"
+	# AND THE BRANCH IS REFUSED WITH ITS REAL REASON.  An assigned GOTO
+	# needs a code address in a Fortran INTEGER; that is four bytes here
+	# and Mach-O loads text above 4GB, so the address cannot be stored.
+	# Before the GOTO record's `var' flag was read this emitted `b L4' --
+	# P2INT is 4 -- and the assembler reported an undefined label, naming
+	# something the program never had.
+	check 'f77: an assigned GOTO is refused, naming the address width' 'yes' \
+	    "$(cd f77p1w && printf '      program ch\n      assign 20 to lbl\n      goto lbl\n   20 continue\n      end\n' > ch.f
+	       "$V8ROOT/usr/bin/f77" ch.f -o ch 2>&1 |
+	       grep -q 'code address in a Fortran INTEGER' && echo yes)"
+	# the two controls: the direct and computed forms still branch
+	check 'f77: a direct GOTO still works' ' right|' \
+	    "$(f77run cj '      program cj
+      goto 20
+   10 write(6,*) "wrong"
+      goto 30
+   20 write(6,*) "right"
+   30 continue
+      end')"
+	check 'f77: a computed GOTO still works' ' 22|' \
+	    "$(f77run ck '      program ck
+      i = 2
+      goto (10,20,30), i
+   10 write(6,*) 11
+      goto 40
+   20 write(6,*) 22
+      goto 40
+   30 write(6,*) 33
+   40 continue
+      end')"
+
 	# THE HONEST REPORT THAT STAGE 3 IS ABSENT.  Asserted so that f77pass1
 	# arriving is a decision rather than a discovery -- the same reason
 	# tests/kmemu asserts that w(1) says `No mem'.
 
 else
-	fail=$((fail+29)); echo "FAIL f77 driver is not installed"
+	fail=$((fail+50)); echo "FAIL f77 driver is not installed"
 fi
 
 # The machine description the build GENERATES, which is upstream's own mechanism

@@ -284,10 +284,33 @@ isdbl(t)
 #define SCRATCHB	13
 #define SCRATCHC	14
 
-static int ipool[] = { 23, 24, 25, 26, 27 };
+/*
+ * THE INTEGER POOL IS NOT A CONSTANT, BECAUSE PASS 1 STATES ITS OWN CLAIM IN
+ * THE RECORD.  src/cmd/f77/arm64.c's regnum[] hands out x19, x20, x21, x22 as
+ * register variables and arm64defs caps that at MAXREGVAR 4 -- but the
+ * LBRACKET record opens each procedure with the number it ACTUALLY took, and
+ * measured over every program in the corpus that number is 0.  So four
+ * callee-saved registers were sitting idle in every procedure this pass has
+ * ever compiled, while it refused expressions for want of a fifth.
+ *
+ * x23-x28 are unconditional: prsave() saves x19-x28, regnum[] never reaches
+ * past x24 (and cannot, being capped at four entries), and nothing else here
+ * names x28.  The four above are taken in regnum[] order, so listing them
+ * BACKWARDS makes the count a subtraction rather than a search.
+ *
+ * Character concatenation is what found this -- `c = a(1:3) // b(1:3)' needs
+ * six live values at once -- and it is a spill that does not have to be a
+ * spill: this pass owns no frame slots (pass 1 allocated the autos and told us
+ * only how many), so the alternative was refusing, and the registers were
+ * already there and already saved.
+ */
+#define IPOOLFIXED	6	/* x23-x28, always ours */
+#define IPOOLREGVAR	4	/* x22-x19, ours unless pass 1 took them */
+static int ipool[] = { 23, 24, 25, 26, 27, 28, 22, 21, 20, 19 };
 static int fpool[] = { 8, 9, 10, 11, 12, 13, 14, 15 };
 static char ibusy[sizeof ipool / sizeof ipool[0]];
 static char fbusy[sizeof fpool / sizeof fpool[0]];
+static int ipooln = IPOOLFIXED + IPOOLREGVAR;
 
 static int
 ralloc(flt)
@@ -295,8 +318,7 @@ ralloc(flt)
 {
 	int i, n;
 
-	n = flt ? sizeof fpool / sizeof fpool[0]
-		: sizeof ipool / sizeof ipool[0];
+	n = flt ? sizeof fpool / sizeof fpool[0] : ipooln;
 	for (i = 0; i < n; i++)
 		if (flt ? !fbusy[i] : !ibusy[i]) {
 			if (flt)
@@ -323,8 +345,7 @@ rfree(flt, r)
 {
 	int i, n;
 
-	n = flt ? sizeof fpool / sizeof fpool[0]
-		: sizeof ipool / sizeof ipool[0];
+	n = flt ? sizeof fpool / sizeof fpool[0] : ipooln;
 	for (i = 0; i < n; i++)
 		if ((flt ? fpool[i] : ipool[i]) == r) {
 			if (flt)
@@ -746,6 +767,27 @@ docall(hasargs)
 	struct val f, r;
 	int n, i, base, fbase;
 
+	/* A CALL WRITES THE FLAGS TOO, AND flushcc()'s SURVEY SAID ONLY
+	 * COMPARISONS DID.  That was a true and complete account of the code
+	 * that existed when it was written; a `bl' arrived later.  So
+	 *
+	 *	if (i .lt. 3 .and. f(j) .gt. 1)
+	 *
+	 * emitted `cmp' for the first test, `bl _f_' -- which destroys NZCV --
+	 * and only then, at the second comparison, did flushcc() run `cset' on
+	 * flags the callee had overwritten.  Measured: with a callee that
+	 * leaves LT set on the way out, .FALSE. .AND. .TRUE. came out TRUE.
+	 * Nothing refused and nothing crashed, which is what makes it worse
+	 * than the four refusals this pass answered with.
+	 *
+	 * Here rather than after the arguments, because in postfix everything
+	 * between the comparison and this point is address pushes, which write
+	 * no flags -- and a nested call flushes before its own `bl', so the
+	 * induction closes.  The pool is callee-saved (x23-x27), so a value
+	 * materialised now survives the call it is being protected from.
+	 */
+	flushcc();
+
 	if (lsp < (hasargs ? 2 : 1)) {
 		fprintf(stderr, "f1: call with no callee\n");
 		exit(2);
@@ -763,8 +805,30 @@ docall(hasargs)
 		fprintf(stderr, "f1: %d arguments, more than AAPCS64 puts in registers\n", n);
 		exit(2);
 	}
+
+	/* A FLOAT PASSED BY VALUE PROMOTES TO DOUBLE, WHICH IS K&R's RULE AND
+	 * NOT A SPECIAL CASE FOR ANY PARTICULAR CALLEE.  Fortran passes
+	 * everything by reference, so an ordinary call hands over ICONs --
+	 * addresses, whose type carries PTR and for which isflt() is false.  A
+	 * float VALUE reaches here only from intr.c:381-396's callbyvalue[],
+	 * thirteen C math functions f77 calls directly as OPCCALL rather than
+	 * through libF77's by-reference wrapper, and `double sqrt(double)' is
+	 * what src/libc/math/sqrt.c declares.  The promotion is what a K&R C
+	 * compiler would have emitted at that call.
+	 */
 	for (i = 0; i < n; i++)
-		into(&vstack[base + i], i);
+		if (isflt(vstack[base + i].vtype)) {
+			struct val d;
+
+			d = materas(&vstack[base + i], P2DREAL);
+			/* v8cc passes a double in an X register -- its own
+			   convention, not AAPCS64's, and the half of the pair
+			   that differs from the return.  The note in into()
+			   has the measurement. */
+			printf("\tfmov\tx%d, d%d\n", i, d.reg);
+			vstack[base + i] = d;	/* freed by the loop below */
+		} else
+			into(&vstack[base + i], i);
 	if (f.kind != V_ADDR) {
 		fprintf(stderr, "f1: a call through a value rather than a name\n");
 		exit(2);
@@ -787,12 +851,32 @@ docall(hasargs)
 	r.vtype = type;
 	r.owned = 1;
 	if (isflt(type)) {
-		/* A v8cc-compiled function returns a float in s0 and a double in
-		   d0 -- AAPCS64's rule, measured, and the half of the convention
-		   that is NOT the one used for passing. */
+		/*
+		 * A FLOATING RESULT IS ALWAYS A DOUBLE IN d0, WHATEVER THE
+		 * STREAM CALLS THE CALL.  K&R C has no float return, so every
+		 * callee this pass can reach widens: measured, not one of the
+		 * 66 typed functions in src/libF77, src/libI77 or src/libc/math
+		 * returns `float' -- they are all `double'.  And a FORTRAN
+		 * function is the same, because putpcc.c:551-552 forces a
+		 * TYREAL result as P2DREAL; see the note at P2FORCE.
+		 *
+		 * f77's own table calls these results real anyway --
+		 * `{ TYREAL, TYREAL, 1, "r_sqrt", 1 }' against
+		 * `double r_sqrt(float *x)' -- and ON A VAX THAT COST NOTHING,
+		 * for the reason wrt_E's bug cost nothing until it met IEEE:
+		 * D_floating's leading 32 bits have F_floating's exact layout,
+		 * so reading a returned double's first word as a float is the
+		 * same number.  Here d0's low half is the low mantissa.  This
+		 * is the second instance of that coincidence, in a second
+		 * component -- and it is why `x ** 0.5' printed 3.01e+23 for
+		 * the square root of two: pow_dd returned a double and `fmov
+		 * s8, s0' read the bottom of it.
+		 */
 		r.reg = ralloc(1);
-		printf("\tfmov\t%c%d, %c0\n", isdbl(type) ? 'd' : 's', r.reg,
-		    isdbl(type) ? 'd' : 's');
+		if (isdbl(type))
+			printf("\tfmov\td%d, d0\n", r.reg);
+		else
+			printf("\tfcvt\ts%d, d0\n", r.reg);
 	} else {
 		r.reg = ralloc(0);
 		printf("\tmov\tx%d, x0\n", r.reg);
@@ -999,8 +1083,15 @@ dumprec()
 		printf(" proc %d", type);
 		break;
 	case P2LABEL:
-	case P2GOTO:
 		printf(" L%d", type);
+		break;
+	case P2GOTO:
+		/* `var' says whether `type' is a label or a pcc type; see the
+		   note in genrec(). */
+		if (var)
+			printf(" L%d", type);
+		else
+			printf(" indirect, through the top of the stack");
 		break;
 	case P2ICON:
 		if (!getword(&v))
@@ -1012,8 +1103,18 @@ dumprec()
 		}
 		break;
 	case P2NAME:
-		getname(buf);
-		printf(" \"%s\" type %s", buf, typename(type));
+		/* `var' IS A FLAG HERE RATHER THAN A REGISTER, and when it is set
+		   an offset word precedes the name.  See the note in genrec(). */
+		if (var) {
+			if (!getword(&v))
+				v = 0;
+			getname(buf);
+			printf(" \"%s\" offset %ld type %s", buf, v,
+			    typename(type));
+		} else {
+			getname(buf);
+			printf(" \"%s\" type %s", buf, typename(type));
+		}
 		break;
 	case P2OREG:
 		if (!getword(&v))
@@ -1074,6 +1175,17 @@ genrec()
 	case P2LBRACKET:
 		if (!getword(&w))
 			w = 0;
+		/* `var' IS THE NUMBER OF REGISTER VARIABLES PASS 1 TOOK, and it
+		   opens every procedure, so the pool is sized per procedure
+		   rather than at the worst case.  Clamped rather than trusted:
+		   a count above MAXREGVAR would mean pass 1 and this pass
+		   disagree about regnum[], and shrinking to the six that are
+		   ours unconditionally is the safe reading of that. */
+		ipooln = IPOOLFIXED + IPOOLREGVAR - var;
+		if (ipooln < IPOOLFIXED)
+			ipooln = IPOOLFIXED;
+		if (ipooln > IPOOLFIXED + IPOOLREGVAR)
+			ipooln = IPOOLFIXED + IPOOLREGVAR;
 		vreset();
 		break;
 
@@ -1085,14 +1197,74 @@ genrec()
 		vreset();
 		break;
 
+	/*
+	 * GOTO, AND `var' IS AGAIN A FLAG RATHER THAN A REGISTER.  Upstream
+	 * writes the two forms differently and only one of them carries a
+	 * label:
+	 *
+	 *	putgoto()   putpcc.c:172  p2triple(P2GOTO, 1, label)
+	 *	putbranch() putpcc.c:182  p2op(P2GOTO, P2INT)
+	 *
+	 * -- so with var clear the destination is the VALUE on the stack and
+	 * `type' is P2INT, which is 4.  Reading it as a label emitted `b L4'
+	 * for every assigned GOTO in the program, and the assembler reported
+	 * an undefined local symbol: a diagnostic naming a label the program
+	 * never had.
+	 *
+	 * AND THE INDIRECT FORM CANNOT WORK ON THIS TARGET, which is a
+	 * property of the address space rather than of this pass.  `assign 20
+	 * to lbl' stores a CODE ADDRESS into a Fortran INTEGER; exec.c:554
+	 * requires that variable to be an integer, INTEGER is four bytes here
+	 * (SZLONG, pinned by typesize[TYREAL] and by lengtype), and Mach-O
+	 * loads text above 4GB -- measured, `str w23, [x13]' drops the 1 in
+	 * bit 32 of 0x10001f140.  On a VAX an address and an INTEGER were both
+	 * four bytes and it fit exactly.  Nothing downstream can recover the
+	 * half that was never stored, so this is refused with the reason
+	 * rather than branched into the weeds.  ASSIGN itself works: it is
+	 * only the branch that has nowhere to put the address.
+	 */
 	case P2GOTO:
-		printf("\tb\tL%d\n", type);
-		vreset();
+		if (var) {
+			printf("\tb\tL%d\n", type);
+			vreset();
+		} else {
+			fprintf(stderr,
+    "f1: an assigned GOTO needs a code address in a Fortran INTEGER,\n");
+			fprintf(stderr,
+    "    which is 4 bytes here while this target's text is above 4GB\n");
+			exit(2);
+		}
 		break;
 
+	/* A NAME'S `var' FIELD IS A FLAG, NOT A REGISTER NUMBER, AND WHEN IT IS
+	 * SET AN OFFSET WORD COMES BEFORE THE NAME.  putpcc.c:1232-1235 is
+	 *
+	 *	p2triple(P2NAME, offset!=0, type2);
+	 *	if(offset != 0) p2word(offset);
+	 *	p2name(name);
+	 *
+	 * so a reader that goes straight for the name eats the offset's four
+	 * bytes as the head of the string.  Everything after that is read at the
+	 * wrong alignment, and the first thing the misalignment produces is an
+	 * opcode of 0 -- which is not an operator at all, so the diagnostic
+	 * named a construct that was never in the program.  The trigger is any
+	 * CONSTANT subscript past the first: a(1) has offset 0 and set no flag,
+	 * so `a(1) = 1' worked and `a(2) = 2' did not, in a plain local array.
+	 * A VARIABLE subscript computes its address with PLUS/STAR instead and
+	 * was never affected, which is why 2-D arrays and DO loops were fine.
+	 *
+	 * The offset goes in `con', which addrinto() already adds to the page
+	 * address -- and already handles a NEGATIVE one, for the separate reason
+	 * recorded there.  So nothing downstream needed changing.
+	 */
 	case P2NAME:
+		if (var) {
+			if (!getword(&w))
+				w = 0;
+		} else
+			w = 0;
 		getname(buf);
-		v.kind = V_VAR; v.con = 0; v.reg = -1; v.vtype = type;
+		v.kind = V_VAR; v.con = w; v.reg = -1; v.vtype = type;
 		v.owned = 0;
 		strncpy(v.name, buf, sizeof(v.name)-1);
 		v.name[sizeof(v.name)-1] = '\0';
@@ -1253,6 +1425,89 @@ genrec()
 			    a.reg, a.reg, b.reg);
 			vfree(&b);
 			r = a; r.vtype = type;
+			vpush(&r);
+		}
+		break;
+
+	/*
+	 * QUEST AND COLON -- AND IN A POSTFIX STREAM THAT IS `csel', NOT A
+	 * BRANCH.  Fortran has no conditional operator, so these arrive only
+	 * from three places f77 builds them in: intr.c:672 expands ABS as
+	 * `0 <= t ? t : -t', putpcc.c:1382-1383 expands MIN and MAX the same
+	 * way, and expr.c:1183-1184 is the -C subscript range check.  That is
+	 * why `abs' refused with `operator 22 (COLON)' -- the commonest
+	 * intrinsic in Fortran is a conditional expression, not a call.
+	 *
+	 * THE STREAM DECIDES THE IMPLEMENTATION.  Measured on `j = iabs(i)':
+	 *
+	 *	NAME "v.1" / ICON 0 / LE	the condition
+	 *	NAME "v.1"			the then-arm
+	 *	NAME "v.1" / NEG		the else-arm
+	 *	COLON / QUEST
+	 *
+	 * so BOTH arms are already evaluated when COLON arrives.  A postfix
+	 * stream cannot express short-circuiting and this one does not try to:
+	 * f77 assigns to a temporary first (intr.c:670-671 calls mktemp when the
+	 * argument is not addressable) precisely so that both arms are safe to
+	 * evaluate.  So COLON is physically nothing -- like LISTOP -- and QUEST
+	 * selects between two values that are already in hand.
+	 *
+	 * AT MOST ONE OF THE THREE CAN OWN THE FLAGS, because flushcc() spills
+	 * the earlier comparison whenever a second `cmp' is emitted.  The arms
+	 * are materialised FIRST: if an arm owns the flags then the condition is
+	 * already a value, and if the CONDITION owns them then materialising an
+	 * arm emits only loads and moves, which write nothing.  Doing it the
+	 * other way round would read the condition's flags into the arm.
+	 */
+	case P2COLON:
+		break;
+
+	case P2QUEST:
+		{
+			struct val e, t, c, r;
+			char *cc;
+			int ch;
+
+			e = vpop(); t = vpop(); c = vpop();
+			if (t.kind == V_CC)
+				t = mater(&t);
+			if (e.kind == V_CC)
+				e = mater(&e);
+			if (c.kind == V_CC)
+				cc = ccname((int) c.con);
+			else {
+				flushcc();
+				c = mater(&c);
+				printf("\tcmp\tw%d, #0\n", c.reg);
+				vfree(&c);
+				cc = "ne";
+			}
+			if (isflt(type)) {
+				ch = isdbl(type) ? 'd' : 's';
+				t = materas(&t, type);
+				e = materas(&e, type);
+				printf("\tfcsel\t%c%d, %c%d, %c%d, %s\n",
+				    ch, t.reg, ch, t.reg, ch, e.reg, cc);
+			} else {
+				t = mater(&t); e = mater(&e);
+				if (isptr(type))
+					printf("\tcsel\tx%d, x%d, x%d, %s\n",
+					    t.reg, t.reg, e.reg, cc);
+				else {
+					/* AND THE RESULT NEEDS RE-EXTENDING.
+					   Any write to a w register zeroes bits
+					   63:32, and this back end keeps an int
+					   sign-extended -- the same fact that
+					   put an sxtw after every arithmetic op
+					   and that arm64_trunc() exists for. */
+					printf("\tcsel\tw%d, w%d, w%d, %s\n",
+					    t.reg, t.reg, e.reg, cc);
+					printf("\tsxtw\tx%d, w%d\n",
+					    t.reg, t.reg);
+				}
+			}
+			vfree(&e);
+			r = t; r.vtype = type;
 			vpush(&r);
 		}
 		break;
@@ -1487,6 +1742,19 @@ genrec()
 	 * convention part company here: a value PASSED goes in an x register and
 	 * a value RETURNED comes back in s0 or d0.  Measured on v8cc's own
 	 * output rather than assumed symmetric.
+	 *
+	 * AND THE VALUE IS CONVERTED TO THE FORCE'S TYPE, WHICH IS THE WHOLE OF
+	 * K&R's `no float return' RULE.  putpcc.c:551-552 is
+	 *
+	 *	p2op(P2FORCE, (t==TYSHORT ? P2SHORT : (t==TYLONG ? P2LONG
+	 *						: P2DREAL)));
+	 *
+	 * so a REAL function's FORCE says DOUBLE -- f77 states K&R's rule that
+	 * a floating result is always widened.  finto() picks its s-or-d from
+	 * the VALUE's type instead of the requested one, so a REAL FUNCTION
+	 * returned `ldr s0' where the stream had asked for d0, and every
+	 * caller reading d0 got the low mantissa.  The fix is to honour the
+	 * type, which is what materas() is for.
 	 */
 	case P2FORCE:
 		{
@@ -1494,6 +1762,7 @@ genrec()
 
 			a = vpop();
 			if (isflt(type)) {
+				a = materas(&a, type);
 				finto(&a, 0);
 				r.reg = 0;
 			} else {

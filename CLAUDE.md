@@ -2560,6 +2560,108 @@ as a program that ran and printed nothing. Assert the ARTEFACT.
   initialization` naming the line. A shim file is modern C only where the
   Makefile compiles it with clang; this one is not.
 
+**AND A TWENTY-PROGRAM CORPUS OF ORDINARY FORTRAN FOUND EIGHT MORE, OF WHICH
+ONLY ONE ANNOUNCED ITSELF — SO "IT REFUSES WHAT IT CANNOT DO" WAS WRONG A
+SECOND TIME.** The entry above already records that a guard on the vocabulary
+is not a guard on the grammar; stage 6 is what that costs when the corpus is
+wide rather than deep. `src/cmd/f77/PORTING.md` has all eight. Nine things
+generalise, and three are about instruments rather than code:
+
+- **A SURVEY THAT ENUMERATES WRITERS GOES STALE WHEN A NEW WRITER ARRIVES, AND
+  THE COMMENT STAYS TRUE-SOUNDING.** `flushcc()` spills a pending comparison
+  and says it runs at "the only thing that writes flags". Complete for the code
+  that existed; a `bl` writes NZCV too and calls came later. So
+  `if (i .lt. 3 .and. fn(i) .gt. 1)` ran `cset` on flags the CALLEE had left,
+  and `.FALSE. .AND. .TRUE.` came out **TRUE** — no refusal, no crash. Third
+  instance after `v8fs.c`'s sleeper survey and `conf.h`'s switch tables, and the
+  first where the survey is in a *comment on the function it protects*.
+- **AND THE VALUE CASES FOR IT ARE NOT THE GUARD.** They depend on what the
+  callee happens to leave: measured, an ordinary callee gave the right answer
+  either way, and it took one that leaves LT set on the way out to see the bug
+  at all. The guard is STRUCTURAL — between a `cmp` and the `bl` that destroys
+  it there must be a `cset` — which is true at every callee. Same shape as the
+  `p_pid` width case being the guard while the value cases were a demonstration.
+- **K&R C HAS NO FLOAT RETURN, AND THAT ONE SENTENCE REPLACED A TABLE OF
+  NAMES.** Three symptoms — `sqrt` refused, `x ** 0.5` printing 3.01e+23 for
+  the square root of two, and a REAL FUNCTION returning through the wrong
+  register — are one cause. Measured rather than assumed: **not one** of the 66
+  typed functions in `src/libF77`, `src/libI77` and `src/libc/math` returns
+  `float`. The first draft special-cased the thirteen names in `callbyvalue[]`;
+  reading `putforce` showed f77 states the same rule for Fortran functions, and
+  the special case went away. **A rule that removes a name list is worth
+  looking for**, because a name list is a thing that goes stale.
+- **AND THE D_floating/F_floating COINCIDENCE HAS NOW COST TWICE, IN TWO
+  COMPONENTS.** `wrt_E` was the first. A VAX cannot tell a returned double's
+  first word from a float, so f77's table calling `r_sqrt`'s result TYREAL
+  against `double r_sqrt(float *)` was free there and is noise here. **When a
+  1985 program disagrees with its own runtime about a float width, check
+  whether the VAX layout made the disagreement invisible** before assuming the
+  source is wrong.
+- **AN UNEXERCISED *EXCUSE* EXPIRES, AND THE GOOD ONES SAY WHEN.** `io.c`
+  corrected the external I/O offsets and deferred the rest because "an
+  unexercised correction is a claim nothing can check". Right when written, and
+  the first internal READ made it false. The version that replaced it names its
+  own expiry condition for OPEN/CLOSE/INQUIRE — *the first program to OPEN a
+  file will refuse to link* — which is what turns a deferral into a tripwire.
+  Fourth instance of the unexercised-rule shape, and the first where the fix
+  was to make the deferral self-cancelling.
+- **`var` IS A FLAG IN THREE DIFFERENT RECORDS, AND THE READER WAS INFERRING
+  INSTEAD OF CONSULTING.** NAME sets it when an offset word follows; GOTO sets
+  it to mean `type` is a label rather than a pcc type; ICON sets it when a name
+  follows. f1 read the NAME's name immediately (desyncing the stream so the
+  first thing it produced was opcode **0**, which is not an operator, so the
+  diagnostic named a construct no program contains) and branched on GOTO's
+  `type` unconditionally (emitting `b L4`, because P2INT is 4). ICON was right
+  by an inference that happens to coincide — measured, `p2icon` is never called
+  with a PTR type — and now consults `var` anyway. **Ask which end of the wire
+  states a field before deriving it.**
+- **TWO CONSEQUENCES OF ONE WIDTH CHANGE MET IN A FUNCTION NEITHER IS ABOUT.**
+  `assign 20 to lbl`, with no GOTO, SIGSEGV'd f77pass1 at address 1: `putop`
+  refreshes its operand pointer before re-testing the tag, so at a leaf it reads
+  `leftp` off the end of a `Constblock` — a garbage heap byte on a VAX, into a
+  variable the loop then stops using; a real zero field here. And it is
+  REACHABLE only because `SZADDR` stopped equalling `SZLONG`, which made
+  `expr.c:477` build a conversion node that never existed on a VAX. Neither
+  fact is about `putop`. **When a width changes, the new bug is often in the
+  third place the two consequences meet.**
+- **A CLAMP CAN DEFEAT A MUTATION, AND A WEAKER MUTATION SAYS NOTHING.**
+  Reverting the register pool to five fired only one of the two concatenation
+  cases — because `if (ipooln < IPOOLFIXED) ipooln = IPOOLFIXED;` raised it
+  straight back to six, so what was measured was 10 → 6 rather than 10 → 5.
+  Mutating the constant instead fired both. Fifth cause for a non-firing
+  mutation, after dead code, vacuous cases, a missing consumer, and defensive
+  code — and this one *partially* fires, which is the reading most likely to be
+  believed.
+- **THE SAME-SECOND TRAP'S DANGEROUS GAP IS PREVIOUS-BUILD → TOUCH, NOT TOUCH →
+  BUILD.** This file already says to sleep and re-`touch` after writing a
+  mutation. Measured: the harness reported "artefact did not change" three
+  times, and each time it was right and the *tree* was wrong — a restore whose
+  rebuild landed in the same second as the previous build left a mutated binary
+  with pristine sources. So a mutation harness must **establish** its baseline
+  (restore, sleep, touch, sleep, build, hash) rather than observe it, and
+  `sleep` belongs before every `touch` as well as after.
+
+**AND FOUR INSTRUMENTS WERE WRONG BEFORE ANY CODE WAS, WHICH IS THE STANDING
+RATE AND EVERY ONE FAILED SILENT.** A harness reported `not implemented` as
+`|ot impleme|ted` because **V8's own `tr` was on its PATH** and V7 `tr` reads
+`\n` as the SET {backslash, n} — `\012` works in both, which is the
+`[[:blank:]]` rule arriving in a second tool. `nm -g rootfs/usr/lib/libv8c.a`
+printed nothing and every symbol read as "absent"; the archive is in
+`rootfs/lib`. A register-pressure measurement was read out of an **aborted**
+compile, because f1 emits code before it refuses. And a "the pool reaches x19"
+reading came from that same partial output. **A wrong path, a wrong PATH, and a
+non-zero exit status all produce empty output, and empty output reads as a
+finding.** Check the status and the path before believing a sweep that says
+"nothing".
+
+**AND THE THREE TEST-PROGRAM BUGS ARE WORTH KNOWING, because two of them look
+exactly like compiler defects.** A result of `2.101947696e-44` is the integer 15
+read through an implicitly-REAL declaration — **a denormal is almost always an
+integer read as a float**, and implicit typing makes it easy to write by
+accident. `name counter too long, truncated to 6` is F77's own six-character
+identifier limit, not a port defect. **Correct the instrument before the code**:
+of twenty programs that "failed", three were mine.
+
 
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 

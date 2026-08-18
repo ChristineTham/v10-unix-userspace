@@ -627,3 +627,171 @@ each half in a different note; nothing had put them side by side. `FORCE` is
 therefore the return path — `proc.c` gives every non-subroutine a `retslot` auto
 and the exit label is followed by that slot and a `FORCE` — and it dispatches on
 type, while an argument always goes to an x register.
+
+## Stage 6: what a twenty-program corpus found
+
+Stage 5 ended with f77 compiling arrays, functions, floats and logicals, and
+with the claim that `/lib/f1` refuses by name anything it cannot do. A corpus
+of twenty ordinary Fortran programs — character variables, FORMAT, DATA,
+COMMON, EQUIVALENCE, SAVE, intrinsics, arithmetic IF, implied DO, internal
+I/O — found **eight** more defects. Only one of them announced itself the way
+stage 5's did.
+
+Three of the twenty "failures" were bugs in the test programs, not in f77, and
+the tell for two of them is worth keeping: a result of `2.101947696e-44` is the
+integer 15 read through an implicitly-REAL declaration. **A denormal is almost
+always an integer being read as a float.** The third was `name counter too
+long, truncated to 6`, which is F77's own six-character identifier limit.
+
+### The flags do not survive a call, and the survey that missed it was complete
+
+`flushcc()` in f1 spills a pending comparison into a register, and its comment
+said it is called "at the top of the comparison arms, which is the only thing
+that writes flags". That was a true and complete account of the code that
+existed when it was written. A `bl` writes NZCV too, and calls arrived later.
+
+    if (i .lt. 3 .and. fn(i) .gt. 1)
+
+emitted `cmp` for the first test, `bl _fn_` — which destroys the flags — and
+only then, at the second comparison, ran `cset` on flags the callee had
+overwritten. Measured with a callee that leaves LT set on the way out,
+`.FALSE. .AND. .TRUE.` came out **TRUE**. Nothing refused and nothing crashed.
+
+`flushcc()` now runs at the top of `docall()`. That is the right place and not
+merely a working one: in postfix everything between the comparison and the call
+is address pushes, which write no flags, and a nested call flushes before its
+own `bl`, so the induction closes. The pool is callee-saved, so a value spilled
+there survives the call it is being protected from.
+
+**The value cases are not the guard.** They depend on what the callee happens
+to leave; an ordinary callee gave the right answer either way. The guard is
+structural — between a `cmp` and the `bl` that destroys it there must be a
+`cset` — and that is true at every callee.
+
+### A NAME's `var` field is a flag, and the reader went straight for the name
+
+`putpcc.c:1232-1235` writes an extra word before the name when the offset is
+nonzero. f1 read the name immediately, so it took the offset's four bytes as
+the head of the string and every record after that was read at the wrong
+alignment. The first thing the misalignment produced was **opcode 0**, which is
+not an operator at all — so the diagnostic named a construct no program
+contains.
+
+The trigger is any **constant subscript past the first**, in a plain local
+array: `a(1)` has offset 0 and sets no flag, which is why it worked throughout
+and is now the control. A variable subscript computes its address with
+PLUS/STAR instead and was never affected, which is why 2-D arrays and DO loops
+were fine. `addrinto()` already added `con` to the page address — and already
+handled a negative one — so nothing downstream needed changing.
+
+### ABS is a conditional expression, and in a postfix stream that is `csel`
+
+`abs`, `iabs`, `dabs`, `min` and `max` were all refused with `operator 22
+(COLON)`. Fortran has no conditional operator; f77 builds one. `intr.c:672`
+expands ABS as `0 <= t ? t : -t` and `putpcc.c:1382-1383` expands MIN/MAX the
+same way, so the commonest intrinsic in the language is a QUEST/COLON tree.
+
+The stream decides the implementation. Measured on `j = iabs(i)`, both arms are
+already evaluated when COLON arrives — a postfix stream cannot express
+short-circuiting and this one does not try to, because f77 assigns to a
+temporary first (`intr.c:670-671`) precisely so both arms are safe to evaluate.
+So COLON is physically nothing and QUEST is one `csel`. Two details: at most
+one of the three operands can own the flags, so the arms are materialised
+first; and `csel w` zeroes bits 63:32, so the result needs the same `sxtw`
+every arithmetic site here already emits.
+
+### Every floating value crossing a call is a double — K&R's rule, twice over
+
+Three separate symptoms, one cause. `sqrt(x)` was refused outright; `x ** 0.5`
+printed **3.01e+23** for the square root of two; and a Fortran REAL FUNCTION
+returned through `s0` where its caller read `d0`.
+
+K&R C has no float return. Measured: **not one** of the 66 typed functions in
+`src/libF77`, `src/libI77` or `src/libc/math` returns `float` — all are
+`double`. f77's own table disagrees with its own runtime, calling `r_sqrt`'s
+result TYREAL while `src/libF77/r_sqrt.c` is
+`double r_sqrt(float *x) { return sqrt(*x); }`. And `putpcc.c:551-552` forces a
+TYREAL result as `P2DREAL`, so f77 states the rule for Fortran functions too.
+
+On a VAX that disagreement cost nothing, for the reason `wrt_E`'s bug cost
+nothing until it met IEEE: D_floating's leading 32 bits have F_floating's exact
+layout, so reading a returned double's first word as a float is the same
+number. Here `d0`'s low half is the low mantissa. **Second instance of that
+coincidence, in a second component.**
+
+The first draft special-cased "the callee is one of the thirteen in
+`intr.c:381-396`'s `callbyvalue[]`". Reading `putforce` made the rule uniform
+and the special case went away — which is the better outcome, because a table
+of names is a thing that goes stale. What remains is that a float argument
+passed **by value** promotes to double, which is the same K&R rule at the other
+end of the call.
+
+The precision is what discriminates a fix from a coincidence: `exp(1.0)` gives
+`2.71828175` and `dexp(1.0d0)` gives `2.71828183`. Both are right for their
+width, and a pass reading `s0` got neither.
+
+### The register pool was a worst case; pass 1 states the real number
+
+Character concatenation was refused for want of a sixth register. The pool was
+five, fixed. `src/cmd/f77/arm64.c`'s `regnum[]` offers x19–x22 as register
+variables and `arm64defs` caps that at `MAXREGVAR 4` — but the LBRACKET record
+opens every procedure with the number pass 1 **actually** took, and measured
+over the whole corpus that number is 0. So four callee-saved registers sat idle
+in every procedure this pass had ever compiled, and x28 was saved by the
+prologue and allocated by nobody.
+
+Measured, in registers live at once: one-way concatenation 1, two-way 6,
+three-way 8, four-way 10, five-way still refuses. The old pool of five could
+not do a **two-way** — `a // b`, the simplest concatenation there is.
+
+The remaining pressure is not the pool. `doassign()` returns the stored value
+and pushes it, and `s_cat`'s argument vector is built by a run of assignments
+whose values nothing consumes, so each holds a register until the statement
+ends. Returning the *lvalue* instead would free them and is the obvious next
+step — recorded rather than done, because it changes the most load-bearing
+function in the pass and the boundary above is honest and measured.
+
+### The internal-I/O control block, and an excuse that expired
+
+`io.c` already carried `IOALIGN` and a comment that corrected only the external
+READ/WRITE offsets, deferring the rest because "an unexercised correction is a
+claim nothing can check". That reason expired the moment something read from a
+CHARACTER buffer: `ld` refused the object with `pointer not aligned in
+v.2+0x4`. `icilist` puts its pointers at 8 and 24 where upstream's arithmetic
+put them at 4 and 16.
+
+**The rewrite is upstream's own arithmetic**, and that is checkable rather than
+asserted: set `SZADDR` equal to `SZIOINT`, as a VAX had them, and `IOALIGN`
+becomes the identity and all six offsets collapse to exactly the expressions
+upstream wrote — 4, 8, 12, 16, 20, 24. The OPEN, CLOSE and INQUIRE lists still
+have the defect and keep the marker, with the same expiry condition stated.
+
+The guard is a **relation over the init records** — every pointer in a control
+block sits on an eight-byte boundary — so those three lists are covered the day
+they are corrected and nobody edits the case.
+
+### ASSIGN crashed the front end, and it took two ports of one fact
+
+`assign 20 to lbl` — with no GOTO at all — SIGSEGV'd inside `f77pass1` at
+address **1**. `putop`'s OPCONV loop descends a conversion chain and refreshes
+`lp` and `lt` at the bottom, *before* the `while` re-tests `p`'s tag, so at a
+leaf it reads `leftp` — offset 24 — out of a `Constblock`, whose union ends
+there. On a VAX that offset was past the end of a 24-byte block and the byte
+came from the next heap object: garbage into `lt`, which is dead once the loop
+condition fails. Here the block is 32 bytes, offset 24 is `cd[1]`, `ALLOC`
+leaves it zero, and `lp->headblock.vtype` reads address 1.
+
+**It is reachable only because SZADDR stopped equalling SZLONG.** `expr.c:477`
+skips the conversion when `typesize[ltype] >= typesize[rtype]`; assigning a
+TYADDR constant to an INTEGER was `4 >= 4` on a VAX and is `4 >= 8` here, so
+the OPCONV that trips the loop was never built before. Breaking out when `p` is
+no longer a `TEXPR` is exactly what the VAX did next.
+
+The branch itself cannot work here and is refused with its reason. An assigned
+GOTO needs a code address in a Fortran INTEGER; `exec.c:554` requires that
+variable to be an integer, INTEGER is four bytes, and Mach-O loads text above
+4GB — measured, `str w23, [x13]` drops the 1 in bit 32 of `0x10001f140`. Before
+the GOTO record's `var` flag was read, f1 emitted `b L4` for every assigned
+GOTO, because `p2op(P2GOTO, P2INT)` puts P2INT — which is 4 — in the type
+field. The assembler then reported an undefined label, naming something the
+program never had.

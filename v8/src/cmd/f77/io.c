@@ -112,11 +112,27 @@ LOCAL struct Ioclist
    compiler does before a pointer member, so the arithmetic stays upstream's
    shape rather than becoming a table of literals.
 
-   ONLY THE EXTERNAL READ/WRITE OFFSETS ARE CORRECTED HERE, because those are
-   the ones a compiled program has reached.  The internal-I/O, OPEN, CLOSE and
-   INQUIRE lists below have the same defect and are marked rather than fixed:
-   an unexercised correction is a claim nothing can check, and each needs its
-   own C struct read alongside it. */
+   THE EXTERNAL AND INTERNAL READ/WRITE OFFSETS ARE CORRECTED HERE.  The
+   external ones came first, when a compiled program reached them; the internal
+   ones were deliberately left, with the reason that "an unexercised correction
+   is a claim nothing can check".  That reason expired the moment something
+   read from a CHARACTER buffer -- `read(buf,'(i6)') n' -- which ld refused
+   with `pointer not aligned in v.2+0x4'.  icilist is
+
+	{ flag icierr; char *iciunit; flag iciend; char *icifmt;
+	  ftnint icirlen; ftnint icirnum; }
+
+   so its pointers sit at 8 and 24 where upstream's arithmetic put them at 4
+   and 16.  THE REWRITE IS UPSTREAM'S OWN ARITHMETIC AND NOT A NEW ONE, which
+   is checkable rather than asserted: set SZADDR equal to SZIOINT, as a VAX
+   had them, and IOALIGN becomes the identity and all six offsets collapse to
+   exactly the expressions upstream wrote -- 4, 8, 12, 16, 20, 24.
+
+   THE OPEN, CLOSE AND INQUIRE LISTS BELOW STILL HAVE THE DEFECT and are
+   marked rather than fixed, on the same rule and with the same expiry
+   condition: the first program to OPEN a file will refuse to link, and its
+   struct (olist/cllist/inlist in src/libI77/fio.h) must be read alongside the
+   correction, exactly as icilist was here. */
 #define IOALIGN(n)	(((n) + SZADDR - 1) & ~(SZADDR - 1))
 
 /* offsets for external READ and WRITE statements */
@@ -132,12 +148,12 @@ LOCAL struct Ioclist
 /* offsets for internal READ and WRITE statements */
 
 #define XIERR	0
-#define XIUNIT	SZFLAG
-#define XIEND	SZFLAG + SZADDR
-#define XIFMT	2*SZFLAG + SZADDR
-#define XIRLEN	2*SZFLAG + 2*SZADDR
-#define XIRNUM	2*SZFLAG + 2*SZADDR + SZIOINT
-#define XIREC	2*SZFLAG + 2*SZADDR + 2*SZIOINT
+#define XIUNIT	IOALIGN(SZFLAG)
+#define XIEND	XIUNIT + SZADDR
+#define XIFMT	IOALIGN(XIEND + SZFLAG)
+#define XIRLEN	XIFMT + SZADDR
+#define XIRNUM	XIRLEN + SZIOINT
+#define XIREC	XIRNUM + SZIOINT
 
 /* offsets for OPEN statements */
 
