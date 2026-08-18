@@ -2818,7 +2818,7 @@ generalise, and the first is a refusal that named the wrong resource entirely:
   machine's answer necessary THERE before copying its shape.**
 - **AND THE OTHER HALF WAS A LINE THIS PORT SIMPLY DID NOT HAVE.** Entries may
   differ in type, so each type gets an epilogue and every RETURN branches to one
-  exit that jumps INDIRECTLY through an auto naming it. `vax.c:466` stores that
+  exit that jumps INDIRECTLY through an auto naming it. `vax.c:466-467` stores that
   auto and `arm64.c` had no such line, so the exit branched through whatever the
   frame held: `integer function f(n) ... entry g(m,k)` compiled clean, printed
   NOTHING and exited 0. Nothing had reached it because with one entry the exit
@@ -2844,6 +2844,15 @@ generalise, and the first is a refusal that named the wrong resource entirely:
   prints 4.5 as `4.50000000`. This file already records the denormal direction
   of the same class; **implicit typing is easiest to get wrong in the DECLARATION
   YOU WRITE ELSEWHERE**, since the two spellings are in different program units.
+
+- **AND `sed -n "${l}p"` ON EVERY NEW CITATION CAUGHT ONE IN EIGHT, WHICH THE
+  SWEEP COULD NOT.** `vax.c:466` is `if(typeaddr)`; the `puteq` line quoted
+  beside it is **467**, so the citation had drifted onto plausible code before
+  it was ever committed -- `cites.awk`'s documented blind spot, met by the habit
+  rather than the instrument, and in three files at once because one claim
+  repeated is one claim. Written `vax.c:466-467` now, since what is being cited
+  is the two-line construct. The other seven measured correct, which is the
+  point of running all of them rather than the ones that feel uncertain.
 
 **AND THE `V_ADDR` ARM IS THE FOURTH NON-FIRING-MUTATION CAUSE AGAIN, MEASURED
 RATHER THAN ARGUED.** `doassign()` converts a V_ADDR destination to V_VAR so the

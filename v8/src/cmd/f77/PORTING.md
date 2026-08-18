@@ -1160,7 +1160,7 @@ fixed place.**
 **AND THE SECOND MECHANISM WAS A LINE THIS FILE SIMPLY DID NOT HAVE.** Entries
 may differ in type, so `proc.c:383-385` gives each *type* an epilogue label, every
 `RETURN` branches to one common exit, and that exit jumps **indirectly** through
-an auto naming the right epilogue. `vax.c:466` stores it —
+an auto naming the right epilogue. `vax.c:466-467` stores it —
 `puteq(cpexpr(typeaddr), mkaddcon(ep->typelabel))` — and `arm64.c` had no such
 line. With one entry the exit is not indirect at all and `typeaddr` is null, so
 nothing had ever reached it: the refusal is what kept the path from running.

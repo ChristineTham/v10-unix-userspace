@@ -696,7 +696,7 @@ if(lastargslot > SZADDR*MAXARGSLOT)
 	fatali("procedure has %d argument slots, more than the frame holds",
 		(int) (lastargslot/SZADDR));
 
-/* AND THE ENTRY MUST SAY WHICH EPILOGUE IT RETURNS THROUGH, which is vax.c:466
+/* AND THE ENTRY MUST SAY WHICH EPILOGUE IT RETURNS THROUGH, which is vax.c:466-467
    and was simply absent here.  A procedure with more than one ENTRY may have
    entries of different types, so proc.c:383-385 gives each TYPE an epilogue
    label and every RETURN branches to one common exit -- which then jumps
