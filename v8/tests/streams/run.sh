@@ -1734,8 +1734,10 @@ fsdeadline() { perl -e 'alarm 40; exec @ARGV' env V8ROOT=$ROOT/rootfs "$@"; }
 # element's status, so `... | head -200' reports head -- and head always
 # succeeds.  That is this tree's most-cited shell hazard arriving in the one
 # place where the status is the missing evidence.
+icstart=$(date +%s)
 fsdeadline "$ROOT/rootfs/etc/icheck" "$FSTMP/img" > "$FSTMP/ic.raw" 2>&1
 icstatus=$?
+icsecs=$(( $(date +%s) - icstart ))
 icout=$(head -200 "$FSTMP/ic.raw")
 # A POSITIVE CONTROL, AND IT WAS MISSING FROM THE ONE BLOCK OF THE THREE THAT
 # NEEDED IT MOST.  The dcheck block below argues at length that a silence case
@@ -1765,6 +1767,21 @@ fi
 # discarded.  This run was NOT empty -- the arm above did not fire -- so
 # whatever icheck printed is the whole of the evidence and it went nowhere.
 #
+# FOURTH SIGHTING NAMED IT: `icheck exited 142', which is 128+14, SIGALRM --
+# the 40s deadline above.  The first three said nothing because the shell writes
+# `Alarm clock' into the CAPTURED stream (this block redirects 2>&1 into the
+# file), not to the suite's stderr, so it never reached the log and a grep of
+# the log for a signal came back clean.  THE CAPTURE WAS SWALLOWING ITS OWN
+# EVIDENCE.  Measured alone on the same image: icheck takes 1.85-4.13s, so the
+# deadline has 10-20x headroom on a quiet machine and is sized right; what is
+# NOT established is why it ever reaches 40.  Both of the runs that failed had
+# a VAX emulator from another session at 99.9% CPU on this host, and this tree
+# is on a secondary volume.  The elapsed seconds and the load are printed now,
+# so the next one distinguishes `marginal under contention' from `blocked'.
+# It is NOT stdin: icheck.c:123's `gets(fname)' is inside `#else' of `#ifndef
+# STANDALONE' and is not compiled here, which is why icheck gets no </dev/null
+# where fsck does.
+#
 # THE IMAGE WAS FINE, WHICH IS WHAT NARROWS IT.  fsck on the same file in the
 # same run answered `5 files 35 blocks 1882 free', and 35 + 1882 is exactly the
 # 1917 the used+free case wanted -- so this is icheck's OUTPUT and not the
@@ -1773,7 +1790,10 @@ fi
 # tree.  Newlines are folded to `|' so one FAIL block stays one line.
 if [ -n "$icout" ] && ! printf '%s
 ' "$icout" | grep -q "^$FSTMP/img"; then
-	echo "  (icheck exited $icstatus, $(wc -c < "$FSTMP/ic.raw" | tr -d ' ') bytes:" \
+	icload=$(uptime | sed 's/.*averages*: *//')
+	icbytes=$(wc -c < "$FSTMP/ic.raw" | tr -d ' ')
+	echo "  (icheck exited $icstatus after ${icsecs}s, $icbytes bytes," \
+	     "load $icload:" \
 	     "[$(printf '%s' "$icout" | tr '\n' '|' | cut -c1-300)])"
 fi
 # `missing' is icheck's count of blocks that are in neither a file nor the free

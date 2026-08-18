@@ -715,12 +715,42 @@ if(p = V(IOSFMT))
    SIGSEGVs, and the same construct with the FORMAT statement written ABOVE the
    ASSIGN crashes identically -- so nothing about the source order warns anyone.
 
-   EXPIRY: removable the day pass 1 states the ASSIGN rather than pass 2
-   inferring it -- a distinguished opcode from exassign() through pccdefs, and
-   an add of the procedure base emitted by /lib/f1 at this path.  Until then,
-   note what this refusal costs: it makes the io path unreachable and therefore
-   untestable, which is the lesson the ninth argument taught, so it should not
-   stand indefinitely.  src/cmd/f77/PORTING.md. */
+   EXPIRY, AND THE FIRST VERSION OF THIS SENTENCE WAS TOO WEAK, WHICH IS WORSE
+   THAN TOO STRONG.  It said the refusal is removable the day pass 1 states the
+   ASSIGN -- a distinguished opcode from exassign() through pccdefs and an add
+   of the procedure base emitted by /lib/f1 here.  That is NECESSARY AND NOT
+   SUFFICIENT, and acting on it would trade one clean diagnostic for a silent
+   wrong answer.
+
+   MEASURED, with this refusal temporarily removed.  exassign() reads
+   `labelval->labelno' at the moment the ASSIGN statement is compiled --
+   exec.c:480 is `puteq(p, mkaddcon(labelval->labelno))' -- and fmtstmt()
+   above REPLACES that number with `lp->labelno = newlabel()' the first time
+   it learns the label is a FORMAT.  So the
+   source order decides which label the variable captures:
+
+	FORMAT written FIRST	the data label, `.byte 0x28,0x31,0x78,...'
+				which is the string (1x,i5).  Correct.
+	FORMAT written LAST	a stale CODE label, emitted empty in .text
+				immediately after this procedure's base.
+
+   Both already go through the Lf1b<proc> subtraction, so the encoding fix
+   alone would make the first ordering work and hand the second a VALID
+   POINTER INTO EXECUTABLE TEXT as a format string -- compiling, linking,
+   running, and reading instructions as a FORMAT.  Nothing at this arm can
+   tell the two apart: `np' is the integer variable and pass 1 does not know
+   which label was assigned to it; nor can exassign(), where a forward FORMAT
+   and a forward statement label are both LABUNKNOWN.
+
+   AND THE OTHER HALF IS UPSTREAM'S OWN AND MAY NOT BE FIXED HERE.  A VAX
+   stored the identical wrong address for the FORMAT-last ordering, so it is
+   machine-independent and S1 forbids repairing it.  The two must therefore be
+   closed together or neither, and this refusal covers both because it fires on
+   the USE rather than on the assignment.
+
+   What it still costs is what it always cost: the io path is unreachable and
+   therefore untestable, which is the lesson the ninth argument taught.
+   src/cmd/f77/PORTING.md. */
 			err("ASSIGNed FORMAT specifier: an INTEGER cannot hold a format address on this target");
 			ok = NO;
 			statstruct = NO;

@@ -3139,6 +3139,90 @@ would have reported a derived count of zero. `tests/cpp`'s anchor-to-`dirname`
 lesson, arriving in a case rather than in a suite.
 
 
+**AND A CAPTURE CAN SWALLOW ITS OWN EVIDENCE, WHICH IS WHY THREE SIGHTINGS OF
+ONE INTERMITTENT PRODUCED NO DIAGNOSIS.** `tests/streams` had gone red four
+times with `icheck ran on the image / want [1] got [0]` and three friends. The
+fourth sighting named it on the first opportunity, because a diagnostic added
+that morning printed what the block had always thrown away:
+`icheck exited 142` -- 128+14, **SIGALRM**. It is killed by its own 40-second
+deadline, and "icheck produced no output at all" was the symptom rather than
+the event. Five things:
+
+- **THE SIGNAL WAS NAMED IN THE CAPTURED STREAM, NOT IN THE LOG.** The shell
+  writes `Alarm clock' to the stderr of the command it reaped -- and that block
+  redirects `2>&1` into the file it captures -- so it never reached the run
+  log. My check *"nothing in the whole log names a signal, therefore not the
+  deadline"* was aimed at the wrong stream and returned a confident wrong
+  answer. **Ask which stream the evidence would be on before concluding from
+  its absence.**
+- **AND THE ORIGINAL NOTE HAD THE RIGHT HYPOTHESIS** -- *"empty output with a
+  perl alarm wrapper is what a deadline looks like from outside"* -- and I
+  talked myself out of it with that check. The recorded-diagnosis rule with the
+  record being RIGHT and the re-derivation wrong, which is the direction this
+  file had not yet seen.
+- **A PIPELINE HID THE STATUS TOO.** The capture was `... | head -200`, so `$?`
+  was head's, which always succeeds. Through a file now, which is the same fix
+  `tests/runsuite.sh` needed on the same day for the same reason -- third
+  instance of the pipeline-status hazard.
+- **RULE OUT BY MEASURING, INCLUDING THE ATTRACTIVE ONES.** `icheck.c:123` is
+  `gets(fname)`, which reads stdin -- and it is inside `#else` of
+  `#ifndef STANDALONE`, so it is not compiled here. Without checking, the
+  missing `</dev/null` (fsck gets one and icheck does not) is exactly the
+  asymmetry this file's most repeated shape would have you "fix".
+- **AND HEADROOM IS WHAT SEPARATES `sized wrong' FROM `something blocked'.**
+  Timed on the same image: icheck 1.85-4.13s, dcheck 1.16s, fsck 2.91s against
+  a 40s deadline -- so the deadline is right and the slowdown is 10-20x and
+  unexplained. Both failing runs had a competing VAX emulator at 99.9% CPU from
+  another session, on a tree that lives on a secondary volume; that is a
+  correlation on two observations and not a mechanism. The block prints
+  ELAPSED SECONDS and LOAD now, so `40s at load 12' and `40s at load 2' become
+  different findings.
+
+
+**AND AN EXPIRY CONDITION CAN BE TOO WEAK AS WELL AS TOO STRONG, WHICH IS THE
+WORSE DIRECTION -- MEASURED ON THE ONE THIS SESSION SHIPPED THE DAY BEFORE.**
+§7f refused an ASSIGNed variable used as a FORMAT specifier and wrote beside it
+that the refusal is removable *the day pass 1 states the ASSIGN rather than
+pass 2 inferring it*. Necessary, and NOT SUFFICIENT. Measured with the refusal
+temporarily removed and the emitted assembly read: `exassign()` reads
+`labelval->labelno` when the ASSIGN statement is compiled (`exec.c:480`), and
+`fmtstmt()` REPLACES that number the first time it learns the label is a
+FORMAT -- so the SOURCE ORDER decides what the variable captures.
+
+	FORMAT first	L14, `.byte 0x28,0x31,0x78,...' = the string (1x,i5)
+	FORMAT last	L13, an EMPTY CODE LABEL in .text, and there is no L13
+			in the data section at all
+
+Both already go through the `Lf1b<proc>` subtraction, so the proposed fix --
+add the base back at the io path -- makes the first ordering right and hands
+the second **a valid pointer into executable text** as a format string, which
+compiles, links, runs and reads instructions as a FORMAT. Today both are one
+clean diagnostic. Four things:
+
+- **TOO STRONG NEVER FIRES; TOO WEAK FIRES EARLY**, and whoever acts on it
+  ships the silent version. The sibling is already in this file -- `io.c`'s
+  OPEN/CLOSE/INQUIRE deferral naming the LINKER as the instrument, when an OPEN
+  block is filled in at run time and carries no relocation to check. So the
+  rule has two halves: an expiry condition must name a trigger that CAN fire
+  and that is SUFFICIENT.
+- **A REFUSAL ON THE USE COVERS MORE THAN ONE ON THE PRODUCER**, which is why
+  this one is right where it is. At the io arm pass 1 does not know which label
+  was assigned to the variable; at `exassign()` a forward FORMAT and a forward
+  statement label are both LABUNKNOWN. Neither end can discriminate, so the
+  only available refusal is the one that fires on every use -- and it does.
+- **AND THE BLOCKING HALF IS UPSTREAM'S**: a VAX stored the identical wrong
+  address for the FORMAT-last ordering, so `fmtstmt()`'s reallocation is
+  machine-independent and S1 forbids repairing it. The two close together or
+  neither, which turns a deferred task into an owner DECISION rather than
+  deferred work.
+- **THE WAY TO CHECK ONE IS TO TRY IT.** The finding cost one temporary
+  removal, one rebuild and two `f77 -S` runs. A costing written from the task
+  note alone would have implemented the encoding and shipped the regression --
+  which is this file's own standing rule, *verify a recorded diagnosis before
+  building on it, including your own, from an hour ago*, meeting a note written
+  the previous day.
+
+
 **AND ARTICLE.md's TEST COUNT HAS A GUARD NOW, WHICH IS TASK #7 -- AND BOTH
 OBJECTIONS THAT HAD BLOCKED IT WERE TRUE AND NEITHER WAS FATAL.** It had gone
 stale FIVE times: 1767, 2222 against 2483, again within the hour of that fix,

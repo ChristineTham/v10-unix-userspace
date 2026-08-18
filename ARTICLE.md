@@ -5550,6 +5550,44 @@ have. Three cases that assert *there is no terminal here* went red the first
 time the wrapper ran. The fix is one token, closing the descriptor for the child
 alone; the lesson is that in this world a spare file descriptor is not spare.
 
+### A note that expires too early is worse than one that never expires
+
+The compiler refuses one Fortran construct: an integer variable that has been
+`ASSIGN`ed a `FORMAT` label and is then used as a format specifier. Four bytes
+cannot hold a Mach-O data address, and unlike the assigned `GOTO` — where the
+compiler stores a distance from the procedure's own base and adds it back at
+the branch — there is nothing on the far side to add it back, because the
+consumer is the runtime library and it simply dereferences the field.
+
+The refusal was written with an expiry condition beside it, which is a habit
+this project has found valuable: say what would have to become true for the
+deferral to end, so that it is a tripwire rather than a permanent excuse. This
+one said the refusal comes out the day the first pass states the assignment
+explicitly instead of the second pass inferring it, and named the four small
+pieces that would take.
+
+Going to implement that turned up something the note had not: the condition is
+necessary and **not sufficient**. Where the `FORMAT` statement sits relative to
+the `ASSIGN` decides which label the variable captures, because the front end
+renumbers a label the first time it learns it is a format. Written above, the
+variable gets the string; written below, it gets a stale, empty *code* label —
+and the emitted assembly says so plainly, with no such label in the data
+section at all. Both already go through the distance encoding, so implementing
+the proposed fix would make one ordering correct and hand the other a perfectly
+valid pointer **into executable text** as a format string. It would compile,
+link, run, and read machine instructions as though they were `(1x,i5)`.
+
+The renumbering is not this port's to fix — a VAX stored the same wrong address
+— so the two have to close together or not at all. The refusal stays, and it is
+in the right place for a reason worth stating: it fires on the *use* rather
+than on the assignment, which is the only point at which both orderings are
+visible.
+
+The general shape is that an expiry condition too *strong* never fires and the
+deferral just persists, which is the failure everyone expects. One too *weak*
+fires early, and whoever acts on it ships the silent version. Checking this one
+cost a temporary removal, one rebuild, and two compilations.
+
 ---
 
 *Source: [github.com/ChristineTham/v10-unix-userspace](https://github.com/ChristineTham/v10-unix-userspace).

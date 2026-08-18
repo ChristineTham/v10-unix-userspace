@@ -1495,3 +1495,54 @@ expressions: **0 overruns**, with several tight — a 14-argument call reserves
 exactly the 48 bytes it stores, and the two ENTRY stubs of one procedure emit
 identical `sub sp` and `add x29`. Behaviourally, a 14-argument call between two
 leaf calls returns 91 and a five-way `character*(*)` call returns `abcd`.
+
+## Stage 7h — the ASSIGNed FORMAT refusal stays, and its expiry condition was wrong
+
+Stage 7f refused an ASSIGNed variable used as a FORMAT specifier and wrote an
+expiry condition beside it: *removable the day pass 1 states the ASSIGN rather
+than pass 2 inferring it*. That is **necessary and not sufficient**, and acting
+on it would have traded one clean diagnostic for a silent wrong answer.
+
+### Measured, with the refusal temporarily removed
+
+`exassign()` reads `labelval->labelno` at the moment the ASSIGN statement is
+compiled — `exec.c:480` is `puteq(p, mkaddcon(labelval->labelno))` — and
+`fmtstmt()` **replaces** that number with `lp->labelno = newlabel()` the first
+time it learns the label is a FORMAT. So the source order decides which label
+the variable captures, and the emitted assembly says so plainly:
+
+| ordering | the ASSIGN captures | what that label is |
+|---|---|---|
+| FORMAT written **first** | `L14` | `.byte 0x28,0x31,0x78,0x2c,0x69,0x35,0x29,0x0` — `"(1x,i5)"` in `__DATA,__const` |
+| FORMAT written **last** | `L13` | an empty **code** label in `.text`, immediately after `Lf1b1` |
+
+There is no `L13` in the data section at all. Both orderings already go through
+the `Lf1b<proc>` subtraction, so adding the base back at the io path — the whole
+of the proposed fix — would make the first ordering correct and hand the second
+a **valid pointer into executable text** as a format string. It would compile,
+link, run, and read instructions as a FORMAT.
+
+### Neither end can discriminate, and the other half may not be repaired
+
+At the io arm `np` is the integer variable and pass 1 does not know which label
+was assigned to it. At `exassign()` a forward FORMAT and a forward statement
+label are both `LABUNKNOWN`. So no refusal narrower than the present one is
+available — and the present one is right precisely because it fires on the
+**use** rather than on the assignment, which is what makes it cover both
+orderings.
+
+And `fmtstmt()`'s reallocation is upstream's own: a VAX stored the identical
+wrong address for the FORMAT-last ordering, so it is machine-independent and S1
+forbids fixing it here. The two must be closed together or neither.
+
+### The lesson
+
+**An expiry condition can be too WEAK as well as too strong, and too weak is
+worse.** A condition that is too strong never fires and the deferral simply
+persists; one that is too weak is a tripwire that fires *early*, and whoever
+acts on it ships the silent version. This file already records the sibling —
+`io.c`'s OPEN/CLOSE/INQUIRE deferral naming the linker as the instrument that
+would catch it, when an OPEN block is filled in at run time and carries no
+relocation for the linker to check. So the pair is: an expiry condition must
+name a trigger that **can** fire and that is **sufficient**.
+
