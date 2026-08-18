@@ -37,8 +37,10 @@
 #   flag X' and exit 3 -- so this is one line rather than a family, and the
 #   count is what says the option loop is otherwise sound.
 #
-#   (The `(null)' in that message is task #2, printf %%s of a null pointer,
-#   where V8 printed the empty string.  A second instance, recorded there.)
+#   (That message used to read `line 0 of (null)'.  doprnt.c prints the EMPTY
+#   string for a null %%s now -- the VAX's answer, since virtual 0 is crt0's
+#   first byte and it is 0x00 -- so it reads `line 0 of :'.  The abort is
+#   unchanged either way; only the text moved.)
 #
 # dmesg (51) -- every single-letter option except -i.  Berkeley's, 1981, and
 #   unbounded mutual recursion rather than a bad pointer: done() ends

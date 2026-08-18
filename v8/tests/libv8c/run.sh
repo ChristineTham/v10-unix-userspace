@@ -758,6 +758,30 @@ fi
 # *(char *)1 and the fixed one never dereferences at all.  Same defect, same
 # line, and deterministic on every host rather than dependent on where the
 # linker put a buffer.
+# AND %s OF A NULL POINTER IS THE EMPTY STRING, WHICH IS THE VAX'S ANSWER
+# RATHER THAN THE ABSENCE OF A FAULT.  This file printed "(null)", which V8
+# never produced: doprnt.S has NO null guard -- its six occurrences of the word
+# are comments about NUL bytes in the format scan -- so %s read virtual address
+# 0 and stopped on the byte there.  That byte is 0x00, measured on the shipped
+# binaries: V8 a.out is ZMAGIC, so a.out.h makes N_TXTOFF 1024, the header is
+# never mapped, and bin/cat, bin/ls and usr/bin/egrep all begin
+# `00 00 c2 08 5e d0 ae 08' at virtual 0.  The convention is real and belongs
+# to other programs' PRIVATE copies of 4BSD's doprnt (cmd/ex/ovdoprnt.s has
+# `nulstr: <(null)\0>', cmd/csh/doprnt.c has its own) rather than to libc.
+#
+# THE WIDTH CASE IS THE DISCRIMINATOR.  A "fix" that skipped the whole %s arm
+# for a null pointer prints [] for the first and [] for the second; the VAX
+# padded the field, because it found a zero-length string rather than no
+# string at all.
+run 'printf %s of a null pointer is empty' '[]|[]' <<'EOF'
+#include <stdio.h>
+main() { printf("[%s]|[%.3s]\n", (char *)0, (char *)0); fflush(stdout); return 0; }
+EOF
+run 'and a width still pads it' '[     ][ab   ]' <<'EOF'
+#include <stdio.h>
+main() { printf("[%5s][%-5s]\n", (char *)0, "ab"); fflush(stdout); return 0; }
+EOF
+
 run 'printf %.0s does not dereference' 'ok' <<'EOF'
 #include <stdio.h>
 main() { printf("%.0s", (char *)1); printf("ok\n"); fflush(stdout); return 0; }

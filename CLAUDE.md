@@ -3139,6 +3139,39 @@ would have reported a derived count of zero. `tests/cpp`'s anchor-to-`dirname`
 lesson, arriving in a case rather than in a suite.
 
 
+**AND `%s` OF A NULL POINTER IS THE EMPTY STRING NOW, WHICH IS THE ADDRESS-0
+RULE APPLIED TO OUR OWN LIBC.** `doprnt.c` printed `(null)`, and its own header
+promises *"the same observable output"* as `doprnt.S`. Measured: **doprnt.S has
+no null guard at all** -- its six occurrences of the word are comments about
+NUL bytes in the format scan -- so `%s` read virtual 0 and stopped on the byte
+there, and that byte is `0x00`: V8 a.out is ZMAGIC (`0413`, and `a.out.h:26-27`
+makes `N_TXTOFF` 1024), the header is never mapped, and `bin/cat`, `bin/ls` and
+`usr/bin/egrep` all begin `00 00 c2 08 5e d0 ae 08` at virtual 0. Four things:
+
+- **THE CONVENTION IS REAL AND BELONGS TO SOMEBODY ELSE.** `cmd/ex/ovdoprnt.s`
+  carries `nulstr: <(null)\0>` and `cmd/csh/doprnt.c` has its own -- those are
+  4BSD's formatter, privately copied into two programs, and neither is what
+  `printf(3)` linked. **A convention being period-correct somewhere in the tree
+  is not evidence that it is correct in libc**, and a grep for `(null)` finds
+  both without distinguishing them.
+- **THE WIDTH CASE IS THE ONE THAT KNOWS THE RIGHT ANSWER.** Printing nothing
+  and SKIPPING the conversion differ: a zero-length string still occupies a
+  field, so `%5s` of NULL padded five spaces on a VAX. Mutation-verified --
+  restoring `(null)` fires both cases, and `break`ing out of the arm fires only
+  the second. Same discipline as `%#g` being the negative control for the `%g`
+  trailing-zero fix.
+- **AND THE THREE COMMENTS THAT DESCRIBED THE OLD BEHAVIOUR WERE CORRECTED WITH
+  IT** -- `sed0.c`, `tests/waveb` and `tests/crash-probe.floor` each explained a
+  soft landing by saying doprnt prints `(null)`. A behaviour change that leaves
+  its own explanations standing is how this file's most-cited class starts.
+- **THE BLAST RADIUS WAS THE REASON IT WAS DEFERRED, AND IT IS TWO MESSAGES.**
+  Every binary links libv8c, but only two diagnostics in the tree reach a null
+  `%s`: `f77pass1 -d` (now `line 0 of :`) and `sed -f` with `-f` last. The
+  crash-probe floor entry keys on the ABORT rather than the text, so it did not
+  move. **Costing a blast radius by counting linkers overstates it; count the
+  call sites that can reach the value.**
+
+
 **AND A CAPTURE CAN SWALLOW ITS OWN EVIDENCE, WHICH IS WHY THREE SIGHTINGS OF
 ONE INTERMITTENT PRODUCED NO DIAGNOSIS.** `tests/streams` had gone red four
 times with `icheck ran on the image / want [1] got [0]` and three friends. The

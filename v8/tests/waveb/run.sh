@@ -90,7 +90,9 @@ try sed 'sed uses a regexp' 'BANANA'      "./sed -n 's/^ban.*/BANANA/p' in.txt"
 #
 # -e SIGSEGV'd outright, in rline()'s copy loop.  -f did not, and only because
 # of two of this port's own tolerances: rootpath() hands a NULL path to the
-# kernel for EFAULT, and doprnt prints "(null)" for the %s in the diagnostic.
+# kernel for EFAULT, and doprnt survives a null %s in the diagnostic -- it
+# prints the EMPTY STRING now, the VAX's answer, and printed "(null)" when this
+# was written.
 # A walk off the end that lands on a soft floor is still a walk off the end, so
 # both were fixed together.
 try sed 'sed -e with no script exits'   '2' \

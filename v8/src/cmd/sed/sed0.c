@@ -65,9 +65,11 @@ char	*argv[];
 			 * fopen(NULL) -- which survives only on two of this
 			 * port's own tolerances, v8s_rootpath returning NULL
 			 * for a NULL path so the kernel answers EFAULT, and
-			 * doprnt.c printing "(null)" for the %s below.  A walk
-			 * off the end of argv that lands on a soft floor is
-			 * still a walk off the end of argv.
+			 * doprnt.c surviving a null %s below -- it prints the
+			 * EMPTY STRING now, which is what a VAX printed, and
+			 * printed "(null)" when this was written.  A walk off
+			 * the end of argv that lands on a soft floor is still
+			 * a walk off the end of argv.
 			 */
 			if(eargc-- <= 1)	exit(2);
 

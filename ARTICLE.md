@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2701 tests across 17 suites** guard it.
+assembly. **2703 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5587,6 +5587,38 @@ The general shape is that an expiry condition too *strong* never fires and the
 deferral just persists, which is the failure everyone expects. One too *weak*
 fires early, and whoever acts on it ships the silent version. Checking this one
 cost a temporary removal, one rebuild, and two compilations.
+
+### What a VAX printed for a string that was not there
+
+Printing a null pointer with `%s` is undefined, and every modern C library has
+settled on the same courtesy: it emits `(null)` rather than crashing. This
+port's `printf` did that too — because the code underneath it is a fresh C
+implementation written for this project, replacing 765 lines of VAX assembly
+that no change of machine could carry over, and whoever wrote it reached for
+the modern convention without thinking about it.
+
+The convention is real, and it is not V8's. The assembly it replaces has no
+null guard at all; its half-dozen mentions of the word are comments about the
+NUL bytes that terminate a format string. So on the original machine `%s`
+simply read address zero and stopped at whatever it found — and address zero
+was readable there, because these binaries are demand-load format, the header
+is never mapped, and the first byte of the startup code sits at address zero.
+Three different shipped binaries all begin with the same eight bytes, and the
+first of them is zero. A leading zero byte is an empty string. The VAX printed
+nothing at all.
+
+What makes this worth the trouble is the second case in the test. Printing
+nothing and *skipping the conversion* are not the same thing: a zero-length
+string still occupies a field, so `%5s` of a null pointer produced five spaces
+on a VAX, and a fix that simply bailed out of the conversion would produce
+none. Reverting the change fails both cases; bailing out fails only the second.
+That is the difference between a test that notices a change and a test that
+knows what the right answer is.
+
+The convention had to come from somewhere, and it did: `ex` and `csh` each
+carry their own private copy of the Berkeley formatter, and both of those
+*do* have the guard. It simply never reached the C library that everything
+else links.
 
 ---
 

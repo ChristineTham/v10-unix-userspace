@@ -264,7 +264,33 @@ _doprnt(fmt, argp, iop)
 
 		case 's':
 			s = NEXTPTR(argp);
-			if (s == 0) s = "(null)";
+			/*
+			 * PORT: THE EMPTY STRING, NOT "(null)", BECAUSE THAT IS
+			 * WHAT A VAX PRINTED.  This file's own header promises
+			 * "the same observable output" as doprnt.S, and "(null)"
+			 * was output V8 never produced: doprnt.S has no null
+			 * guard at all -- measured, its six occurrences of the
+			 * word are comments about NUL bytes in the format scan --
+			 * so %s of a null pointer read virtual address 0 and
+			 * stopped on the byte it found there.
+			 *
+			 * AND THAT BYTE IS 0x00, MEASURED ON THE SHIPPED
+			 * BINARIES.  V8 a.out is ZMAGIC (magic 0413, and
+			 * a.out.h:26-27 makes N_TXTOFF 1024 for it), so the
+			 * header is never mapped and virtual 0 is the first byte
+			 * of crt0.  bin/cat, bin/ls and usr/bin/egrep all begin
+			 * `00 00 c2 08 5e d0 ae 08' there.  A leading NUL is a
+			 * zero-length string, so the VAX printed nothing -- and
+			 * padded a field width, which this spelling keeps and a
+			 * skip of the whole arm would not.
+			 *
+			 * The "(null)" convention is real but belongs to other
+			 * programs' private copies of 4BSD's doprnt, not to
+			 * libc: cmd/ex/ovdoprnt.s carries `nulstr: <(null)\0>'
+			 * and cmd/csh/doprnt.c has its own.  Neither is this
+			 * file, and neither is what printf(3) linked.
+			 */
+			if (s == 0) s = "";
 			/*
 			 * The precision has to be in the loop CONDITION, not
 			 * in its body.  Written as
