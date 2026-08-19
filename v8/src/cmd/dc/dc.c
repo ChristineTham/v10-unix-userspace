@@ -920,7 +920,28 @@ char *argv[];
 	readptr = &readstk[0];
 	k=0;
 	sp = sptr = &symlst[0];
-	while(sptr < &symlst[TBLSZ]){
+	/* PORT: THE LOOP WROTE ONE ELEMENT PAST symlst, AND HERE THAT ELEMENT IS
+	   tenptr.  Upstream runs while `sptr < &symlst[TBLSZ]', so the last
+	   iteration sets symlst[TBLSZ-1].next to &symlst[TBLSZ] -- a pointer past
+	   the array -- and leaves sptr there, so the `sptr->next=0' below stores
+	   eight zero bytes at &symlst[TBLSZ].  Measured: symlst ends at
+	   0x...bf88 and _tenptr begins at 0x...bf88, so init() zeroed the very
+	   block it had built four statements earlier, and dc SIGSEGV'd in
+	   mult(tenptr,q) -- the one call reached only by a number with an ODD
+	   count of fraction digits, add0()'s `ct == 1' arm.  Every fraction was
+	   affected: .4 crashed, .44 did not.
+	   The overrun is upstream's on any machine -- struct sym is two pointers,
+	   so it was 8 bytes on a VAX and is 16 here -- but the ARRAY DOUBLED and
+	   Mach-O put a live pointer where a VAX had put something harmless.  That
+	   is sed -n l's verdict (`trans[]' is an array of pointers, so the stride
+	   doubled and Mach-O maps nothing where a.out did) arriving as a WRITE
+	   rather than a read, so it is fixed rather than recorded.
+	   TBLSZ-1 is what the code already means: link 0..TBLSZ-2 to their
+	   successors and terminate TBLSZ-1.  It also removes the second half of
+	   the same defect, which no symptom had reached -- symlst[TBLSZ-1].next
+	   pointed OUTSIDE the array, so exhausting the symbol table would have
+	   handed out &symlst[TBLSZ] as a free slot.  */
+	while(sptr < &symlst[TBLSZ-1]){
 		sptr->next = ++sp;
 		sptr++;
 	}

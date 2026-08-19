@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2719 tests across 17 suites** guard it.
+assembly. **2727 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5791,24 +5791,41 @@ system produces — and made exponential, logarithm and sine produce nothing at
 all.
 
 That turned out not to be `bc`'s doing. `dc`, which this project installed a
-long time ago and which is an exact copy of the original, silently discards the
-rest of whatever it is reading as soon as it meets a number with an odd count
-of digits after the decimal point. Two digits are fine; one is not. Three are
-not; four are. The reason is that it stores numbers two decimal digits to a
-byte, so an odd count leaves a half-used byte, and the path that handles that
-case is the one at fault.
+long time ago and which is an exact copy of the original, crashed on any number
+with an odd count of digits after the decimal point. Two digits were fine; one
+was not. Three were not; four were. Because the crash took the rest of the
+input with it, it looked at first like the program was quietly discarding
+things rather than dying — a misreading helped along by the fact that the
+command used to measure it reported the exit status of the wrong end of a
+pipeline.
 
-The tests `dc` already had could not have found it. There were three, and all
-three were whole numbers — a calculator whose arithmetic was, in the part that
-distinguishes it from a pocket calculator, untested.
+The cause was four lines at the end of the program's own start-up. It builds a
+list of every slot in its symbol table, and the loop runs one step too far: it
+stops one past the end of the array and then writes there. That is a mistake in
+the original, and on the machine it was written for it was harmless, because
+whatever happened to sit after the array did not matter. Here each slot in that
+table is twice as wide, so the array is twice as long, and what the linker
+placed immediately after it was the program's stored copy of the number ten.
+Start-up erased it four statements after creating it — and the only routine
+that needs the number ten is the one handling an odd count of decimal digits.
 
-What makes this one uncomfortable is that the copy is exact. The program is
-byte-for-byte what was shipped, it worked for years on the machine it was
-written for, and something about moving it to this one broke it. That is a
-different kind of finding from the ones this project usually records, where the
-original is known to have had the same fault. It is written down in full, with
-everything already ruled out by measurement, and it is a fault to fix rather
-than a curiosity to preserve.
+The fix is one character. The loop should stop one earlier, which is what the
+code around it plainly intends, and doing so also removes a second fault nobody
+had reached: as written, the last slot in the table pointed outside the array,
+so a program that used up every symbol would have been handed the space beyond
+it.
+
+What makes this one worth recording is that the copy is exact. The program is
+byte-for-byte what was shipped and it worked for years, and the thing that
+broke it was not a change to the program but a change in how wide a pointer is.
+This project usually preserves faults the original had; this one it could not,
+because here the fault destroys the program's entire purpose rather than
+producing a slightly odd message.
+
+And it had three tests, all of them whole numbers — so a calculator's defining
+feature had never been checked at all. It has both cases now, odd and even,
+because the even one passes whether or not the bug is present and is what makes
+the pair mean something.
 
 ---
 

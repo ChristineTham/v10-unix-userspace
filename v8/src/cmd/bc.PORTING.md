@@ -136,46 +136,36 @@ unconsumed-component rule rather than an instance of it. Measured before:
 With it in place `a(1)*4` gives `3.14159265358979323844`, character for
 character what the host's `bc -l` gives.
 
-**And `e()`, `l()` and `s()` give nothing, which is not bc's fault.** It is a
-pre-existing defect in `dc(1)` that nothing had ever reached: **dc silently
-consumes the rest of its input after reading any number with an ODD count of
-fractional digits.**
+**And `e()`, `l()` and `s()` gave nothing when this was written, which was not
+bc's fault.** It was a defect in `dc(1)` that nothing had ever reached, now
+**diagnosed and fixed** -- `init()` wrote one element past `symlst` and the
+element it landed on was `tenptr`, so every number with an odd count of
+fractional digits SIGSEGV'd in `mult(tenptr,q)`. `src/cmd/dc/PORTING.md` has
+the account. With it fixed:
 
-```
-$ printf '4 p\n.4 p\n5 p\n' | dc
-4
-```
+| | ours | host `bc -l` |
+|---|---|---|
+| `e(1)` | `2.71828182845904523536` | identical |
+| `l(10)` | `2.30258509299404568401` | identical |
+| `a(1)*4` | `3.14159265358979323844` | identical |
 
--- the `.4` and the `5` after it both vanish, exit 0, no diagnostic. The rule
-is parity: `.44`, `.4444`, `1.00` and `4.34` are exact; `.4`, `.444`, `1.0`
-and `0.5` produce nothing. V7 dc stores numbers **base 100**, two decimal
-digits per byte, so an odd count is a half-used byte -- and `add0()`'s only odd
-arm, `if(ct == 1) t = mult(tenptr,q)`, is the whole difference between the two
-paths.
-
-`lib.b` opens `scale = 20`, which is even, so `a()` survives while the
-functions that work through odd intermediate scales do not. Task #25 carries
-the full account and everything ruled out by measurement; `dc.c` and `dc.h` are
-**pristine** against PROVENANCE, so it worked on a VAX and the fault is this
-port's.
-
-Three things generalise:
+Three things generalise, and they are about the search rather than the code:
 
 - **A program can be correct and useless because its back end is not.** bc
   compiles `.434*2` to exactly the right dc program -- ` 3k .434 2*ps.`,
-  verified with `bc -c` -- and dc answers nothing. Checking the *emitted*
-  intermediate rather than the final answer is what separated the two in one
-  command, and it is the same discipline as reading `cc -S` before theorising.
+  verified with `bc -c` -- and dc answered nothing. Checking the *emitted*
+  intermediate rather than the final answer separated the two in one command,
+  the same discipline as reading `cc -S` before theorising.
 - **The tests dc already had could not have found it.** All three
   (`2 3+`, `3 4*`, `6 7*`) are integer. A calculator with no fractional test is
-  a calculator whose arithmetic is untested, and dc has no `PORTING.md` either
+  a calculator whose arithmetic is untested, and dc had no `PORTING.md` either
   -- it was imported before this project audited what it imported.
-- **This is NOT the cb/calendar4/ratfor-BUGS shape and must not be asserted as
-  one.** Those are upstream defects a VAX shared, deliberately frozen so that
-  repairing them is a decision. This is a port defect in pristine source: a bug
-  to fix, so nothing here asserts it stays.
+- **Importing a program audits its dependencies.** Nothing else in the tree
+  feeds dc a fraction, so bc's arrival is what asked the question. That is the
+  same shape as `awk` surfacing `%g`'s missing trailing-zero strip in libc, and
+  it is an argument for importing consumers rather than only libraries.
 
 ## Still open
 
-`dc`'s odd-fraction defect above (task #25) -- which bounds `bc -l` to the
-functions whose intermediate scales stay even. Everything else measured works.
+Nothing. Ordinary arithmetic, functions, loops, bignums, bases and the whole
+math library all measure correct.

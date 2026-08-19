@@ -1896,6 +1896,33 @@ check 'bc runs a for loop'      '123'  "$(bcrun 'for(i=1;i<=3;i++) i\n')"
 # which of lib.b's functions can be asked.  lib.b opens `scale = 20', even.
 check 'bc -l loads the math library' '3.14159265358979323844' \
     "$(bcrun 'a(1)*4\n' -l)"
+# ...and the two that could not be asked until dc was fixed.  e() and l() work
+# through ODD intermediate scales, which is the parity that used to crash dc --
+# see src/cmd/dc/PORTING.md.  Both agree with the host's bc -l digit for digit.
+check 'bc -l computes e(1)'  '2.71828182845904523536' "$(bcrun 'e(1)\n' -l)"
+check 'bc -l computes l(10)' '2.30258509299404568401' "$(bcrun 'l(10)\n' -l)"
+
+# dc: THE FRACTIONAL PATH, which had NO case at all for the life of this port.
+# Its whole suite was `2 3+', `3 4*' and `6 7*' -- three whole numbers -- and
+# init() was zeroing tenptr by writing one element past symlst, so EVERY number
+# with an odd count of fraction digits SIGSEGV'd in mult(tenptr,q).  16-byte
+# struct sym here against 8 on a VAX is what moved the neighbour.
+dcbin=$(v8which dc)
+dcrun() { printf '%b' "$1" | perl -e 'alarm 15; exec @ARGV' "$dcbin" 2>&1 | tr '\n' ' ' | sed 's/ $//'; }
+# BOTH PARITIES, because the even path never touches tenptr and passed
+# throughout -- a one-sided case cannot see this.  The leading 0 on the odd
+# answers is upstream's own formatting (tenot does printf("%d.", c/10)), not
+# the host's `.4', so these assert V8's answer rather than GNU dc's.
+check 'dc prints an even-digit fraction'  '.44'   "$(dcrun '.44 p\n')"
+check 'dc prints an odd-digit fraction'   '0.4'   "$(dcrun '.4 p\n')"
+check 'dc divides to an even scale'       '.33'   "$(dcrun '2k 1 3/ p\n')"
+check 'dc divides to an odd scale'        '0.333' "$(dcrun '3k 1 3/ p\n')"
+# AND THE SEQUENCE IS THE CASE THAT NAMES THE FAILURE MODE: the crash took the
+# REST OF THE INPUT with it, so the 5 vanished too and it read as silent
+# truncation rather than as a fault.  Asserting all three keeps that visible.
+check 'dc survives a fraction mid-stream' '4 0.4 5' "$(dcrun '4 p\n.4 p\n5 p\n')"
+check 'dc exits 0 on a fraction' '0' \
+    "$(printf '.4 p\n' | perl -e 'alarm 15; exec @ARGV' "$dcbin" >/dev/null 2>&1; echo $?)"
 
 # m4: define and expand, then a macro with an argument, which is the only case
 # that proves the argument stack rather than the symbol table.

@@ -3480,8 +3480,8 @@ generalise:
   into within the hour of quoting it. Diff against the pristine backup, and
   confirm that backup hashes to the recorded PROVENANCE blob.
 
-**AND bc IMMEDIATELY FOUND A DEFECT IN dc, WHICH HAS BEEN INSTALLED SINCE AN
-EARLY WAVE AND HAS NO PORTING.md.** `dc` **silently consumes the rest of its
+**AND bc IMMEDIATELY FOUND A DEFECT IN dc, WHICH HAD BEEN INSTALLED SINCE AN
+EARLY WAVE WITH NO PORTING.md -- NOW DIAGNOSED AND FIXED, IN ONE TOKEN.** `dc` **silently consumes the rest of its
 input** after reading any number with an ODD count of fractional digits.
 `printf '4 p\n.4 p\n5 p\n' | dc` prints only `4`; exit 0, empty stderr. The
 rule is parity -- `.44`, `.4444`, `1.00`, `4.34` exact; `.4`, `.444`, `1.0`,
@@ -3490,24 +3490,50 @@ byte, so an odd count is a half-used byte, and `add0()`'s only odd arm
 (`if(ct == 1) t = mult(tenptr,q)`) is the whole difference. Task #25 carries
 what is ruled out by measurement. Four things:
 
-- **IT IS NOT UPSTREAM'S, WHICH MAKES IT A DIFFERENT CLASS FROM cb AND
-  calendar4.** `dc.c` and `dc.h` are PRISTINE against PROVENANCE, so it worked
-  on a VAX and the fault is this port's. So there is **no case asserting it
-  stays** -- the frozen-bug treatment is for defects a VAX shared, and applying
-  it here would enshrine a regression.
+**THE CAUSE IS AN OFF-BY-ONE THAT USED TO BE HARMLESS, AND THE LAYOUT IS THE
+PROOF.** `init()` threads the symbol table onto a free list with
+`while(sptr < &symlst[TBLSZ])`, so the last iteration leaves `sptr` AT
+`&symlst[TBLSZ]` and the `sptr->next=0` below writes one element past the
+array. `struct sym` is two pointers -- 8 bytes on a VAX, **16** here -- so the
+array doubled to 4096 bytes, and `nm -n` says `_symlst` is at `...af88` and
+`_tenptr` at `...bf88`, exactly `TBLSZ * sizeof(struct sym)` later. `init()`
+zeroed the block it had built four statements earlier. `TBLSZ-1` is what the
+code already means, and it removes a second half nobody had reached:
+`symlst[TBLSZ-1].next` pointed OUTSIDE the array, so exhausting the table would
+have handed out `&symlst[TBLSZ]` as a free slot. `src/cmd/dc/PORTING.md`.
+Six things generalise:
+
+- **IT IS `sed -n l`'s VERDICT, NOT `cb`'s.** The overrun is upstream's on any
+  machine, which reads at first like the frozen-bug shape -- and it is not,
+  because what changed is the STRIDE: an array of pointers doubled and Mach-O
+  put a live object where a VAX had put something harmless. There it was a
+  read; here it is a **write**. Fixed rather than recorded, and the frozen-bug
+  treatment would have enshrined a total failure of the program's purpose.
+- **MY OWN `exit 0` WAS A PIPELINE.** The first characterisation said *exit 0,
+  no diagnostic, silently consumes the rest of the input*. It is **139** --
+  SIGSEGV -- and the rest of the input is simply never read; `$?` had come off
+  the end of a `| tr`. This file's most-cited shell hazard, inside the
+  instrument describing the bug it was aimed at, in the same session that
+  quoted the rule.
+- **ADDING A PRINT CRASHED THE PATH THAT WORKED, AND THAT WAS THE FINDING.**
+  The added expression was `length(tenptr)`, so the *trace* dereferenced what
+  the even path never touches, and `.44` started failing too. **An instrument
+  that crashes where the program does not has just named the bad object.**
+- **ASLR SAID THE POINTER WAS REAL.** `tenptr` read `0x300000068` on one run
+  and `0x109680068` on the next, which separated "init never set it" from
+  "something cleared it after". This file already records the rule from the
+  other direction -- a constant-looking wrong value that does NOT move is a
+  truncation.
 - **THREE INTEGER CASES CANNOT TEST A CALCULATOR.** dc's whole suite was
-  `2 3+`, `3 4*`, `6 7*`. The half that distinguishes dc from a pocket
-  calculator had no case at all, which is why this survived every run.
-- **CHECK THE EMITTED INTERMEDIATE, NOT THE FINAL ANSWER.** `bc -c` shows bc
-  compiling `.434*2` to exactly the right dc program while dc answers nothing --
-  one command separating a front end from a back end, the same discipline as
-  reading `cc -S` before theorising.
-- **AND THE EXPERIMENT THAT WOULD SETTLE IT IS BLOCKED BY 1985 ITSELF.**
-  Building the same source under clang would say whether the bug follows the
-  SOURCE or v8cc, and `dc.h`'s `int log10;`, `int (*signal())();` and a K&R
-  handler all collide with modern headers. Recorded as a step of its own rather
-  than attempted half-way -- "v8cc miscompiles this" and "the source is
-  LP64-unsafe here" are very different findings.
+  `2 3+`, `3 4*`, `6 7*`. Its defining feature had no case at all, which is why
+  every fraction failed for the life of the port. Both parities are asserted
+  now, and the mutation fires the six odd cases while leaving the two even
+  controls green -- a one-sided suite could not have seen this.
+- **CHECK THE EMITTED INTERMEDIATE, NOT THE FINAL ANSWER.** `bc -c` showed bc
+  compiling `.434*2` to exactly the right dc program while dc answered nothing,
+  separating front end from back end in one command -- the same discipline as
+  reading `cc -S` before theorising. And the bisect was **three `fprintf`s**,
+  because v8cc emits no unwind info and lldb is useless here.
 
 
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
