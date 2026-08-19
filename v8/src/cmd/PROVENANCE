@@ -108,3 +108,5 @@ c5625265e032b2f7269f07fa0883015de6f1010c  v8/usr/src/cmd/uudecode.c
 379a4c986e3265e08e9da42c56ec747619c56a33  v8/usr/src/cmd/false.sh
 c9d937842035a86088a543d7654c8fa10d8d8d04  v8/usr/src/cmd/egrep.y
 6dccc5e1a9d260e1f38c4fd1d445c6a528b1a96e  v8/usr/src/cmd/bc.y
+02007a987ccd7081b8cbe757e95a60d88085fe9b  v8/usr/src/cmd/bundle.sh
+5ad6613442835c7c4a78a37bcbff4c71d3e16ff1  v8/usr/src/cmd/where.sh

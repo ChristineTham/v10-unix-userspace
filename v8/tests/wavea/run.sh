@@ -2045,13 +2045,58 @@ jail_sh() { PATH=/bin:/usr/bin:/etc "$sh8" -c "$1" 2>/dev/null; }
 # So there are two properties and they need two cases: that the PORT INSTALLED
 # it (here, at the directory $(call v8dest,...) derives from Admin/binfiles),
 # and that it WORKS under the jail's PATH (below).  Neither implies the other.
-check 'the five scripts are installed where V8 put them' \
-    'bin/true bin/false bin/nohup usr/bin/dirname usr/bin/whois' \
-    "$(for n in true false nohup dirname whois; do
+check 'the seven scripts are installed where V8 put them' \
+    'bin/true bin/false bin/nohup usr/bin/dirname usr/bin/whois usr/bin/bundle usr/bin/where' \
+    "$(for n in true false nohup dirname whois bundle where; do
          for d in bin usr/bin etc; do
            [ -f "$V8ROOT/$d/$n" ] && { printf '%s/%s ' "$d" "$n"; break; }
          done
        done | sed 's/ $//')"
+
+# bundle: THE STRONGEST OF THE SEVEN, because a round trip exercises far more
+# than the script.  It writes a shell archive whose payload is a here-document
+# terminated by `//GO.SYSIN DD <name>' with every line prefixed by `-', and
+# unbundling runs that archive under V8's sh, which must read the here-document
+# and run V8's sed to strip the prefix back off.  So a pass means bundle, sh,
+# sed, here-documents and the jail's PATH all agree -- and asserting the
+# CONTENTS rather than the exit status is what makes it mean anything, because
+# sh exits 0 on an archive that produced nothing.
+bundlebin=$(v8which bundle)
+check 'bundle round-trips through sh and sed' 'one two |alpha |' \
+    "$(rm -rf bun && mkdir -p bun/un && cd bun
+       printf 'one\ntwo\n' > f1; printf 'alpha\n' > f2
+       PATH=$V8ROOT/bin:$V8ROOT/usr/bin:$V8ROOT/etc "$bundlebin" f1 f2 > a.sh 2>/dev/null
+       cd un && PATH=$V8ROOT/bin:$V8ROOT/usr/bin:$V8ROOT/etc "$V8ROOT/bin/sh" ../a.sh >/dev/null 2>&1
+       for f in f1 f2; do tr '\n' ' ' < $f 2>/dev/null; printf '|'; done)"
+
+# where: the only one of the seven that reads a DATA file V8 ships and this
+# port had never imported -- /etc/whoami, ten bytes, the machine's own name.
+# The case asserts the name comes from the jail's copy, which is the half a
+# `it printed something' case would miss: the host has no /etc/whoami at all,
+# so an unjailed read would print an empty name and still look plausible.
+#
+# AND IT MUST BE RUN BY V8's sh, WHICH IS A NEW TURN ON A DOCUMENTED CLASS.
+# where.sh has no `#!' line, so it is run by WHATEVER SHELL INVOKES IT -- and
+# this suite's shell is the host's.  Measured: `sh -c "echo -n abc"' on macOS
+# prints `-n abc', because /bin/sh's builtin echo does not take -n, while V8's
+# echo.c handles -n, -e and -ne explicitly.  So the first draft of this case
+# read `-n v8generic!...' and looked like a broken port.  The whois case above
+# established that a script's answer depends on which BINARIES it finds; this
+# one adds that for a #!-less script the INTERPRETER is part of the program
+# too, and in the V8 world that interpreter is V8's sh.
+wherebin=$(v8which where)
+whererun() { PATH=$V8ROOT/bin:$V8ROOT/usr/bin:$V8ROOT/etc \
+             "$V8ROOT/bin/sh" "$wherebin" 2>/dev/null; }
+check 'where names the machine from the jail /etc/whoami' 'v8generic' \
+    "$(whererun | sed 's/!.*//')"
+# The directory half is compared against V8's OWN pwd rather than the shell's,
+# because $TMPDIR here is a symlink (/var/folders -> /private/var/folders) and
+# the two resolve it differently -- a host property, where "these two V8
+# programs agree" is a relation the port controls.
+check 'where reports the working directory' 'yes' \
+    "$(w=$(whererun | sed 's/.*!//')
+       v=$(PATH=$V8ROOT/bin:$V8ROOT/usr/bin "$V8ROOT/bin/pwd" 2>/dev/null)
+       [ -n "$w" ] && [ "$w" = "$v" ] && echo yes)"
 
 # true is upstream's ZERO-BYTE file, not a program that exits 0, and the size
 # is asserted because "it exits 0" is also true of a broken copy -- and of the

@@ -3536,6 +3536,36 @@ Six things generalise:
   because v8cc emits no unwind info and lldb is useless here.
 
 
+**AND TWO MORE SCRIPTS WENT IN -- `bundle` AND `where`, 176 -> 178 -- WHICH
+FOUND THAT A `#!`-LESS SCRIPT'S INTERPRETER IS PART OF THE PROGRAM.** Both are
+in none of the four tables, so `Admin/dest` answers `/usr/bin` by fall-through
+and the shipped tree agrees; both have a `usr/src` copy, so unlike the earlier
+four they land in `$(SRC)/cmd` beside `false.sh`. `where` also needed
+**`/etc/whoami`**, ten bytes of DATA V8 ships (`v8generic`) that nothing here
+had imported -- it reaches the rootfs through the `$(ROOTFS)/etc/%` generator
+with no rule of its own, `/etc/termcap`'s route. Three things:
+
+- **THE FIRST DRAFT OF THE `where` CASE READ `-n v8generic!...` AND LOOKED LIKE
+  A BROKEN PORT.** `where.sh` has no `#!`, so it is run by WHATEVER SHELL
+  INVOKES IT, and this suite's shell is the host's. Measured:
+  `sh -c 'echo -n abc'` on macOS prints **`-n abc`**, because /bin/sh's builtin
+  echo does not take `-n`, while V8's `echo.c` handles `-n`, `-e` and `-ne`
+  explicitly and the installed binary is correct. Under `$V8ROOT/bin/sh` the
+  script is right. The `whois` entry established that a script's answer depends
+  on which BINARIES it finds; this adds that **for a #!-less script the
+  INTERPRETER is part of the program too**, and in this world that is V8's sh.
+- **AND THE DIRECTORY HALF HAD TO BE COMPARED AGAINST V8's OWN `pwd`.**
+  `$TMPDIR` here is a symlink (`/var/folders` -> `/private/var/folders`) and the
+  suite's shell and V8's `pwd` resolve it differently, so `= "$(pwd)"` fails on
+  a correct program. Two V8 programs agreeing is a relation the port controls;
+  the shell's idea of the cwd is a host property.
+- **`bundle`'s ROUND TRIP IS FOUR PROGRAMS, NOT ONE.** The archive is a shell
+  script whose payload is a here-document terminated by `//GO.SYSIN DD <name>`
+  with every line prefixed `-`, so unbundling needs V8's `sh` to read the
+  here-document and V8's `sed` to strip the prefix. Assert the CONTENTS: `sh`
+  exits 0 on an archive that produced nothing.
+
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never

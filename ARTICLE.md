@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2727 tests across 17 suites** guard it.
+assembly. **2730 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **176** of the 286 V8 shipped, and the ones still missing mostly
+port installs **178** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -5826,6 +5826,37 @@ And it had three tests, all of them whole numbers — so a calculator's defining
 feature had never been checked at all. It has both cases now, odd and even,
 because the even one passes whether or not the bug is present and is what makes
 the pair mean something.
+
+### Two more that cost nothing, and a shell that was part of the program
+
+Two of the commands still missing were shell scripts, which means there is
+nothing to compile and the file that was shipped *is* the source. `bundle`
+packs a set of files into a self-extracting archive; `where` prints the
+machine's name and the current directory. Both needed only tools this world
+already had, so installing them was a matter of copying upstream's own bytes
+into the right place — 178 of the 286 commands now.
+
+`bundle` is the more interesting of the two to test, because unpacking one of
+its archives is not a test of `bundle` at all. The archive is a shell script
+whose payload is embedded text with every line prefixed by a character, and
+extracting it means the shell must read that embedded text correctly and run
+the stream editor to strip the prefix back off. So the round trip exercises
+four programs at once, and asserting the recovered *contents* rather than a
+success code is what makes it mean anything, since the shell reports success
+on an archive that produced nothing.
+
+`where` turned up something worth keeping. The first version of its test
+reported that the program printed a stray `-n` before its output, which looks
+exactly like a broken port. It is not. A shell script with no line naming its
+interpreter is run by whichever shell happened to invoke it — and the test's
+own shell was the host's, whose built-in echo does not understand the option to
+suppress a trailing newline, while the 1985 one does. Run the way it is run
+inside this world, by the shell this project built, it is correct.
+
+That is a small extension of something already recorded here. A script's answer
+was known to depend on which *programs* it finds on its search path. It also
+depends on which shell reads it, and for a script that does not name one, the
+interpreter is as much part of the program as the text is.
 
 ---
 

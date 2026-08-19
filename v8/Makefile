@@ -2109,12 +2109,27 @@ LINKED_INSTALL = $(call v8install,e uncompress zcat)
 # tables, which put true/false/nohup in Admin/binfiles (so /bin) and let
 # dirname/whois fall through (so /usr/bin).  Checked against the shipped tree --
 # all five agree, so there is no cpp/dump-shaped disagreement here.
-V8SCRIPT          = true false nohup dirname whois
+#
+# ...AND TWO MORE, WHICH ARE THE bc SHAPE FOR SCRIPTS: nothing to compile, and
+# their whole dependency set was already installed.  `bundle' needs echo and
+# sed and a `for' loop; `where' needs echo, pwd and cat.  Both are in NONE of
+# the four tables, so Admin/dest answers /usr/bin by fall-through, and the
+# shipped tree agrees at v8/usr/bin/{bundle,where}.  Both have a usr/src copy
+# (bundle.sh, where.sh), so unlike the four above they land in $(SRC)/cmd
+# beside false.sh.
+#
+# `where' also needs /etc/whoami, which is DATA V8 ships (10 bytes,
+# "v8generic") and which nothing here had imported.  It goes to $(SRC)/etc and
+# reaches the rootfs through the $(ROOTFS)/etc/% generator with no rule of its
+# own -- the same route /etc/termcap takes.
+V8SCRIPT          = true false nohup dirname whois bundle where
 scriptsrc_true    = $(SRC)/bin/true
 scriptsrc_false   = $(SRC)/cmd/false.sh
 scriptsrc_nohup   = $(SRC)/bin/nohup
 scriptsrc_dirname = $(SRC)/bin/dirname
 scriptsrc_whois   = $(SRC)/bin/whois
+scriptsrc_bundle  = $(SRC)/cmd/bundle.sh
+scriptsrc_where   = $(SRC)/cmd/where.sh
 
 # foreach/eval for $(V8DIRBIN)'s reason: a static pattern rule cannot expand a
 # per-name source path, and .SECONDEXPANSION is too large a blast radius.
