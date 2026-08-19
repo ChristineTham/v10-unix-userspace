@@ -239,6 +239,7 @@ dep 'spell hash.h'             src/cmd/spell/hash.h            $B/spell/hashlook
 dep 'spell huff.h'             src/cmd/spell/huff.h            $B/spell/hashlook.o
 dep 'pic pic.h'                src/cmd/pic/pic.h               $B/pic/main.o
 dep 'eqn e.h'                  src/cmd/eqn/e.h                 $B/eqn/main.o
+dep 'neqn e.h'                 src/cmd/neqn/e.h                $B/neqn/lex.o
 dep 'sh defs.h'                src/cmd/sh/defs.h               $B/sh/main.o
 dep 'troff tdef.h'             src/cmd/troff/tdef.h            $B/troff/n1.o
 dep 'nroff tdef.h'             src/cmd/troff/tdef.h            $B/nroff/n1.o
@@ -247,6 +248,14 @@ dep 'nroff tdef.h'             src/cmd/troff/tdef.h            $B/nroff/n1.o
 dep 'grammar -> pic tables'    src/cmd/pic/picy.y              $B/pic/y.tab.c
 dep 'lexer -> pic scanner'     src/cmd/pic/picl.l              $B/pic/lex.yy.c
 dep 'grammar -> eqn tables'    src/cmd/eqn/eqn.y               $B/eqn/y.tab.c
+dep 'grammar -> neqn tables'   src/cmd/neqn/e.y                $B/neqn/y.tab.c
+dep 'neqn tables -> e.def'     $B/neqn/y.tab.c                 $B/neqn/e.def
+# e.def IS y.tab.h under another name, #include'd by eight of neqn's files --
+# invisible to a header scanner AND to any *.c glob, which is the shape that
+# made lex's once.c go stale.  This is step 4 of the porting checklist stated
+# as an assertion rather than as a Makefile line nobody re-reads.
+dep 'neqn e.def -> object'     $B/neqn/e.def                   $B/neqn/lex.o
+dep 'neqn -> installed copy'   $B/neqn/neqn                    rootfs/usr/bin/neqn
 
 # --- the rootfs the driver actually links against ---------------------------
 # Staleness incident #4: `make libv8c` refreshed build/ but not the copy under

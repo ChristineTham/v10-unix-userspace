@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2742 tests across 17 suites** guard it.
+assembly. **2753 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **181** of the 286 V8 shipped, and the ones still missing mostly
+port installs **182** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -5911,6 +5911,58 @@ the character does not help. What works is putting the name in a variable,
 because the decision about what kind of line it is gets made before the
 variable is expanded. It is a small thing, but it is the first time in this
 port that a program could not be built because of what it was called.
+
+### The same program twice, from two different copies of its source
+
+`neqn` is the version of the equation formatter that sets its output for a
+line printer or terminal rather than a typesetter. It is the 182nd command,
+and it is interesting because of what it is *not*: not a second name for the
+typesetting one, and not the same program run with a flag.
+
+The archive ships both binaries, at different sizes, and it ships two source
+directories. Comparing them, no file is the same — all twenty-one shared files
+differ, and the two directories do not even agree about their own file names.
+What is in the tree is an older snapshot of the program alongside a newer one,
+and both were built and shipped. This project has met that before in a
+terminal-handling library kept in two places; the difference here is that both
+copies are meant to be built, because that is what Bell Labs did.
+
+The whole of the build difference is one definition passed to the compiler,
+which selects three alternatives in the source: how an integral's limits are
+positioned, which of two macro-defining keywords is the real one, and — the
+one you can see — how mathematical symbols are drawn. On a typesetter an
+approximation sign is a character in the font. On a terminal it is a tilde,
+then a backspace, then another tilde half a line down: the machine strikes the
+same position twice. The generated output differs the same way at every scale,
+absolute character cells against fractions of an em.
+
+That made the tests easy to get right and would have made them easy to get
+wrong. A missing definition of that kind does not fail to compile — it just
+selects the other alternative — so a `neqn` built without it would link, run,
+and quietly produce typesetter output from the program installed as the
+terminal one. Checking the flag on the command line would prove nothing about
+the binary. So every test reads the *output*, and each one asserts what both
+programs produce, so that neither a build stuck on one alternative nor a build
+stuck on the other can pass. Run through the terminal formatter, the fraction
+`a over b` comes out as the denominator half a line down, the numerator half a
+line up, and an underscore struck over the gap to make the bar.
+
+The one change the program needed was in a header, and it was found by a search
+this project wrote down after being bitten by it three times before — a
+declaration of the parser's value stack as a machine integer where the parser
+generator now makes it wide enough to hold an address. This is the first time
+that search has caught the fault *before* the program was built rather than
+after it crashed.
+
+There was a fourth declaration next to it that looked like the same fault and
+was not. It named a pointer that walks the value stack, which would have been
+exactly the same bug — except that the object it refers to does not exist. In
+the parser skeleton this project uses, that name is a local variable inside a
+function, and the declaration is a leftover from an older generator where it
+was global. Nothing in the program refers to it, so nothing is emitted for it.
+Widening it would have been a change nothing forced, and would have quietly
+implied the symbol was real, so it is left exactly as written with the
+measurement recorded beside it.
 
 ---
 

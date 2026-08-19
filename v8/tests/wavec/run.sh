@@ -85,6 +85,66 @@ else
 	fail=$((fail+4)); echo "FAIL eqn not built"
 fi
 
+# neqn -- eqn's nroff half, and a SEPARATE PROGRAM: V8 ships both binaries at
+# different sizes, and usr/src/cmd/neqn is an older snapshot of the same
+# sources.  src/cmd/neqn/PORTING.md.
+#
+# THE FLAG IS WHAT THESE CASES GUARD, AND IT CANNOT BE GUARDED ON THE COMMAND
+# LINE.  Upstream's build difference is `CFLAGS=-O -DNEQN', which selects arms
+# rather than failing to compile if it is missing -- the -DCM_N shape -- so a
+# neqn built without it would link, run, and quietly emit TROFF output from the
+# binary installed as the nroff one.  Every case below therefore reads the
+# OUTPUT, and each asserts neqn and eqn TOGETHER so that neither a program that
+# always took the nroff arm nor one that always took the troff arm can pass.
+NEQN=$ROOT/build/stage0/neqn/neqn
+if [ -x "$NEQN" ] && [ -x "$EQN" ]; then
+	printf '.EQ\na approx b\n.EN\n' > nq.in
+	"$NEQN" nq.in > nq.tr 2>nq.err
+	check 'neqn is silent on stderr' '' "$(cat nq.err)"
+	check 'neqn emits the .EQ block' '.EQ' "$(grep -m1 '^\.EQ' nq.tr)"
+
+	# `approx' is inside the -DNEQN arm of lookup.c's character table.  The
+	# nroff spelling is an OVERSTRIKE -- a literal backspace, 010 -- and the
+	# troff one is the special character \(ap.  Counted in octal through od
+	# rather than matched, because a backspace in a shell pattern is not
+	# portable.  Asserted as the PAIR, so the case measures the arm rather
+	# than the presence of a byte.
+	bs() { od -An -b < "$1" | tr -s ' ' '\n' | grep -c '^010$'; }
+	"$EQN" nq.in > eq2.tr 2>/dev/null
+	check 'approx overstrikes for neqn and not for eqn' '1 0' \
+	    "$(echo "$(bs nq.tr) $(bs eq2.tr)")"
+	check 'approx is a troff special for eqn and not for neqn' '0 1' \
+	    "$(echo "$(grep -c '(ap' nq.tr) $(grep -c '(ap' eq2.tr)")"
+
+	# THE NEXT TWO CASES GUARD A DIFFERENT THING FROM THE TWO ABOVE, measured:
+	# dropping -DNEQN fires the approx pair and leaves these GREEN, because
+	# absolute-versus-em spacing is inherent to neqn's own (older) sources
+	# rather than selected by the flag.  So the four split two and two -- the
+	# flag, and the program -- and a suite that only had one pair would think
+	# it had covered both.
+	#
+	# neqn reserves vertical space in ABSOLUTE units, because an nroff device
+	# has fixed character cells, and eqn does it in ems.
+	printf '.EQ\na over b\n.EN\n' > nq2.in
+	"$NEQN" nq2.in > nq2.tr 2>/dev/null
+	"$EQN"  nq2.in > eq3.tr 2>/dev/null
+	ne() { grep -o '\.ne [0-9.]*[um]' "$1" | tail -1; }
+	check 'neqn reserves space in units where eqn uses ems' '.ne 80u|.ne 2.3m' \
+	    "$(echo "$(ne nq2.tr)|$(ne eq3.tr)")"
+
+	# End to end: nroff renders `a over b' as the denominator on a half-line
+	# down (ESC 9), the numerator on a half-line up (ESC 7), and the fraction
+	# bar as an overstruck underscore.  Filtered to letters and the bar,
+	# because the motions are escape sequences whose digits survive a
+	# graphic-character filter and would be asserted by accident.  The pair
+	# again: eqn's em-based construction lays down extra bars on a device
+	# that has no ems.
+	check 'neqn and eqn set the fraction differently' 'ba_|_b_a_' \
+	    "$(echo "$("$NROFF" nq2.tr 2>/dev/null | tr -dc 'a-z_')|$("$NROFF" eq3.tr 2>/dev/null | tr -dc 'a-z_')")"
+else
+	fail=$((fail+6)); echo "FAIL neqn not built"
+fi
+
 # pic -- the first program needing BOTH generators, V8's yacc and V8's lex.
 PIC=$ROOT/build/stage0/pic/pic
 if [ -x "$PIC" ]; then

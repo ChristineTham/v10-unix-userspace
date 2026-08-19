@@ -301,12 +301,12 @@ P9_HOSTIO = $(ROOT)shim/p9/p9io_libc.c
 %.c: %.y
 %.c: %.l
 
-.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern v8fsd v8fsd-ubsan cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin srctree clean distclean
+.PHONY: install man grap wavec-install spell-install all stage0 test-deps test-jail test-selfhost v8bin v8make libv8kern v8fsd v8fsd-ubsan cpp ccom-pass1 ccom-vax v8ccom v8cc rootfs rootfs-libs libv8sys libv8c crt0 sh nroff troff tbl v8yacc v8lex pic spell refer eqn neqn devtables test test-cpp test-v8ccom test-v8cc test-v8sys test-freestanding test-libv8c test-wavea test-waveb test-sh test-wavec test-kmemu test-streams test-hooks test-mkfs mkfs imgbin srctree clean distclean
 all: stage0
 # libv8c belongs here.  Without it a plain `make` rebuilt the compiler but left
 # libv8c.a compiled by the PREVIOUS one, so a back-end fix looked like it had
 # not worked -- which cost a full debugging round on the indirect-call bug.
-stage0: cpp v8ccom v8cc libv8sys libv8kern v8fsd crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex srctree
+stage0: cpp v8ccom v8cc libv8sys libv8kern v8fsd crt0 rootfs libv8c rootfs-libs sh nroff troff tbl v8yacc v8lex pic spell refer eqn neqn v8make v8bin man wavec-install spell-install $(ROOTFS)/bin/[ $(ROOTFS)/bin/sh $(ROOTFS)/bin/make $(ROOTFS)/usr/bin/yacc $(ROOTFS)/usr/bin/lex srctree
 
 # A test target's prerequisites are the files its script actually opens.  Four
 # of these ran `rootfs/bin/cc` while depending only on rootfs-libs, and got the
@@ -3876,6 +3876,54 @@ $(BUILD)/eqn/%.o: $(EQNSRC)/%.c $(BUILD)/eqn/e.def $(V8CC_DEPS)
 	$(V8CCRUN) -I$(BUILD)/eqn -I$(EQNSRC) -c -o $@ $<
 $(EQN_OBJ): $(EQNSRC)/e.h
 
+# neqn -- eqn's nroff half, and it is a SEPARATE PROGRAM rather than a link or
+# a second invocation of one binary.  V8 ships both: usr/bin/eqn at 47104 bytes
+# and usr/bin/neqn at 31256, different inodes and not byte-identical, so this
+# is not the vi/ex or pcat/unpack shape.  usr/src/cmd/neqn is its own directory
+# holding an OLDER SNAPSHOT of the same program -- measured, all 21 shared
+# files DIFFER, and the two disagree about their own file names as well
+# (e.y against eqn.y, io.c against input.c plus main.c).  That is the
+# two-upstream-copies situation lib/libtermlib/termcap.c against
+# cmd/ex/termlib/termcap.c already put in this tree, with the difference that
+# here BOTH copies are built, because Bell Labs built both.
+#
+# The whole of the build difference is upstream's `CFLAGS=-O -DNEQN', which
+# selects three arms: integral.c gives up the integral sign, and lookup.c makes
+# `ndefine' a synonym for `define' and `tdefine' a no-op.  A missing -D here is
+# the -DCM_N shape -- it would compile and quietly produce troff output from a
+# program installed as the nroff one -- so tests/wavea asserts the difference
+# in the OUTPUT rather than the flag on the command line.
+NEQNSRC = $(SRC)/cmd/neqn
+NEQN_NAMES = diacrit eqnbox font fromto funny glob integral io lex lookup \
+             mark matrix move over paren pile shift size sqrt text
+NEQN_OBJ = $(patsubst %,$(BUILD)/neqn/%.o,$(NEQN_NAMES)) $(BUILD)/neqn/e.o
+
+neqn: $(BUILD)/neqn/neqn
+$(BUILD)/neqn/neqn: $(NEQN_OBJ) $(BUILD)/crt0.o $(BUILD)/libc/libv8c.a \
+                    $(BUILD)/v8sys/libv8stubs.a $(BUILD)/v8sys/libv8sys.a
+	$(HOSTCC) -nostdlib -e _v8start -o $@ $(BUILD)/crt0.o $(NEQN_OBJ) \
+	    $(BUILD)/libc/libv8c.a $(BUILD)/v8sys/libv8stubs.a \
+	    $(BUILD)/v8sys/libv8sys.a -lSystem
+	@echo "built $@"
+
+# The grammar is e.y here rather than eqn.y, and e.def is y.tab.h under a name
+# ending in .c's neighbour -- an #include'd NON-HEADER in eight files, so it is
+# invisible to a header scanner and to any *.c glob.  Declared explicitly at the
+# bottom of this block, which is step 4 of the porting checklist.
+$(BUILD)/neqn/y.tab.c: $(NEQNSRC)/e.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/neqn
+	cd $(BUILD)/neqn && V8ROOT=$(ROOTFS) $(YACC) -d $(NEQNSRC)/e.y
+
+$(BUILD)/neqn/e.def: $(BUILD)/neqn/y.tab.c
+	@cp $(BUILD)/neqn/y.tab.h $@
+
+$(BUILD)/neqn/e.o: $(BUILD)/neqn/y.tab.c $(V8CC_DEPS)
+	$(V8CCRUN) -DNEQN -I$(BUILD)/neqn -I$(NEQNSRC) -c -o $@ $(BUILD)/neqn/y.tab.c
+$(BUILD)/neqn/%.o: $(NEQNSRC)/%.c $(BUILD)/neqn/e.def $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/neqn
+	$(V8CCRUN) -DNEQN -I$(BUILD)/neqn -I$(NEQNSRC) -c -o $@ $<
+$(NEQN_OBJ): $(NEQNSRC)/e.h
+
 # ---------------------------------------------------------------------------
 # rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.
 # ---------------------------------------------------------------------------
@@ -4204,7 +4252,7 @@ $(ROOTFS)/usr/man/.stamp: $(MANPAGESRC)/man1/cat.1
 # never put where the V8 world could reach them -- the same gap that hid yacc
 # and lex until a program built from its own makefile asked for one.  man is
 # what surfaced it here: man.sh runs `nroff`, and nroff was in build/ only.
-WAVEC_INSTALL = nroff troff eqn tbl pic refer grap
+WAVEC_INSTALL = nroff troff eqn neqn tbl pic refer grap
 WAVEC_TARGETS = $(patsubst %,$(ROOTFS)/usr/bin/%,$(WAVEC_INSTALL))
 
 wavec-install: $(WAVEC_TARGETS) $(ROOTFS)/usr/lib/tmac/.stamp \
@@ -4228,6 +4276,8 @@ $(ROOTFS)/usr/bin/nroff: $(BUILD)/nroff/nroff
 $(ROOTFS)/usr/bin/troff: $(BUILD)/troff/troff
 	@mkdir -p $(@D) && cp $< $@
 $(ROOTFS)/usr/bin/eqn: $(BUILD)/eqn/eqn
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/neqn: $(BUILD)/neqn/neqn
 	@mkdir -p $(@D) && cp $< $@
 $(ROOTFS)/usr/bin/tbl: $(BUILD)/tbl/tbl
 	@mkdir -p $(@D) && cp $< $@

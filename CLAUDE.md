@@ -3659,6 +3659,61 @@ besides widening the candidate set: write the answer down per directory.**
   rate holds; `--` before the command, and `[ "$st" -gt 128 ]` for the signal.
 
 
+**AND `neqn` IS IN -- 181 -> 182 -- WHICH IS THE SAME PROGRAM TWICE FROM TWO
+DIFFERENT COPIES OF ITS SOURCE, AND THE FIRST TIME A DOCUMENTED SWEEP CAUGHT
+ITS CLASS BEFORE THE PROGRAM WAS BUILT.** V8 ships `eqn` at 47104 bytes and
+`neqn` at 31256, different inodes and not byte-identical, so this is neither
+the `vi`/`ex` shape nor the `pcat`/`unpack` one. `usr/src/cmd/neqn` is an
+**older snapshot**: measured, **zero** of the 21 shared files are identical,
+and the two directories do not agree about their own file names (`e.y` against
+`eqn.y`, `io.c` against `input.c` plus `main.c`). That is the two-upstream-
+copies situation `libtermlib/termcap.c` against `ex/termlib/termcap.c` already
+put in the tree, with the difference that **both are built, because Bell Labs
+built both**. `src/cmd/neqn/PORTING.md`. Five things generalise:
+
+- **THE `yylval` SWEEP FOUND ITS FOURTH INSTANCE AHEAD OF THE SYMPTOM**, which
+  is the first time it has done so. Every earlier one (awk, ratfor, egrep) was
+  found by a crash, a build failure or a wrong answer, and the sweep was
+  widened afterwards. Run as step 2 of the porting checklist -- before
+  building, as the checklist says -- it named `e.h:30,32` in one command.
+  **A sweep is only worth widening if it is then RUN at the point the checklist
+  puts it**, and this is the evidence that it is.
+- **AND THE CLASS IS LOUD IN ONE TRANSLATION UNIT AND SILENT IN TWENTY**, which
+  no previous instance had both of. `e.y` includes `e.h`, so yacc writes the
+  DEFINITION into the same file as the `extern` and v8cc refuses -- `egrep`'s
+  shape, the change forced by the BUILD. But **20 of the 21 objects include
+  `e.h` and never see that definition**, so there the `extern int` compiles
+  clean and reads four bytes of an eight-byte value. Measured by reverting.
+  The corollary is that the loud half is the guard: no test is aimed at this
+  change, because `make` failing is stronger than a case.
+- **A DECLARATION CAN LOOK EXACTLY LIKE THE CLASS AND NOT BE, BECAUSE THE
+  OBJECT IT NAMES DOES NOT EXIST.** `e.h` also declares `extern int *yypv` --
+  a pointer that walks the value stack, which would stride four bytes over
+  eight-byte cells, i.e. the identical bug one line down. In the yaccpar this
+  port uses `yypv` is `register YYSTYPE *yypv` INSIDE `yyparse()`, a local, and
+  the extern is left over from an older skeleton. Measured: the only occurrence
+  of the name in all of `src/cmd/neqn` is that line. Left `int *` -- widening it
+  is not forced by the target, and would quietly suggest the symbol is real.
+  **Before widening the third member of a group, grep for its call sites**; two
+  of these three are live and the third is furniture.
+- **`-DNEQN` IS THE `-DCM_N` SHAPE, SO THE GUARD READS THE OUTPUT AND NEVER THE
+  COMMAND LINE.** A missing `-D` selects an arm rather than failing to compile,
+  so a neqn built without it links, runs, and quietly emits **troff** output
+  from the binary installed as the nroff one. The observable is `lookup.c`'s
+  character table: `approx` is `~\b\d~\u` -- a literal BACKSPACE, an nroff
+  overstrike -- with the flag, and `\v'-.2m'\z\(ap...` without it. Asserted as
+  a PAIR against `eqn` in both directions, so neither a program stuck on the
+  nroff arm nor one stuck on the troff arm can pass.
+- **AND MUTATION SPLIT THE FOUR CASES TWO AND TWO, WHICH READING THEM WOULD
+  NOT HAVE.** Dropping `-DNEQN` fires exactly the two `approx` cases
+  (`want [1 0] got [0 0]`, `want [0 1] got [1 1]`) and leaves the
+  absolute-versus-em ones GREEN -- because that spacing is inherent to neqn's
+  own older sources rather than selected by the flag. So two cases guard the
+  FLAG and two guard the PROGRAM, and a suite with only one pair would have
+  believed it covered both. The comment beside them said the wrong thing until
+  the mutation was run, which is the standing reason to run one.
+
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never

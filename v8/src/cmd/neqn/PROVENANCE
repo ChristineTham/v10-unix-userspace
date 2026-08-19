@@ -1,0 +1,30 @@
+# Provenance for v8/src/cmd/neqn
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+4722f6b4f2d1c68ec70ff9622c1c5c6a917f5776  v8/usr/src/cmd/neqn/e.h
+2aea8da378ac8f01a549fb5c90d6a27b7fd9cdc8  v8/usr/src/cmd/neqn/eqnbox.c
+068cb722f94740af41384f862333c134dac753ae  v8/usr/src/cmd/neqn/shift.c
+aa6ea9279b47ee64ba0490182ba4452344ccfbe2  v8/usr/src/cmd/neqn/lookup.c
+c2fca931ef06fff3d90ef2a312909277bb609041  v8/usr/src/cmd/neqn/pile.c
+541d31dd60e1015283b09c2ceaae7045011f7a1e  v8/usr/src/cmd/neqn/io.c
+19860a2307f1f1d7328aa0aed98089528a360758  v8/usr/src/cmd/neqn/lex.c
+d792d1e70d5df24f5160f72f46e21d1d97f1e36f  v8/usr/src/cmd/neqn/fromto.c
+c3025da848d83cddb79efd5ebf222e9f413e5fdf  v8/usr/src/cmd/neqn/makefile
+2f3076cce4bf6dcb3fd91611f4c84be084f3e32a  v8/usr/src/cmd/neqn/move.c
+124725070974450969cff9e0e88e46e10c528519  v8/usr/src/cmd/neqn/integral.c
+58c91bb252c72477b96a7762e0d0df657612db78  v8/usr/src/cmd/neqn/paren.c
+e4e026e6be42a028be850dd7dd5270e6092c40bf  v8/usr/src/cmd/neqn/font.c
+834a33f4f6cd930a9e9a048e9b106749132d25fc  v8/usr/src/cmd/neqn/glob.c
+ea20beae7e99204ea9883898f129a53ef17832ce  v8/usr/src/cmd/neqn/sqrt.c
+f294e59738e98cb38fdf8bb3d44bb1f455607975  v8/usr/src/cmd/neqn/e.y
+1b93818e89c54a2aae6e79bfef759700b3b992e5  v8/usr/src/cmd/neqn/funny.c
+8f99fa680454c4e10de7ccb7c346e5a3f2c2f181  v8/usr/src/cmd/neqn/size.c
+6e03156bfa42822423f06e70d9ad20aa012a9306  v8/usr/src/cmd/neqn/mark.c
+0686dcac4556eb0eb24ff3b3908e0a84560c5989  v8/usr/src/cmd/neqn/text.c
+730f141eb1c439c72a9767ecca158f8468f17b72  v8/usr/src/cmd/neqn/e.def
+d38d24db38a2d9b736636b5761cd6c2572fffc4c  v8/usr/src/cmd/neqn/diacrit.c
+4625e364f706275b5218191cc34fb8f4c640ee4e  v8/usr/src/cmd/neqn/over.c
+209e37be711ebcfb4a1a304aea00e96a0633cfe9  v8/usr/src/cmd/neqn/matrix.c
