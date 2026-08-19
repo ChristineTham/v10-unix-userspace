@@ -3441,6 +3441,75 @@ saturated machine is not a measurement**, which is this file's own rule about a
 run you killed, arriving without anyone killing anything.
 
 
+**AND `bc` IS IN -- THE SECOND BARE `*.y`, AND THE FIRST PROGRAM HERE WHOSE
+CORRECTNESS DEPENDS ON A SECOND V8 BINARY.** bc does not evaluate: it compiles
+to `dc(1)`'s language, forks, and execs the interpreter down a pipe -- and it
+tries `/bin/dc` BEFORE `/usr/bin/dc`, so the first exec is a union MISS and the
+second is the hit, which is the distinction `v8s_execve` draws deliberately.
+286 shipped, **176** installed. `src/cmd/bc.PORTING.md`. Five things
+generalise:
+
+- **THE WHOLE PORT IS ONE TYPE, AND IT IS `struct(1)`'s VERDICT A THIRD TIME.**
+  `bundle()` fills an arena of compiled dc fragments and every cell holds a
+  POINTER -- a `char *` literal, or a pointer to a nested bundle, which is how
+  `routput()` tells them apart by asking whether the value lies inside the
+  arena. Upstream spells the cell `int` because a VAX pointer was four bytes.
+  **Widen the TYPE, not the uses**: eight declarations cascade from one line and
+  nothing else in the file changes.
+- **AND THE ARGUMENT WALK IS THE SAME FACT, WHICH IS WHY ONE CHANGE FIXED
+  BOTH.** `p = &a; i = *p++;` strides forward from the first K&R parameter --
+  exact on a VAX and wrong here because v8cc spills into EIGHT-byte slots. This
+  is the FORWARD form, which libc already walks with an eight-byte type
+  (`doprnt.c`'s `NEXTLONG`); this file records the INDEXED form as a singleton
+  in `mkfs`'s `gmode()` and gives a sweep for it, and **that sweep cannot see
+  this one**, because the walk is `*p++` rather than a subscript.
+- **A HALF-STEP WALK PRODUCES SILENCE, NOT A CRASH.** Measured with `bc -c`:
+  every input compiled to the EMPTY dc program, because the first cell read was
+  the HIGH half of the count's slot -- zero -- and `while (*p != 0)` stopped at
+  once. Exit 0, no output. That reads as a program that does not work rather
+  than as memory corruption, which is the opposite of where anyone looks.
+- **AND THE MUTATION THAT DID NOT FIRE NAMED WHICH HALF OF MY OWN FIX WAS
+  LOAD-BEARING.** Reverting the ARENA to `int b_space[]` changed nothing -- 458
+  cases green, object hash moved, so it was compiled. With the cursor and the
+  walk still `long *` the array is only STORAGE: every access goes through
+  8-byte pointers and the range test compares byte addresses either way.
+  Reverting the CURSOR or the WALK POINTER fires all eight behavioural cases.
+  A too-weak mutation is a measurement of which declaration matters.
+- **AND `git diff` READ CLEAN ON THE FILE I HAD JUST EDITED**, because a
+  freshly imported file is UNTRACKED -- this file's own recorded trap, walked
+  into within the hour of quoting it. Diff against the pristine backup, and
+  confirm that backup hashes to the recorded PROVENANCE blob.
+
+**AND bc IMMEDIATELY FOUND A DEFECT IN dc, WHICH HAS BEEN INSTALLED SINCE AN
+EARLY WAVE AND HAS NO PORTING.md.** `dc` **silently consumes the rest of its
+input** after reading any number with an ODD count of fractional digits.
+`printf '4 p\n.4 p\n5 p\n' | dc` prints only `4`; exit 0, empty stderr. The
+rule is parity -- `.44`, `.4444`, `1.00`, `4.34` exact; `.4`, `.444`, `1.0`,
+`0.5` nothing -- because V7 dc stores numbers **base 100**, two digits to a
+byte, so an odd count is a half-used byte, and `add0()`'s only odd arm
+(`if(ct == 1) t = mult(tenptr,q)`) is the whole difference. Task #25 carries
+what is ruled out by measurement. Four things:
+
+- **IT IS NOT UPSTREAM'S, WHICH MAKES IT A DIFFERENT CLASS FROM cb AND
+  calendar4.** `dc.c` and `dc.h` are PRISTINE against PROVENANCE, so it worked
+  on a VAX and the fault is this port's. So there is **no case asserting it
+  stays** -- the frozen-bug treatment is for defects a VAX shared, and applying
+  it here would enshrine a regression.
+- **THREE INTEGER CASES CANNOT TEST A CALCULATOR.** dc's whole suite was
+  `2 3+`, `3 4*`, `6 7*`. The half that distinguishes dc from a pocket
+  calculator had no case at all, which is why this survived every run.
+- **CHECK THE EMITTED INTERMEDIATE, NOT THE FINAL ANSWER.** `bc -c` shows bc
+  compiling `.434*2` to exactly the right dc program while dc answers nothing --
+  one command separating a front end from a back end, the same discipline as
+  reading `cc -S` before theorising.
+- **AND THE EXPERIMENT THAT WOULD SETTLE IT IS BLOCKED BY 1985 ITSELF.**
+  Building the same source under clang would say whether the bug follows the
+  SOURCE or v8cc, and `dc.h`'s `int log10;`, `int (*signal())();` and a K&R
+  handler all collide with modern headers. Recorded as a step of its own rather
+  than attempted half-way -- "v8cc miscompiles this" and "the source is
+  LP64-unsafe here" are very different findings.
+
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never

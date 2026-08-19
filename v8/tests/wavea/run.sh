@@ -1863,6 +1863,40 @@ check 'egrep reads a newline in a -f pattern as an alternation' 'yes no' \
        b=$(printf 'xxthreexx\n' | "$egrepbin" -f eg.pat >/dev/null 2>&1 && echo yes || echo no)
        echo "$a $b")"
 
+# bc: egrep's shape again -- a bare *.y, /usr/bin by fall-through -- and the
+# FIRST PROGRAM HERE WHOSE CORRECTNESS DEPENDS ON A SECOND V8 BINARY.  bc does
+# not evaluate: it compiles to dc(1)'s language, forks, and execs the
+# interpreter down a pipe.  So a passing case means bc, dc, fork, pipe and the
+# jail's exec fall-through all agree -- bc tries /bin/dc first, which this
+# world does not have, and /usr/bin/dc second.
+bcbin=$(v8which bc)
+bcrun() { _in=$1; shift
+          printf '%b' "$_in" | perl -e 'alarm 20; exec @ARGV' "$bcbin" "$@" 2>&1 | tr -d '\n'; }
+check 'bc installs to /usr/bin' 'yes' "$([ -x "$V8ROOT/usr/bin/bc" ] && echo yes)"
+check 'bc adds'                  '5'  "$(bcrun '2+3\n')"
+check 'bc keeps scale'      '3.3333'  "$(bcrun 'scale=4\n10/3\n')"
+check 'bc has variables'        '42'  "$(bcrun 'x=7\nx*6\n')"
+# THE BIGNUM CASE IS THE ONE THAT PROVES dc IS DOING THE WORK: 2^64 does not fit
+# in any integer either program has, so a right answer here is arbitrary
+# precision arriving through the pipe.
+check 'bc is arbitrary precision' '18446744073709551616' "$(bcrun '2^64\n')"
+check 'bc changes output base'   'FF'  "$(bcrun 'obase=16\n255\n')"
+# A FUNCTION, WHICH IS WHAT bundle() EXISTS FOR.  The whole port of bc is one
+# type widening in that arena -- every cell holds a pointer and a VAX pointer
+# was four bytes -- and before it bc emitted the EMPTY dc program for every
+# input, exit 0.  A body on its own lines is V7's dialect; the one-line form is
+# GNU's extension and is not a defect here.
+check 'bc defines and calls a function' '81' \
+    "$(bcrun 'define f(n) {\n\treturn(n*n)\n}\nf(9)\n')"
+check 'bc runs a for loop'      '123'  "$(bcrun 'for(i=1;i<=3;i++) i\n')"
+# ...and the math library, which is DATA: bc -l parses /usr/lib/lib.b as bc
+# source, so this asserts the install as well as the arithmetic.  a() is used
+# rather than e() or s() deliberately -- see src/cmd/bc.PORTING.md and task #25,
+# where dc loses any number with an odd count of fraction digits, which bounds
+# which of lib.b's functions can be asked.  lib.b opens `scale = 20', even.
+check 'bc -l loads the math library' '3.14159265358979323844' \
+    "$(bcrun 'a(1)*4\n' -l)"
+
 # m4: define and expand, then a macro with an argument, which is the only case
 # that proves the argument stack rather than the symbol table.
 m4bin=$(v8which m4)

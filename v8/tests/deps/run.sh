@@ -395,6 +395,13 @@ dep 'expr regexp.h -> object'  src/cmd/expr/regexp.h          $B/expr/expr.o
 # stale y.tab.c.
 dep 'egrep grammar -> tables'  src/cmd/egrep.y                $B/egrep/y.tab.c
 dep 'egrep tables -> object'   $B/egrep/y.tab.c               $B/egrep/egrep.o
+# bc is egrep's shape again -- a bare .y, two edges, no third file to name.
+# The third case is NOT a make edge: lib.b is DATA (bc's -l arm parses it as bc
+# source, nothing compiles it), so what has to hold is that editing the source
+# copy reaches the installed one.
+dep 'bc grammar -> tables'     src/cmd/bc.y                   $B/bc/y.tab.c
+dep 'bc tables -> object'      $B/bc/y.tab.c                  $B/bc/bc.o
+dep 'bc math library installs' src/lib/lib.b                  rootfs/usr/lib/lib.b
 # m4 is grap's shape without a lexer.  Upstream says `m4.o m4ext.o m4macs.o :
 # m4.h' and deliberately LEAVES m4y.o OUT; m4y.y does not include the header,
 # so the nodep is what keeps this tree from widening a claim upstream did not

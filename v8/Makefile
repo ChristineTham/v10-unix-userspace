@@ -1960,6 +1960,38 @@ $(BINDIR)/egrep: $(BUILD)/egrep/egrep.o $(V8DEPS)
 	@mkdir -p $(@D)
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/egrep/egrep.o $(V8LIBS)
 
+# bc -- egrep's shape again (a bare *.y in cmd/, built by Admin/Mk's `*.y' arm,
+# and in none of binfiles/etcfiles/libfiles so Admin/dest answers /usr/bin by
+# FALL-THROUGH; the shipped tree agrees at v8/usr/bin/bc).  No -ly: liby would
+# supply main() and yyerror() and bc.y defines both itself.
+#
+# IT IS A FRONT END FOR dc(1), WHICH THIS PORT ALREADY INSTALLS.  bc compiles
+# its input to dc's reverse-Polish language and execs the interpreter -- and it
+# tries /bin/dc BEFORE /usr/bin/dc, so on this world the first exec is a union
+# MISS and the second is the hit.  That is the distinction v8s_execve draws
+# deliberately: a name the rootfs half does not have is a quiet miss, not an
+# escape.
+BCSRC = $(SRC)/cmd
+$(BUILD)/bc/y.tab.c: $(BCSRC)/bc.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/bc
+	cd $(BUILD)/bc && V8ROOT=$(ROOTFS) $(YACC) $(BCSRC)/bc.y
+$(BUILD)/bc/bc.o: $(BUILD)/bc/y.tab.c $(V8CC_DEPS)
+	@$(V8CCRUN) -I$(BUILD)/bc -c -o $@ $(BUILD)/bc/y.tab.c
+$(BINDIR)/bc: $(BUILD)/bc/bc.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/bc/bc.o $(V8LIBS)
+
+# ...and lib.b beside it, which is DATA in the /etc/termcap sense: bc's -l arm
+# rewrites argv[1] to "/usr/lib/lib.b" and parses it as bc source, so nothing
+# compiles it and the shipped artefact IS the source.  Measured without it:
+# `bc -l' answers `cannot open input file on line 1'.  It is installed rather
+# than deferred because bc(1) is its consumer and a documented option of an
+# installed program was failing -- which is the opposite of the unconsumed-
+# component rule, not an instance of it.
+$(ROOTFS)/usr/lib/lib.b: $(SRC)/lib/lib.b
+	@mkdir -p $(@D)
+	@cp $< $@
+
 M4SRC = $(SRC)/cmd/m4
 M4_NAMES = m4 m4ext m4macs
 M4_OBJ = $(patsubst %,$(BUILD)/m4/%.o,$(M4_NAMES)) $(BUILD)/m4/m4y.o
@@ -3087,13 +3119,14 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
               $(ROOTFS)/usr/lib/libl.a
 
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
-                   $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/egrep \
+                   $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/egrep $(BINDIR)/bc \
+                   $(ROOTFS)/usr/lib/lib.b \
                    $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
                    $(F77LIB_BUILT) $(F77_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
-                   $(EX_INSTALL) $(call v8install,awk expr egrep m4) \
+                   $(EX_INSTALL) $(call v8install,awk expr egrep bc m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
                    $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \

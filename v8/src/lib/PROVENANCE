@@ -1,0 +1,7 @@
+# Provenance for v8/src/lib
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+2bd27c6b7cb2ff1fb4bec6148458d6d3294f2fae  v8/usr/lib/lib.b

@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2707 tests across 17 suites** guard it.
+assembly. **2719 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **175** of the 286 V8 shipped, and the ones still missing mostly
+port installs **176** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -5747,6 +5747,68 @@ machine with one set of habits, and it took a build server with different ones
 — and then, on the same day, an unrelated program eating the machine alive —
 to show that two numbers this project had been treating as properties of the
 work were properties of the room it was sitting in.
+
+### A calculator, and the program underneath it
+
+`bc` is the calculator language, and it is worth knowing that it does not
+calculate. It reads its input, compiles it into the reverse-Polish language of
+`dc`, and hands the result down a pipe to `dc` to execute. So porting it was
+the first time this project needed a second one of its own programs to already
+be right.
+
+The whole port is one word. `bc` builds its compiled output in an arena, and
+every slot in that arena holds a pointer — either to a piece of text it is
+going to emit, or to another run of slots. On the machine it was written for a
+pointer took four bytes and so did the integer type, so the arena was declared
+as integers and nobody had to think about it. Here a pointer takes eight. The
+arena had to be declared in a type that is one machine word wide, and the eight
+declarations that describe it followed from that one.
+
+The same change fixed a second thing that looks unrelated and is not. `bc`'s
+arena-filling routine takes a variable number of arguments and walks them by
+taking the address of the first and stepping forward. How far to step is
+exactly the width in question, so a single declaration decides both whether
+each slot can hold a whole pointer and whether the walk lands on the next
+argument or halfway into the current one.
+
+Before the change, every input produced an empty program: the walk's first step
+landed on the unused half of the first argument, read zero, and stopped. `bc`
+printed nothing at all and exited successfully. That is worth noting as a
+symptom — a pointer walk that goes wrong by half a step tends to produce
+silence rather than a crash, which reads like a program that simply does not
+work rather than like a memory fault.
+
+Afterwards it computes, including two-to-the-sixty-fourth to the last digit,
+which is the answer that proves the arithmetic really is happening in the
+second program at the far end of the pipe.
+
+### ...and the calculator found a fault in the program underneath it
+
+`bc` also arrived carrying a small library of mathematical functions written in
+its own language, which the project had not installed. Installing it made
+arctangent work — it produces π to twenty places, digit for digit what the host
+system produces — and made exponential, logarithm and sine produce nothing at
+all.
+
+That turned out not to be `bc`'s doing. `dc`, which this project installed a
+long time ago and which is an exact copy of the original, silently discards the
+rest of whatever it is reading as soon as it meets a number with an odd count
+of digits after the decimal point. Two digits are fine; one is not. Three are
+not; four are. The reason is that it stores numbers two decimal digits to a
+byte, so an odd count leaves a half-used byte, and the path that handles that
+case is the one at fault.
+
+The tests `dc` already had could not have found it. There were three, and all
+three were whole numbers — a calculator whose arithmetic was, in the part that
+distinguishes it from a pocket calculator, untested.
+
+What makes this one uncomfortable is that the copy is exact. The program is
+byte-for-byte what was shipped, it worked for years on the machine it was
+written for, and something about moving it to this one broke it. That is a
+different kind of finding from the ones this project usually records, where the
+original is known to have had the same fault. It is written down in full, with
+everything already ruled out by measurement, and it is a fault to fix rather
+than a curiosity to preserve.
 
 ---
 
