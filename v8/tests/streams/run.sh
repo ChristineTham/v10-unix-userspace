@@ -3532,6 +3532,15 @@ trap 'kill $CDPID 2>/dev/null; rm -rf "$TMP" "$CDTMP"' EXIT
 if [ -z "$CDTMP" ] || [ ! -d "$CDTMP" ]; then
 	bad "5i: no /tmp directory for a short socket path"
 elif [ ${#CDTMP} -ge 90 ]; then
+	# DELIBERATELY NOT COUNTED, and it is the one skip in the tree that is
+	# not.  kmemu's seven go through a `skip N' helper so the case total is
+	# the port's rather than the host's; this one cannot fire -- the mktemp
+	# template above is LITERAL, so the path is 16 characters on every host
+	# and 90 is unreachable, measured.  Wiring it would need a hand-counted
+	# N for the whole 5i section that nothing could ever check, which is the
+	# vacuous case this suite keeps finding by accident.  Kept because a
+	# short sun_path is worth stating, with the comment saying which of the
+	# two it is -- v8_bufend's verdict, reached again.
 	echo "  (5i not exercised: /tmp path $CDTMP is too long for sun_path)"
 	rm -rf "$CDTMP"
 elif ! "$MKFS" "$CDTMP/img" 2000 >/dev/null 2>&1; then

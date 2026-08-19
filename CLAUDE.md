@@ -3342,6 +3342,105 @@ fourth is the one worth carrying furthest:
   or fails the build.
 
 
+**AND ITS FIRST OUTING WAS TO GO RED IN CI, BECAUSE THE NUMBER IT GUARDS WAS A
+PROPERTY OF THE MACHINE.** Every suite 0 failed and the runner counted **2702**
+against this desk's **2705**. Nothing was broken: `kmemu` has seven branches
+that print `(not exercised: ...)` and run NO case, so a run's total is a fact
+about the host -- the runner skipped five, this Mac two. The rule this file
+states for a *test* (**assert a relation the port controls**) had never been
+applied to the *count of tests*, and the prose it replaced had absorbed exactly
+this in a parenthetical -- "2701 cases, 2700 on a host whose `$TMPDIR` holds
+under 2 or over 65535 entries". **A hard equality cannot carry a parenthetical.**
+Six things generalise:
+
+- **A CASE THAT COULD NOT RUN IS STILL A CASE THE PORT HAS**, and that one
+  sentence is the whole fix. `skip N "msg"` counts the cases the branch stood in
+  for, the summary line prints `N passed, M failed, K not exercised`, and
+  `runsuite.sh` records **pass + K**. The exercised count stays the host's and
+  the total becomes the port's, which is the distinction the rule was always
+  about. Do NOT make the else-branch call `ok`: that is the vacuous pass this
+  tree finds by accident about once a step, and the "not exercised" print exists
+  precisely because a check that silently matched nothing reads as one that
+  passed.
+- **THE COUNT IS AN ARGUMENT BECAUSE A BRANCH DOES NOT GUARD ONE CASE.** The
+  over-long-mount-point block runs **two**, and the nice chain has two skip
+  branches either side of a single `ok`, so it is worth 1 whichever way it goes.
+  Mutation-verified separately from the mechanism: `skip 2` -> `skip 1` reports
+  `the run was 2706`, which is a different measurement from dropping the field
+  entirely (2705).
+- **AND THE MUTATION THAT PROVES THE DESIGN IS THE ONE THAT FORCES A SKIP.**
+  Pushed into the undecidable band, `kmemu` reports **147 passed + 4 not
+  exercised** where it had reported 149 + 2 -- and 151 either way. **The total
+  is invariant across which arm ran**, which is the property, and no
+  value-checking case can see it.
+- **THE EIGHTH SKIP IN THE TREE IS DELIBERATELY NOT COUNTED**, and saying so is
+  the point. `tests/streams`' 5i branch fires when the socket directory is too
+  long for `sun_path`; the `mktemp` template above it is LITERAL, so the path is
+  **16 characters on every host** against a threshold of 90, measured. Wiring it
+  would need a hand-counted N for a whole section that nothing could ever check.
+  `v8_bufend`'s verdict reached a second time: keep the arm, correct the comment
+  to say which of the two it is, write no case.
+
+**AND THE SAME RUN FOUND A LIMIT NOTHING HAD EVER REACHED, BECAUSE AN UNRELATED
+PROGRAM ATE THE MACHINE.** `procfs.c:68` is `#define PR_NPROC 1024` and its note
+says 1024 "covers this Mac comfortably (about 620 processes as measured)". A
+booted iOS Simulator runtime took the host to **1217**, the table saturated, and
+two cases comparing `/proc`'s count against `ps ax` went red -- `host 1217,
+/proc 1024`.
+
+- **THE PORT WAS RIGHT AND THE TEST WAS DESCRIBING THE HOST.** V8's own `NPROC`
+  was a fixed table too, and `procfs.c:132-133` **reports** the excess on stderr
+  rather than dropping it silently, which its note argues for at length. So
+  saturation is the correct answer above the table and the cases simply had no
+  arm for it. Raising the table is the wrong fix twice over: `kern.maxproc` is
+  16000 here, which is neither faithful nor affordable in a fixed directory.
+- **ONE CASE, THREE ARMS, because which assertion is AVAILABLE depends on the
+  machine** -- track within 40 below the table, saturate above it, and `skip 1`
+  in the 80-wide band where neither is decidable. Each arm is a real assertion
+  and the case count is the same in all three.
+- **AND THE TABLE SIZE IS MEASURED, NOT TRANSCRIBED.** The probe already reports
+  the directory size and the record stride is 256, so the suite computes
+  `dirsize / 256 - 2`. A constant copied from `procfs.c` would agree with the
+  source **by construction** and could never catch the two disagreeing -- the
+  two-copies-of-one-list trap, which this tree has now paid for in errno tables,
+  in f77's opcode list and in efl's token numbers.
+
+**AND THE NON-FIRING MUTATION HAS A SEVENTH CAUSE, WHICH IS THAT THE HOST'S
+STATE CHANGED UNDER THE EXPERIMENT.** Removing the saturation arm fired
+**nothing**: between the baseline and the mutation the Simulator quiesced,
+processes fell 1199 -> 932, the bracket arm became available again and passed.
+None of the six recorded causes applied -- the code was live, the assertion is a
+relation, the consumer exists, it is not defensive, no clamp, and the input
+shape was right. **The baseline and the mutation were not run against the same
+machine.** The remedy is the same one this file prescribes for a baseline:
+*establish* the condition rather than observe it -- forcing the measured table
+size to 100 made the arm fire and compare (`want [100] got [937]`), and forcing
+it to the live process count produced exactly the two skips.
+
+- **AND A MUTATION THAT DID NOT APPLY READS AS ONE THAT DID NOT FIRE**, which is
+  the *did not compile* entry one step earlier in the pipeline. BSD `sed` refused
+  `\)` in the replacement, printed `RE error: parentheses not balanced`, and the
+  suite then ran against **unmutated** source and reported `149 passed, 0
+  failed`. It was caught only because sed is loud; a silently-unmatched pattern
+  would have read as a clean verification. **Assert the substitution happened** --
+  `assert s.count(old)==1` in the script that makes it, which is what the other
+  five mutations here used.
+
+**AND TASK #4's icheck INTERMITTENT IS DIAGNOSED, ON THE FIRST RECURRENCE AFTER
+BEING INSTRUMENTED.** The capture wired up the previous session printed
+`icheck exited 142 after 43s, 166 bytes, load 35.67 11.62 6.97`. 142 is
+128+14 -- SIGALRM, its own 40s deadline -- and **35.67 on 16 cores** is the
+number the old capture threw away. Measured minutes later: load **135.52**, the
+same Simulator runtime plus a vendor updater at 76%. Third event after the
+`mkfs` sighting at load 11.82 with `backupd` mid-backup and the two earlier ones
+correlated with a VAX emulator at 99.9%: **one mechanism, contention, and three
+unrelated host hogs.** The deadline stays 40s -- the headroom measurement is
+what says so -- because what was ever missing was not the size of the bound but
+the ability to tell an exhausted deadline from a hang. **A suite run on a
+saturated machine is not a measurement**, which is this file's own rule about a
+run you killed, arriving without anyone killing anything.
+
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never

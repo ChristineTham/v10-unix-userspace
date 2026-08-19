@@ -29,13 +29,63 @@ KMEMU=$ROOT/build/stage0/kmemu/libkmemu.a
 WHO=$V8ROOT/bin/who
 UTMP=$V8ROOT/etc/utmp
 
-pass=0 fail=0
+pass=0 fail=0 notex=0
 check() {
 	if [ "$2" = "$3" ]; then pass=$((pass+1))
 	else fail=$((fail+1)); echo "FAIL $1"; echo "  want [$2]"; echo "  got  [$3]"; fi
 }
 ok()  { pass=$((pass+1)); }
 bad() { fail=$((fail+1)); echo "FAIL $1"; shift; [ $# -gt 0 ] && echo "    $*"; }
+# A CASE THAT DID NOT RUN IS STILL A CASE THIS PORT HAS, and until this helper
+# existed nothing said so: every branch below printed its message and returned,
+# so the number of cases a run reported was a property of the MACHINE.  That
+# reached CI as a red build -- 2702 on a runner against 2705 here, every suite
+# 0 failed -- with the difference being five skips there against two here.  The
+# rule this tree already states for a test is "assert a relation the port
+# controls"; the total is one and the exercised count is not, so they are two
+# numbers and the summary line now prints both.
+#
+# The COUNT is an argument because a branch does not guard one case: the
+# over-long mount point block runs two.  Continuation lines are separate
+# arguments and are laid out exactly as the hand-written echoes were, so no
+# message changes.
+skip() {
+	n=$1; shift
+	notex=$((notex + n))
+	printf '  (not exercised: %s' "$1"; shift
+	for l in "$@"; do printf '\n   %s' "$l"; done
+	printf ')\n'
+}
+
+# THE PROCESS TABLE IS FIXED AND THE HOST'S PROCESS COUNT IS NOT, so which
+# assertion is AVAILABLE depends on the machine -- and for the life of this
+# suite only one of the three was written.  procfs.c's PR_NPROC is 1024, a
+# recorded CHOICE (V8's own NPROC came from a per-machine config file that is
+# not in the vendored tree), and its note says the excess is REPORTED rather
+# than dropped.  So above the table /proc saturates, on purpose; the bracket
+# below it cannot hold there, and a run on a busy machine failed two cases
+# that were describing the host rather than the port.  Measured when a booted
+# iOS Simulator runtime took this Mac to 1217 processes.
+#
+# $prnproc is MEASURED, not transcribed: the probe reports the directory size
+# and the record stride is 256, so the table size is (dirsize / 256 - 2).  A
+# constant copied from procfs.c would agree with the source by construction
+# and could never catch the two disagreeing.
+prnproc=
+prtrack() {
+	_w=$1 _h=$2 _v=$3 _sat=$4
+	if [ -z "$prnproc" ]; then
+		bad "$_w" "the table size was never measured"
+	elif [ "$_h" -gt $((prnproc + 40)) ]; then
+		check "$_w -- saturated at the table" "$_sat" "$_v"
+	elif [ "$_h" -lt $((prnproc - 40)) ]; then
+		awk -v h="$_h" -v v="$_v" 'BEGIN { exit !(v > h - 40 && v < h + 40) }' &&
+			ok || bad "$_w" "host $_h, v8 $_v"
+	else
+		skip 1 "this host has $_h processes against a $prnproc-slot table," \
+		       "so neither tracking nor saturation is decidable"
+	fi
+}
 
 for f in "$WHO" "$KMEMU"; do
 	[ -e "$f" ] || { echo "missing $f -- run make"; exit 1; }
@@ -185,7 +235,7 @@ if [ -n "$idlecol" ]; then
 	*) bad "who -i idle column is not HH:MM or 'old': [$idlecol]" ;;
 	esac
 else
-	echo "  (not exercised: no idle session on this host)"
+	skip 1 "no idle session on this host"
 fi
 
 # --- THE BOUNDARY: who takes the utmpx trio from libc and nothing else ---
@@ -459,7 +509,7 @@ if [ -n "$longmp" ]; then
 	grep -qF "$longmp" "$TMP/df.out" && ok ||
 		bad "df shows a mount point past the old 32-byte field" "missing: $longmp"
 else
-	echo "  (not exercised: no /dev-backed mount point here between 32 and $FSNMLG characters)"
+	skip 1 "no /dev-backed mount point here between 32 and $FSNMLG characters"
 fi
 
 # Past the NEW field: reported on stderr and absent from the listing, never
@@ -474,7 +524,7 @@ if [ -n "$toobig" ]; then
 	grep -qF "$toobig" "$TMP/df.out" &&
 		bad "...and left out of the listing" "still listed: $toobig" || ok
 else
-	echo "  (not exercised: every mount point here fits in $FSNMLG)"
+	skip 2 "every mount point here fits in $FSNMLG"
 fi
 
 # ---------------------------------------------------------------- load ---
@@ -822,18 +872,24 @@ if "$CC" -c -o "$TMP/pr.o" "$TMP/pr.c" > "$TMP/pr.log" 2>&1 &&
 	# which is proca.c:71's shape.  256 and not 16 because this port's DIRSIZ
 	# is 254 -- /proc must speak the same dialect as every other directory.
 	check "size is (nproc + 2) records"     "262656" "$(g dirsize)"
+	# ...and the same number read as the table size, for prtrack above.
+	prdir=$(g dirsize)
+	case $prdir in
+	''|*[!0-9]*) prnproc= ;;
+	*)           prnproc=$((prdir / 256 - 2)) ;;
+	esac
 	check "names are five zero-padded digits" "1" "$(g fivedigit)"
 	check "no live entry has inode 0"       "1" "$(g nonzero)"
 	check "a process can open its own entry" "1" "$(g self)"
 	check "pid 0 has no entry"              "1" "$(g bogus)"
 	check "a non-numeric name is refused"   "1" "$(g notdigits)"
 
-	# The count must track the host's.  Bracketed, not equal: processes come
-	# and go between the two samples, and a flaky test is worse than none.
+	# The count must track the host's -- or saturate, above the table.
+	# Bracketed rather than equal because processes come and go between the
+	# two samples, and a flaky test is worse than none.
 	hostn=$(ps ax | wc -l | tr -d ' ')
 	v8n=$(g live)
-	awk -v h="$hostn" -v v="$v8n" 'BEGIN { exit !(v > h - 40 && v < h + 40) }' &&
-		ok || bad "/proc lists roughly what ps ax does" "host $hostn, /proc $v8n"
+	prtrack "/proc lists roughly what ps ax does" "$hostn" "$v8n" "$prnproc"
 else bad "/proc probe build" "$(head -3 "$TMP/pr.log")"; fi
 
 # --- PIOCGETPR, and the struct it copies out -----------------------------
@@ -1026,8 +1082,8 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 		bad "could not read the nice values" "self=$mynice kid=$kidnice"
 	elif [ -z "$hostkid" ] || [ -z "$hostself" ] ||
 	     [ "$((hostkid - hostself))" -ne 10 ]; then
-		echo "  (not exercised: nice -n 10 gave the host no difference to"
-		echo "   report -- ps says self=$hostself kid=$hostkid)"
+		skip 1 "nice -n 10 gave the host no difference to" \
+		       "report -- ps says self=$hostself kid=$hostkid"
 	elif [ "$((kidnice - mynice))" -eq 10 ]; then
 		ok
 		# The MARKER needs a stronger precondition than the difference
@@ -1039,9 +1095,9 @@ if "$CC" -c -o "$TMP/gp.o" "$TMP/gp.c" > "$TMP/gp.log" 2>&1 &&
 		# is correct behaviour rather than a bug.
 		[ "$hostkid" -gt 0 ] && nicelive=yes
 	elif [ "$((kidnice - mynice))" -eq 0 ]; then
-		echo "  (not exercised: ps sees the renice and proc_pidinfo does"
-		echo "   not -- the host's two interfaces disagree, shim self=$mynice"
-		echo "   kid=$kidnice. src/cmd/ps/PORTING.md)"
+		skip 1 "ps sees the renice and proc_pidinfo does" \
+		       "not -- the host's two interfaces disagree, shim self=$mynice" \
+		       "kid=$kidnice. src/cmd/ps/PORTING.md"
 	else
 		bad "...nice tracks the host's, ten apart" \
 		    "ps self=$hostself kid=$hostkid; shim self=$mynice kid=$kidnice"
@@ -1696,10 +1752,14 @@ echo "$psout" | head -1 | grep -q 'pid tty   stat  time command' &&
 	ok || bad "ps -h prints V8's header" "$(echo "$psout" | head -1)"
 
 # Bracketed rather than equal: processes come and go between the two samples.
+# The saturated expectation carries a +1 that the /proc one does not, because
+# `ps hax' prints V8's header and the line above asserts it -- so both sides of
+# the bracket count one header each, and the table's 1024 entries come out as
+# 1025 lines.  Measured: host 1218, v8 1025.
 hostn=$(ps ax | wc -l | tr -d ' ')
 v8n=$(echo "$psout" | wc -l | tr -d ' ')
-awk -v h="$hostn" -v v="$v8n" 'BEGIN { exit !(v > h - 40 && v < h + 40) }' &&
-	ok || bad "ps ax lists what the host's ps ax does" "host $hostn, v8 $v8n"
+prtrack "ps ax lists what the host's ps ax does" "$hostn" "$v8n" \
+        "$((${prnproc:-0} + 1))"
 
 # EVERY PID POSITIVE.  p_pid was a short and macOS pids reach 99998, so before
 # src/include/sys/proc.h was patched every pid above 32767 printed NEGATIVE.
@@ -1717,7 +1777,7 @@ check "no process has a negative pid" "" "$neg"
 # which holds at every pid.
 himax=$(echo "$psout" | tail -n +2 | awk '{if ($1+0 > m) m = $1+0} END {print m+0}')
 if [ "$himax" -gt 32767 ]; then ok
-else echo "  (not exercised: highest pid here is $himax, inside 16 bits)"; fi
+else skip 1 "highest pid here is $himax, inside 16 bits"; fi
 
 # --- THE SAME CLASS FOR uid, AND ITS DETERMINISTIC GUARD IS A SWEEP ------
 #
@@ -1802,8 +1862,8 @@ kill "$nicekid" 2>/dev/null; wait "$nicekid" 2>/dev/null
 if [ "$nicelive" = yes ]; then
 	check "a renice'd process carries V8's N marker" "N" "$nmark"
 else
-	echo "  (not exercised: no process here ends up above the host's nice 0,"
-	echo "   so none can be above NZERO and none earns the marker)"
+	skip 1 "no process here ends up above the host's nice 0," \
+	       "so none can be above NZERO and none earns the marker"
 fi
 
 # The time column comes from the u-area, which is the half PIOCGETPR does not
@@ -1892,5 +1952,5 @@ else
 	    "$(comm -23 "$TMP/pids.stable" "$TMP/pids.t" | tr '\n' ' ' | sed 's/ *$//')"
 fi
 
-echo "kmemu: $pass passed, $fail failed"
+echo "kmemu: $pass passed, $fail failed, $notex not exercised"
 [ "$fail" -eq 0 ]

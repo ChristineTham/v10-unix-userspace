@@ -51,7 +51,22 @@ status=$(cat "$st")
 # The summary line every suite prints as its last act.  Anchored on the name so
 # a suite cannot be credited with another's count, and `tail -1' because a suite
 # may quote the shape in its own diagnostics.
-sum=$(sed -n "s/^$name: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed\$/\1 \2/p" "$out" | tail -1)
+#
+# THE THIRD FIELD IS WHAT MAKES THE RECORDED NUMBER THE PORT'S RATHER THAN THE
+# HOST'S.  A suite whose coverage depends on the machine -- kmemu asks whether
+# this host has an idle login, a mount point past 32 characters, a pid over
+# 32767 -- prints "N not exercised" beside its pass count, and what is recorded
+# here is pass + not-exercised: the number of cases the port HAS.  Without it
+# the total is a host property, which is what took CI red at 2702 against this
+# machine's 2705 with every suite reporting 0 failed.
+#
+# Both spellings are accepted rather than requiring the third field everywhere,
+# because a suite with no conditional coverage has nothing to say and adding a
+# ", 0 not exercised" to sixteen summary lines would be noise.  The two-field
+# arm supplies the 0 itself, so nothing downstream has to know which is which.
+sum=$(sed -n "s/^$name: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed, \([0-9][0-9]*\) not exercised\$/\1 \2 \3/p" "$out" | tail -1)
+[ -n "$sum" ] ||
+sum=$(sed -n "s/^$name: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed\$/\1 \2 0/p" "$out" | tail -1)
 if [ -z "$sum" ]; then
 	echo "runsuite: $name exited 0 but printed no summary line" >&2
 	exit 1
@@ -61,5 +76,5 @@ if [ "$2" -ne 0 ]; then
 	echo "runsuite: $name exited 0 but reported $2 failed" >&2
 	exit 1
 fi
-[ -n "$dir" ] && printf '%s\n' "$1" > "$dir/$name"
+[ -n "$dir" ] && printf '%s\n' "$(($1 + $3))" > "$dir/$name"
 exit 0

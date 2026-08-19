@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2705 tests across 17 suites** guard it.
+assembly. **2707 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -5700,6 +5700,53 @@ question worth asking is simply whether everything present in the archive is in
 the repository — the state a fresh clone would find. Aiming at the state
 catches the historical cause as a special case, and aiming at the cause misses
 the state entirely.
+
+### A count of tests is a claim about the port, not about the machine
+
+The previous section's guard went in to stop a number in this document drifting
+away from the truth. Its first real outing was to fail, on a machine that was
+not this one, for a reason worth writing down: it was measuring the wrong
+quantity.
+
+Every suite passed. Not one case failed anywhere. What the guard reported was
+that this document claimed 2705 tests and the run had counted 2702 — three
+cases that exist here and did not exist there.
+
+They had not been deleted. Some checks can only run where the machine offers
+the conditions they need: whether anyone is logged in and idle, whether a disk
+is mounted at a path longer than thirty-two characters, whether the system has
+handed out a process number above thirty-two thousand. Where the condition is
+absent, those checks print "not exercised" and move on, which is deliberate —
+a check that silently matches nothing is indistinguishable from a check that
+passed, and this project would rather be told. But each of those lines was a
+case that quietly stopped existing, so the total a run reported was a fact
+about the machine it ran on. The build server skipped five; this desk skipped
+two; three is the difference.
+
+The fix is to notice that a check which could not run is still a check the
+project has. Each of those branches now says how many cases it stood in for,
+the summary line carries the number beside the pass count, and what gets
+recorded is the sum. A quiet Mac and a busy build server now agree that there
+are 2707, while disagreeing — correctly, and visibly — about how many of them
+their hardware was able to try.
+
+The same measurement turned up a second thing, and this one was in a test
+rather than in the accounting. Two checks compare the number of processes the
+ported tools can see against the number the host reports, and they had always
+agreed, because the table the port keeps them in holds a thousand and this
+machine had never run more than about six hundred. On the day of the
+measurement it was running twelve hundred, because a phone simulator had been
+left running, and the table filled up. The port behaved correctly and said so
+out loud, which is what it was built to do; the tests had simply never been
+told that a full table is the right answer rather than a wrong one. They know
+now, and they work out the size of the table by asking the running system
+rather than by being told, so the two can never quietly disagree.
+
+None of this would have been visible here. The desk this is written on is one
+machine with one set of habits, and it took a build server with different ones
+— and then, on the same day, an unrelated program eating the machine alive —
+to show that two numbers this project had been treating as properties of the
+work were properties of the room it was sitting in.
 
 ---
 
