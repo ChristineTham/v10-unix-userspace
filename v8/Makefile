@@ -2086,6 +2086,50 @@ $(call v8install,uncompress zcat): $(call v8install,compress)
 	@rm -f $@ && ln $< $@
 LINKED_INSTALL = $(call v8install,e uncompress zcat)
 
+# =(1) and ==(1) -- two commands from one 365-line file, and the FIRST program
+# here whose NAME makes trouble for make itself.
+#
+# cmd/hist/Makefile is `cp a.out /usr/bin/= ; ln /usr/bin/= /usr/bin/=='.  Both
+# names are in NONE of Admin's three tables, so dest answers /usr/bin by
+# fall-through and the shipped tree agrees -- v8/usr/bin/{=,==}, byte-identical
+# at 13312 with DIFFERENT inodes, the tarball having lost the link on
+# extraction, exactly as pcat/unpack and e/ed were measured.
+#
+# THE LINK IS LOAD-BEARING, which decides what the cases have to be.  main()
+# opens `int edit = argv[0][1] != '\0'', so `=' runs the command and `==' opens
+# the redo editor on it -- compress/uncompress/zcat's rule, where an inode
+# comparison would not prove the link reached the PROGRAM.  Each name gets a
+# behavioural case, and the inode is asserted as well because it is a separate
+# claim.  (Note it does NOT strip a directory the way compress.c does, so the
+# distinction only works when the command is reached through PATH by its bare
+# name.  That is upstream's on any machine, not a port defect.)
+#
+# A FILENAME CONTAINING `=' BREAKS GNU make IN BOTH POSITIONS, FOR TWO
+# DIFFERENT REASONS, AND THE DIAGNOSTIC NAMES NEITHER.  In a target,
+# `$(BINDIR)/=:' is read as an assignment to the variable `$(BINDIR)/'; in a
+# prerequisite, `foo.o: dir/=.c' is read as GNU make's TARGET-SPECIFIC variable
+# syntax, `target: VAR = value'.  Both report `commands commence before first
+# target', which points at the recipe rather than at the line that swallowed
+# it.  Measured: backslash-escaping does NOT help.  What works is hiding the
+# `=' behind a variable, because make decides rule-versus-assignment on the
+# UNEXPANDED line -- so $(EQNAME) and $(HISTEQ) below are load-bearing and not
+# a style choice.  A literal `=' inside $(call ...) is safe, since the `$('
+# shields it, which is why $(call v8install,...) needs no such treatment.
+HISTSRC = $(SRC)/cmd/hist
+HISTEQ  = $(HISTSRC)/=.c
+EQNAME  = =
+EQQNAME = ==
+$(BUILD)/hist/eq.o: $(HISTEQ) $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $(HISTEQ)
+$(BINDIR)/$(EQNAME): $(BUILD)/hist/eq.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/hist/eq.o $(V8LIBS)
+$(call v8install,$(EQQNAME)): $(call v8install,$(EQNAME))
+	@rm -f $@ && ln $< $@
+HIST_BUILT   = $(BINDIR)/$(EQNAME)
+HIST_INSTALL = $(call v8install,$(EQNAME) $(EQQNAME))
+
 # FIVE COMMANDS V8 SHIPPED AS SHELL SCRIPTS, so there is nothing to compile and
 # the installed file IS the source.  They are the cheap half of the breadth
 # remainder: measured, their whole dependency set (expr, nice, test, grep, sh)
@@ -2122,7 +2166,7 @@ LINKED_INSTALL = $(call v8install,e uncompress zcat)
 # "v8generic") and which nothing here had imported.  It goes to $(SRC)/etc and
 # reaches the rootfs through the $(ROOTFS)/etc/% generator with no rule of its
 # own -- the same route /etc/termcap takes.
-V8SCRIPT          = true false nohup dirname whois bundle where
+V8SCRIPT          = true false nohup dirname whois bundle where plot
 scriptsrc_true    = $(SRC)/bin/true
 scriptsrc_false   = $(SRC)/cmd/false.sh
 scriptsrc_nohup   = $(SRC)/bin/nohup
@@ -2130,6 +2174,7 @@ scriptsrc_dirname = $(SRC)/bin/dirname
 scriptsrc_whois   = $(SRC)/bin/whois
 scriptsrc_bundle  = $(SRC)/cmd/bundle.sh
 scriptsrc_where   = $(SRC)/cmd/where.sh
+scriptsrc_plot    = $(SRC)/bin/plot
 
 # foreach/eval for $(V8DIRBIN)'s reason: a static pattern rule cannot expand a
 # per-name source path, and .SECONDEXPANSION is too large a blast radius.
@@ -3139,13 +3184,13 @@ V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/
                    $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
-                   $(F77LIB_BUILT) $(F77_BUILT)
+                   $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr egrep bc m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
                    $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \
-                   $(LINKED_INSTALL)
+                   $(LINKED_INSTALL) $(HIST_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

@@ -3566,6 +3566,99 @@ with no rule of its own, `/etc/termcap`'s route. Three things:
   exits 0 on an archive that produced nothing.
 
 
+**AND THREE MORE -- `plot`, `=` AND `==`, 178 -> 181 -- WHERE THE FIRST PROGRAM
+IN THIS PORT'S HISTORY COULD NOT BE BUILT BECAUSE OF WHAT IT IS CALLED.** All
+three fall through to `/usr/bin` and the shipped tree agrees. `plot` is a
+sixteen-line `#!`-less dispatcher with no `usr/src` copy, so it lands in
+`$(SRC)/bin` beside `dirname`; its only reachable arm here is `tek`, which this
+port already builds, and `plot -Ttek` emits bytes identical to `tek` directly.
+`src/cmd/hist/PORTING.md`. Six things generalise:
+
+- **A FILENAME CONTAINING `=` BREAKS GNU make IN BOTH POSITIONS, FOR TWO
+  DIFFERENT REASONS, AND ONE DIAGNOSTIC NAMES NEITHER.** In a target,
+  `$(BINDIR)/=:` is an assignment to the variable `$(BINDIR)/`; in a
+  prerequisite, `foo.o: dir/=.c` is TARGET-SPECIFIC variable syntax,
+  `target: VAR = value`. Both report `commands commence before first target`,
+  which points at the orphaned recipe rather than at the line that swallowed
+  it. Measured: **backslash-escaping does not help**. What works is putting the
+  name in a variable, because make decides rule-versus-assignment on the
+  **unexpanded** line -- and a literal `=` inside `$(call ...)` is already safe,
+  since the `$(` shields it. Ask of a new program whether its NAME is
+  expressible before costing the port.
+- **THE ONE-ARRAY-TWO-MEANINGS CLASS, A FOURTH TIME, AND THE COMPILER WAS
+  SILENCED BY UPSTREAM'S OWN CASTS.** `=.c`'s `matchvec` is filled from the
+  bottom with `ftell` offsets and from the top with `savestr()` pointers, and
+  is declared `int *`. `struct(1)`'s `VERT` verdict again -- **widen the TYPE,
+  not the uses** -- five declarations and one cast, every reader and writer
+  untouched. What is new is that **neither direction warns**: upstream wrote an
+  explicit `(int)` on the store and an explicit `(char *)` on the load, so
+  there is no mismatch left for v8cc to see, and the build is clean before and
+  after. `find`'s eleven predicates were found by reading; this one could only
+  be found by running.
+- **AND THE MEASUREMENT IS THE STORE AND THE LOAD PRINTED TOGETHER.** `SAVED
+  300001818 CELL 1818`, and on the next run `104f1d818` -> `4f1d818`. The value
+  **moves between runs**, which is this file's recorded tell that a real pointer
+  is being truncated rather than garbage being read; the remainder lands in the
+  unmapped low pages, so the `strcmp` faults. `==` SIGSEGV'd the moment you
+  typed `=` to step back, which is the ordinary way to use the redo editor.
+- **MY `$?` CAME OFF THE END OF A PIPE AGAIN, IN THE INSTRUMENT AIMED AT THE
+  BUG.** The first characterisation said "prints one line, exit 0"; the exit is
+  **139**, and the 0 was `head`'s. Identical to the `dc` session's `| tr`, one
+  step later in the same file, and it is the reason the fix nearly went
+  unmeasured. The suite's own status case therefore avoids a pipeline
+  deliberately.
+- **A TEST WAS NOT A PURE FUNCTION OF ITS INPUT BECAUSE THE PROGRAM WRITES ITS
+  OWN INPUT.** `=` APPENDS the line it ran to `$HISTORY` before exec'ing, so a
+  second run steps back to a different command and reports a plausible wrong
+  answer. Litter shape number five, after programs sharing a directory, cases
+  sharing a stream, suite sections sharing an image, and a mutation
+  contaminating the next run's baseline -- and the first where the artefact is
+  written by the program **under test**, on purpose, as its documented job.
+  Every case rewrites the history file.
+- **A PROBED PROGRAM CAN OBEY AN ENVIRONMENT VARIABLE AND THEN `exec`, WHICH NO
+  CONTAINMENT CHECK CAN SEE.** `=` reads `$HISTORY`, appends to it and finishes
+  with `execl("/bin/sh", "sh", "-c", line)`. The crash probe inherits the
+  ambient environment, so with that variable set the sweep would run arbitrary
+  commands out of a file it did not create and write to a path **no cell and no
+  rootfs clone can contain** -- `tar`'s `/dev/rmt1` arriving through the
+  environment rather than through a compiled-in default, and invisible to the
+  rootfs path-list guard because `$HISTORY` may name anything at all.
+  `crash-probe.sh` unsets it, and `tests/wavea` asserts the other half, that
+  both names then refuse. Measured: 74 invocations across every single-letter
+  option, zero signal deaths, so the floor does not move.
+
+**AND A SKIP WHOSE REASON HAD EXPIRED WAS TURNED INTO A CLAIM, WHICH IS
+STRICTLY STRONGER AND NAMES THE MISSING NAME.** `tests/wavea`'s
+imported-but-not-installed sweep is keyed on DIRECTORY names and carried
+`plot) continue` -- justified, correctly, by "src/cmd/plot builds tek and
+hpplot, never a program called plot". Importing the dispatcher made that false,
+and the block's own note two lines above says *a skip left behind after its
+reason expires is a hole*. Both it and the new `hist` case (whose directory
+installs `=` and `==`) are a per-directory **want list** now rather than a
+`continue`, so the sweep asks about every directory under the right name.
+Mutation-verified in the direction that matters: dropping the link reports
+`hist(==)` and dropping the script reports `plot(plot)`, where a `continue`
+could have reported neither. **The calendar lesson -- a sweep keyed on
+directory names cannot see a program named differently -- has a second remedy
+besides widening the candidate set: write the answer down per directory.**
+
+- **AND THE REFUSAL CASES ASSERT THE MESSAGE RATHER THAN THE STATUS, WHICH
+  BOUGHT A THIRD CHECK ON THE LINK FOR FREE.** Exit 1 is also what a shell that
+  could not parse the line would give, so the status alone would pass on a
+  refusal from anywhere -- discriminated by measuring that the same command
+  exits 0 with `$HISTORY` set. The message is printed through `cmd`, which is
+  `argv[0]`, so `=:` against `==:` is the program stating which of its two
+  names it was reached by. A load-bearing link is usually checked by behaviour
+  and by inode; this is a third way, and it came out of fixing a weak
+  assertion.
+- **AND `env -u VAR prog -a` HANDS `-a` TO `env`.** A sweep written that way
+  reported 72 signal deaths out of 72, every one of them status **127** -- and
+  the detector was wrong too, testing `$((st & 127)) -ne 0`, which calls every
+  nonzero exit a signal. Two faults in one four-line instrument, and together
+  they read as a catastrophic finding in a program that is fine. The standing
+  rate holds; `--` before the command, and `[ "$st" -gt 128 ]` for the signal.
+
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never

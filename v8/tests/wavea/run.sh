@@ -801,16 +801,30 @@ for d in "$ROOT"/src/cmd/*/; do
 	# -- a SIGCHLD that never wakes pjwait -- was wrong about the layer: the
 	# signal machinery was correct throughout and sh.proc.h's `short p_pid'
 	# was truncating the host pid so pchild could never match it.
-	# src/cmd/plot builds `tek' and `hpplot', never a program called `plot'.
-	# The COMMAND of that name is a 16-line shell dispatcher V8 ships with no
-	# source at all -- usr/src/cmd/plot's makefile does not install it -- so
-	# this directory can never satisfy the rule by its own name.  Asserted the
-	# other way round below: tek must be installed, and hpplot must not,
-	# because libcurses is unported.  src/libplot/PORTING.md.
-	plot) continue ;;
 	esac
-	find "$V8ROOT" -name "$name" -type f -perm -u+x 2>/dev/null | grep -q . ||
-		dmissing="$dmissing $name"
+	# A DIRECTORY WHOSE PROGRAM HAS A DIFFERENT NAME IS NOT EXEMPT -- it just
+	# has to be asked about under the right name, which is a CLAIM where a
+	# `continue' is a hole.  This list is the calendar lesson (a sweep keyed
+	# on directory names cannot see a program named differently) with the
+	# answer written down per directory instead of the directory being
+	# skipped.
+	#
+	# `plot' USED TO BE A SKIP HERE AND ITS REASON HAS EXPIRED.  It read
+	# "src/cmd/plot builds tek and hpplot, never a program called plot" --
+	# true until the 16-line shell dispatcher V8 ships as /usr/bin/plot was
+	# imported, at which point the directory satisfies the rule by its own
+	# name like anything else.  This file's own note two lines up says a skip
+	# left behind after its reason expires is a hole, so it is gone rather
+	# than reworded.  hpplot is still absent (libcurses is unported) and that
+	# is asserted separately below.
+	case "$name" in
+	hist) want='= ==' ;;	# cmd/hist installs /usr/bin/= and a link, ==
+	*)    want=$name ;;
+	esac
+	for w in $want; do
+		find "$V8ROOT" -name "$w" -type f -perm -u+x 2>/dev/null | grep -q . ||
+			dmissing="$dmissing $name($w)"
+	done
 done
 if [ -z "$dmissing" ]; then
 	pass=$((pass+1))
@@ -2134,6 +2148,97 @@ check 'whois reads the jail passwd, not the host' \
 # and an unknown name falls all the way through -- upstream's own last arm.
 check 'whois falls through for an unknown name' 'who indeed is nosuchguy' \
     "$(jail_sh 'whois nosuchguy' | tail -1)"
+
+# =(1) and ==(1) -- ONE BINARY, TWO NAMES, AND THE NAME IS LOAD-BEARING.
+# main() opens `int edit = argv[0][1] != '\0'', so `=' runs the last history
+# line outright and `==' opens the redo editor on it first.  That is
+# compress/uncompress/zcat's rule and it decides the shape of these cases: an
+# inode comparison proves the LINK exists, never that it reached the PROGRAM.
+#
+# The third case is the discriminator, and it is why there are three: given
+# the SAME stdin, `=' must ignore it and `==' must read it.  A build that
+# installed one binary under both names without the argv[0] test passes the
+# first two and fails that one.
+#
+# Unlike true/false/dirname/nohup, the host has NONE of these names -- measured
+# -- so the union cannot make these vacuous the way it did there, and no
+# separate "was it installed" case is needed to keep them honest.
+#
+# $HISTORY IS REWRITTEN PER CASE ON PURPOSE.  `=' APPENDS the line it ran to
+# the file before exec'ing, so a case that reused one history would be reading
+# the previous case's litter -- the crash-probe rule (a case has to be a pure
+# function of what it sent) arriving through a file the program under test
+# writes to itself.  Measured: without the rewrite the second run steps back to
+# `echo charlie' rather than `echo bravo', which is a plausible wrong answer.
+eqhist=$TMP/eqhist
+eqrun() {	# $1 = the name to invoke it BY, $2 = stdin
+	printf 'echo alpha\necho bravo\necho charlie\n' > "$eqhist"
+	printf '%b' "$2" |
+	    HISTORY=$eqhist PATH=/bin:/usr/bin:/etc "$sh8" -c "$1" 2>&1 | tr '\n' '|'
+}
+check '= re-runs the last history line' 'echo charlie|charlie|' \
+    "$(eqrun '=' '')"
+check '== steps back to the previous command' 'echo charlie|echo bravo|bravo|' \
+    "$(eqrun '==' '=\n\n')"
+check '= ignores the stdin that == reads' 'echo charlie|charlie|' \
+    "$(eqrun '=' '=\n\n')"
+
+# THE STATUS IS A SEPARATE CLAIM FROM THE OUTPUT, and it is the one aimed at
+# the LP64 fix.  Stepping back is the only path that reaches prevline(), where
+# upstream's `int' vector truncated a savestr() pointer to its low half and the
+# strcmp on it faulted: measured 139 (SIGSEGV) before the widening and 0 after.
+# It is asserted without a pipeline, because `$?' after `| tr' is tr's.
+check '== survives stepping back' '0' \
+    "$(printf 'echo alpha\necho bravo\necho charlie\n' > "$eqhist"
+       printf '=\n\n' |
+           HISTORY=$eqhist PATH=/bin:/usr/bin:/etc "$sh8" -c '==' >/dev/null 2>&1
+       echo $?)"
+
+# The names SEEN are asserted beside the distinct inode count, because `ls -i'
+# on a missing name is a missing ROW rather than an error -- so `1 1' would
+# read as "one inode" for a tree where the link was never installed at all.
+# WITH NO $HISTORY BOTH NAMES MUST REFUSE BEFORE OPENING ANYTHING, and this is
+# a claim the crash probe depends on rather than a courtesy.  `=' ends in
+# execl("/bin/sh", "sh", "-c", line), so a sweep that ran it with the variable
+# set would execute commands out of a file it did not write, at a path no
+# rootfs clone can contain.  tests/crash-probe.sh unsets it for that reason;
+# this is the other half, that refusing is what the program then does.
+# The DIAGNOSTIC is asserted rather than the status, because exit 1 is also
+# what a shell that could not parse the line would give -- and the status alone
+# would pass on any refusal from anywhere.  Measured with $HISTORY set, the
+# same command exits 0 and runs the line, so the pair discriminates.
+#
+# It also happens to be a THIRD check on the load-bearing link, from a
+# direction nothing else here takes: the message is printed through `cmd',
+# which is argv[0], so `=:' against `==:' is the program saying which of its
+# two names it was reached by.
+check '= refuses without HISTORY' '=: Environment lacks HISTORY' \
+    "$(PATH=/bin:/usr/bin:/etc "$sh8" -c 'unset HISTORY; =' 2>&1 | head -1)"
+check '== refuses without HISTORY' '==: Environment lacks HISTORY' \
+    "$(PATH=/bin:/usr/bin:/etc "$sh8" -c 'unset HISTORY; ==' 2>&1 | head -1)"
+
+check '= and == are one inode' '2 1' \
+    "$(cd "$V8ROOT/usr/bin" && ls -i '=' '==' 2>/dev/null |
+       awk '{n++; ino[$1]=1} END {d=0; for (k in ino) d++; print n+0, d}')"
+
+# plot(1) is a #!-less shell script -- the shipped artefact IS the source -- so
+# the interpreter is part of the program and it is run under V8's sh, which is
+# `where''s lesson.  It sets its own PATH and exec's a renderer per -T; the only
+# arm this port can reach is tek, and the rest reach the diagnostic.
+#
+# `cmp' ALONE WOULD BE VACUOUS: two empty files compare equal, so a plot that
+# exec'd nothing and a tek that emitted nothing would pass.  The size test is
+# what makes it a measurement.
+plotbin=$(v8which plot)
+plotrun() { PATH=/bin:/usr/bin:/etc "$sh8" "$plotbin" "$@"; }
+check 'plot -Ttek renders through tek' 'yes' \
+    "$(printf 'm 0 0\nli 0 0 100 100\ne\n' > "$TMP/pin"
+       plotrun -Ttek < "$TMP/pin" > "$TMP/p1" 2>/dev/null
+       "$V8ROOT/usr/bin/tek" < "$TMP/pin" > "$TMP/p2" 2>/dev/null
+       cmp -s "$TMP/p1" "$TMP/p2" && [ -s "$TMP/p1" ] && echo yes)"
+check 'plot names a terminal it cannot render' \
+    'plot: terminal type -Tnosuch not known' \
+    "$(plotrun -Tnosuch < /dev/null 2>&1)"
 
 # ---------------------------------------------------------------------------
 # Wave A2 batch 2d -- seven programs and a library.  The batch was scoped as

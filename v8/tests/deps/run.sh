@@ -402,6 +402,19 @@ dep 'egrep tables -> object'   $B/egrep/y.tab.c               $B/egrep/egrep.o
 dep 'bc grammar -> tables'     src/cmd/bc.y                   $B/bc/y.tab.c
 dep 'bc tables -> object'      $B/bc/y.tab.c                  $B/bc/bc.o
 dep 'bc math library installs' src/lib/lib.b                  rootfs/usr/lib/lib.b
+
+# =(1)/==(1).  The object rule is ordinary; what is NOT here is an edge for the
+# `==' hard link, and its absence is deliberate rather than an omission.  The
+# link's prerequisite IS its target -- one inode, two names -- so `touch' moves
+# both mtimes and the target can never be newer than itself.  libtermlib.a
+# recorded that as impossible rather than merely hard; tests/wavea asserts it by
+# INODE instead, which is also the only form that would catch two identical
+# copies where V8 shipped one file.
+dep 'hist source -> object'    src/cmd/hist/=.c               $B/hist/eq.o
+dep 'hist object -> ='         $B/hist/eq.o                   $B/bin/=
+# plot(1) is a #!-less shell script and the shipped artefact IS the source, so
+# the only edge it has is the install copy -- diff3's shape.
+dep 'plot script -> /usr/bin'  src/bin/plot                   rootfs/usr/bin/plot
 # m4 is grap's shape without a lexer.  Upstream says `m4.o m4ext.o m4macs.o :
 # m4.h' and deliberately LEAVES m4y.o OUT; m4y.y does not include the header,
 # so the nodep is what keeps this tree from widening a claim upstream did not

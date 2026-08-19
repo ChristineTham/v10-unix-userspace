@@ -1,0 +1,8 @@
+# Provenance for v8/src/cmd/hist
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+9a88c4d9bd0bebdbdcb6dc66cdbdb76de6788726  v8/usr/src/cmd/hist/=.c
+7f5f79d0f9d923c767636e9d8d6c00bd08a91684  v8/usr/src/cmd/hist/Makefile

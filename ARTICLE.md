@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2730 tests across 17 suites** guard it.
+assembly. **2742 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **178** of the 286 V8 shipped, and the ones still missing mostly
+port installs **181** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -5857,6 +5857,60 @@ That is a small extension of something already recorded here. A script's answer
 was known to depend on which *programs* it finds on its search path. It also
 depends on which shell reads it, and for a script that does not name one, the
 interpreter is as much part of the program as the text is.
+
+### A command whose name the build system could not say
+
+Three more commands went in: `plot`, and the pair `=` and `==`. That makes 181
+of the 286. Each of the three was interesting for a different reason, and none
+of the reasons was the program itself.
+
+`plot` is another of the shell scripts — sixteen lines that look at a terminal
+type and hand the work to the right renderer. This world already had the
+Tektronix one, built earlier from a library whose sources arrive inside an
+archive, so the dispatcher had something real to dispatch to the moment it was
+installed. The test asserts that going through the script produces the same
+bytes as calling the renderer directly, and that a terminal it has no renderer
+for produces the diagnostic rather than silence. Comparing the two outputs is
+not on its own a measurement, though: two empty files compare equal, so a
+script that ran nothing would pass. The test also requires the output to be
+non-empty, which is what turns the comparison into evidence.
+
+`=` and `==` re-run commands from the shell's history — the second opens a
+small editor on the command first. They are one program under two names, and
+the program decides which one it is by looking at the second character of the
+name it was invoked under. That makes the link between them load-bearing:
+checking that the two names share one file on disk proves the link exists, but
+not that the program noticed. So the test gives both names the *same* input and
+requires them to disagree — one ignores it, the other reads it.
+
+Underneath was a fault of a kind this project has now met four times. The
+program keeps a single array and fills it from both ends with two different
+kinds of thing: file positions from one end, addresses of saved text from the
+other. On the machine it was written for those were both four bytes, so one
+array served. Here an address is eight, and the half that stores addresses was
+losing the top half of every one — which put the remainder in the unmapped
+region at the bottom of memory, so the program died the moment you asked it to
+step back a line. That is the ordinary way to use the editor.
+
+The fix is the one this project keeps arriving at: widen the *type*, not the
+uses. What a cell of that array has to hold is one machine word, and the
+language of 1985 has no name for that; the type that was word-sized then and is
+word-sized now is the right one, and five declarations change while every line
+that reads or writes the array stays exactly as written. Neither the compiler
+nor any warning could have found it, because the original author had written
+explicit conversions in both directions — the casts that made it work on a VAX
+are the casts that silence every check here. Only running it found it.
+
+The genuinely new thing was that the build system could not say the program's
+name. A file called `=` breaks the rules of a makefile twice over, in two
+different places for two different reasons: written as a target it reads as
+setting a variable, and written as a prerequisite it reads as setting a
+variable *for that target*. Both produce the same complaint, which points at
+the recipe underneath rather than at the line that swallowed it, and escaping
+the character does not help. What works is putting the name in a variable,
+because the decision about what kind of line it is gets made before the
+variable is expanded. It is a small thing, but it is the first time in this
+port that a program could not be built because of what it was called.
 
 ---
 

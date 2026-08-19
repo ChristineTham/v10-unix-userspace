@@ -45,6 +45,21 @@
 # only because a missing floor file is a FAILURE rather than a skip -- the guard
 # firing on the person who wrote it.
 HERE=$(cd "$(dirname "$0")" && pwd) || exit 1
+# $HISTORY IS UNSET BECAUSE ONE PROBED PROGRAM OBEYS IT AND THEN EXECS.  =(1)
+# and ==(1) read the file it names, APPEND the line they ran to it, and finish
+# with execl("/bin/sh", "sh", "-c", line) -- so with the variable set to
+# anything the sweep would run arbitrary commands out of a file it did not
+# create, and would write to a path no cell and no rootfs clone can contain.
+# That is tar's /dev/rmt1 arriving through the ENVIRONMENT rather than through
+# a compiled-in default, and the containment check cannot see it, because that
+# check watches the rootfs and $HISTORY may name anything at all.
+#
+# Unset rather than pointed at a scratch file: this script's founding rule is
+# that an invocation be a pure function of the program and its arguments, and
+# with the variable absent both programs stop at `Environment lacks HISTORY'
+# and exit 1 before opening anything.  Measured: 74 invocations of the two
+# names across every single-letter option, zero signal deaths, nothing written.
+unset HISTORY
 ROOT=$1; export V8ROOT=$ROOT
 WORK=$2; mkdir -p "$WORK/run" || exit 1
 # ABSOLUTE, because the next line cd's and run1 appends to $WORK/observed from
