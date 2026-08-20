@@ -551,6 +551,21 @@ mkdest() {	# mkdest <directory> <program> -- where its OWN makefile puts it
 				gsub("\\$\\{" n "\\}", var[n], s)
 				if (length(n) == 1) gsub("\\$" n, var[n], s)
 			}
+			# AND ROOT IS THE THIRD SPELLING OF THE SAME IDEA, AND IT
+			# HAS TO BE STRIPPED **AFTER** THE EXPANSION ABOVE.  cflow
+			# sets BIN = $(ROOT)/usr/bin, so ROOT is not in the install
+			# line at all -- it arrives only when $(BIN) is substituted,
+			# which is why the first version of this strip sat beside
+			# DESTDIR, changed nothing, and had to be measured rather
+			# than assumed.  DESTDIR is never a variable defined in the
+			# file so it can be stripped either side; ROOT is reached
+			# THROUGH one.  Unstripped it reported FIVE spurious
+			# disagreements -- cflow, dag, lpfx, nmf, flip -- each of
+			# which agrees with dest once the prefix is gone.  Fourth
+			# bug in this parser, and like two of the others it was
+			# exposed by an import rather than by anyone reading it.
+			gsub(/\$\(ROOT\)/, "", s)
+			gsub(/\$\{ROOT\}/, "", s)
 			# strip the leading tab of a recipe line first --
 			# split on /[ \t]+/ makes f[1] the empty string
 			# otherwise, and every mv/cp line stops matching.
@@ -743,8 +758,35 @@ check 'a multi-source cp does not read its directory as the program' \
 # table", and the count moves when the SWEEP improves as well as when the tree
 # does.  Ordered by directory, then by makefile appearance, which is why diffh
 # (src/cmd/diff) precedes diff3 (src/cmd/diff3).
-check 'an imported makefile and Admin/dest disagree about exactly these eight' \
-   ' calendar1(usr/lib,dest=usr/bin) calendar2(usr/lib,dest=usr/bin) calendar3(usr/lib,dest=usr/bin) calendar4(usr/lib,dest=usr/bin) cpp(lib,dest=usr/bin) diffh(usr/lib,dest=usr/bin) diff3(usr/lib,dest=usr/bin) dump(etc,dest=usr/bin)' \
+# NINE NOW, AND lint IS THE FIRST OF THE OPPOSITE SHAPE -- which makes the
+# sentence above FALSE as a characterisation of the set.  The eight are all
+# "in no table, so dest answers usr/bin by fall-through, and two real sources
+# say otherwise".  lint IS in a table: it is in ulibfiles, dest therefore
+# answers /usr/lib, and the makefile and the shipped tree both say /usr/bin.
+# So the set is now "every program the three sources disagree about", and the
+# disagreement can run in either direction.  A survey that enumerates one shape
+# goes stale the day a second shape joins it, which is why this is written down
+# here rather than left to be re-derived.
+#
+# AND WHY man AND spell ARE NOT HERE, since both are the identical INSTALL
+# shape -- a shell script at /usr/bin/NAME, the machinery at /usr/lib/NAME, and
+# the name in ulibfiles.  They resolve to usr/lib and agree with dest, because
+# their machinery line is a SINGLE-source command that the basename test reads:
+# `mv man /usr/lib' and `mv spellprog /usr/lib/spell'.  lint's is
+# `cp lint[12] llib* ${LINTDIR}' -- MULTI-source, which the parser deliberately
+# skips (a multi-source cp's destination must be a directory, the fix for the
+# struct false positive) -- so lint falls through to its `cp lint.sh
+# ${BINDIR}/${NAME}' line and resolves to usr/bin instead.  The three are the
+# same program shape and land differently purely on the arity of one cp.
+# THIRTEEN, and cflow's four helpers are the cpp shape rather than lint's.
+# dag, lpfx, nmf and flip are installed to /usr/lib by cflow's own makefile,
+# appear in no Admin table, and dest therefore answers /usr/bin by
+# fall-through -- two sources against a non-answer, exactly diffh and diff3.
+# `cflow' itself is NOT here: it installs to /usr/bin and dest agrees, so it
+# drops out, which is what says the ROOT strip above discriminates rather than
+# simply deleting entries.
+check 'an imported makefile and Admin/dest disagree about exactly these thirteen' \
+   ' calendar1(usr/lib,dest=usr/bin) calendar2(usr/lib,dest=usr/bin) calendar3(usr/lib,dest=usr/bin) calendar4(usr/lib,dest=usr/bin) dag(usr/lib,dest=usr/bin) flip(usr/lib,dest=usr/bin) lpfx(usr/lib,dest=usr/bin) nmf(usr/lib,dest=usr/bin) cpp(lib,dest=usr/bin) diffh(usr/lib,dest=usr/bin) diff3(usr/lib,dest=usr/bin) dump(etc,dest=usr/bin) lint(usr/bin,dest=usr/lib)' \
    "$mkdiffer"
 # ...and the port sides with the makefile in every one of the five new cases,
 # which is what says the widening found a blind spot rather than a bug.  diffh
@@ -4819,6 +4861,123 @@ check 'values.h: this port has an arm64 arm, and it is IEEE' '11 1 1' \
                s/^#define[[:blank:]]*_HIDDENBIT[[:blank:]]*\([0-9]*\).*/\1/p;
                s/^#define[[:blank:]]*_IEEE[[:blank:]]*\([0-9]*\).*/\1/p' |
        sort -rn | tr '\n' ' ' | sed 's/ $//')"
+
+# ---------------------------------------------------------------------------
+# lint(1) and cflow(1).  lint1 is pcc1's C front end with lint's back end, and
+# the two of them are the first thing this port has built out of the OTHER pcc
+# family -- see src/cmd/lint/PORTING.md.
+#
+# BOTH ARE #!-LESS OR #!/bin/sh SCRIPTS AND MUST RUN UNDER V8's OWN sh, which
+# is `where(1)'s lesson: for a script the INTERPRETER is part of the program,
+# and the host's sh resolves /lib/cpp and /usr/lib/lint/lint2 against the Mac.
+# PATH is the jail's for the same reason the whois case sets it.
+vsh() { PATH=/bin:/usr/bin:/etc "$V8ROOT/bin/sh" -c "$*" 2>&1; }
+
+cat > lt.c <<'LTEOF'
+int f(a) int a; { return (a); }
+main(argc, argv) int argc; char **argv; {
+	int x;
+	f(1, 2);
+	x = f(3);
+	printf("%d %s\n", x);
+	return;
+}
+LTEOF
+
+lintout=$(vsh "/usr/bin/lint $TMP/lt.c")
+# The three lint is FOR, and each is a different pass.  "variable # of args"
+# is lint2 reconciling two .ln records; "too few args for format" is the
+# -DFMTARGS machinery in lint1 cross-referencing against llib-lc, which is the
+# GENERATED library and therefore the case that says the .ln round trip works;
+# "sometimes ignored" is lint2's return-value analysis.
+check 'lint reports a wrong argument count' 1 \
+    "$(printf '%s\n' "$lintout" | grep -c 'variable # of args')"
+check 'lint cross-references llib-lc for printf' 1 \
+    "$(printf '%s\n' "$lintout" | grep -c 'too few args for format.*llib-lc')"
+check 'lint reports an ignored return value' 1 \
+    "$(printf '%s\n' "$lintout" | grep -c 'sometimes ignored')"
+
+# A CLEAN program must be QUIET, which is the control: a lint that printed the
+# three lines above whatever it read would pass all three cases.
+cat > clean.c <<'CLEOF'
+int g(a) int a; { return (a + 1); }
+main() { int x; x = g(2); printf("%d\n", x); exit(0); }
+CLEOF
+check 'lint is quiet on a clean program' '' \
+    "$(vsh "/usr/bin/lint $TMP/clean.c" | grep -vE '^$' | head -3)"
+
+# cflow: the call graph, and the INDENTATION is the claim -- a cflow that
+# listed the functions without nesting them would pass a name-only check.
+cat > cf.c <<'CFEOF'
+int leaf(x) int x; { return (x + 1); }
+int mid(x) int x; { return (leaf(x) + leaf(x)); }
+main() { int r; r = mid(3); printf("%d\n", r); return (0); }
+CFEOF
+cfout=$(vsh "/usr/bin/cflow $TMP/cf.c")
+check 'cflow nests main > mid > leaf' 'main mid leaf' \
+    "$(printf '%s\n' "$cfout" | sed -n 's/^[0-9]*\(	*\)\([a-z]*\):.*/\2/p' |
+       tr '\n' ' ' | sed 's/ $//' | cut -d' ' -f1-3)"
+check 'cflow indents by depth' '1 2 3' \
+    "$(printf '%s\n' "$cfout" | grep -E '(main|mid|leaf):' |
+       awk '{n=0; while (substr($0,index($0,"\t")+n,1)=="\t") n++; print n}' |
+       tr '\n' ' ' | sed 's/ $//')"
+
+# TWO HAND-MAINTAINED COPIES OF ONE TOKEN LIST, which is efl's gram.c/tokens
+# shape.  cgram.y pins every token number with `%term NAME 2' because in pcc a
+# token number IS a tree operator number, and manifest declares the same list
+# by hand for the lexer.  Compared as SETS IN BOTH DIRECTIONS: two lists of the
+# same length can differ and still both be right about their length.
+gtok=$(sed -n 's/^%term[[:blank:]][[:blank:]]*\([A-Z_][A-Z_0-9]*\)[[:blank:]][[:blank:]]*\([0-9][0-9]*\).*/\1 \2/p' \
+        "$ROOT/src/cmd/pcc1/mip/cgram.y" | sort)
+mtok=$(sed -n 's/^#[[:blank:]]*define[[:blank:]][[:blank:]]*\([A-Z_][A-Z_0-9]*\)[[:blank:]][[:blank:]]*\([0-9][0-9]*\)[[:blank:]]*$/\1 \2/p' \
+        "$ROOT/src/cmd/pcc1/mip/manifest" | sort)
+# Vacuity guard first, because a sed that matched nothing reports two empty
+# sets as agreeing -- cites.awk's 0-stale-over-0-checked, exactly.
+check 'lint: the grammar states enough tokens to compare' 'many' \
+    "$(if [ "$(printf '%s\n' "$gtok" | grep -c .)" -ge 20 ]; then echo many; else echo "only $(printf '%s\n' "$gtok" | grep -c .)"; fi)"
+# Only the names manifest and the grammar SHARE are comparable: manifest also
+# defines operator numbers that are not tokens at all (ASOP's members, the
+# tree-only ops), and the grammar declares no number for those.
+shared=$(printf '%s\n' "$gtok" | cut -d' ' -f1 | sort > gn.txt
+         printf '%s\n' "$mtok" | cut -d' ' -f1 | sort > mn.txt
+         comm -12 gn.txt mn.txt)
+disagree=
+for n in $shared; do
+	g=$(printf '%s\n' "$gtok" | awk -v k="$n" '$1==k{print $2}')
+	m=$(printf '%s\n' "$mtok" | awk -v k="$n" '$1==k{print $2}')
+	[ "$g" = "$m" ] || disagree="$disagree $n($g/$m)"
+done
+check 'lint: cgram.y and manifest agree about every shared token number' '' "$disagree"
+check 'lint: the shared token set is not empty' 'many' \
+    "$(if [ "$(printf '%s\n' "$shared" | grep -c .)" -ge 15 ]; then echo many; else echo "only $(printf '%s\n' "$shared" | grep -c .)"; fi)"
+
+# WHICH cflow.sh SHIPPED, which is libtermlib's fingerprint rule.  There are
+# two in the archive -- usr/src/cmd/cflow.sh at 1610 bytes and
+# usr/src/cmd/cflow/cflow.sh at 1601 -- and the second is byte-identical to the
+# shipped /usr/bin/cflow.  Building the wrong copy should be a failure rather
+# than a discovery.
+check 'cflow.sh is the copy V8 shipped' 'same' \
+    "$(cmp -s "$SHIPPED/usr/bin/cflow" "$ROOT/src/cmd/cflow/cflow.sh" && echo same || echo differs)"
+check 'the bare cmd/cflow.sh is the OTHER copy' 'differs' \
+    "$(cmp -s "$SHIPPED/usr/bin/cflow" "$SHIPPED/usr/src/cmd/cflow.sh" && echo same || echo differs)"
+
+# Where the pieces land.  lint is in ulibfiles so Admin/dest says /usr/lib,
+# and both the makefile and the shipped tree say /usr/bin -- see the ninth
+# entry in the makefile-versus-dest set above.
+check 'lint installs the command to /usr/bin' 'yes' \
+    "$([ -f "$V8ROOT/usr/bin/lint" ] && echo yes || echo no)"
+check 'lint installs both passes to /usr/lib/lint' 'yes yes' \
+    "$([ -f "$V8ROOT/usr/lib/lint/lint1" ] && printf 'yes ' || printf 'no '
+       [ -f "$V8ROOT/usr/lib/lint/lint2" ] && echo yes || echo no)"
+check 'cflow installs its four helpers to /usr/lib' '4' \
+    "$(n=0; for h in dag lpfx nmf flip; do [ -f "$V8ROOT/usr/lib/$h" ] && n=$((n+1)); done; echo $n)"
+
+# /usr/tmp: lint.sh names it, sixteen V8 programs name it, V8's tarball ships
+# it as nothing because it is an empty runtime directory, and THIS MAC HAS
+# NONE for the union to fall through to.  The jail supplies its own, which is
+# what keeps lint.sh byte-identical to upstream.
+check 'the jail has a /usr/tmp for lint to write in' 'yes' \
+    "$([ -d "$V8ROOT/usr/tmp" ] && echo yes || echo no)"
 
 echo "wavea: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1,0 +1,16 @@
+# Provenance for v8/src/cmd/pcc1/mip
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+e9434961894dd49aa0f9b53f873adeabf6df5bac  v8/usr/src/cmd/pcc1/mip/cgram.y
+856aea424152bcf59c75465725deacafab021755  v8/usr/src/cmd/pcc1/mip/comm1.c
+c5b449b7fadc529f8b6b1cac9896f39b9f05f347  v8/usr/src/cmd/pcc1/mip/optim.c
+c3060901f63162e47a4cdaed1a15d51e0e4f2e67  v8/usr/src/cmd/pcc1/mip/pftn.c
+53b5dd0dbdc7dd80d4b5510bce94098fd2790a96  v8/usr/src/cmd/pcc1/mip/scan.c
+8cd4b4b614d290d258172cbf87c9aaebb03da9ad  v8/usr/src/cmd/pcc1/mip/trees.c
+a4a9235344db677065bfc7d2950b1c96439ed390  v8/usr/src/cmd/pcc1/mip/xdefs.c
+f7a47cd4e3e73b464c4ca35415f2f3764a1be170  v8/usr/src/cmd/pcc1/mip/manifest
+95c3cbae6e15c75a99d64a859bd9d1513f3470a5  v8/usr/src/cmd/pcc1/mip/mfile1
+53c1230ef3bc335c40550b1e5191f18630faa459  v8/usr/src/cmd/pcc1/mip/common

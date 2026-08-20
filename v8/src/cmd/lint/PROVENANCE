@@ -1,0 +1,14 @@
+# Provenance for v8/src/cmd/lint
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+8fcaca89c70323090c638d574922334b91e6899d  v8/usr/src/cmd/lint/lint1.c
+43b9d5e749a2ff53e758aa62c150ba3c04a8f51b  v8/usr/src/cmd/lint/llib-lc
+14e8c1ba9899806cbda4e162f6567e23b991c3c3  v8/usr/src/cmd/lint/makefile
+13d8159cf222cf7914d6083b7486e50651e45485  v8/usr/src/cmd/lint/lint.sh
+5a7b11beca59ae97c22ef39fbc39e27893ed4286  v8/usr/src/cmd/lint/lint2.c
+1eee523ab8c16288514482bed237e9fa31f0aabd  v8/usr/src/cmd/lint/lint.h
+b5c8450c54af5ea171f9cd25fa0b59e205d20edd  v8/usr/src/cmd/lint/llib-port
+b0d7767e3da515c50e39816c8d8245e3f5c8eded  v8/usr/src/cmd/lint/macdefs

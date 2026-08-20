@@ -3187,19 +3187,63 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
 DES_BUILT   = $(BINDIR)/encrypt $(BINDIR)/decrypt
 DES_INSTALL = $(call v8install,encrypt decrypt)
 
+# ...and lint's, for the same reason.  $(LINT_INSTALL) is consumed by
+# $(V8DIRBIN_INSTALL) a few lines below, so every name it is built from --
+# LINTLIB included -- has to be defined HERE and not beside the rules at the
+# bottom of the file.  Fifth time this file has had to say so.
+LINTSRC  = $(SRC)/cmd/lint
+MIPSRC   = $(SRC)/cmd/pcc1/mip
+LINTLIB  = $(ROOTFS)/usr/lib/lint
+
+# lint1 links EIGHT objects and SEVEN are pcc1/mip's.  Only lint1.o is lint's.
+LINT1_MIP = comm1 optim pftn scan trees xdefs
+LINT1_OBJ = $(BUILD)/lint/cgram.o \
+            $(patsubst %,$(BUILD)/lint/%.o,$(LINT1_MIP)) \
+            $(BUILD)/lint/lint1.o
+
+# Upstream's own CFLAGS less -O.  -DFLEXNAMES makes identifiers arbitrary
+# length; -DFMTARGS turns on printf-format checking, which is most of what
+# lint is for.  THE -I ORDER IS LOAD-BEARING: mfile1 includes "macdefs", mip
+# has none, so the quoted include falls through to lint's -- which is the
+# machine description, and is why lint ships one and mip does not.
+LINTFLAGS = -DFLEXNAMES -DFMTARGS -I$(MIPSRC) -I$(LINTSRC)
+
+LINT_BUILT   = $(BINDIR)/lint1 $(BINDIR)/lint2
+LINT_INSTALL = $(LINTLIB)/lint1 $(LINTLIB)/lint2 \
+               $(LINTLIB)/llib-lc $(LINTLIB)/llib-lc.ln \
+               $(LINTLIB)/llib-port $(LINTLIB)/llib-port.ln \
+               $(ROOTFS)/usr/bin/lint
+
+# cflow(1), which is what lint1 was blocking: its own code is four small
+# programs (806 lines all told) and the dependency is at RUN TIME -- cflow.sh
+# execs /usr/lib/lint/lint1.  Same define-above-first-use rule as everything
+# else in this block.
+CFLOWSRC      = $(SRC)/cmd/cflow
+CFLOW_NAMES   = dag lpfx nmf flip
+CFLOW_BUILT   = $(patsubst %,$(BINDIR)/%,$(CFLOW_NAMES))
+CFLOW_INSTALL = $(patsubst %,$(ROOTFS)/usr/lib/%,$(CFLOW_NAMES)) \
+                $(ROOTFS)/usr/bin/cflow
+
+# -DUNIX5 is upstream's and it is LOAD-BEARING: the whole of nmf.c sits inside
+# `#if defined(UNIX5) && !defined(pdp11)', so without it that file is an empty
+# translation unit and the link fails for want of main.  The -DCM_N shape with
+# the LOUD outcome, which is why no case is aimed at it.
+CFLOWFLAGS = -DFLEXNAMES -DUNIX5 -I$(MIPSRC) -I$(CFLOWSRC)
+
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/egrep $(BINDIR)/bc \
                    $(ROOTFS)/usr/lib/lib.b \
                    $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
-                   $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT) $(DES_BUILT)
+                   $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT) $(DES_BUILT) $(LINT_BUILT) $(CFLOW_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr egrep bc m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
                    $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \
-                   $(LINKED_INSTALL) $(HIST_INSTALL) $(DES_INSTALL)
+                   $(LINKED_INSTALL) $(HIST_INSTALL) $(DES_INSTALL) \
+                   $(LINT_INSTALL) $(CFLOW_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
@@ -3994,7 +4038,7 @@ $(DES_SHARED_OBJ) $(BUILD)/descrypt/encrypt.o $(BUILD)/descrypt/decrypt.o: \
 # A phony ALIAS over real files, not a recipe.  Nothing depends on this name
 # any more; the things that used to say `| rootfs` now name the files they
 # actually read, so make can tell when they change.
-rootfs: $(V8CC_DEPS) $(ROOTFS_YACCPAR) $(ROOTFS_NCFORM) $(ROOTFS_TERM) $(ROOTFS_FONT) $(ROOTFS_ETC) $(ROOTFS_DEV) $(ROOTFS)/usr/bin/macos
+rootfs: $(V8CC_DEPS) $(ROOTFS_YACCPAR) $(ROOTFS_NCFORM) $(ROOTFS_TERM) $(ROOTFS_FONT) $(ROOTFS_ETC) $(ROOTFS_DEV) $(ROOTFS)/usr/bin/macos $(ROOTFS)/usr/tmp
 
 # /dev/dk and /dev/pt are DIRECTORY targets, which is the one place that is
 # right: the rule against directory stamps elsewhere in this file is about a
@@ -4006,6 +4050,26 @@ $(ROOTFS)/dev/pt:
 	@mkdir -p $@
 $(ROOTFS)/dev/drum:
 	@mkdir -p $(@D) && : > $@
+
+# /usr/tmp is the same case -- the directory IS the artefact -- and it is a GAP
+# rather than a decision.  V8's tarball ships neither /tmp nor /usr/tmp because
+# both are empty runtime directories, the same reason it ships no /usr/adm and
+# no /etc/utmp; SIXTEEN V8 programs name /usr/tmp.  sort.c:42 is
+# `{"/usr/tmp", "/tmp", NULL}' and has been silently taking the fallback for
+# the life of this port, and lint.sh has no fallback at all.  THIS MAC HAS NO
+# /usr/tmp for the union to fall through to -- modern macOS deleted it -- so
+# the jail must supply its own.
+#
+# troff/n1.c took the other road and its PORT comment says /usr "is protected
+# by SIP so it cannot be made".  That is true of the HOST's /usr and does not
+# apply here: $(ROOTFS)/usr is an ordinary build-tree directory, and the mount
+# table's bare /usr/ is a UNION, so /usr/include and /usr/local still fall
+# through untouched.  Making the directory is what keeps lint.sh BYTE-IDENTICAL
+# to upstream, and S1 prefers that to a one-token change to authentic source.
+# troff is deliberately left alone: it works, and churning it would be a change
+# forced by tidiness rather than by the target.
+$(ROOTFS)/usr/tmp:
+	@mkdir -p $@
 
 # The 132 /dev/fd nodes, as STATIC PATTERN rules rather than one multi-target
 # rule.  The distinction is the one check-makefile.sh is about: a static pattern
@@ -4441,3 +4505,152 @@ $(ROOTFS)/usr/lib/grap.defines: $(GRAPSRC)/grap.defines
 
 $(ROOTFS)/usr/bin/grap: $(BUILD)/grap/grap
 	@mkdir -p $(@D) && cp $< $@
+
+# ---------------------------------------------------------------------------
+# lint(1) -- pcc1's C front end with lint's back end bolted on, which is the
+# whole reason this was recorded for months as unportable.
+#
+# The recorded blocker said lint1 was "shipped BINARY-ONLY".  It is not:
+# usr/src/cmd/lint/ carries 1043 lines of lint1.c plus lint2.c, lint.h,
+# macdefs and a makefile, and the seven objects it takes from ../pcc1/mip are
+# 6786 more.  AND THE f77 FINDING DOES NOT APPLY, which is the load-bearing
+# half: that finding is that pcc1's PASS 2 (mfile2) matches on SHAPES and
+# COOKIES where this port's pcc2 matches on TYPES, so UCtable.c cannot be
+# reused.  `mip' is machine-INDEPENDENT pass 1, and lint1 has no code
+# generator at all -- it writes .ln files, not assembly.  The blocker cited a
+# result about the half of pcc1 that lint1 does not use.
+#
+# Only the TEN files upstream's makefile names are imported.  mip has 29; the
+# other 19 are pass 2 and the Fortran front end, and an unconsumed component
+# invents a difference the tree does not have.
+#
+# ZERO SOURCE CHANGES, and two decisions of Berkeley's are why.  mfile1 spells
+# the parser's value type `typedef union { int intval; NODE *nodep; } YYSTYPE'
+# -- a real union with a POINTER arm, so it is eight bytes here and nothing
+# truncates, which is efl's `typedef int *ptr' reached by a different route.
+# And SZCHAR/SZINT/SZPOINT are `extern int' rather than #define: lint1.c:905
+# sets them from sizeof() in the compiler that BUILT it, so a v8cc-built lint
+# describes arm64 with no arm64 arm anywhere.  Compare f77's values.h, which
+# needed one.  PORTING.md has the four LP64 candidates and why each is latent.
+
+# Upstream runs yacc with NO -d, and that is not an oversight: cgram.y pins
+# every token number itself (`%term NAME 2'), because in pcc a token number IS
+# a tree operator number -- `manifest' declares the same list by hand for the
+# lexer and for NODE.in.op.  Two hand-maintained copies of one list, which is
+# efl's gram.c/tokens shape, so tests/wavea compares them as SETS IN BOTH
+# DIRECTIONS: two lists of the same length can differ and still both be right
+# about their length.
+$(BUILD)/lint/cgram.c: $(MIPSRC)/cgram.y $(YACC) $(ROOTFS_YACCPAR)
+	@mkdir -p $(BUILD)/lint
+	@cd $(BUILD)/lint && V8ROOT=$(ROOTFS) $(YACC) $(MIPSRC)/cgram.y
+	@mv $(BUILD)/lint/y.tab.c $@
+
+$(BUILD)/lint/cgram.o: $(BUILD)/lint/cgram.c $(V8CC_DEPS)
+	$(V8CCRUN) $(LINTFLAGS) -c -o $@ $<
+
+$(BUILD)/lint/%.o: $(MIPSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/lint
+	$(V8CCRUN) $(LINTFLAGS) -c -o $@ $<
+
+$(BUILD)/lint/lint1.o: $(LINTSRC)/lint1.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/lint
+	$(V8CCRUN) $(LINTFLAGS) -c -o $@ $<
+
+$(BUILD)/lint/lint2.o: $(LINTSRC)/lint2.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/lint
+	$(V8CCRUN) $(LINTFLAGS) -c -o $@ $<
+
+# Step 4 of the porting checklist.  mfile1, manifest and common are #include'd
+# NON-HEADERS -- invisible to a dependency scanner and to any *.c glob -- and
+# `macdefs' is a fourth, reached from mfile1 by quoted-include fall-through
+# rather than by being named in any source file at all.  That takes the tree's
+# list from 16 to 20.
+$(LINT1_OBJ) $(BUILD)/lint/lint2.o: $(MIPSRC)/mfile1 $(MIPSRC)/manifest \
+                                    $(LINTSRC)/macdefs
+$(BUILD)/lint/comm1.o: $(MIPSRC)/common
+$(BUILD)/lint/lint1.o $(BUILD)/lint/lint2.o: $(LINTSRC)/lint.h
+
+$(BINDIR)/lint1: $(LINT1_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(LINT1_OBJ) $(V8LIBS)
+	@echo "built $@"
+
+$(BINDIR)/lint2: $(BUILD)/lint/lint2.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/lint/lint2.o $(V8LIBS)
+	@echo "built $@"
+
+# The two .ln libraries are GENERATED by running the lint1 just built over the
+# llib description files, which is upstream's own rule.  The SHIPPED .ln files
+# are deliberately not used: lint1 and lint2 exchange raw structs through
+# fwrite/fread, so the format is whatever the compiler that built the pair
+# says it is -- and both ends are ours, which is the case where a width change
+# is safe.  A shipped VAX .ln read by an arm64 lint2 is the opposite case.
+#
+# NOT a pipeline, though upstream's is one: `cpp | lint1 > x.ln' puts the exit
+# status on lint1 and a failing cpp would leave a plausible short .ln behind.
+# Through a temporary for the same reason awk's proctab.c is -- a redirect
+# creates the file BEFORE the program runs, so a died-halfway generator leaves
+# an empty, freshly-dated target that the next make calls current.
+#
+# The -I is ours and upstream had no need of one: on a real V8 /usr/include
+# WAS the system's, and cpp has no built-in notion of $V8ROOT.  cc.c:112
+# builds exactly this flag for the same reason and cc.c:407 explains it --
+# but cc is not in this pipeline, so the flag has to be spelled again here.
+# cpp takes `input output' as POSITIONALS, so there is no redirect to lose
+# a status through.
+$(LINTLIB)/llib-%.ln: $(LINTSRC)/llib-% $(BINDIR)/lint1 $(ROOTFS_CPP)
+	@mkdir -p $(@D)
+	@V8ROOT=$(ROOTFS) $(ROOTFS_CPP) -C -Dlint $< $@.i -I$(ROOTFS)/usr/include
+	@V8ROOT=$(ROOTFS) $(BINDIR)/lint1 -v < $@.i > $@.tmp
+	@mv $@.tmp $@ && rm -f $@.i
+	@echo "built $@"
+
+$(LINTLIB)/lint1: $(BINDIR)/lint1
+	@mkdir -p $(@D) && cp $< $@
+$(LINTLIB)/lint2: $(BINDIR)/lint2
+	@mkdir -p $(@D) && cp $< $@
+$(LINTLIB)/llib-lc: $(LINTSRC)/llib-lc
+	@mkdir -p $(@D) && cp $< $@
+$(LINTLIB)/llib-port: $(LINTSRC)/llib-port
+	@mkdir -p $(@D) && cp $< $@
+
+# lint(1) itself is a SHELL SCRIPT -- it runs /lib/cpp into lint1 into lint2 --
+# so the installed file is upstream's source, the same as true/false/dirname.
+# It is in none of Admin's tables, so dest answers /usr/bin by fall-through and
+# both the shipped tree and lint's own makefile agree, which is why this adds
+# no fourth entry to the wavea disagreement set.
+$(ROOTFS)/usr/bin/lint: $(LINTSRC)/lint.sh
+	@mkdir -p $(@D) && cp $< $@ && chmod +x $@
+
+# ---------------------------------------------------------------------------
+# cflow(1) -- four small programs and a shell script, and the only reason it
+# was not here already is that it execs /usr/lib/lint/lint1 at RUN TIME.  Its
+# own build needs nothing of pcc1 but a HEADER: lpfx.c includes "manifest" for
+# the operator numbers, and its three other pcc includes (lerror.h, lmanifest,
+# lpass2.h) are COMMENTED OUT in upstream's source although cflow.mk still
+# lists them as prerequisites.
+#
+# Two upstream copies again, and the shipped artefact settles it: cflow.sh
+# exists at usr/src/cmd/cflow.sh (1610 bytes) AND usr/src/cmd/cflow/cflow.sh
+# (1601), and the second is BYTE-IDENTICAL to the shipped /usr/bin/cflow.
+# tests/wavea asserts that rather than leaving it to this comment.
+$(BUILD)/cflow/%.o: $(CFLOWSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/cflow
+	$(V8CCRUN) $(CFLOWFLAGS) -c -o $@ $<
+
+$(BUILD)/cflow/lpfx.o: $(MIPSRC)/manifest $(CFLOWSRC)/lint.h
+$(BUILD)/cflow/dag.o: $(CFLOWSRC)/lint.h
+
+$(BINDIR)/dag $(BINDIR)/lpfx $(BINDIR)/nmf $(BINDIR)/flip: \
+    $(BINDIR)/%: $(BUILD)/cflow/%.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $< $(V8LIBS)
+	@echo "built $@"
+
+$(ROOTFS)/usr/lib/dag $(ROOTFS)/usr/lib/lpfx $(ROOTFS)/usr/lib/nmf \
+$(ROOTFS)/usr/lib/flip: $(ROOTFS)/usr/lib/%: $(BINDIR)/%
+	@mkdir -p $(@D) && cp $< $@
+
+$(ROOTFS)/usr/bin/cflow: $(CFLOWSRC)/cflow.sh
+	@mkdir -p $(@D) && cp $< $@ && chmod +x $@

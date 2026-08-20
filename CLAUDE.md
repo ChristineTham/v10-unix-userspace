@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2701 cases, 2700 on a host whose $TMPDIR
+make test             # all 17 suites (2794 cases, 2793 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  Ends by checking that total against
                       # ARTICLE.md, so the number there cannot go stale again.
@@ -3778,6 +3778,129 @@ the opposite of the link families. All 19 files byte-identical to pristine V8.
   the suite is stricter.
 
 
+**AND `lint(1)` AND `cflow(1)` ARE IN -- 184 -> 186 -- WHICH TOOK TWO CHANGED
+LINES, AND THE BLOCKER THAT HELD THEM FOR MONTHS WAS A `ls` OF THE WRONG
+DIRECTORY.** `lint1` is pcc1's C front end with lint's back end bolted on: it
+links eight objects and **seven are `../pcc1/mip`'s**. Task #28 recorded it as
+*"shipped BINARY-ONLY in usr/lib/lint/"* -- which is the INSTALLED directory;
+`usr/src/cmd/lint/` has `lint1.c` (1043 lines), `lint2.c`, `lint.h`, `macdefs`
+and a makefile. 29 of the 30 imported files are byte-identical to pristine V8.
+`src/cmd/lint/PORTING.md`, `src/cmd/cflow/PORTING.md`. Eight things generalise:
+
+- **THE `vi`-IS-`ex` SHAPE, AND ITS DURABILITY IS THAT THE VERDICT WAS RIGHT.**
+  cflow genuinely could not be built, so nothing about the conclusion invited
+  re-reading the argument. This file already states the remedy -- *check whether
+  it is a LINK before recording it as sourceless* -- and the generalisation is
+  wider: **a correct answer to the wrong question is more durable than a wrong
+  one.**
+- **AND THE SECOND HALF WAS A REAL FINDING APPLIED TO THE WRONG HALF OF ITS
+  SUBJECT.** The blocker cited f77 stage 1's result that pcc1 and pcc2 are
+  different compilers -- true, and about **pass 2**, which matches on SHAPES and
+  COOKIES where ours matches on TYPES. `mip` is machine-INDEPENDENT pass 1 and
+  **lint1 has no code generator at all**; it writes `.ln` files. Ask of any
+  citation which PART of its subject it was about.
+- **ONE TYPEDEF AND ONE `extern int` REMOVE THE WHOLE LP64 SURFACE.**
+  `mfile1:142` is `typedef union { int intval; NODE *nodep; } YYSTYPE` -- a real
+  union with a POINTER arm, so nothing truncates; and `SZCHAR`/`SZINT`/`SZPOINT`
+  are `extern int` set from `sizeof()` at `lint1.c:916`, so a v8cc-built lint
+  describes arm64 with **no arm64 arm anywhere**, where f77's `values.h` needed
+  one written by hand. efl's verdict reached by two different routes.
+- **CLEARING A LINE FOR ONE HAZARD IS NOT CLEARING THE LINE.** My audit flagged
+  `lint1.c:1069`'s `(int) ftell` as a width question and pronounced it benign
+  under a 2GB temp file, which is true. The live defect at that exact site is a
+  **null `FILE *`**: `stmpfile` is opened by the `-S` option and by nothing
+  else, and upstream's own rule for the `.ln` libraries runs `lint1 -v` with no
+  `-S`. Two hazards, one line, and finding one is not finishing.
+- **AND `bycode()`, THE FUNCTION IMMEDIATELY ABOVE, TESTS `c >= 0 &&
+  stmpfile`.** The fix landing on one line while the line beside it keeps the
+  assumption, from the other side -- and the guard that was already there is
+  what says the author knew. Also: the VAX did not fault because `ftell` only
+  READS the FILE, which is this file's own read-versus-write rule for page 0.
+  The answer restored is **10**, upstream's own at `macdefs:56`, not the garbage
+  a VAX actually returned.
+- **A `-D` CAN SELECT WHICH ARM CARRIES THE BUG.** `fsave`'s `strcmp(s,
+  fsname.f.fn)` faults only under `-DFLEXNAMES`, because `lint.h:60` makes
+  `f.fn` a `char *` there and a `char fn[LFNM]` ARRAY otherwise -- and a static
+  array zero-initialises to the empty string and cannot fault. The `-DCM_N`
+  shape meeting the address-0 class.
+- **AND BOTH FIXES ARE GUARDED BY THE BUILD RATHER THAN BY A CASE**, measured:
+  reverting either makes `make` exit 139, because the build RUNS lint1 to
+  generate `llib-lc.ln`. neqn's `e.h` and cflow's `-DUNIX5` are the same
+  shape -- when a mutation fails the build, that is stronger than a test, and
+  no case should be written for it.
+- **THE FOUR LP64 CANDIDATES ARE ALL LATENT, MEASURED NOT ARGUED.**
+  `pftn.c:1698` and `lint2.c:221` both cast a pointer to a SIGNED `int` and
+  index an array with `% N` -- negative index the moment bit 31 lands. A V8
+  binary calling `malloc(4096)` forty times gave **zero negative**: the heap
+  sits just above the image base and would need 2GB. Recorded, not patched, per
+  S1. And a union whose FLEXNAMES arm was hand-sized equal to the fixed-name arm
+  in 1980 (`char *name; int stalign;` was 4+4) is 8+4 here, which moves
+  `in.stalign` off `stn.stalign` -- **not exercised**, both reached through
+  `stn` only, one site each.
+
+**AND `ulibfiles` IS THE FOURTH `Admin/dest` ARM AND THIS FILE PREDICTED THE DAY
+IT WOULD MATTER.** `tests/jail` carried *"the only thing that would notice the
+deliberately-omitted `ulibfiles` arm starting to matter"*, and lint is the first
+imported program in it. The omission is RIGHT: `man`, `spell` and `lint` are one
+install shape -- a script at `/usr/bin/NAME`, the machinery at `/usr/lib/NAME`,
+the name in `ulibfiles` -- and the table describes the machinery. Two things:
+
+- **A SET`s STATED CHARACTERISATION GOES STALE WHEN A SECOND SHAPE JOINS IT.**
+  The makefile-versus-dest set was described as *"every program upstream
+  installs somewhere other than /usr/bin without writing it in a table"*. lint
+  IS in a table, so it is the first entry of the OPPOSITE direction, and the
+  sentence became false without the count being wrong.
+- **AND THREE PROGRAMS OF ONE SHAPE LAND DIFFERENTLY ON THE ARITY OF ONE `cp`.**
+  `man` and `spell` are absent from that set because their machinery line is
+  SINGLE-source and the basename test reads it (`mv man /usr/lib`); lint`s is
+  `cp lint[12] llib* ${LINTDIR}`, MULTI-source, which the parser deliberately
+  skips after the `struct` false positive -- so lint falls through to its
+  `/usr/bin` script line instead.
+
+**AND THE SWEEP HAD A FOURTH BUG, AND THE FIRST FIX FOR IT CHANGED NOTHING.**
+cflow sets `BIN = $(ROOT)/usr/bin`, and the sweep reported **five** spurious
+disagreements at once. It already strips `DESTDIR` in both spellings, with a
+comment saying such a prefix is never a variable defined in the file; `ROOT` is
+the third spelling of that idea. **The strip has to go AFTER the expansion
+loop**, because `ROOT` is not in the install line at all -- it arrives only when
+`$(BIN)` is substituted, i.e. it is reached THROUGH a variable rather than
+written in the line. The first version sat beside the DESTDIR strips and was
+measured to change nothing. Fourth bug in that parser after `f[3]`, the
+directory-name one and the install-source one, and like two of those it was
+exposed by an IMPORT rather than by anyone reading it.
+
+**AND `/usr/tmp` WAS MISSING FROM THE JAIL, WITH A NEIGHBOURING PORT COMMENT
+GIVING A REASON THAT IS TRUE OF THE HOST AND IRRELEVANT INSIDE.** `lint.sh`
+names it; **sixteen V8 programs do**, and `sort.c:42` is
+`{"/usr/tmp", "/tmp", NULL}` and has been silently taking the fallback for the
+life of this port. V8's tarball ships neither `/tmp` nor `/usr/tmp` because both
+are empty RUNTIME directories, the same reason it ships no `/usr/adm` -- and
+**this Mac has no `/usr/tmp` at all** for the union to fall through to.
+`troff/n1.c` took the other road and its PORT comment says `/usr` *"is protected
+by SIP so it cannot be made"*: true of the HOST`s `/usr`, and `$(ROOTFS)/usr` is
+an ordinary build-tree directory whose bare `/usr/` mount is a UNION, so
+`/usr/include` still falls through. Making the directory is what keeps
+`lint.sh` byte-identical, which S1 prefers to a one-token source change. troff
+is deliberately left alone -- changing it would be forced by tidiness.
+
+**AND AN EDIT KEYED ON A VARIABLE NAME MATCHED THE COMMENT DOCUMENTING IT.**
+Adding `$(CFLOW_INSTALL)` beside `$(LINT_INSTALL)` replaced the FIRST occurrence
+of that name, which was in the sentence *"$(LINT_INSTALL) is consumed by..."* --
+so the install list never got it, `make` exited 0, and nothing was installed.
+That is the matching-its-own-documentation class this file records for SWEEPS,
+arriving in an EDIT: anchor a replacement on the recipe line, not on the name.
+The `DES_BUILT` trap`s cousin, and the fifth time an install list has silently
+expanded to nothing.
+
+**AND TWO OF MY OWN INSTRUMENTS WERE WRONG BEFORE ANY CODE WAS, BOTH ALREADY IN
+THIS FILE.** A provenance loop read `up hash` where PROVENANCE writes
+`hash  path`, and reported **"checked 0 files, 0 deviate"** -- which reads as
+clean and was caught only because the count was printed, `cites.awk`'s vacuity
+guard exactly. And a wavea case used `echo -n`, in a block whose own comment
+cites `where(1)`'s finding that macOS `/bin/sh`'s builtin echo does not take it;
+it printed `-n yes`. Third and fourth instances this session, after a `cd` that
+had drifted and a zsh `$F` that did not word-split.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
@@ -3867,7 +3990,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 173 installed**, stable. (It moves when something is imported,
+**286 shipped, 186 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.  This sentence said 150 for several batches while the
 guard kept ARTICLE.md exact — **a number with a test beside it stays current and

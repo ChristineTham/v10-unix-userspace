@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2761 tests across 17 suites** guard it.
+assembly. **2794 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end â€” and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **184** of the 286 V8 shipped, and the ones still missing mostly
+port installs **186** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -5236,6 +5236,80 @@ Three of the test programs were mine again, and all three were implicit typing â
 not in `I` through `N`. The standing rate is about three per corpus.
 
 ---
+
+## A blocker that was a bad `ls`
+
+`cflow(1)` had sat in the "cannot be done" column for months, with a reason
+written beside it: `lint1`, the C front end it needs at run time, was *"shipped
+BINARY-ONLY"*. That reason came from listing `usr/lib/lint/`, which is the
+**installed** directory. `usr/src/cmd/lint/` has 1043 lines of `lint1.c`, plus
+`lint2.c`, a header, a machine description and a makefile.
+
+This is a shape the project has met before and keeps failing to recognise in
+time: something recorded as missing that is sitting in the tree, unread. `vi`
+was filed as sourceless for months because `usr/src/cmd` has no directory of
+that name -- `vi` **is** `ex`. What makes this class durable is that the
+*verdict* is usually right. cflow genuinely could not be built. Nothing about a
+correct conclusion invites you to re-read the argument under it.
+
+The second half of the blocker was worse, because it was a real result applied
+to the wrong thing. An earlier step had established that pcc1 and this port's
+pcc2 are different compilers: pcc1's **pass 2** matches on shapes and cookies
+where pcc2 matches on types, so its instruction-selection table cannot be
+reused. True, and cited. But `lint1` has no code generator at all -- it writes
+`.ln` intermediate files, not assembly -- and the seven objects it takes from
+pcc1 are all **pass 1**, which is machine-independent. The blocker cited a
+finding about the half of pcc1 that lint does not use.
+
+So `lint` and `cflow` are in, and the whole port needed **two changed lines**.
+29 of the 30 imported files are byte-identical to pristine V8.
+
+Two decisions of Berkeley's are why. The parser's value type is a real union
+with a pointer arm -- `union { int intval; NODE *nodep; }` -- so a semantic
+value is eight bytes here and nothing truncates; and the type sizes lint
+reports are `extern int` set from `sizeof()` at startup rather than compiled-in
+constants, so a lint built by our compiler describes our machine with no
+machine-specific arm anywhere. Read the central typedef before costing the
+audit: it is the difference between eight defects and none.
+
+Both changed lines are the same bug: reading address 0. On a VAX the text
+segment started there, so a null pointer dereference read the first bytes of
+the program rather than trapping. `fsave` compares a filename against a static
+`char *` that is null on the first call; `getlab` calls `ftell` on a temp file
+that upstream's own build rule never opens. The second is the more interesting
+one, because **the function immediately above it guards the same variable** --
+`if (c >= 0 && stmpfile)` -- and this one guarded nothing. The fix landing on
+one line while the line beside it keeps the assumption is the single most
+repeated shape in this project's notes.
+
+And the repair is to the VAX's *answer*, not merely to the absence of the
+fault. Address 0 in these binaries holds a zero byte, so the VAX's `strcmp` was
+comparing against the empty string and taking the branch it was supposed to
+take. For `getlab` the VAX returned garbage that nothing looked at -- so the
+answer restored is not that garbage but **10**, which is what upstream's own
+machine description expands `getlab()` to when the feature is compiled out.
+When you fix one of these, the question is not "what stops it crashing" but
+"what did the machine this was written for actually do".
+
+The audit before building found four more candidates and every one is
+**latent**: two hash sites cast a pointer to a signed `int` and index an array
+with the result, which would be an out-of-bounds read the moment the top bit
+lands. Measured with a V8 binary calling `malloc` forty times -- zero negative,
+because the heap sits just above the image base and would need two gigabytes to
+reach that bit. Recorded rather than patched: a change to authentic source has
+to be forced by the target, and this one is not, yet.
+
+The nicest small finding was in the test suite rather than the code. A sweep
+that compares each imported makefile against Bell Labs' install tables reported
+five new disagreements at once, all of them spurious -- `cflow` sets
+`BIN = $(ROOT)/usr/bin`, and `ROOT` is a staging prefix supplied from outside
+that the sweep did not strip. It already stripped `DESTDIR`, twice, in both
+spellings, with a comment explaining that such a prefix is never a variable
+defined in the file. `ROOT` is the third spelling of that idea. The first fix
+put the strip beside the other two and **changed nothing**, because `ROOT`
+arrives only when `$(BIN)` is expanded -- it is reached *through* a variable
+rather than written in the line. That had to be measured; reading the code had
+already produced the wrong answer once.
 
 ## The thing this project keeps teaching
 

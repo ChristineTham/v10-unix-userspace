@@ -1,0 +1,18 @@
+# Provenance for v8/src/cmd/cflow
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+a4777073ac2886f4bf54e0779adc4b4244c2fd77  v8/usr/src/cmd/cflow/cflow.sh
+4aabbc093a01ae9fb3f9fb6abf74711f74ad1bdb  v8/usr/src/cmd/cflow/nmf.c
+d551d784a22ed6246c99a5ff208fa3fbe9729caa  v8/usr/src/cmd/cflow/cflow.mk
+548956f854a9571dca079a72aab99a9d3e7421b6  v8/usr/src/cmd/cflow/Makefile
+abb98fadbec56358fdf19471329097eb6ef77dcb  v8/usr/src/cmd/cflow/cf
+7834fc06276d70f553cbf5da27b81b1893bdc629  v8/usr/src/cmd/cflow/lint.sh
+7fcc741424eb10c25c403b3144a98a8ef06921e8  v8/usr/src/cmd/cflow/README
+81679acb9cedaab5a4d1ce8d8394c6c00b0ae2ab  v8/usr/src/cmd/cflow/dag.c
+1eee523ab8c16288514482bed237e9fa31f0aabd  v8/usr/src/cmd/cflow/lint.h
+af2cd2cd11c4ff69826b73f6dea804bd1d6ed977  v8/usr/src/cmd/cflow/flip.c
+d444a45cf49ac09d4a675a2510fff3a29c61533b  v8/usr/src/cmd/cflow/li
+3a6b4689cc2c9295b49057c0d6e3f10962711222  v8/usr/src/cmd/cflow/lpfx.c

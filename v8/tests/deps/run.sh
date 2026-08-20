@@ -267,6 +267,50 @@ dep 'descrypt crypt.h'         src/cmd/descrypt/crypt.h        $B/descrypt/des.o
 dep 'descrypt getpass -> encrypt' $B/descrypt/getpass.o        $B/bin/encrypt
 dep 'descrypt des -> decrypt'  $B/descrypt/des.o               $B/bin/decrypt
 
+# lint: FOUR #include'd non-headers, which is step 4 of the porting checklist
+# and takes the tree's list from 16 to 20.  `mfile1', `manifest' and `common'
+# are named in a source file and are invisible to a dependency scanner because
+# they have no extension; `macdefs' is worse -- NO SOURCE FILE NAMES IT AT ALL.
+# mfile1 includes "macdefs", mip has none, and the quoted include falls through
+# to -I$(LINTSRC).  An edge is the only thing that can state that.
+dep 'lint mfile1 -> pftn.o'    src/cmd/pcc1/mip/mfile1         $B/lint/pftn.o
+dep 'lint manifest -> trees.o' src/cmd/pcc1/mip/manifest       $B/lint/trees.o
+dep 'lint macdefs -> scan.o'   src/cmd/lint/macdefs            $B/lint/scan.o
+dep 'lint common -> comm1.o'   src/cmd/pcc1/mip/common         $B/lint/comm1.o
+dep 'lint.h -> lint1.o'        src/cmd/lint/lint.h             $B/lint/lint1.o
+dep 'lint.h -> lint2.o'        src/cmd/lint/lint.h             $B/lint/lint2.o
+
+# The grammar chain.  Upstream runs yacc with no -d because cgram.y pins every
+# token number itself, so there is no y.tab.h in this one and the chain is two
+# edges rather than three.
+dep 'lint grammar -> cgram.c'  src/cmd/pcc1/mip/cgram.y        $B/lint/cgram.c
+dep 'lint cgram.c -> object'   $B/lint/cgram.c                 $B/lint/cgram.o
+
+# THE .ln LIBRARIES ARE MADE BY RUNNING THE BINARY THIS BUILD JUST LINKED,
+# which is awk's maketab shape: lint1 is a build tool AND an installed program.
+# The edge that matters is lint1 -> llib-lc.ln, because a stale lint1 writes a
+# .ln in a format lint2 cannot read and nothing in the exit status says so.
+dep 'lint1 -> llib-lc.ln'      $B/bin/lint1                    rootfs/usr/lib/lint/llib-lc.ln
+dep 'llib-lc -> llib-lc.ln'    src/cmd/lint/llib-lc            rootfs/usr/lib/lint/llib-lc.ln
+dep 'lint1 -> installed copy'  $B/bin/lint1                    rootfs/usr/lib/lint/lint1
+dep 'lint.sh -> installed'     src/cmd/lint/lint.sh            rootfs/usr/bin/lint
+
+# NOT an edge, and the first draft of this case was WRONG in the instructive
+# direction: it named mfile1, which IS a prerequisite of lint2.o because this
+# Makefile declares it, so the case went red on the run that added it.  What
+# was meant is that the llib DESCRIPTIONS are inputs to the .ln generation and
+# not to any compile -- a sloppy `$(LINT1_OBJ): $(LINTSRC)/*' would make every
+# object depend on them, and only a negative control can see that.
+nodep 'llib-lc is not a compile input' src/cmd/lint/llib-lc    $B/lint/lint1.o
+nodep 'llib-port is not a compile input' src/cmd/lint/llib-port $B/lint/lint2.o
+
+# cflow.  lpfx is the only one of the four that needs anything of pcc1, and it
+# needs a HEADER rather than an object -- "manifest", for the operator numbers.
+dep 'cflow manifest -> lpfx.o' src/cmd/pcc1/mip/manifest       $B/cflow/lpfx.o
+dep 'cflow lint.h -> dag.o'    src/cmd/cflow/lint.h            $B/cflow/dag.o
+dep 'cflow dag -> installed'   $B/bin/dag                      rootfs/usr/lib/dag
+dep 'cflow.sh -> installed'    src/cmd/cflow/cflow.sh          rootfs/usr/bin/cflow
+
 # --- the rootfs the driver actually links against ---------------------------
 # Staleness incident #4: `make libv8c` refreshed build/ but not the copy under
 # rootfs/lib that cc links, so spell's sscanf kept reaching the host's.
