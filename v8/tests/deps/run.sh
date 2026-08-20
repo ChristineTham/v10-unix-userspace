@@ -257,6 +257,16 @@ dep 'neqn tables -> e.def'     $B/neqn/y.tab.c                 $B/neqn/e.def
 dep 'neqn e.def -> object'     $B/neqn/e.def                   $B/neqn/lex.o
 dep 'neqn -> installed copy'   $B/neqn/neqn                    rootfs/usr/bin/neqn
 
+# descrypt: upstream's own dependency line is `$(OBJS) encrypt.o decrypt.o:
+# crypt.h'.  The getpass edge is the one worth having -- that object is a T/T
+# duplicate against libv8c's getpass, and it is built in because Berkeley's
+# truncates a passphrase to eight characters.  No behavioural case can see it
+# (getpass is only reached without -p, i.e. from a terminal), so this edge and
+# src/cmd/descrypt/PORTING.md are its whole guard.
+dep 'descrypt crypt.h'         src/cmd/descrypt/crypt.h        $B/descrypt/des.o
+dep 'descrypt getpass -> encrypt' $B/descrypt/getpass.o        $B/bin/encrypt
+dep 'descrypt des -> decrypt'  $B/descrypt/des.o               $B/bin/decrypt
+
 # --- the rootfs the driver actually links against ---------------------------
 # Staleness incident #4: `make libv8c` refreshed build/ but not the copy under
 # rootfs/lib that cc links, so spell's sscanf kept reaching the host's.

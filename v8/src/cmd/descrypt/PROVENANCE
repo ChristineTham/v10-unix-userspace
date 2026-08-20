@@ -1,0 +1,25 @@
+# Provenance for v8/src/cmd/descrypt
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+3cad90526b2165e8d44c634dfe0981e2e7116854  v8/usr/src/cmd/descrypt/CIPHERTEST
+4fe22985cecf93dab10ac8e7749bd4de03998e05  v8/usr/src/cmd/descrypt/newcrypt.1
+25e0f2a97acb1e075e745d5e7d61aa78864d568f  v8/usr/src/cmd/descrypt/genSP.c
+4958908e11fec6d1ba192c9a99a9ac244a2ad40b  v8/usr/src/cmd/descrypt/crunch.c
+a941ea4ac1f758d2cc51d33507ee33289d8aeca0  v8/usr/src/cmd/descrypt/randblock.c
+c65462fa38ac3137e46719212c86a6701471b90f  v8/usr/src/cmd/descrypt/des.c
+837122947baec9d08ab7c0e79f2bd02c04583e67  v8/usr/src/cmd/descrypt/io.c
+2a3b54b56d99e72e8b502977c282891c6d18bb2b  v8/usr/src/cmd/descrypt/encrypt.c
+b4dedd6d13b208b8c70913d03db9daf7d8645fcc  v8/usr/src/cmd/descrypt/Makefile
+40884beb0195ac5ef4efe40d3b2ee845a3394187  v8/usr/src/cmd/descrypt/README
+0b58bde07c6b465b9da5ae4d65504298d606d14b  v8/usr/src/cmd/descrypt/getpass.c
+d1985323eadd2e8eaabe0e5487fa88780cab298b  v8/usr/src/cmd/descrypt/setup.c
+5fe1ff31f5b9916961b18e9e51bf594d69ff7cdf  v8/usr/src/cmd/descrypt/crypt.h
+8b51c4a10a5862bece8b565454fb13b1ba57843e  v8/usr/src/cmd/descrypt/permute.c
+1ee25e02f11a84b802aafbad186f9cf330952a85  v8/usr/src/cmd/descrypt/SP.c
+f3f887db55454bd50a060c451a052dfa2e285f32  v8/usr/src/cmd/descrypt/decrypt.c
+9af296af132bc64fe1565f946739a302ed827f19  v8/usr/src/cmd/descrypt/alpha.c
+d166e07ef295fec4d288f6e57ca74f624db38363  v8/usr/src/cmd/descrypt/getpass.USG
+6a48c626868f52c1e257f99e9e5e60162071a2b0  v8/usr/src/cmd/descrypt/keysetup.c

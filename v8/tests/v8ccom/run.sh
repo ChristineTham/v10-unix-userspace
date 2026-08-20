@@ -1125,7 +1125,17 @@ INTFNS='_strlen _dysize _slength _maplow _length _width _sgn _roman _decml
         _getnum _getsigned
         _blklen
         _conval
+        _getuid
         _f77args _f77frame'
+# `_getuid' is the syscall, and it is here rather than declared because it
+# genuinely returns an int: this port keeps getuid(2) RAW on purpose -- every
+# 16-bit FIELD is folded by v8_foldid(), while getuid is a value flowing back
+# OUT to the host, and mv.c:56's `setuid(getuid())' is why.  The site that
+# surfaced it is descrypt's randblock.c, `NEXT(getpid() + (getuid() << 16))',
+# and the shift is what forces the result to be materialised as a 32-bit
+# quantity: `setuid(getuid())' passes it straight on, so v8cc emits no
+# truncation there and the sweep had never seen the name before.
+#
 # `_f77args' and `_f77frame' are src/cmd/f77/arm64.c -- the spilled-argument
 # area and the frame, in BYTES, sized to the procedure being compiled.  They
 # were constants until the frame stopped being the worst case, and turning a

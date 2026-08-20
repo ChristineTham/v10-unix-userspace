@@ -3178,19 +3178,28 @@ B2D_BUILT   = $(patsubst %,$(BINDIR)/%,$(B2D_NAMES) $(CAL_BIN))
 B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
               $(ROOTFS)/usr/lib/libl.a
 
+# ...and descrypt's two, for the same reason and by the same rule.  Defining
+# these beside their rules (some 800 lines below) made $(DES_BUILT) expand to
+# the empty string here, so `make' built nothing, installed nothing and exited
+# 0 -- the FOURTH time this file has recorded that trap, and the first where
+# the guard for it already existed: `make -n --warn-undefined-variables' names
+# all three uses, and tests/deps fails on any such warning.
+DES_BUILT   = $(BINDIR)/encrypt $(BINDIR)/decrypt
+DES_INSTALL = $(call v8install,encrypt decrypt)
+
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/egrep $(BINDIR)/bc \
                    $(ROOTFS)/usr/lib/lib.b \
                    $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
-                   $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT)
+                   $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT) $(DES_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr egrep bc m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
                    $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \
-                   $(LINKED_INSTALL) $(HIST_INSTALL)
+                   $(LINKED_INSTALL) $(HIST_INSTALL) $(DES_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
@@ -3923,6 +3932,60 @@ $(BUILD)/neqn/%.o: $(NEQNSRC)/%.c $(BUILD)/neqn/e.def $(V8CC_DEPS)
 	@mkdir -p $(BUILD)/neqn
 	$(V8CCRUN) -DNEQN -I$(BUILD)/neqn -I$(NEQNSRC) -c -o $@ $<
 $(NEQN_OBJ): $(NEQNSRC)/e.h
+
+# encrypt(1) and decrypt(1) -- two programs from one directory, which is
+# pack/unpack's shape: ten shared objects plus a main each.  Both are in none
+# of Admin's tables, so dest answers /usr/bin by fall-through and the shipped
+# tree agrees (usr/bin/{encrypt,decrypt}, 18432 bytes each and NOT identical --
+# two real programs that happen to be the same size, unlike the link families).
+#
+# ZERO SOURCE CHANGES, and that is the finding rather than the absence of one.
+# crypt.h says "bit 31 is the high-order bit (sign bit on VAX) of block.left"
+# and declares `typedef struct Block { long left, right; }' -- so a DES block
+# is two 32-bit halves on the machine this was written for, and here `long' is
+# eight bytes and Block is 16 rather than 8 (measured).  des.c then builds its
+# rotate out of `(right << 1) | ((right >> 31) & 1)', which reads as the
+# daddr_t/NOLONG class at its most alarming.  It is not: EVERY field extraction
+# in the round function is MASKED (`temp & 0x3f', `(temp & 0x3f0) >> 4', ...),
+# so a stray bit 32 is never read, and io.c packs and unpacks bytes explicitly.
+# The width is invisible to the algorithm by construction.
+#
+# Measured rather than argued, with the author's own acceptance test: the
+# directory ships CIPHERTEST and README says "decrypt -p testkeyword <
+# CIPHERTEST should result in readable text".  It does, and what comes out is
+# the README itself -- bit-exact interop with a 1983 VAX.  That is a stronger
+# statement than any round trip, because a consistently-wrong implementation
+# round-trips with itself perfectly.
+#
+# getpass.o IS BUILT IN DELIBERATELY, and it is a T/T duplicate against
+# libv8c's.  Upstream ships its own because Berkeley's truncates at EIGHT
+# characters -- `static char pbuf[9]' against this one's [128], with README
+# saying so in as many words.  The program's own object is on the link line, so
+# the archive member is never pulled and the resolution is silent and correct;
+# dropping it would compile, link and quietly cut every passphrase to 8
+# characters.  src/cmd/descrypt/PORTING.md.
+DESSRC = $(SRC)/cmd/descrypt
+DES_SHARED = SP io keysetup crunch des permute randblock setup getpass alpha
+DES_SHARED_OBJ = $(patsubst %,$(BUILD)/descrypt/%.o,$(DES_SHARED))
+
+$(BUILD)/descrypt/%.o: $(DESSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -I$(DESSRC) -c -o $@ $<
+$(BINDIR)/encrypt: $(BUILD)/descrypt/encrypt.o $(DES_SHARED_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o \
+	    $(BUILD)/descrypt/encrypt.o $(DES_SHARED_OBJ) $(V8LIBS)
+$(BINDIR)/decrypt: $(BUILD)/descrypt/decrypt.o $(DES_SHARED_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o \
+	    $(BUILD)/descrypt/decrypt.o $(DES_SHARED_OBJ) $(V8LIBS)
+# Upstream's own dependency line: `$(OBJS) encrypt.o decrypt.o: crypt.h'.
+$(DES_SHARED_OBJ) $(BUILD)/descrypt/encrypt.o $(BUILD)/descrypt/decrypt.o: \
+	$(DESSRC)/crypt.h
+# DES_BUILT and DES_INSTALL are NOT defined here.  They are up beside
+# B2D_NAMES, above V8DIRBIN_BUILT, because make expands a variable in a
+# prerequisite when it READS the rule -- see the note there.  Defining them at
+# this point built nothing and exited 0.
 
 # ---------------------------------------------------------------------------
 # rootfs -- the V8-shaped tree v8cc runs out of.  $V8ROOT points here.

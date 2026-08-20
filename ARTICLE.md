@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2753 tests across 17 suites** guard it.
+assembly. **2761 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **182** of the 286 V8 shipped, and the ones still missing mostly
+port installs **184** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -5963,6 +5963,46 @@ was global. Nothing in the program refers to it, so nothing is emitted for it.
 Widening it would have been a change nothing forced, and would have quietly
 implied the symbol was real, so it is left exactly as written with the
 measurement recorded beside it.
+
+### A test written in 1983 for exactly this question
+
+The 183rd and 184th commands are `encrypt` and `decrypt` — file encryption
+written by Don Mitchell in 1983. They needed no changes at all, and the reason
+they are worth writing up is the fault that *should* have been there.
+
+The header defines the unit the cipher works on as a pair of machine
+integers, with a comment saying which bit is the sign bit "on VAX". That is a
+statement that each half is exactly thirty-two bits wide, and on this machine
+the type it uses is sixty-four — so the structure is twice the size it was, and
+the code rotates its halves with shifts that name the number 31 directly. Every
+instinct this project has built up says that is broken.
+
+It is not, and the reason is a discipline in how the code reads its own values.
+Every time the cipher pulls a field out of a half, it masks it first. The extra
+bits at the top are never looked at, the byte stream is packed and unpacked one
+byte at a time rather than by reinterpreting the structure, and so the
+algorithm does not depend on the width of the thing holding it. This is the
+mirror of something recorded earlier here about a Fortran-related program,
+where a single type being already the right size meant twelve thousand lines
+had no exposure at all. Here it is not the type but the habit. Read how a value
+is *used* before costing a change to what holds it.
+
+What settles it is not that argument. The source directory ships a file of
+ciphertext with a note from the author: it is provided so you can check the
+code works on your machine, and decrypting it with a stated key should produce
+readable text. It does, and what comes out is the note itself. That is exact
+interoperability with a machine retired decades ago, and it is a much stronger
+result than encrypting something and decrypting it again — a program that is
+consistently wrong will always agree with itself.
+
+Two smaller things came out of it. The build silently produced nothing and
+reported success, because a variable was defined below the line that used it —
+a trap this project's build file warns about in a comment, now hit for the
+fourth time, and the first time there was already a check in place that names
+it. And the automated sweep that looks for values quietly cut in half found one
+the hand audit had missed: not a pointer, which is what I was looking for, but
+an ordinary integer-returning system call the sweep insists must be on a known
+list. It was right to insist.
 
 ---
 

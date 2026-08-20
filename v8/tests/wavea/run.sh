@@ -818,8 +818,9 @@ for d in "$ROOT"/src/cmd/*/; do
 	# than reworded.  hpplot is still absent (libcurses is unported) and that
 	# is asserted separately below.
 	case "$name" in
-	hist) want='= ==' ;;	# cmd/hist installs /usr/bin/= and a link, ==
-	*)    want=$name ;;
+	hist)     want='= ==' ;;	# cmd/hist installs /usr/bin/= and a link, ==
+	descrypt) want='encrypt decrypt' ;;	# two programs, one directory
+	*)        want=$name ;;
 	esac
 	for w in $want; do
 		find "$V8ROOT" -name "$w" -type f -perm -u+x 2>/dev/null | grep -q . ||
@@ -2239,6 +2240,51 @@ check 'plot -Ttek renders through tek' 'yes' \
 check 'plot names a terminal it cannot render' \
     'plot: terminal type -Tnosuch not known' \
     "$(plotrun -Tnosuch < /dev/null 2>&1)"
+
+# encrypt/decrypt -- and the first case is THE AUTHOR'S OWN ACCEPTANCE TEST.
+# src/cmd/descrypt ships CIPHERTEST with README saying "provided to insure
+# that this code performs correctly on your machine ... decrypt -p testkeyword
+# < CIPHERTEST should result in readable text".  What comes out is the README
+# itself, so this is bit-exact interop with a 1983 VAX -- a far stronger claim
+# than a round trip, because an implementation that is consistently wrong
+# round-trips with itself perfectly.
+#
+# It matters here more than it would elsewhere: crypt.h declares a DES block as
+# two `long' halves and says "bit 31 is the high-order bit (sign bit on VAX)",
+# and `long' is EIGHT bytes here, so sizeof(Block) is 16 against the author's
+# 8.  The program is correct anyway because every field extraction is masked --
+# src/cmd/descrypt/PORTING.md -- and this case is what says so rather than the
+# paragraph.
+CIPHER=$ROOT/src/cmd/descrypt/CIPHERTEST
+encbin=$(v8which encrypt); decbin=$(v8which decrypt)
+check 'decrypt reproduces the 1983 CIPHERTEST' \
+    'The file, CIPHERTEST, is provided to insure that this code performs' \
+    "$("$decbin" -p testkeyword < "$CIPHER" 2>/dev/null | head -1)"
+
+# Round trip, and the negative control beside it.  Either alone is weak: a
+# program that ignored the key entirely would round-trip perfectly.
+printf 'attack at dawn\n' > desp.txt
+"$encbin" -p testkeyword < desp.txt > desp.enc 2>/dev/null
+check 'encrypt then decrypt returns the input' 'yes' \
+    "$("$decbin" -p testkeyword < desp.enc 2>/dev/null | cmp -s - desp.txt && echo yes)"
+check 'a different key does not return the input' 'yes' \
+    "$("$decbin" -p wrongkeyword < desp.enc 2>/dev/null | cmp -s - desp.txt || echo yes)"
+
+# Key material past EIGHT characters must matter.  This is the neighbouring
+# property to the getpass question -- upstream builds its own getpass because
+# Berkeley's truncates a passphrase at eight, and -p bypasses getpass so no
+# case can reach that code -- but a key schedule that dropped the tail would
+# look identical from here, and does not.
+"$encbin" -p testkeyw < desp.txt > desp8.enc 2>/dev/null
+check 'the key is not truncated at eight characters' 'yes' \
+    "$(cmp -s desp.enc desp8.enc || echo yes)"
+
+# encrypt and decrypt are TWO PROGRAMS, not a link -- the shipped pair is
+# 18432 bytes each and not byte-identical, so the inode families' idiom would
+# be the wrong assertion here.  Two names, two inodes.
+check 'encrypt and decrypt are two inodes' '2 2' \
+    "$(cd "$V8ROOT/usr/bin" && ls -i encrypt decrypt 2>/dev/null |
+       awk '{n++; ino[$1]=1} END {d=0; for (k in ino) d++; print n+0, d}')"
 
 # ---------------------------------------------------------------------------
 # Wave A2 batch 2d -- seven programs and a library.  The batch was scoped as

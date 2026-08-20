@@ -3714,6 +3714,70 @@ built both**. `src/cmd/neqn/PORTING.md`. Five things generalise:
   the mutation was run, which is the standing reason to run one.
 
 
+**AND `encrypt`/`decrypt` ARE IN -- 182 -> 184 -- WITH ZERO SOURCE CHANGES AND
+AN LP64 DEFECT THAT IS NOT THERE, WHICH ONLY MEASURING COULD HAVE SETTLED.**
+Don Mitchell's 1983 DES, two programs from one directory (`pack`/`unpack`'s
+shape), both `/usr/bin` by fall-through, and the shipped pair is 18432 bytes
+EACH and **not** byte-identical -- two real programs the same size, which is
+the opposite of the link families. All 19 files byte-identical to pristine V8.
+`src/cmd/descrypt/PORTING.md`. Five things generalise:
+
+- **THE SOURCE STATES THE WIDTH AND IS STILL RIGHT AT THE WRONG ONE.**
+  `crypt.h` is `typedef struct Block { long left, right; }` with the author's
+  own comment *"bit 31 is the high-order bit (sign bit on VAX)"*, and `des.c`
+  rotates with `(right << 1) | ((right >> 31) & 1)`. Measured: `sizeof(long)`
+  8 and `sizeof(Block)` **16** against the VAX's 4 and 8, so every instinct
+  this file has built says `daddr_t`/`NOLONG`. It is correct anyway, because
+  **every field extraction is masked** (`temp & 0x3f`, `(& 0x3f0) >> 4`, up to
+  `& 0x3f000000`), the halves are rebuilt each round from 32-bit S-box values,
+  and `io.c` packs bytes explicitly rather than reinterpreting the struct. The
+  stray bit 32 is never read. `efl`'s lesson from the other side: there one
+  typedef being already pointer-sized meant no LP64 surface at all; here it is
+  not the type but the HABIT. **Read how a value is USED before costing a width
+  change** -- the declaration is not the claim.
+- **THE AUTHOR SHIPPED THE ACCEPTANCE TEST, AND IT IS THE RIGHT ONE FORTY
+  YEARS LATER.** `CIPHERTEST` plus a README saying *"provided to insure that
+  this code performs correctly on your machine"*. `decrypt -p testkeyword` on
+  it yields the README itself -- bit-exact interop with a 1983 VAX. **When an
+  imported directory ships a known-answer file, that is the acceptance test and
+  it outranks anything you would write**, because it is the only case that can
+  see a consistently-wrong implementation.
+- **AND MUTATION PROVED THAT RATHER THAN LEAVING IT A SENTENCE.** Perturbing
+  the rotate to `>> 30` breaks the cipher in BOTH programs, since they share
+  `des.o`: the CIPHERTEST case goes red and **the round-trip case stays
+  GREEN**, with the wrong-key and key-length ones. A round trip is a test of
+  self-consistency and nothing else. Add it to the negative-control family
+  beside `%#g` and the `.ne` pair.
+- **A DELIBERATE T/T DUPLICATE, WHOSE ONLY GUARD IS A MAKE EDGE.** Upstream
+  builds its own `getpass.o` although `libv8c` defines `getpass`, because
+  Berkeley's truncates a passphrase at EIGHT characters -- `pbuf[9]` against
+  `pbuf[128]`, and the README says so. The program's object is on the link line
+  so the archive member is never pulled; the resolution is silent and correct.
+  Measured by dropping it: **the build succeeds, `wavea` reports 483 passed and
+  0 failed**, and only the `tests/deps` edge fires -- because `-p` bypasses
+  `getpass` entirely, so no behavioural case can reach it. **When a duplicate
+  is resolved by link ORDER, the make edge is the whole guard**, and the thing
+  to test beside it is the neighbouring observable property (here: that the key
+  schedule uses material past the eighth character).
+- **AND THE `define-above-first-use` TRAP FIRED FOR THE FOURTH TIME, SILENTLY,
+  WITH ITS GUARD ALREADY STANDING.** `DES_BUILT` was defined beside its rules
+  and used 800 lines earlier in `V8DIRBIN_BUILT`, so it expanded to the empty
+  string: `make` built nothing, installed nothing and **exited 0**. What is new
+  is that `make -n --warn-undefined-variables` names all three uses and
+  `tests/deps` fails on any such warning -- so the guard was there and I had
+  simply not run it yet. **Run the cheap guard before the expensive one**: the
+  full suite takes minutes and would have said the same thing.
+- **AND THE ROOTFS-WIDE TRUNCATION SWEEP CAUGHT WHAT MY HAND AUDIT DID NOT.**
+  I swept for undeclared POINTER returns, per the checklist, and came back
+  clean. `tests/v8ccom` failed on `_getuid` -- an INT-returning syscall, which
+  the sweep requires to be on a known list rather than merely harmless. The
+  site is `randblock.c`'s `NEXT(getpid() + (getuid() << 16))`, and **the shift
+  is what forces it**: `mv.c:56`'s `setuid(getuid())` passes the result
+  straight on, so v8cc materialises nothing and the name had never been seen.
+  The checklist's grep and the suite's sweep are not the same instrument, and
+  the suite is stricter.
+
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
