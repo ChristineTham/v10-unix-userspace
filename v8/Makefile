@@ -2166,7 +2166,37 @@ HIST_INSTALL = $(call v8install,$(EQNAME) $(EQQNAME))
 # "v8generic") and which nothing here had imported.  It goes to $(SRC)/etc and
 # reaches the rootfs through the $(ROOTFS)/etc/% generator with no rule of its
 # own -- the same route /etc/termcap takes.
-V8SCRIPT          = true false nohup dirname whois bundle where plot
+# ...AND NINE MORE, FOUND BY AUDITING THE MISSING SET RATHER THAN BY LOOKING
+# FOR THEM.  All nine are shipped-only -- no usr/src copy -- so the installed
+# file IS the source and they land in $(SRC)/bin, except mklost+found which is
+# in Admin/etcfiles and goes to $(SRC)/etc.  Every dependency was already
+# installed; nothing here needed compiling.
+#
+# 2,3,4,5,6 ARE ONE PROGRAM WITH FIVE NAMES: each is the 44-byte
+# `exec /bin/pr -t -w78 -l${PAGESIZE-1} -$0 $*', and `$0' IS THE COLUMN COUNT
+# -- so the program reads its own name to decide what to do, which is
+# compress/uncompress/zcat's trick in a shell script.  git records ONE blob for
+# all five with five inodes, so upstream linked them and the tarball lost the
+# links, exactly as it did for pcat/unpack.  They are installed as five copies
+# for that reason and tests/wavea asserts the SHARED BEHAVIOUR rather than an
+# inode, because five identical copies are what the archive actually holds.
+#
+# `tel' IS THE SECOND PLACE THE OMITTED ulibfiles ARM WOULD HAVE BEEN WRONG.
+# It is in ulibfiles and in no other table, so Bell Labs' own Admin/dest
+# answers /usr/lib -- and the shipped tree has /usr/bin/tel.  v8dest does not
+# consult ulibfiles and therefore agrees with the tree.  lint was the first
+# such case; this is the second, and both say the omission is right.
+V8SCRIPT          = true false nohup dirname whois bundle where plot \
+                    2 3 4 5 6 doctype tel pick mklost+found
+scriptsrc_2       = $(SRC)/bin/2
+scriptsrc_3       = $(SRC)/bin/3
+scriptsrc_4       = $(SRC)/bin/4
+scriptsrc_5       = $(SRC)/bin/5
+scriptsrc_6       = $(SRC)/bin/6
+scriptsrc_doctype = $(SRC)/bin/doctype
+scriptsrc_tel     = $(SRC)/bin/tel
+scriptsrc_pick    = $(SRC)/bin/pick
+scriptsrc_mklost+found = $(SRC)/etc/mklost+found
 scriptsrc_true    = $(SRC)/bin/true
 scriptsrc_false   = $(SRC)/cmd/false.sh
 scriptsrc_nohup   = $(SRC)/bin/nohup

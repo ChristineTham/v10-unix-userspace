@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2861 cases, 2860 on a host whose $TMPDIR
+make test             # all 17 suites (2876 cases, 2875 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  Ends by checking that total against
                       # ARTICLE.md, so the number there cannot go stale again.
@@ -4220,6 +4220,67 @@ hook cannot tell a heredoc from a build invocation and fails CLOSED, which is
 the right direction for a tripwire -- but the remedy is to write such a file
 from the repo root, or with the Write tool, rather than to weaken the hook.
 
+**AND ASKED WHETHER THE PORT HAD FINISHED EVERYTHING IT COULD, I SAID YES AND
+WAS WRONG BY NINE COMMANDS -- 189 -> 198 -- BECAUSE THE SURVEY WAS KEYED ON
+`cmd/<the program's own name>`.** `2 3 4 5 6 doctype tel pick mklost+found`,
+all shipped-only scripts, all of whose dependencies were already installed.
+Five things generalise, and the first is that reciting a lesson does not
+prevent repeating it:
+
+- **THE `vi`-IS-`ex` SHAPE, REPRODUCED IN THE SAME SESSION THAT QUOTED IT.**
+  The classification asked whether `usr/src/cmd/<name>` existed. **25 of the 45
+  "no source" entries have source elsewhere** -- `cmd/PDP11/` (8 cross-tools),
+  `cmd/asd/` (5), `cmd/uucp/` (6), `cmd/view2d/` (2), `cmd/cref/`,
+  `cmd/rarepl/`, `cmd/monk/cmd/`, `cmd/cfront/`. This file already prescribes
+  *check whether it is a LINK before recording it as sourceless*; the wider
+  rule is **a program's source is not required to be filed under its own
+  name**, and the cheap sweep is `find usr/src -name <n> -o -name <n>.c`.
+- **AND TWENTY OF THE MISSING WERE NEVER COMPILED PROGRAMS AT ALL.** `file` on
+  the shipped artefact separates them in one command: 82 VAX a.out, **20 ASCII
+  text**, 1 awk script, 1 POSIX shell script, 1 empty. The text ones are the
+  `true`/`dirname` class -- shipped-only scripts whose installed file IS the
+  source -- of which this port had already imported NINE and then stopped
+  looking. **Ask `file` of the shipped artefact before asking where its source
+  is**; it costs one command and it partitions the problem.
+- **`2`..`6` READ THEIR OWN NAME, IN A SHELL SCRIPT.** Each is the identical
+  44 bytes `exec /bin/pr -t -w78 -l${PAGESIZE-1} -$0 $*`, and `$0` IS THE
+  COLUMN COUNT -- compress/uncompress/zcat's argv[0] dispatch without a binary.
+  Consequence worth knowing: **it only works when found through PATH.** By
+  absolute path `$0` is `/usr/bin/3`, `-$0` is `-/usr/bin/3`, and pr says `bad
+  option` -- which is how the first test of it failed and read like a broken
+  port. git records ONE blob for all five names with five inodes, so upstream
+  linked them and the tarball lost the links; installed as five copies, and the
+  cases assert BEHAVIOUR at two widths, because one width passes against a
+  wrapper with the count hardcoded.
+- **`/etc/mtab` IS DATA AND HAS BEEN IN THE COMMAND COUNT SINCE THE BEGINNING,
+  so the shipped figure is 285 and not 286.** It is the mount table, **nought
+  bytes**, written at run time by `mount(8)`, and it sits in `Admin/etcfiles`
+  beside `passwd`, `group`, `ttys`, `motd` and `utmp` -- all of which this file
+  already calls data and excludes. The ONLY thing that let it through the
+  `-perm -u+x` filter is an executable bit on an empty file that **`utmp`, the
+  entry beside it, does not have**. Measured both modes side by side. Our own
+  side is safe: the manufactured `mtab` and `utmp` are `-rw-r--r--`, so the
+  installed count is stable -- which is the property that filter was adopted
+  for, working for `utmp` and failing for its twin.
+- **AND `tel` IS THE SECOND PLACE THE OMITTED `ulibfiles` ARM WOULD HAVE BEEN
+  WRONG.** It is in `ulibfiles` and no other table, so Bell Labs' own
+  `Admin/dest` answers `/usr/lib` -- and the shipped tree has `/usr/bin/tel`.
+  `v8dest` does not consult `ulibfiles` and therefore agrees with the tree.
+  `lint` was the first such case and was recorded as the thing that would
+  "notice the omission starting to matter"; two instances now, and both say the
+  omission is RIGHT rather than that it matters.
+
+**AND THREE PROGRAMS ARE PORTABLE AND DELIBERATELY NOT PORTED, WHICH IS A
+DIFFERENT ANSWER FROM `blocked'.** `shutdown` needs only `echo egrep expr kill
+ls sleep sync` -- every one installed -- and **must not** be, because inside
+this jail `kill` signals HOST pids and `sync` is the Mac's; it is `tar`'s
+/dev/rmt1 hazard with a signal instead of a file. `lorder` needs `nm`, which is
+on the host-tool exception list and which `tests/jail` asserts is REFUSED, so
+it is blocked by a decision this port already made rather than by the target.
+And `cmd/asd/` -- `seal unseal mkpkg inspkg` plus `asdrcv`, a 17-object library
+and `DEST = /usr/bin` -- is a genuine directory-port candidate that has simply
+not been assessed.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
@@ -4309,7 +4370,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 189 installed**, stable. (It moves when something is imported,
+**285 shipped, 198 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.  This sentence said 150 for several batches while the
 guard kept ARTICLE.md exact — **a number with a test beside it stays current and

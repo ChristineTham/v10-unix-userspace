@@ -2206,6 +2206,68 @@ check 'whois reads the jail passwd, not the host' \
 check 'whois falls through for an unknown name' 'who indeed is nosuchguy' \
     "$(jail_sh 'whois nosuchguy' | tail -1)"
 
+# ---- 2..6, doctype, tel, pick, mklost+found -------------------------------
+#
+# NINE SHIPPED-ONLY SCRIPTS, FOUND BY AUDITING THE MISSING SET.  None has a
+# usr/src copy, so the installed file IS the source.  None is shadowed by a
+# host binary -- measured under sh, because under zsh `2'..`6' are ALIASES for
+# `cd -2' and command -v reports them, which would make this look shadowed when
+# it is not.  So the behavioural cases below discriminate.
+printf 'a\nb\nc\nd\ne\nf\n' > six.txt
+
+# 2..6 ARE ONE PROGRAM WITH FIVE NAMES: `exec /bin/pr -t -w78 -l${PAGESIZE-1}
+# -$0 $*', where $0 IS THE COLUMN COUNT -- compress/uncompress/zcat's argv[0]
+# dispatch, in a shell script.  It therefore only works when found through
+# PATH: invoked by absolute path $0 is `/usr/bin/3' and pr says `bad option'.
+# Two widths, because a case at one width passes against a wrapper with the
+# count hardcoded.
+check '3 lays out three columns' 'a b c d e f' \
+      "$(jail_sh "cd $TMP && 3 six.txt" | tr -s ' \n' ' ' | sed 's/^ //;s/ $//')"
+check '2 lays out two columns' '3' \
+      "$(jail_sh "cd $TMP && 2 six.txt" | grep -c .)"
+# ...and all five names carry identical bytes.  git records ONE blob with five
+# inodes, so upstream linked them and the tarball lost the links -- the
+# pcat/unpack shape.  Asserted as content, which is what the archive holds.
+check '2..6 are five copies of one script' '1' \
+      "$(cd "$V8ROOT/usr/bin" && cat 2 3 4 5 6 | sort -u | wc -l | tr -d ' ')"
+
+# doctype READS THE DOCUMENT and synthesises the pipeline it needs.  The
+# control is a document needing nothing: a fix that always emitted tbl and eqn
+# would pass the first case and fail the second.
+printf '.EQ\nx=1\n.EN\n.TS\na\tb\n.TE\n' > dt.ms
+printf 'just words\n' > plain.ms
+check 'doctype sees tbl and eqn' 'tbl dt.ms | eqn | troff' \
+      "$(jail_sh "cd $TMP && doctype dt.ms" | tr -s ' ' ' ' | sed 's/ $//')"
+check 'doctype adds nothing for plain text (control)' 'troff plain.ms' \
+      "$(jail_sh "cd $TMP && doctype plain.ms" | tr -s ' ' ' ' | sed 's/ $//')"
+
+# tel has no data file -- /usr/lib/tel is site-local state V8 never shipped, so
+# it refuses.  THE WORDING IS THE EVIDENCE: V8's grep says "can't open" where
+# BSD grep says "No such file or directory", so this also proves the JAILED
+# grep ran rather than the Mac's.  whois's lesson, from the other side.
+check 'tel refuses through V8 grep, not the host' 'yes' \
+      "$(PATH=/bin:/usr/bin:/etc "$sh8" -c 'tel smith' 2>&1 |
+         grep -qF "can't open" && echo yes)"
+
+# mklost+found builds fsck's lost+found by creating 256 slots and removing
+# them, which is what forces the directory to a useful size.
+rm -rf lfdir && mkdir lfdir
+jail_sh "cd $TMP/lfdir && /etc/mklost+found" >/dev/null 2>&1
+check 'mklost+found makes the directory' 'yes' \
+      "$([ -d "$TMP/lfdir/lost+found" ] && echo yes)"
+check 'mklost+found removes its dummy slots' '0' \
+      "$(ls "$TMP/lfdir/lost+found" 2>/dev/null | wc -l | tr -d ' ')"
+
+# ...AND THE PORT INSTALLED THEM.  Behavioural cases cannot see this for the
+# names the host also has; here none is shadowed, but the pattern is kept
+# because it is the half that would notice $(SCRIPT_INSTALL) losing an entry.
+scr9=
+for n in 2 3 4 5 6 doctype tel pick; do
+	[ -f "$V8ROOT/usr/bin/$n" ] || scr9="$scr9 $n"
+done
+[ -f "$V8ROOT/etc/mklost+found" ] || scr9="$scr9 mklost+found"
+check 'the nine audited scripts are installed' '' "$scr9"
+
 # =(1) and ==(1) -- ONE BINARY, TWO NAMES, AND THE NAME IS LOAD-BEARING.
 # main() opens `int edit = argv[0][1] != '\0'', so `=' runs the last history
 # line outright and `==' opens the redo editor on it first.  That is

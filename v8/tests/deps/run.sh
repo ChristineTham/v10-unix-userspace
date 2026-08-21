@@ -747,6 +747,12 @@ dep 'false script -> /bin'     src/cmd/false.sh               rootfs/bin/false
 dep 'nohup script -> /bin'     src/bin/nohup                  rootfs/bin/nohup
 dep 'dirname script -> /usr/bin' src/bin/dirname              rootfs/usr/bin/dirname
 dep 'whois script -> /usr/bin' src/bin/whois                  rootfs/usr/bin/whois
+dep '2 script -> /usr/bin'      src/bin/2                      rootfs/usr/bin/2
+dep '6 script -> /usr/bin'      src/bin/6                      rootfs/usr/bin/6
+dep 'doctype script -> /usr/bin' src/bin/doctype               rootfs/usr/bin/doctype
+dep 'tel script -> /usr/bin'    src/bin/tel                    rootfs/usr/bin/tel
+dep 'pick script -> /usr/bin'   src/bin/pick                   rootfs/usr/bin/pick
+dep 'mklost+found -> /etc'      src/etc/mklost+found           rootfs/etc/mklost+found
 
 # wwb: the dispatcher is a shipped-only #!-less script like the five above, and
 # everything it needs is under /usr/lib/style.  The nodep is the point: the 23

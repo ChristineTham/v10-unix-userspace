@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2861 tests across 17 suites** guard it.
+assembly. **2876 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -2677,7 +2677,11 @@ pseudo-kernel, a real filesystem. Then the goal changed to *"install a usable
 V8 world"*, which is a **breadth** requirement, and a measurement that had
 never been taken became the important one.
 
-V8 shipped **286** executable commands across `/bin`, `/usr/bin` and `/etc`.
+V8 shipped **285** executable commands across `/bin`, `/usr/bin` and `/etc`.
+(The count of *files* is 287: `procmount` ships twice under two paths, and
+`/etc/mtab` is a nought-byte runtime file — the mount table — that carries an
+executable bit its neighbour `/etc/utmp` does not, which is the only reason it
+was ever counted as a command.)
 This port installed **91**.
 
 Of the 195 missing, 43 have no source at all — VAX firmware, data files, and
@@ -4181,7 +4185,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **189** of the 286 V8 shipped, and the ones still missing mostly
+port installs **198** of the 285 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -6379,6 +6383,51 @@ valid read, in 1982 and now — and then copies it into a fourteen-byte buffer,
 which overruns in exactly the same way it always did. Predicting that string
 before seeing it is what distinguishes a restored behaviour from a suppressed
 symptom.
+
+## Nine more, and how they were missed
+
+Asked whether the port had finished everything it could, I said yes. The answer
+was wrong, and the way it was wrong is the failure this project keeps writing
+down: the survey was keyed on the wrong thing.
+
+Every program in the archive had been checked for source at `usr/src/cmd/<its
+own name>`. Twenty-five of the forty-five said to have no source have source
+somewhere else — under `PDP11/`, `asd/`, `uucp/`, `view2d/`, `cref/`. That is
+the same shape as the discovery, months earlier, that `vi` was missing only
+because its source is filed under `ex`. Knowing that lesson and reciting it did
+not prevent repeating it.
+
+Worse, twenty of the missing entries are not compiled programs at all. They are
+shell scripts, shipped as text, whose source therefore *is* the installed file
+— the same category as `true` and `dirname`, of which this port had already
+imported nine. Checking them was a matter of reading twenty short files. Nine
+turned out to work with everything they need already present.
+
+Five of them are the same forty-four bytes:
+
+    exec /bin/pr -t -w78 -l${PAGESIZE-1} -$0 $*
+
+installed under the names `2`, `3`, `4`, `5` and `6`. The column count is
+`$0` — the program's own name. It is the same trick `compress` uses to know
+whether it was called as `uncompress` or `zcat`, written in a shell script, and
+it has the consequence that the program only works when found through the
+search path: invoke it by its full path and `$0` becomes `/usr/bin/3`, and `pr`
+reports a bad option. Git records one blob for all five names, so they were
+links once and the archive lost them.
+
+The others: `doctype` reads a document and works out which of `tbl`, `eqn`,
+`pic` and `refer` it needs before `troff`; `mklost+found` builds the directory
+`fsck` puts orphaned files in, by creating two hundred and fifty-six entries
+and deleting them, which is what forces the directory to a useful size; `tel`
+looks up a phone list; `pick` asks yes or no about each of its arguments.
+
+One further thing fell out of counting properly. The number of commands V8
+shipped has been quoted here as 286 since the beginning. It is 285. `/etc/mtab`
+is the mount table — nought bytes, written at run time by `mount`, sitting in
+the install list beside `/etc/passwd` and `/etc/utmp`, which are also data and
+were excluded years ago. The single thing that let it be counted as a program
+is an executable bit, on an empty file, that the entry immediately above it in
+the same list does not have.
 
 ---
 
