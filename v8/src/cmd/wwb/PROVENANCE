@@ -1,0 +1,70 @@
+# Provenance for v8/src/cmd/wwb
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+677c5a30a6bfa60b094899e91b35b444dce9483b  v8/usr/src/cmd/wwb/var4.t
+eca823d34d7eb1c4f5e6a0da764cbd6e53ed9b69  v8/usr/src/cmd/wwb/type.t
+65253c9f3cf230431db970a6aee842c11239ba60  v8/usr/src/cmd/wwb/cbtype.h
+61373574517d3a32c8492009c6366395f1f4bdd7  v8/usr/src/cmd/wwb/poptt.t
+afa549e469bee328fd39968c509c72a1e4fc8d74  v8/usr/src/cmd/wwb/worduse.sh
+5a219177fbb51e938d7940953a8a8e79c3764809  v8/usr/src/cmd/wwb/prose.sh
+52e414a57b746550a942c8cd896dcab75a51d7ef  v8/usr/src/cmd/wwb/helplist.d
+e809664ab1378888e2822548ea90f1e1c276c32b  v8/usr/src/cmd/wwb/gram.l
+16e6cd9001d3b37126d441fd841364b005560a97  v8/usr/src/cmd/wwb/oMakefile
+94b4de771db480aaab2b6da87515132360b64e23  v8/usr/src/cmd/wwb/org.l
+56108d3b3a116cd108ee90afe6352fbd162174aa  v8/usr/src/cmd/wwb/double.c
+4dd35cc7f8953082153752ebb31e67f5ff14d8c5  v8/usr/src/cmd/wwb/train.st
+b1883c4be2f5c9c8acaaa1e516db53892a1f8ba1  v8/usr/src/cmd/wwb/dictadd.c
+c3b3689bb2f2b144a70b6842c0db94efd411ecb1  v8/usr/src/cmd/wwb/wwbstand.sh
+394ac82df7f14b92115692fb589dfc647bd6d442  v8/usr/src/cmd/wwb/splitrules.sh
+4dcf29e2a50aeb92e20663237638ef289670fec8  v8/usr/src/cmd/wwb/spellwwb.sh
+61b9be0b527f0c4d3b91c2a839a9eeb18f446187  v8/usr/src/cmd/wwb/spelladd.sh
+ad718c066f4336ba60d843f58c2e4286ddc922ba  v8/usr/src/cmd/wwb/chkout.sed
+9b38bf1a89c5d7af7a18fb38a77b6945ab933feb  v8/usr/src/cmd/wwb/sexist.d
+25e636ceeb118d23159552dc761db6f67f5b9684  v8/usr/src/cmd/wwb/var.t
+fa7767fe1606e9511e8ba039d5537d9382d7d2c9  v8/usr/src/cmd/wwb/prose.c
+d7281c5649ebc8a49c655605b36d9331824551a9  v8/usr/src/cmd/wwb/Makefile
+eb8d261d19d261f6e6257a3148a94570e0c29713  v8/usr/src/cmd/wwb/syl.c
+ca005718271708714671a4936d592418a25ef92a  v8/usr/src/cmd/wwb/wwbmail.sh
+881f20291daa759f06920b7a27d9cf557cc772e7  v8/usr/src/cmd/wwb/proofr.sh
+fc4c249ca8cbc1f7deea95b61cccd87d6a2fc25f  v8/usr/src/cmd/wwb/dictplus.sh
+7eddc7117eba274ce9e07e703b46e530622a58d1  v8/usr/src/cmd/wwb/match.sh
+52b74688d04f75d4e4950624e2bdee1250aaaf66  v8/usr/src/cmd/wwb/type2.t
+6103c9b7ba9bf6057e4385cd462ef801e4d97ada  v8/usr/src/cmd/wwb/var6.t
+3453be63142a6941e908d25b57ca92e9f74c5c56  v8/usr/src/cmd/wwb/dictadd.sh
+ce0964240509b81d8804fd9e5975367e1c112b69  v8/usr/src/cmd/wwb/standlkup.sh
+d827a9dca9b659942a5e5ab865178ec2229c7d26  v8/usr/src/cmd/wwb/org.sh
+f1dbf83601bb6e2b3ec8972820c96e48ee297743  v8/usr/src/cmd/wwb/wwbinfo.sh
+e645b50643757cbf0e3d0610069fc34663bd882b  v8/usr/src/cmd/wwb/nom.t
+c849566c4742d328127f1ce0948cb8ebf62b23c8  v8/usr/src/cmd/wwb/wwbhelp.sh
+38b4c4ca1455d7c15cf927dd4e2f5d75a8212e0f  v8/usr/src/cmd/wwb/spelltell.sh
+0042650f4df92c6cc79d85f2004d0bb9e9ca7d8c  v8/usr/src/cmd/wwb/spelllist.d
+bf5b5a2016842388834c798f8a54ce7b354657a0  v8/usr/src/cmd/wwb/cbtype.c
+fdb64a470a3bf2352d7dc09f602a86526a91bf42  v8/usr/src/cmd/wwb/seddiff
+91f233e2d3c2fea3772f5a90a0a12444d93f6531  v8/usr/src/cmd/wwb/syl.sh
+1615bac03a4d074eeedc3997c229c0bb9fe77929  v8/usr/src/cmd/wwb/popttm.t
+9b2f708aced9ebf6aa455c3a780df9312478155c  v8/usr/src/cmd/wwb/pass.t
+c0ae66c9f938f0172158181116553b519e8659cf  v8/usr/src/cmd/wwb/chunk.c
+678872b2c2c1ae6280c747aa596c0f992153cdb6  v8/usr/src/cmd/wwb/chkin.sed
+8e20b1c53d0edb6429576420a9dd7fbb9a88381f  v8/usr/src/cmd/wwb/script.sed
+5ef124b1db7314ac2423ece47b1ca80e3c0dcd22  v8/usr/src/cmd/wwb/acro.sh
+860837111f735fb4d921dda0d555913a839f72c4  v8/usr/src/cmd/wwb/wwb.sh
+2ad36000c250ed657b4ead631983b8c2deb6ccef  v8/usr/src/cmd/wwb/wordlist.d
+6b0133db4c4c6a72d847a4be1c0189a35202c4ad  v8/usr/src/cmd/wwb/sexist.sg
+1c8188d0d9864ba5162f25d6861dedb37849403f  v8/usr/src/cmd/wwb/rd2.t
+848af0554020eaf60dbcd9227266815adfeb6baf  v8/usr/src/cmd/wwb/mkstand.c
+02fec871979ab0b2fec71a122d42417321f25ad1  v8/usr/src/cmd/wwb/tm.st
+6cbf48cd4a3385ef18e54d91276780a054738289  v8/usr/src/cmd/wwb/punct.l
+236cdac108568a524375ce3c693ceb6eb8c800ef  v8/usr/src/cmd/wwb/crft.st
+10eb6289ec13886a96105efa2dcccde684d813a3  v8/usr/src/cmd/wwb/exp.t
+d8fb1c0fbe7c39c34f247f412d95650fd107e0f8  v8/usr/src/cmd/wwb/acro.sed
+61cf5634dec41c758caca5aefae76eb27325fe1f  v8/usr/src/cmd/wwb/var5.t
+b792f4688ae1e85f180c7653723fc2564e291e44  v8/usr/src/cmd/wwb/sexist.sh
+36935d249e499e87a9d784b79005b304265cd64a  v8/usr/src/cmd/wwb/punct.sh
+a8cec777977240640e260b1b3a839db88f44d63d  v8/usr/src/cmd/wwb/punctrules.sh
+3f81b80bc9f96c5cbc216e3f6875816a3a3672d2  v8/usr/src/cmd/wwb/fur.t
+32bd6352d7367e9052bb78158eb0097f035b7859  v8/usr/src/cmd/wwb/gram.sh
+1fbf60b429c6e9473830167a3ce418bdb51ba134  v8/usr/src/cmd/wwb/chunk.sh
+579bb2191b560774e20f1a2785b2df7ee23d4d4e  v8/usr/src/cmd/wwb/mkstand.sh

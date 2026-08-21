@@ -2603,6 +2603,114 @@ STRUCT_INSTALL = $(ROOTFS)/usr/lib/struct/structure \
                  $(ROOTFS)/usr/lib/struct/beautify $(ROOTFS)/usr/bin/struct
 
 # ---------------------------------------------------------------------------
+# wwb(1) -- the Writer's Workbench, and the string literal split across a -D.
+#
+# THE COMMAND V8 SHIPS IN /usr/bin IS 27 BYTES AND IS IN NO MAKEFILE:
+# `PATH=/usr/bin/WWB:$PATH $*'.  It is a #!-less dispatcher, so it is imported
+# from the SHIPPED artefact into $(SRC)/bin like dirname, nohup, plot, true and
+# whois -- for those the installed file IS the source.  Everything it dispatches
+# to is built here, because a dispatcher installed over an empty directory is a
+# command that cannot work.
+#
+# UPSTREAM SHIPPED THIS HALF-INSTALLED, AND THE OTHER HALF CANNOT BE INSTALLED
+# HERE AT ALL.  /usr/lib/style is complete in the archive -- 44 entries, of
+# which 35 are wwb's (the eight programs built below plus standlkup and the
+# data) and 9 belong to style(1)/diction(1), which V8 ships no source for
+# anywhere.  /usr/bin/WWB, which upstream's makefile makes a DIRECTORY for 23
+# shell scripts, is NOT IN THE ARCHIVE: `git ls-files' records exactly one
+# entry, lowercase `usr/bin/wwb', and no WWB directory either as a file or as a
+# tree.  Independently, all 23 of those scripts are absent from the shipped
+# tree.
+#
+# AND IT COULD NOT BE INSTALLED IF IT WERE THERE, because `WWB' and `wwb' are
+# ONE NAME on a case-insensitive filesystem, which is the macOS default and
+# what the CI runner has.  A V7 filesystem is case-sensitive, so the layout was
+# fine in 1985; it is the HOST that cannot represent it.  So what is installed
+# is exactly the archive's 35 files plus the dispatcher, and the scripts are
+# imported (PROVENANCE records all 64) and not installed -- lcomp's bb and
+# refer's whatabout are the precedent.
+#
+# (An earlier reading of this called the pair a hard link, on the strength of
+# `ls -li' reporting one inode for both spellings.  That measurement was taken
+# THROUGH the case-insensitive volume and was worthless; git is the authority
+# because it records names exactly.  The case-sensitivity probe that licensed
+# it was itself vacuous -- an `&&' chain that broke on an empty glob, so the
+# file it tested for was never created and `[ -e AA ]' was false for the wrong
+# reason.)
+#
+# prose IS THE INTERESTING ONE.  Upstream's rule is
+#     $(CC) $(CFLAGS) -DLIB=\"$(LIB) prose.c -o prose
+# with an OPENING quote and no closing one, and prose.c:125 is
+#     strcpy(path,LIB");
+# with a stray CLOSING quote.  The string literal is split across the -D and
+# the source, and neither half is well-formed alone.  v8cc compiles it; CLANG
+# REFUSES IT.  That makes wwb the second program here whose buildability is a
+# property of the authentic compiler, after cyntax's space-separated compound
+# operators -- the -DCM_N shape sharpened, because the flag supplies half a
+# TOKEN rather than selecting an arm.  Do not "fix" the quoting: both halves
+# are upstream's and the pair is well-formed.
+#
+# style(1) and diction(1) are called by 5 of the ~100 command references in the
+# scripts and V8 SHIPS NEITHER, anywhere -- so proofr's two arms and wwb's
+# style pass cannot run, on this port or on a VAX.  Recorded in
+# src/cmd/wwb/PORTING.md rather than worked around.
+WWBSRC  = $(SRC)/cmd/wwb
+WWBLIB  = $(ROOTFS)/usr/lib/style
+
+WWB_CPROG   = prose chunk syl mkstand dictadd
+WWB_LEXPROG = punlx gramlx orglx
+WWB_DATA    = script.sed seddiff chkin.sed chkout.sed acro.sed \
+              sexist.sg sexist.d wordlist.d spelllist.d helplist.d \
+              crft.st tm.st train.st \
+              exp.t fur.t nom.t pass.t poptt.t popttm.t rd2.t \
+              type.t type2.t var.t var4.t var5.t var6.t
+
+# prose alone takes the split literal; the others take nothing.
+$(BUILD)/wwb/prose.o: $(WWBSRC)/prose.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -DLIB='"/usr/lib/style' -c -o $@ $<
+$(BUILD)/wwb/%.o: $(WWBSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+
+$(patsubst %,$(BINDIR)/wwb-%,$(WWB_CPROG)): $(BINDIR)/wwb-%: $(BUILD)/wwb/%.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/wwb/$*.o $(V8LIBS)
+
+# THREE SCANNERS, THREE BUILD DIRECTORIES, because lex always writes a file
+# called lex.yy.c and a shared directory would race under -j and silently
+# compile whichever one finished last.
+define WWB_LEXRULE
+$$(BUILD)/wwb/$(2)/lex.yy.c: $$(WWBSRC)/$(2).l $$(LEX) $$(ROOTFS_NCFORM)
+	@mkdir -p $$(@D)
+	cd $$(BUILD)/wwb/$(2) && V8ROOT=$$(ROOTFS) $$(LEX) $$(WWBSRC)/$(2).l
+$$(BUILD)/wwb/$(2)/lex.yy.o: $$(BUILD)/wwb/$(2)/lex.yy.c $$(V8CC_DEPS)
+	@$$(V8CCRUN) -c -o $$@ $$<
+$$(BINDIR)/wwb-$(1): $$(BUILD)/wwb/$(2)/lex.yy.o $$(BUILD)/libl/libl.a $$(V8DEPS)
+	@mkdir -p $$(@D)
+	@$$(HOSTCC) $$(V8LDFLAGS) -o $$@ $$(BUILD)/crt0.o \
+	    $$(BUILD)/wwb/$(2)/lex.yy.o $$(BUILD)/libl/libl.a $$(V8LIBS)
+endef
+$(eval $(call WWB_LEXRULE,punlx,punct))
+$(eval $(call WWB_LEXRULE,gramlx,gram))
+$(eval $(call WWB_LEXRULE,orglx,org))
+
+# install: binaries and data to /usr/lib/style, scripts and double to
+# /usr/bin/WWB, and the 27-byte dispatcher to /usr/bin/wwb.
+$(WWBLIB)/%: $(BINDIR)/wwb-%
+	@mkdir -p $(@D) && cp $< $@
+$(patsubst %,$(WWBLIB)/%,$(WWB_DATA)): $(WWBLIB)/%: $(WWBSRC)/%
+	@mkdir -p $(@D) && cp $< $@
+$(WWBLIB)/standlkup: $(WWBSRC)/standlkup.sh
+	@mkdir -p $(@D) && cp $< $@ && chmod +x $@
+$(ROOTFS)/usr/bin/wwb: $(SRC)/bin/wwb
+	@mkdir -p $(@D) && cp $< $@ && chmod +x $@
+
+WWB_BUILT   = $(patsubst %,$(BINDIR)/wwb-%,$(WWB_CPROG) $(WWB_LEXPROG))
+WWB_INSTALL = $(patsubst %,$(WWBLIB)/%,$(WWB_CPROG) $(WWB_LEXPROG) $(WWB_DATA)) \
+              $(WWBLIB)/standlkup $(ROOTFS)/usr/bin/wwb
+
+# ---------------------------------------------------------------------------
 # csh(1) -- Bill Joy's C shell, 4.1BSD, and libjobs under it.  /bin per
 # Admin/binfiles:10, confirmed by the shipped tree.
 #
@@ -3286,7 +3394,7 @@ V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
                    $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT) $(DES_BUILT) $(LINT_BUILT) $(CFLOW_BUILT) \
-                   $(CYNTAX_BUILT) $(LCOMP_BUILT)
+                   $(CYNTAX_BUILT) $(LCOMP_BUILT) $(WWB_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr egrep bc m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
@@ -3294,7 +3402,7 @@ V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \
                    $(LINKED_INSTALL) $(HIST_INSTALL) $(DES_INSTALL) \
                    $(LINT_INSTALL) $(CFLOW_INSTALL) $(CYNTAX_INSTALL) \
-                   $(LCOMP_INSTALL)
+                   $(LCOMP_INSTALL) $(WWB_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a

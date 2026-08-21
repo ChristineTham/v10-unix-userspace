@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2843 cases, 2842 on a host whose $TMPDIR
+make test             # all 17 suites (2861 cases, 2860 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  Ends by checking that total against
                       # ARTICLE.md, so the number there cannot go stale again.
@@ -4115,6 +4115,111 @@ test at `lprint.c:243`. **Zero source changes, `nm -u` empty.**
   prerequisite fires **exactly one case**, `lcomp instr.c -/-> lprint`, and
   nothing else.
 
+**AND `wwb(1)` IS IN -- 188 -> 189 -- WHICH IS A STRING LITERAL SPLIT ACROSS A
+`-D` AND THE SOURCE, AND THE FIRST THING HERE BLOCKED BY THE HOST
+FILESYSTEM.** The Writer's Workbench: eight programs and their data at
+`/usr/lib/style`, the 27-byte dispatcher at `/usr/bin/wwb`, **zero source
+changes** across 64 imported files. `src/cmd/wwb/PORTING.md`. Five things
+generalise, and two are corrections to measurements I had already made:
+
+- **NEITHER HALF OF THE LITERAL IS WELL-FORMED ALONE, AND ONLY v8cc WILL PASTE
+  THEM.** `Makefile:48` is `-DLIB=\"$(LIB)` -- an OPENING quote and no closing
+  one -- and `prose.c:125` is `strcpy(path,LIB");`, a stray CLOSING quote.
+  Together they make `"/usr/lib/style"`. Measured: v8cc exit 0 with a 23160-byte
+  object, **clang `error: expected expression`**. Second program here whose
+  buildability is a property of the authentic compiler, after `cyntax`'s
+  `poignant | = girn`. It is the `-DCM_N` shape sharpened -- there a missing
+  `-D` selected an empty arm and failed SILENTLY; here the flag supplies half a
+  TOKEN, so the file cannot compile without it, which is the good direction.
+  The guard is a **pair**: `prose` must contain `/usr/lib/style` exactly once
+  and `chunk`, which takes no `-D`, exactly zero times -- because a case
+  asserting only that prose exists passes against a prose built with no `-DLIB`
+  at all.
+- **`ls -li` THROUGH A CASE-INSENSITIVE VOLUME IS A WORTHLESS MEASUREMENT, AND
+  I BUILT A CONCLUSION ON ONE.** `ls -li $T/usr/bin/wwb $T/usr/bin/WWB`
+  reported ONE INODE, which I read as a hard link and wrote down as the
+  archive's own state. It is not: `ls WWB` simply opened `wwb`. **`git
+  ls-files` is the authority**, because git records names exactly whatever the
+  working volume does -- and it records exactly one entry, lowercase, and no
+  `WWB` directory as file or tree. Ask of any filename measurement whether the
+  FILESYSTEM can represent the distinction you are testing.
+- **AND THE PROBE THAT LICENSED IT WAS VACUOUS, IN A WAY THIS FILE ALREADY
+  DOCUMENTS TWICE.** The case-sensitivity test was
+  `mkdir -p d && rm -f d/* && echo x > d/aa`, and under zsh `rm -f d/*` on an
+  empty directory is `no matches found` -- **non-zero**, so the `&&` chain
+  stopped, `d/aa` was never created, and `[ -e d/AA ]` was false. It printed
+  `case-sensitive` for a volume that is not. A probe whose setup can fail must
+  assert the setup happened; the fixed version prints whether the file was
+  created before testing for its twin.
+- **THE HOST FILESYSTEM IS A PORTING CONSTRAINT, WHICH IS NEW.** Upstream
+  installs 23 scripts to `BIN = /usr/bin/WWB` (`Makefile:17`). That directory is
+  **not in the archive** and could not be installed if it were, because `WWB`
+  and `wwb` are ONE NAME on a case-insensitive filesystem -- the macOS default
+  and what the CI runner has. A V7 filesystem is case-sensitive, so the layout
+  was fine in 1985 and it is the HOST that cannot represent it. Every earlier
+  blocker here has been about the machine (LP64, Mach-O, AAPCS64) or about a
+  missing facility; this one is about the volume the rootfs happens to sit on.
+- **AND IT IS A THIRD SHAPE IN THE makefile-versus-`Admin/dest` SWEEP, THE
+  FIRST WHERE THE PORT SIDES AGAINST THE MAKEFILE.** The other two shapes both
+  have the makefile and the SHIPPED TREE agreeing -- against dest's fall-through
+  (`cpp`'s) or against a table (`lint`'s) -- so siding with the makefile also
+  sides with the tree. Here dest answers `/usr/bin` by fall-through, the tree
+  has `/usr/bin/wwb`, and the makefile's `/usr/bin/WWB` is the outlier. Thirteen
+  became **fourteen**, and the set's characterisation needed widening for the
+  second time: a survey that enumerates shapes goes stale the day a new one
+  joins it.
+
+**AND THE CRASH PROBE FOUND A FOURTEENTH ADDRESS-0 ARGV INSTANCE WITHIN THE
+HOUR, WHICH IS THE POPULATION BEING DERIVED RATHER THAN LISTED.** `/usr/lib` is
+scanned recursively, so the eight new binaries joined the sweep by themselves:
+170 -> 178 programs, 9434 invocations, and the floor went 107 -> **108** with
+one new line, `mkstand (no arguments)`. `mkstand.c:63` (upstream `:49`) is
+`number = *argv[1];` as main()'s FIRST statement and main has NO argc check at
+all, so a bare `mkstand` dereferences the vector's NULL terminator. Fixed, not
+floored -- it is a READ, and this file's discriminator is that a read has a VAX
+answer to restore where a write never did. Three things:
+
+- **THE GUARD RESTORES THE ANSWER AND THE MEASUREMENT CONFIRMED THE
+  REASONING.** After it, a bare `mkstand` prints
+  `Can't read /tmp/OSLogRateLimit=64stat.out.` and exits 2 --
+  and `OSLogRateLimit=64` is **this host's first environment variable**, which
+  is the positive evidence for the part deliberately NOT guarded: `pid =
+  argv[2]` three lines below reads *past* the terminator into `envp`, a valid
+  read on both machines, and the `sprintf` into `char name[14]` overruns it
+  identically on a VAX. Predicting that string and then seeing it is what
+  separates a restored answer from a suppressed fault.
+- **SO THE CASE ASSERTS THE STATUS AND THE DIAGNOSTIC AND NEVER THE FILENAME**,
+  which is a host property -- with the two-argument invocation as a CONTROL, so
+  a "fix" that made every path answer the same thing fails.
+- **AND THE CITATION WENT STALE THE MOMENT THE PORT COMMENT WAS WRITTEN**, in
+  the same edit: a 14-line `/* PORT: */` block pushed `:49` to `:63`. Written
+  `ours (upstream)` now. The self-invalidating-citation shape, arriving inside
+  the fix for something else, which is why the habit is to re-measure after
+  every edit rather than only when the sweep complains.
+
+**AND A NEW INTERMITTENT WAS SEEN ONCE IN FOUR, IN THE `/proc` SATURATION ARM,
+WITH SPECIFIC NUMBERS RATHER THAN AN EMPTY OBSERVABLE.** `tests/kmemu`'s
+`ps ax lists what the host's ps ax does -- saturated at the table` reported
+`want [1025] got [1023]` at **1281** host processes; re-run three times
+immediately after, at 1266, 1259 and 1247, it passed -- all four in the SAME
+arm, so it is not the arm-selection band. The saturation arm asserts an EXACT
+`prnproc + 1`, and two entries short is what a process exiting between the
+`/proc` directory read and the per-process open would give. So the suspect is
+the exactness of the assertion rather than the port: the honest relation is
+*at least nearly saturated*, which is the shape the `ps -T` case was already
+fixed into after hashing a set it could not then diff. Not changed here,
+because it is pre-existing and re-aiming a case needs its own measurement and
+mutation cycle; recorded with the numbers so the next sighting has something to
+match. Low CI risk -- the arm needs more than `PR_NPROC + 40` processes and a
+fresh runner has far fewer.
+
+**AND THE `v8-make.sh` HOOK HAS A FALSE POSITIVE WORTH KNOWING.** Writing this
+program's `PORTING.md` with a heredoc was BLOCKED, because the command `cd`s
+into a PROVENANCE-covered directory and the prose contains the word `make`. The
+hook cannot tell a heredoc from a build invocation and fails CLOSED, which is
+the right direction for a tripwire -- but the remedy is to write such a file
+from the repo root, or with the Write tool, rather than to weaken the hook.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
@@ -4204,7 +4309,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 188 installed**, stable. (It moves when something is imported,
+**286 shipped, 189 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.  This sentence said 150 for several batches while the
 guard kept ARTICLE.md exact — **a number with a test beside it stays current and
@@ -6219,7 +6324,7 @@ changing it:
   `/dev/pt` and `/dev/drum` at startup and gives up if they are missing
   (`ps.c:21-28`) -- a claim about existence, and `ps` contains not one byte of
   them. Written ordinarily, make also compares mtimes, and **`rootfs/dev/null`
-  is a file the world WRITES TO**: `tests/wavea/run.sh:1456` is `: > "$DEVNULL"`,
+  is a file the world WRITES TO**: `tests/wavea/run.sh:1470` is `: > "$DEVNULL"`,
   emptying it on purpose so that suite is a pure function of the tree, and an
   O_TRUNC moves the mtime **even on a file that is already empty** (measured on
   APFS). So every `make test` left `ps` stale and the next `make` relinked and
@@ -7066,7 +7171,7 @@ not testable until it is installed.
   **AND IT RECURRED WITHIN HOURS OF BEING WRITTEN DOWN, WHICH IS THE POINT.**
   `tests/wavea`'s `pwd` case then failed once, under the same filter, so the
   `want`/`got` lines — the entire diagnosis — were thrown away again and the
-  run had to be repeated to learn anything. `tests/wavea/run.sh:266` records
+  run had to be repeated to learn anything. `tests/wavea/run.sh:274` records
   what is known. Knowing the rule is not the same as having the habit: pipe to
   `tee` and read the tail, rather than grepping and hoping.
 

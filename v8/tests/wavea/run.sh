@@ -785,8 +785,19 @@ check 'a multi-source cp does not read its directory as the program' \
 # `cflow' itself is NOT here: it installs to /usr/bin and dest agrees, so it
 # drops out, which is what says the ROOT strip above discriminates rather than
 # simply deleting entries.
-check 'an imported makefile and Admin/dest disagree about exactly these thirteen' \
-   ' calendar1(usr/lib,dest=usr/bin) calendar2(usr/lib,dest=usr/bin) calendar3(usr/lib,dest=usr/bin) calendar4(usr/lib,dest=usr/bin) dag(usr/lib,dest=usr/bin) flip(usr/lib,dest=usr/bin) lpfx(usr/lib,dest=usr/bin) nmf(usr/lib,dest=usr/bin) cpp(lib,dest=usr/bin) diffh(usr/lib,dest=usr/bin) diff3(usr/lib,dest=usr/bin) dump(etc,dest=usr/bin) lint(usr/bin,dest=usr/lib)' \
+# FOURTEEN, AND wwb IS A THIRD SHAPE -- THE FIRST WHERE THE PORT SIDES AGAINST
+# THE MAKEFILE.  The other two shapes both have the makefile and the SHIPPED
+# TREE agreeing against dest (cpp's) or against a table (lint's), so siding
+# with the makefile also sides with the tree.  wwb's makefile says
+# BIN=/usr/bin/WWB; wwb is in no Admin table, so dest answers /usr/bin by
+# fall-through -- and the shipped tree has /usr/bin/wwb and NO WWB directory at
+# all, measured with `git ls-files' because the working volume is
+# case-insensitive and `ls' cannot tell the two names apart.  So here dest and
+# the tree agree and the makefile is the outlier, and the port follows them.
+# It could not do otherwise even if it wanted to: `WWB' and `wwb' are one name
+# on this host, so the two destinations are not both representable.
+check 'an imported makefile and Admin/dest disagree about exactly these fourteen' \
+   ' calendar1(usr/lib,dest=usr/bin) calendar2(usr/lib,dest=usr/bin) calendar3(usr/lib,dest=usr/bin) calendar4(usr/lib,dest=usr/bin) dag(usr/lib,dest=usr/bin) flip(usr/lib,dest=usr/bin) lpfx(usr/lib,dest=usr/bin) nmf(usr/lib,dest=usr/bin) cpp(lib,dest=usr/bin) diffh(usr/lib,dest=usr/bin) diff3(usr/lib,dest=usr/bin) dump(etc,dest=usr/bin) lint(usr/bin,dest=usr/lib) wwb(usr/bin/WWB,dest=usr/bin)' \
    "$mkdiffer"
 # ...and the port sides with the makefile in every one of the five new cases,
 # which is what says the widening found a blind spot rather than a bug.  diffh
@@ -2392,6 +2403,77 @@ fi
 # a rule deleted and a binary left behind look identical from the build graph.
 check 'lcomp bb is not installed'  'none' "$(v8which bb  >/dev/null 2>&1 && echo FOUND || echo none)"
 check 'lcomp lcc is not installed' 'none' "$(v8which lcc >/dev/null 2>&1 && echo FOUND || echo none)"
+
+# ---- wwb: the Writer's Workbench, and a string literal split across a -D ----
+#
+# THE INSTALL SET IS THE ARCHIVE'S, exactly: 35 files under /usr/lib/style plus
+# the 27-byte dispatcher in /usr/bin.  The 23 shell scripts upstream's makefile
+# puts in /usr/bin/WWB are NOT in the archive, and `WWB' and `wwb' are ONE NAME
+# on a case-insensitive host, so they cannot be installed here at all.
+WWBLIB=$V8ROOT/usr/lib/style
+check 'wwb dispatcher installed' 'yes' \
+      "$([ -f "$V8ROOT/usr/bin/wwb" ] && echo yes)"
+check 'wwb dispatcher is upstream 27 bytes' '27' \
+      "$(wc -c < "$V8ROOT/usr/bin/wwb" 2>/dev/null | tr -d ' ')"
+
+# all eight programs, built by v8cc and V8's lex, self-contained
+wwbmiss=
+for b in prose chunk syl mkstand dictadd punlx gramlx orglx; do
+	[ -x "$WWBLIB/$b" ] || wwbmiss="$wwbmiss $b"
+done
+check 'wwb: all eight programs installed' '' "$wwbmiss"
+
+# THE SPLIT LITERAL, AND ITS NEGATIVE CONTROL.  Upstream's rule is
+# `-DLIB=\"$(LIB)' -- an opening quote and no closing one -- and prose.c:125 is
+# `strcpy(path,LIB");' with the closing quote in the SOURCE.  Neither half is
+# well-formed alone and v8cc pastes them; clang refuses the pair outright.  A
+# case asserting only that prose exists would pass against a prose built with
+# no -DLIB at all, so chunk -- which takes no -D -- is the control.
+check 'wwb prose carries the split LIB path' '1' \
+      "$(strings -a "$WWBLIB/prose" 2>/dev/null | grep -c '^/usr/lib/style$')"
+check 'wwb chunk carries no LIB path (control)' '0' \
+      "$(strings -a "$WWBLIB/chunk" 2>/dev/null | grep -c '/usr/lib/style')"
+
+# ...and it COMPUTES.  syl counts syllables per word.
+check 'wwb syl counts syllables' '1-The 1-quick 2-water' \
+      "$(printf 'The quick water\n' | "$WWBLIB/syl" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+
+# prose REFUSES HONESTLY, because it consumes style(1)'s table and V8 ships no
+# style anywhere -- 9 of the archive's 44 /usr/lib/style entries belong to
+# style/diction and none has source.  Upstream's own message, not ours.
+check 'wwb prose refuses without style' 'yes' \
+      "$(printf 'A short sentence.\n' | "$WWBLIB/prose" 2>&1 |
+         grep -qF 'Try running style alone' && echo yes)"
+
+# THE HALF THAT CANNOT BE INSTALLED STAYED OUT.  On a case-insensitive host a
+# /usr/bin/WWB directory would COLLIDE with the dispatcher, so this also
+# asserts that /usr/bin/wwb is still a plain file rather than a directory.
+check 'wwb: no WWB directory installed' 'file' \
+      "$([ -d "$V8ROOT/usr/bin/wwb" ] && echo DIRECTORY || echo file)"
+check 'wwb: the 23 scripts are not installed' '' \
+      "$(for w in proofr proofer punct sexist acro worduse wwbinfo; do
+             [ -e "$V8ROOT/usr/bin/WWB/$w" ] && printf '%s ' "$w"; done)"
+
+# THE ADDRESS-0 ARGV CLASS, FOUND BY THE CRASH PROBE THE HOUR wwb LANDED.
+# mkstand.c:63 (upstream :49) is `number = *argv[1];' as main()'s FIRST
+# argc check anywhere -- so a bare `mkstand' dereferences the argument
+# vector's NULL terminator.  A VAX read crt0's first byte (0x00) and carried
+# on; macOS faults.  The guard restores the ANSWER, so the program must reach
+# upstream's own diagnostic and exit 2.
+#
+# THE FILENAME IS DELIBERATELY NOT ASSERTED.  `pid=argv[2]' reads PAST the
+# terminator into the environment vector -- valid on both machines -- so the
+# name printed contains this host's first environment variable and is a host
+# property.  What the port controls is the status and the diagnostic.
+mkst=$V8ROOT/usr/lib/style/mkstand
+mkout=$("$mkst" 2>&1); mkst_st=$?
+check 'wwb mkstand with no arguments does not fault' '2' "$mkst_st"
+check 'wwb mkstand with no arguments reaches its diagnostic' 'yes' \
+      "$(printf '%s' "$mkout" | grep -qF "Can't read" && echo yes)"
+# ...and the two-argument control still names what it was given, which is what
+# says the guard did not simply make every path answer the same thing.
+check 'wwb mkstand with two arguments names its file' 'yes' \
+      "$("$mkst" 5 999 2>&1 | grep -qF '/tmp/999stat.out' && echo yes)"
 
 # ---------------------------------------------------------------------------
 # Wave A2 batch 2d -- seven programs and a library.  The batch was scoped as

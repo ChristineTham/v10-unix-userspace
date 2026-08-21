@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2843 tests across 17 suites** guard it.
+assembly. **2861 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **188** of the 286 V8 shipped, and the ones still missing mostly
+port installs **189** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -6298,6 +6298,87 @@ rather than trusting the number gave **thirty-five**. It had grown quietly with
 half a dozen imports, and the note recording it had been incremented by hand
 exactly as often as someone happened to think of it, which is a different thing
 from being maintained.
+
+## Half a string
+
+The Writer's Workbench is a suite of text-analysis programs Bell Labs shipped
+in 1982 — a syllable counter, a punctuation checker, a readability scorer. Its
+build description contains this line:
+
+    $(CC) $(CFLAGS)  -DLIB=\"$(LIB) prose.c -o prose
+
+There is an opening quote and no closing one. The obvious reading is that
+someone lost a character, and the obvious fix is to put it back. The obvious
+reading is wrong. Line 125 of the program is:
+
+    strcpy(path,LIB");
+
+with a stray closing quote sitting in the source. The string literal is split
+across the compiler flag and the file: the flag opens it, the source closes it,
+and neither half is a well-formed token on its own. It has presumably been that
+way since 1982, because it works.
+
+It works on the 1985 compiler, at least. A modern compiler rejects it outright
+— `error: expected expression` — because it tokenises the macro body before
+pasting it anywhere. This is now the second program in the port that can only
+be built by the authentic compiler; the first was a whole program written in
+random dictionary words whose compound assignment operators had spaces in the
+middle of them. Neither was planned as a demonstration of anything. They are
+just what happens when you keep the original toolchain instead of quietly
+substituting a modern one.
+
+The other half of this port was blocked by something that has never come up
+before: the filesystem the work is checked out on.
+
+The suite installs its programs to `/usr/lib/style` and its twenty-three shell
+scripts to `/usr/bin/WWB`. The scripts are not in the shipped archive at all,
+so the question is academic — but it is worth noticing that they could not have
+been installed anyway, because `WWB` and `wwb` are the same name on a
+case-insensitive filesystem, and that is the default on macOS. A 1979 Unix
+filesystem is case-sensitive, so the layout was perfectly sensible when it was
+written. It is the host that cannot hold it.
+
+That discovery came with a small humiliation attached. The first measurement of
+this said the two names were a hard link, on the evidence that `ls -i` reported
+one inode for both. Of course it did: on a case-insensitive volume, asking for
+`WWB` opens `wwb`. The tool could not see the distinction it was being asked
+about. Worse, the probe that had established the volume was case-sensitive in
+the first place was itself broken — a shell chain that silently gave up before
+creating the file it was going to test for, and then reported the file's twin
+as absent. Two instruments wrong in series, each making the next one look
+reasonable.
+
+What settled it was asking git, which stores filenames exactly regardless of
+what the working directory can represent. One entry, lowercase, no directory.
+
+There was one more thing, and it arrived on its own. This project runs a probe
+that executes every installed program against every single-letter option and
+counts the ones that die on a signal, checked against a list of the deaths that
+are known and expected. The list of programs is not maintained by hand — it is
+derived by walking the installed tree — so the eight new binaries joined the
+sweep the moment they were installed, without anyone adding them.
+
+One of them crashed. `mkstand` reads its first argument as the very first
+statement of `main`, and `main` never checks how many arguments it was given,
+so running it bare dereferences the terminator at the end of the argument
+vector. On the original hardware that address was readable — it held the first
+byte of the program's own startup code — so the program carried on with a zero
+and eventually printed a sensible complaint. Here it is unmapped memory.
+
+The fix is not to stop the crash but to restore the answer, which is a
+distinction this project keeps making and which is easy to state and easy to
+get wrong. With the guard in, the program prints:
+
+    Can't read /tmp/OSLogRateLimit=64stat.out.
+
+`OSLogRateLimit=64` is the first environment variable of the machine it ran on.
+That is not a bug in the fix; it is the evidence that the fix is right. Three
+lines further down the program reads *past* the end of the argument vector,
+which on every Unix ever written lands in the environment block — a perfectly
+valid read, in 1982 and now — and then copies it into a fourteen-byte buffer,
+which overruns in exactly the same way it always did. Predicting that string
+before seeing it is what distinguishes a restored behaviour from a suppressed
+symptom.
 
 ---
 

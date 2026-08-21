@@ -747,6 +747,19 @@ dep 'false script -> /bin'     src/cmd/false.sh               rootfs/bin/false
 dep 'nohup script -> /bin'     src/bin/nohup                  rootfs/bin/nohup
 dep 'dirname script -> /usr/bin' src/bin/dirname              rootfs/usr/bin/dirname
 dep 'whois script -> /usr/bin' src/bin/whois                  rootfs/usr/bin/whois
+
+# wwb: the dispatcher is a shipped-only #!-less script like the five above, and
+# everything it needs is under /usr/lib/style.  The nodep is the point: the 23
+# shell scripts and `double' go to /usr/bin/WWB in upstream's makefile, that
+# directory is NOT in the archive, and `WWB' and `wwb' are ONE NAME on a
+# case-insensitive host -- so they are imported and never built or installed,
+# and this is what would notice them coming back.
+dep   'wwb script -> /usr/bin'   src/bin/wwb                    rootfs/usr/bin/wwb
+dep   'wwb prose.c -> style'     src/cmd/wwb/prose.c            rootfs/usr/lib/style/prose
+dep   'wwb punct.l -> style'     src/cmd/wwb/punct.l            rootfs/usr/lib/style/punlx
+dep   'wwb wordlist.d -> style'  src/cmd/wwb/wordlist.d         rootfs/usr/lib/style/wordlist.d
+nodep 'wwb double.c -/-> style'  src/cmd/wwb/double.c           rootfs/usr/lib/style/prose
+nodep 'wwb proofr.sh -/-> style' src/cmd/wwb/proofr.sh          rootfs/usr/lib/style/prose
 # ed/e and compress/uncompress/zcat are HARD LINKS and deliberately have NO
 # case here, for the reason libtermlib's does not: the prerequisite and the
 # target are ONE INODE, so `touch' moves both mtimes and the target can never
