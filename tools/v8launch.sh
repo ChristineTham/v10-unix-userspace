@@ -32,9 +32,12 @@ V8WORK=${V8WORK:-$HOME/.v8}
 
 usage() {
 	cat <<EOF
-usage: v8 [--pure] [--golden] [--reset] [--help] [command ...]
+usage: v8 [--pure] [--golden] [--reset] [--help] [directory]
 
-  (no options)  enter your world at $V8WORK, as yourself
+  (no options)  enter your world at $V8WORK, as yourself, in \$HOME
+  [directory]   land there instead of \$HOME -- v8(1) takes the landing
+                directory as its argument and always execs /bin/sh, so
+                this is a place to start, not a command to run
   --pure        refuse every host binary but the documented toolchain
                 exception (V8JAIL=strict).  A pure V8 world: nothing that
                 is not V8 can be run, including python and git
@@ -191,4 +194,13 @@ export PATH
 # leaves it alone.  The environment is the launcher's to set and the argument
 # is the program's to take; crossing them made a host variable into a jail
 # escape.
+#
+# AND $1 IS A DIRECTORY, NOT A COMMAND.  The usage line said `[command ...]'
+# for as long as this script has existed, and nothing ever implemented it:
+# v8.c ends `execl("/bin/sh", "-", 0)' unconditionally, so there is nowhere for
+# a command to go.  What that cost is a bad diagnostic rather than a bad
+# feature -- `v8 /bin/echo hi' chdir'd to /bin/echo and printed
+# `v8: can't chdir', which reads as a broken install rather than as a wrong
+# invocation.  Found by installing to a scratch prefix and running the result,
+# which is the only thing that exercises this line at all.
 exec "$V8ROOT/usr/bin/v8" "${1:-$HOME}"

@@ -6429,6 +6429,44 @@ were excluded years ago. The single thing that let it be counted as a program
 is an executable bit, on an empty file, that the entry immediately above it in
 the same list does not have.
 
+## Installing it, and the line nothing had ever run
+
+Asked whether the port was ready to install, the honest way to answer was to
+install it — to a scratch directory rather than the usual place, so nothing
+system-wide moved — and then use the result.
+
+It is ready. The golden image comes out with all 198 commands, the launcher
+builds a working copy, and the world greets you by name:
+
+    Research Unix, Eighth Edition.
+    You are christie.  Your files are in /usr/christie and they persist.
+
+Commands added the same afternoon work inside it — `3 /etc/passwd` lays the
+password file out in three columns, `doctype` reads a document and prints the
+`troff` pipeline it needs. The binaries carry the installed path and not one
+reference to the build tree they were compiled in, which is the whole reason
+the install step begins by deleting everything and starting again: the root
+directory is baked into each binary by a compiler flag, and `make` has no way
+to know a flag changed.
+
+What the exercise found was a single wrong word, in the one line of the
+launcher that nothing had ever executed. Its usage message offered
+
+    usage: v8 [--pure] [--golden] [--reset] [--help] [command ...]
+
+and there is no command. The argument is a *directory* — the place to stand
+when the shell starts — because that is what the 1985 program takes, and it
+ends by running the shell unconditionally with nowhere for a command to go.
+Type `v8 ls` and it tries to change directory to `ls`, fails, and says
+`v8: can't chdir`, which reads like a broken installation rather than a
+mistyped command.
+
+The word had been wrong since the launcher was written. Nothing caught it
+because every test drives the world from inside; the launcher is the seam
+between the Mac and the world, and the only thing that exercises it is
+installing and then using what came out. A test suite that never leaves the
+building will not tell you the front door is mislabelled.
+
 ---
 
 *Source: [github.com/ChristineTham/v10-unix-userspace](https://github.com/ChristineTham/v10-unix-userspace).

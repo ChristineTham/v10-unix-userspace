@@ -4315,6 +4315,40 @@ sign, `asdrcv` receives. 2771 lines, 22 files, a 17-object `lib.a`,
   rather than left half-done: a directory under `src/cmd` is a claim that the
   program ships.
 
+**AND `make install` WAS EXERCISED END TO END FOR THE FIRST TIME, WHICH FOUND A
+WRONG WORD IN THE ONE LINE NO TEST CAN REACH.** Installed to a scratch PREFIX
+(never `/usr/local`, which is root-owned and a system change nobody asked for)
+and then USED: golden image 198 commands, working copy built, `.profile` runs,
+`pwd` is `/usr/christie`, and this session's own `3` and `doctype` work inside
+it. Binaries carry the installed root and **zero** references to the build tree
+-- the `V8ROOT_DEFAULT` staleness class working as designed. Four things:
+
+- **`tools/v8launch.sh`'s USAGE OFFERED `[command ...]` AND THERE IS NO
+  COMMAND.** The exec is `exec "$V8ROOT/usr/bin/v8" "${1:-$HOME}"` and
+  `src/cmd/v8.c:37` is `chdir(argc > 1 ? argv[1] : "/")` followed by an
+  unconditional `execl("/bin/sh", "-", 0)` -- so `$1` is the LANDING DIRECTORY
+  and there is nowhere for a command to go. `v8 /bin/echo hi` chdirs to
+  `/bin/echo` and prints **`v8: can't chdir`**, which reads as a broken install
+  rather than a wrong invocation. Corrected to `[directory]` with the reason
+  beside it; v8.c is authentic and untouched.
+- **NOTHING COULD HAVE CAUGHT IT, because every suite drives the world from
+  INSIDE.** The launcher is the seam between the Mac and the world, and the
+  only instrument that reaches it is installing and then using the result. Add
+  it to the seam family: *a guard on a seam is not a guard on what crosses it*,
+  with the seam here being the front door.
+- **AND THE INSTALL LEAVES THE BUILD TREE UNUSABLE FOR TESTING, ON PURPOSE.**
+  It runs `make V8ROOT_DEFAULT=$(PREFIX)/golden all`, so afterwards
+  `rootfs/bin/cat` carries the PREFIX and not the build tree -- measured, 1 and
+  0 -- and `make clean` has taken `.tests-passed` with it. `make` will not undo
+  this, because the flag is a recipe flag it cannot track. **After any
+  `make install`, `make clean && make && make test` before believing a suite**,
+  which is the same sentence the install recipe already carries for its own
+  first line.
+- **AND `V8WORK` IS THE OVERRIDE THAT MAKES THE TEST SAFE.** The launcher is
+  `V8WORK=${V8WORK:-$HOME/.v8}`, so a verification run need not touch the real
+  home directory. Worth knowing before running an installer to see what it
+  does.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
