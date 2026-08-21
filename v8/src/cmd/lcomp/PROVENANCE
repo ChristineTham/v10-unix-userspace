@@ -1,0 +1,18 @@
+# Provenance for v8/src/cmd/lcomp
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+ebde6d08523a9f3dad3463188aa059085b22952d  v8/usr/src/cmd/lcomp/syscore.c
+f3208118fe03b223b16d689ba3e16e7a295f47fc  v8/usr/src/cmd/lcomp/bb.c
+daf0f4289d972f886f1b163f991c56398758c771  v8/usr/src/cmd/lcomp/lsub.c
+d03f7076fb92bcebb29bc619604f1fc72b9fe457  v8/usr/src/cmd/lcomp/instr.c
+e843d83c2d1749a5875926b03943e742c213ce79  v8/usr/src/cmd/lcomp/makefile
+ca6f32f3d32b5e9ec36fb934ec92e332970c1cf3  v8/usr/src/cmd/lcomp/nexit.c
+57fbf731f151c5d50b4ff748af11e7fd21b2cd4b  v8/usr/src/cmd/lcomp/profmemo
+476da727655414a5209b35cb6250522f56c19672  v8/usr/src/cmd/lcomp/README
+b744068390cff36706dfa0546978f65ce29ddac1  v8/usr/src/cmd/lcomp/lprint.c
+a3a8c2b855944e9ce3c5612917283a206354380a  v8/usr/src/cmd/lcomp/5bb.c
+f0f48b8aa6497dac30ba19d6382a168e78f72f3b  v8/usr/src/cmd/lcomp/lcc
+a392638bddcc8a8873efcf46f419c681e17fba05  v8/usr/src/cmd/lcomp/sysprof.c

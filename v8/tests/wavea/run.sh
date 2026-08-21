@@ -862,6 +862,9 @@ for d in "$ROOT"/src/cmd/*/; do
 	case "$name" in
 	hist)     want='= ==' ;;	# cmd/hist installs /usr/bin/= and a link, ==
 	descrypt) want='encrypt decrypt' ;;	# two programs, one directory
+	lcomp)    want='lprint' ;;		# ditto, and the OTHER half cannot come:
+					# bb rewrites VAX assembler, so it is
+					# imported and deliberately not built
 	*)        want=$name ;;
 	esac
 	for w in $want; do
@@ -2327,6 +2330,68 @@ check 'the key is not truncated at eight characters' 'yes' \
 check 'encrypt and decrypt are two inodes' '2 2' \
     "$(cd "$V8ROOT/usr/bin" && ls -i encrypt decrypt 2>/dev/null |
        awk '{n++; ino[$1]=1} END {d=0; for (k in ino) d++; print n+0, d}')"
+
+# ---- lprint: the reporting half of a directory whose other half cannot come --
+#
+# cmd/lcomp is Bell Labs' basic-block profiler.  `bb' reads and REWRITES VAX
+# assembler -- instr.c is its table of VAX mnemonics, #include'd into bb.c:9
+# rather than compiled -- so it is imported and NOT built, which is the as/ld
+# exception reached by another route.  lprint is the reporting half: it reads
+# prof.out, which is TEXT, and touches none of that.
+#
+# THE HOST HAS NO `lprint', measured, so these cases discriminate.  Contrast
+# the true/false/dirname family, where macOS supplies the same names and only
+# `whois' could tell the port from the union.
+lpbin=$(v8which lprint) || lpbin=
+check 'lprint is installed'   'yes' "$([ -n "$lpbin" ] && echo yes)"
+# NOT a `case' pattern here: an unbalanced `)' inside $( ) closes the
+# substitution, which this tree has already paid for once and which reports as
+# the suite printing a fragment of its own source.  grep -qF is the remedy.
+check 'lprint is in /usr/bin' 'yes' \
+      "$(printf '%s' "$lpbin" | grep -qF '/usr/bin/lprint' && echo yes)"
+
+if [ -n "$lpbin" ]; then
+	# WITHOUT DATA IT REFUSES HONESTLY -- load(1)'s `No mem' and dmesg's
+	# refusal: a real program that cannot answer, because bb is the only
+	# thing that can write a prof.out and bb cannot come.  BOTH halves are
+	# asserted, since an expected output is vacuous against a crash unless
+	# the status is asserted beside it.
+	rm -f prof.out
+	lpout=$("$lpbin" 2>&1); lpst=$?
+	check 'lprint without prof.out refuses' \
+	      'prof.out: No such file or directory' "$lpout"
+	check 'lprint without prof.out exits 1' '1' "$lpst"
+
+	# ...AND WITH DATA IT COMPUTES.  A refusal-only suite would pass against
+	# a program that could do nothing else -- canread/canwrite's discipline,
+	# where each direction needs a refusal case AND a success case.
+	printf '/tmp/foo.s\n10\n20\n30\n' > prof.out
+	check 'lprint -s sums a profile' \
+	      '/tmp/foo.s 3 bbs 60 execs 0 untouched' \
+	      "$("$lpbin" -s 2>/dev/null | grep bbs)"
+
+	# BOTH realloc ARMS ARE EXERCISED.  realloc is UNDECLARED at lprint.c:113
+	# and :138 where malloc at :19 is declared -- this port's truncation
+	# shape.  cc -S says v8cc emits `mov x10, x0', the whole register, so it
+	# does not truncate; these are what would notice if that stopped being
+	# true.  The count array grows past quot=100, the file table past ltab=20,
+	# and a truncated pointer from either would fault rather than answer.
+	{ echo /tmp/big.s
+	  i=1; while [ $i -le 300 ]; do echo 1; i=$((i+1)); done; } > prof.out
+	check 'lprint grows the count array (realloc)' \
+	      '/tmp/big.s 300 bbs 300 execs 0 untouched' \
+	      "$("$lpbin" -s 2>/dev/null | grep bbs)"
+	{ i=1; while [ $i -le 25 ]; do echo "/tmp/f$i.s"; echo 5; i=$((i+1)); done; } > prof.out
+	check 'lprint grows the file table (realloc)' '25' \
+	      "$("$lpbin" -s 2>/dev/null | grep -c ' bbs ')"
+	rm -f prof.out
+fi
+
+# AND THE VAX HALF STAYED OUT OF THE WORLD.  tests/deps states this as make
+# edges; these state it as ARTEFACTS, which is what a make edge cannot see --
+# a rule deleted and a binary left behind look identical from the build graph.
+check 'lcomp bb is not installed'  'none' "$(v8which bb  >/dev/null 2>&1 && echo FOUND || echo none)"
+check 'lcomp lcc is not installed' 'none' "$(v8which lcc >/dev/null 2>&1 && echo FOUND || echo none)"
 
 # ---------------------------------------------------------------------------
 # Wave A2 batch 2d -- seven programs and a library.  The batch was scoped as

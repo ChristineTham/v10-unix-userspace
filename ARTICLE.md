@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2831 tests across 17 suites** guard it.
+assembly. **2843 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **187** of the 286 V8 shipped, and the ones still missing mostly
+port installs **188** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -6254,6 +6254,50 @@ reported the wrong number, but one that had been reporting the same number
 regardless of the answer, in a green suite, for as long as anyone could
 remember.
 
+
+## Half a directory
+
+`cmd/lcomp` is Bell Labs' basic-block profiler, and it had been sitting on the
+not-portable list under a single name. Reading it splits it in two.
+
+`bb`, the instrumenting half, reads and **rewrites VAX assembler**. Its
+companion `instr.c` is a table of VAX mnemonics — `acbb`, `adawi`, `addb2` —
+against the condition codes each one destroys, and it is `#include`d into
+`bb.c` rather than compiled, so it is invisible both to a dependency scanner
+and to a `*.c` glob. The driver script says the rest in three lines: compile to
+assembly, rewrite the assembly, reassemble. Porting that would mean authoring
+an arm64 instruction table with condition-code semantics, which is writing a
+new program rather than porting one — the same place the assembler and link
+editor were left, arrived at from a different direction.
+
+`lprint`, the reporting half, touches none of it. It reads a profile data file
+that turns out to be plain text, and its only mention of the word `instr` is a
+test for a `.s` filename suffix. It compiled under the 1985 compiler with **no
+source changes at all** and linked with an empty import list. One program of a
+directory that had been written off whole.
+
+The hazard it did carry is the one this port has met most often: `realloc` is
+called three times and never declared, where `malloc` a few lines above is. An
+undeclared function returning a pointer is implicitly an `int`, and on a
+64-bit machine that cuts an address in half. The tempting move is to add the
+declaration and feel responsible.
+
+What settles it is not reading the C but reading what the compiler emitted.
+Both call sites produce `mov x10, x0` — the whole 64-bit register — followed by
+a full eight-byte store, instruction for instruction identical to the `malloc`
+call beside them that *is* declared. The value never exists as a 32-bit
+quantity, so there is nothing for the implicit type to cut, and a declaration
+would change not one byte of the output. The rule in this project is that a
+change to 1985 source has to be forced by the target; this one is not, so the
+measurement goes in the notes and the file stays exactly as Bell Labs left it.
+
+The same afternoon produced a smaller and more embarrassing finding. The list
+of files that get `#include`d despite not being headers — the class that caused
+this port's worst bug — was recorded as having sixteen members. Re-deriving it
+rather than trusting the number gave **thirty-five**. It had grown quietly with
+half a dozen imports, and the note recording it had been incremented by hand
+exactly as often as someone happened to think of it, which is a different thing
+from being maintained.
 
 ---
 

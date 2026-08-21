@@ -267,6 +267,18 @@ dep 'descrypt crypt.h'         src/cmd/descrypt/crypt.h        $B/descrypt/des.o
 dep 'descrypt getpass -> encrypt' $B/descrypt/getpass.o        $B/bin/encrypt
 dep 'descrypt des -> decrypt'  $B/descrypt/des.o               $B/bin/decrypt
 
+# lcomp: ONE DIRECTORY, TWO PROGRAMS, AND THE NEGATIVE CASES ARE THE POINT.
+# `bb' reads and rewrites VAX assembler and instr.c is its table of VAX
+# mnemonics, #include'd into bb.c:9 rather than compiled -- so the whole
+# profiler half is imported and deliberately NOT built.  A `dep' on lprint.c
+# says the program is wired up; the two `nodep's say the VAX half stayed out,
+# which is the half that could rot back in unnoticed.  Note instr.c is an
+# included non-header, so it is invisible to every dependency scanner AND to a
+# *.c glob -- exactly the class that has to be stated by hand.
+dep   'lcomp lprint.c -> lprint'  src/cmd/lcomp/lprint.c        $B/bin/lprint
+nodep 'lcomp instr.c -/-> lprint' src/cmd/lcomp/instr.c         $B/bin/lprint
+nodep 'lcomp bb.c -/-> lprint'    src/cmd/lcomp/bb.c            $B/bin/lprint
+
 # lint: FOUR #include'd non-headers, which is step 4 of the porting checklist
 # and takes the tree's list from 16 to 20.  `mfile1', `manifest' and `common'
 # are named in a source file and are invisible to a dependency scanner because

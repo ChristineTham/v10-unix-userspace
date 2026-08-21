@@ -3187,6 +3187,12 @@ B2D_INSTALL = $(call v8install,$(B2D_NAMES)) $(CAL_INSTALL) \
 DES_BUILT   = $(BINDIR)/encrypt $(BINDIR)/decrypt
 DES_INSTALL = $(call v8install,encrypt decrypt)
 
+# ...and lcomp's one, for the same reason -- the SIXTH time this file has had
+# to say so.  $(LCOMP_BUILT) is consumed by $(V8DIRBIN_BUILT) a few lines
+# below, so it has to be defined HERE and not beside its rules at the bottom.
+LCOMP_BUILT   = $(BINDIR)/lprint
+LCOMP_INSTALL = $(call v8install,lprint)
+
 # ...and lint's, for the same reason.  $(LINT_INSTALL) is consumed by
 # $(V8DIRBIN_INSTALL) a few lines below, so every name it is built from --
 # LINTLIB included -- has to be defined HERE and not beside the rules at the
@@ -3280,14 +3286,15 @@ V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
                    $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT) $(DES_BUILT) $(LINT_BUILT) $(CFLOW_BUILT) \
-                   $(CYNTAX_BUILT)
+                   $(CYNTAX_BUILT) $(LCOMP_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr egrep bc m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
                    $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \
                    $(LINKED_INSTALL) $(HIST_INSTALL) $(DES_INSTALL) \
-                   $(LINT_INSTALL) $(CFLOW_INSTALL) $(CYNTAX_INSTALL)
+                   $(LINT_INSTALL) $(CFLOW_INSTALL) $(CYNTAX_INSTALL) \
+                   $(LCOMP_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
@@ -4072,6 +4079,36 @@ $(NEQN_OBJ): $(NEQNSRC)/e.h
 # the archive member is never pulled and the resolution is silent and correct;
 # dropping it would compile, link and quietly cut every passphrase to 8
 # characters.  src/cmd/descrypt/PORTING.md.
+# ONE DIRECTORY, TWO PROGRAMS, AND ONLY ONE OF THEM IS PORTABLE -- pack/unpack's
+# shape with the second half genuinely blocked rather than merely deferred.
+# cmd/lcomp is Bell Labs' basic-block profiler, and `bb' READS AND REWRITES VAX
+# ASSEMBLER to insert tally code: instr.c is a table of VAX mnemonics (acbb,
+# adawi, addb2) against the condition codes each one kills -- `struct inst {
+# char *iname; short type; }' at instr.c:8-10 -- and it is #include'd into
+# bb.c:9 and 5bb.c:9 rather than compiled.  lcc:6-8 is the whole mechanism:
+# `cc -g -S $clist $i', then `$DIR/bb $u"s"', then `cc X$u"s" -c'.  Porting
+# that means authoring an arm64 instruction table with condition-code
+# semantics, which is writing a NEW program rather than porting one -- the
+# as/ld exception reached by a different route.  So bb, 5bb, lsub, syscore,
+# sysprof and nexit are imported (PROVENANCE records all twelve files) and are
+# NOT built; refer's `whatabout' is the precedent and the gap is latent rather
+# than live.
+#
+# lprint is the REPORTING half and touches none of it.  It reads prof.out,
+# which is a TEXT file -- fscanf "%s" for a /-leading filename and "%d" for
+# each count -- and its only occurrence of the word `instr' is the `.s'
+# filename suffix test at lprint.c:243.  Zero source changes, and `nm -u' on
+# the result is empty.  src/cmd/lcomp/PORTING.md records the measurement that
+# decided the one hazard it does carry.
+LCOMPSRC = $(SRC)/cmd/lcomp
+
+$(BUILD)/lcomp/%.o: $(LCOMPSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(@D)
+	@$(V8CCRUN) -c -o $@ $<
+$(BINDIR)/lprint: $(BUILD)/lcomp/lprint.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(BUILD)/lcomp/lprint.o $(V8LIBS)
+
 DESSRC = $(SRC)/cmd/descrypt
 DES_SHARED = SP io keysetup crunch des permute randblock setup getpass alpha
 DES_SHARED_OBJ = $(patsubst %,$(BUILD)/descrypt/%.o,$(DES_SHARED))

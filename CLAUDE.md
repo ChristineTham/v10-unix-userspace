@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2831 cases, 2830 on a host whose $TMPDIR
+make test             # all 17 suites (2843 cases, 2842 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  Ends by checking that total against
                       # ARTICLE.md, so the number there cannot go stale again.
@@ -4057,6 +4057,64 @@ prescription to follow.
 states -- *a delta counted from your own diff is a prediction* -- with the
 smallest possible error and the same remedy: re-measure, do not increment.
 
+**AND `lprint(1)` IS IN -- 187 -> 188 -- WHICH IS HALF A DIRECTORY, AND THE
+RECORDED VERDICT HAD BEEN FOR THE WHOLE OF IT.** `cmd/lcomp` sat on the
+not-portable list under one name. It is two programs. `bb` **reads and rewrites
+VAX assembler** to insert tally code -- `instr.c` is its table of VAX mnemonics
+(`acbb`, `adawi`, `addb2`) against the condition codes each kills, `struct inst
+{ char *iname; short type; }` at `instr.c:8-10`, `#include`d into `bb.c:9` and
+`5bb.c:9` rather than compiled -- and `lcc:6-8` is the whole mechanism:
+`cc -g -S $clist $i`, `$DIR/bb $u"s"`, `cc X$u"s" -c`. Porting it means
+authoring an arm64 instruction table with condition-code semantics, which is
+writing a NEW program: the as/ld exception reached by another route, and
+genuinely blocked rather than deferred. `lprint` is the REPORTING half, reads a
+`prof.out` that is TEXT, and its only occurrence of `instr` is a `.s` suffix
+test at `lprint.c:243`. **Zero source changes, `nm -u` empty.**
+`src/cmd/lcomp/PORTING.md`. Five things generalise:
+
+- **A VERDICT ABOUT A DIRECTORY IS NOT A VERDICT ABOUT A PROGRAM, and this is
+  the `vi`-is-`ex` shape in a form that reads *more* defensible.** There the
+  answer was correct about the wrong question; here ONE answer covered TWO
+  questions and was right about one of them, so nothing about it invited
+  re-reading. The tell is available cheaply and was never run: the directory's
+  own makefile has **two** install arms, `cp bb nexit.o /usr/lib/prof` and
+  `cp lprint /usr/bin`. **Read the install arms before recording a directory as
+  blocked** -- a second destination is a second program.
+- **`cc -S` IS WHAT SETTLES AN UNDECLARED POINTER RETURN, AND BEHAVIOUR IS
+  NOT.** `realloc` is undeclared at `lprint.c:113` and `:138` where `malloc` at
+  `:19` is declared -- the truncation shape. Both realloc arms were exercised
+  (300 counts past `quot=100`, 25 files past `ltab=20`) and both answered
+  correctly, which proves nothing on its own: this file already records that
+  the heap can sit low enough for a truncation to be invisible. The emitted code
+  is `mov x10, x0` -- the whole register -- and a full 8-byte `str`, **identical
+  instruction for instruction to the `malloc` control beside it**. `maketab.c`'s
+  verdict a second time: the declaration would change nothing, so S1 forbids it
+  and PORTING.md records the measurement. The CONTROL is what makes the reading
+  trustworthy rather than hopeful.
+- **A NARROW STORE INTO A WIDE OBJECT CAN BE EXACT BY STORAGE CLASS, WHICH IS
+  ONE WORD A TIDY-UP WOULD REMOVE.** `lprint.c:21` is `unsigned long val` and
+  `:129` is `fscanf(fd, "%d", &val)` -- four bytes into eight, exact on a VAX
+  where `NOLONG` made `long` 32 bits. Exact here too, and only because `val` is
+  a **global**: its high half is zero-initialised and, measured, the name has
+  exactly three occurrences so nothing ever writes it. Move that declaration
+  inside the function and the same line reads uninitialised stack. Nothing is
+  wrong today; what is fragile is invisible in the arithmetic.
+- **THE `case ... )` INSIDE `$( )` TRAP FIRED AGAIN, IN THE SESSION THAT QUOTES
+  IT.** A new wavea case written `"$(case "$lpbin" in */usr/bin/lprint) ...)"`
+  made the suite print a fragment of its own source. This file already
+  prescribes `grep -qF`. Fourth instance of a documented shell hazard being
+  walked into while the documentation was on screen -- with the apostrophe and
+  the backquote, **all three present as the suite reporting something that is
+  not a measurement.**
+- **AND THE NEGATIVE CASES ARE THE POINT WHEN HALF A DIRECTORY IS EXCLUDED.**
+  `tests/deps` states it as two `nodep`s (touch `instr.c` or `bb.c`, `lprint`
+  must NOT go stale) and `tests/wavea` as two artefact checks (`bb` and `lcc`
+  are not installed), because a make edge and an artefact are different claims
+  -- a rule deleted and a binary left behind look identical from the build
+  graph. Mutation-verified in the aimed form: making `instr.c` a real
+  prerequisite fires **exactly one case**, `lcomp instr.c -/-> lprint`, and
+  nothing else.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
@@ -4146,7 +4204,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 187 installed**, stable. (It moves when something is imported,
+**286 shipped, 188 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.  This sentence said 150 for several batches while the
 guard kept ARTICLE.md exact — **a number with a test beside it stays current and
@@ -6029,14 +6087,30 @@ Four debugging rounds went to correct source compiled from already-fixed files.
 `tests/deps` exists for this; see below.
 
 **Files `#include`d that are not headers** are invisible to every dependency
-scanner *and* to a `*.c` glob. **Sixteen** — this said thirteen, then fourteen
-when `cb/cbtype.c` arrived, and efl brought two more:
-`cb/cbtype.c`, `ccom/common`, `ccom/y.debug`, `cpp/yylex.c`, **`efl/defs`**,
-**`efl/tokdefs`**, `eqn/e.def`, `lex/ldefs.c`, `lex/once.c`, `make/defs`,
-`refer/refer..c`, `refer/what..c`, `tbl/t..c`, `yacc/dextern`, `yacc/files`,
-`yacc/y.debug`. All are declared explicitly in the Makefile **except
-`refer/what..c`**, which feeds `whatabout` — not in `REFER_PROGS`, so this port
-does not build it and the gap is latent rather than live.
+scanner *and* to a `*.c` glob. **THIRTY-FIVE, MEASURED — AND THIS ENTRY SAID
+SIXTEEN, WHICH IS THE `re-measure, do not increment' RULE FIRING ON THIS FILE'S
+OWN LIST.** It said thirteen, then fourteen for `cb/cbtype.c`, then sixteen for
+efl's two, each time by someone adding what they had just imported; nobody ran
+the sweep. `cflow`, `lint`, `mip`, `f77` and `neqn` brought **nineteen** more
+between them and the number did not move, because a hand-incremented count is
+maintained exactly as often as somebody happens to think of it. Re-derive it,
+and note the sweep **excludes `.md`** or it counts its own documentation:
+
+```bash
+grep -rnE '#[[:blank:]]*include[[:blank:]]*"[^"]*"' src/cmd |
+     grep -v '\.h"' | grep -v '\.md:'
+```
+
+Today: `cb/cbtype.c`, `cflow/{lmanifest,manifest}`, `ccom/common/{common,y.debug}`,
+`cpp/yylex.c`, **`efl/{defs,tokdefs}`**, `eqn/e.def`, `f77/{defines,defs,dmrdefs,
+drivedefs,ftypes,machdefs,pccdefs,scjdefs,tokdefs}`, **`lcomp/instr.c`**,
+`lex/{ldefs.c,once.c}`, `lint/{manifest,mfile1}`, `make/defs`,
+`mip/{common,macdefs,manifest,mfile1}`, `neqn/e.def`, `refer/{refer..c,what..c}`,
+`tbl/t..c`, `yacc/{dextern,files,y.debug}`. All are declared explicitly in the
+Makefile **except** the two that nothing builds — `refer/what..c`, which feeds
+`whatabout` (not in `REFER_PROGS`), and **`lcomp/instr.c`**, the VAX opcode
+table `bb.c:9` includes. Both gaps are latent rather than live, and the second
+is asserted as a `nodep` so it cannot quietly become live.
 
 Two things the efl pair teaches about the list itself. **`defs` is now the name
 of TWO different files** (`make/defs` and `efl/defs`), so a sweep keyed on the
