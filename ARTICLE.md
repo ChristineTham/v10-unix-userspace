@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2828 tests across 17 suites** guard it.
+assembly. **2831 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -6179,6 +6179,81 @@ missing compiler feature went unnoticed through a hundred and fifty-six
 programs until one arrived that used it: **a fault in code generation that
 depends on the shape of the input is found by the first program with that
 shape, not by the size of the test suite.**
+
+## The guard that could never have failed
+
+The build is supposed to reach a resting state. Run `make` twice in a row and
+the second one should do nothing at all, because everything it would build is
+already newer than everything it is built from. A build that never goes quiet
+buries real work in noise, and it is how a project ends up with people running
+`make -j8` out of impatience and getting a half-written compiler.
+
+So there is a check for it, and there has been for a long time. It runs `make`
+with nothing changed and counts how many compiler invocations come out. Zero is
+the pass. The comment above it remembers the day it was written: before the
+dependency graph was audited, a no-op `make` recompiled thirty-nine objects
+every single time.
+
+The check had never once been able to fail.
+
+It was found by asking a duller question. Was the tree actually idle? Not
+according to the test suite, which was green, but according to `make` itself,
+which answers that question directly if you ask with `-q`. It said no. One
+program — `ps` — was relinked and reinstalled on every build, forever.
+
+The reason is a distinction that reads as pedantry right up until it costs you
+something. `ps` needs some device nodes to be present when it *runs*: it opens
+`/dev/dk`, `/dev/pt` and `/dev/drum` at startup and gives up immediately if they
+are missing. So the build rule named them, and the comment above the rule says
+exactly that, in words: these must **exist**. But it named them the ordinary
+way, and the ordinary way tells `make` something stronger — that `ps` is *made
+out of* those files, and must therefore be rebuilt whenever any of them is
+newer. `ps` is not made out of them. It has never contained a byte of them.
+
+That would have been harmless if the files never changed. One of them changes on
+purpose. `/dev/null` is a file the whole world writes to, and the test suite
+empties it before checking that writing to it discards the data — deliberately,
+so that the test is a function of the tree rather than of whatever ran before
+it. Emptying a file that is already empty still moves its timestamp. So every
+test run pushed `/dev/null` past `ps`, and the next build dutifully relinked a
+program because a device node had been touched.
+
+The fix is one character: a vertical bar, which is how you tell `make` that a
+prerequisite must exist without claiming anything was built from it.
+
+The interesting part is why nothing complained. The settle check greps the
+output of `make` for a compiler flag — and every recipe in this build is
+silenced with an `@`, which means `make` prints almost nothing. Recompile an
+object and relink a binary, and the entire output is one line reading `built`
+followed by a path. There is no compiler flag in it. There never was. The
+pattern the check looks for only ever appears under `make -n`, which prints the
+commands a silent recipe *would* have run.
+
+This was measured rather than reasoned about. A rule was temporarily rewritten
+so the build could never settle — a real file made to depend on a target that is
+always out of date, which is precisely the regression the check exists to catch.
+At that moment, on that tree: the original check reported **pass**, and the
+repaired one reported **fail**. The same expression, reading `make -n` instead
+of `make`, is the whole difference between a guard and a decoration. The same
+line had been copied into the continuous-integration workflow, where it was
+equally silent.
+
+Three checks now stand where one did. The repaired count still only sees
+recompiles, so a spurious *link* — which is exactly the defect that started
+this — remains invisible to it; `make -q` catches work of any kind, because it
+is the question itself rather than a proxy for it; and neither of those can see
+work that an earlier `make` has already absorbed, so the third perturbs a device
+node by hand and insists that no binary goes stale. Each one is written down
+next to the others along with what it *cannot* see, which is the part that keeps
+the next person from trusting the wrong one.
+
+There is a habit in this project of writing down what a measuring instrument is
+blind to, because the instruments here have been wrong more often than the code
+they were pointed at. This is the sharpest case so far: not an instrument that
+reported the wrong number, but one that had been reporting the same number
+regardless of the answer, in a green suite, for as long as anyone could
+remember.
+
 
 ---
 

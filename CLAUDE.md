@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2828 cases, 2827 on a host whose $TMPDIR
+make test             # all 17 suites (2831 cases, 2830 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  Ends by checking that total against
                       # ARTICLE.md, so the number there cannot go stale again.
@@ -6138,6 +6138,60 @@ changing it:
 - **Never depend on a phony target** for a real file. Phony means always out of
   date; that once recompiled 39 objects on every single `make`.
 - **Order-only (`| foo`) means "exist before me", not "I depend on you."**
+
+  **AND THAT RULE WAS STATED HERE AND BROKEN IN THE MAKEFILE, WITH THE BROKEN
+  RULE'S OWN COMMENT SAYING "EXIST" IN WORDS.** `$(BINDIR)/ps` named
+  `$(ROOTFS_DEV)` as an ORDINARY prerequisite because `ps(1)` opens `/dev/dk`,
+  `/dev/pt` and `/dev/drum` at startup and gives up if they are missing
+  (`ps.c:21-28`) -- a claim about existence, and `ps` contains not one byte of
+  them. Written ordinarily, make also compares mtimes, and **`rootfs/dev/null`
+  is a file the world WRITES TO**: `tests/wavea/run.sh:1456` is `: > "$DEVNULL"`,
+  emptying it on purpose so that suite is a pure function of the tree, and an
+  O_TRUNC moves the mtime **even on a file that is already empty** (measured on
+  APFS). So every `make test` left `ps` stale and the next `make` relinked and
+  reinstalled it. One token, `|`. Diagnosed with `make -qd`, which names it in
+  one line: *Prerequisite `rootfs/dev/null' is newer than target `bin/ps'*.
+  **Ask of any "must exist" prerequisite whether the thing is WRITTEN TO** --
+  a device node, a manufactured file, a staging directory -- because those are
+  the ones where the distinction stops being pedantry.
+
+- **AND THE TWO GUARDS FOR "THE BUILD MUST SETTLE" WERE NOT WEAK, THEY WERE
+  VACUOUS -- FOR THEIR WHOLE LIVES, IN A GREEN SUITE.** `tests/deps` and
+  `.github/workflows/ci.yml` both ran a real `make` and counted `-c -o ` in its
+  output. **Every recipe in this Makefile is `@`-prefixed**, so a make that
+  recompiles `ps.o` and relinks `ps` prints exactly one line -- `built
+  .../bin/ps` -- and the pattern matches nothing. The count only ever appears
+  under **`make -n`**, which prints the commands a silent recipe would run.
+  Measured on a tree deliberately made never to settle (a real file given a
+  phony prerequisite -- the exact regression the case exists for): at one
+  moment, `make | grep -c` was **0 (PASS)** and `make -n | grep -c` was
+  **1 (FAIL)**. Four things generalise:
+
+  - **IT IS THE ARTEFACT-THE-INSTRUMENT-READS RULE, ARRIVING IN THE GUARD FOR
+    THE BUILD ITSELF.** This file already records a harness watching an object
+    the suite does not link, and a `size` on the wrong path printing nothing.
+    Here the instrument read the right command's output and that output does
+    not contain the thing being counted. **A silent recipe is a silent
+    instrument**, and `@` is invisible in the grep.
+  - **A PROXY IS ONLY AS GOOD AS THE PROXY, so `make -q` is strictly better:
+    it IS the question.** Exit 0 means make has nothing to do, whatever kind of
+    work that would have been -- a link, an `ar`, a `cp` into the rootfs, none
+    of which is a compile. Ask it of the RELEASE (`make -C v8 -q`) and not the
+    repository, where `all` forwards through a `.PHONY` and `-q` is therefore
+    **always non-zero** -- which reads as "never settles" and is meaningless.
+  - **AND NEITHER OF THOSE CAN SEE WORK A PRIMING make HAS ABSORBED**, which is
+    the second half of why the ps relink survived: the case runs `$MAKE` first
+    and then measures, so the spurious link happens before anything counts.
+    Measured -- with the fix reverted, the `make -q` case stays **GREEN** and
+    only the case that perturbs `rootfs/dev/null` by hand fires. So there are
+    three checks at three strengths, and **each says what it cannot see**,
+    which is the only thing that stops the next reader trusting the wrong one.
+  - **THE MUTATION THAT VALIDATES A SETTLE CASE CANNOT BE A DIRTY TREE**, since
+    the priming make cleans it. It has to be a graph that never settles, which
+    is why the phony-prerequisite mutation is the right one -- and it fires
+    nine cases, six of them `dep()`s reporting *"was already stale before the
+    touch"*, which is those cases working rather than collateral damage.
+
 - Chained pattern rules make the middle file an *intermediate*, which make
   deletes. `.SECONDARY` where that matters.
 

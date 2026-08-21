@@ -71,9 +71,21 @@ jobs:
       # An incremental one proves it settles -- that a second make does no work.
       # Before the dependency audit, a no-op make recompiled 39 objects every
       # time, which is how a build gets slow enough that people take shortcuts.
+      #
+      # THE COUNT IS TAKEN FROM `make -n', NOT FROM `make', AND THAT IS THE
+      # WHOLE OF THE CHECK.  Every recipe in v8/Makefile is `@'-prefixed, so a
+      # make that recompiles an object and relinks a binary prints one line --
+      # `built .../bin/ps' -- and a grep for `-c -o ' matches nothing.  This
+      # step counted real make output and therefore reported PASS for any
+      # amount of work, measured, for its whole life.  `-n' prints the commands
+      # a silent recipe would have run, which is what the pattern needs.
+      #
+      # It is still only a count of COMPILES.  The stronger checks -- `make -q'
+      # for work of any kind, and a perturbation that a priming make cannot
+      # absorb -- are cases in v8/tests/deps, which `make test' above runs.
       - name: Build must settle
         run: |
-          busy=$(make 2>&1 | grep -cE '\-c \-o ' || true)
+          busy=$(make -n 2>&1 | grep -cE '\-c \-o ' || true)
           if [ "$busy" -ne 0 ]; then
             echo "::error::a no-op make recompiled $busy objects; the graph does not settle"
             make -n | head -20

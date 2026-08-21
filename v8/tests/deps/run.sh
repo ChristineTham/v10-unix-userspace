@@ -1668,13 +1668,86 @@ done
 # A build that never reaches idle hides real work in the noise, and tempts the
 # shortcuts that caused the staleness bugs in the first place.  Before this
 # change a `make` with nothing touched recompiled 39 objects, every time.
+#
+# THIS CASE WAS VACUOUS FOR ITS WHOLE LIFE, and so was the identical one in
+# .github/workflows/ci.yml.  It counted `-c -o ' in the output of a REAL make
+# -- and every recipe in this Makefile is `@'-prefixed, so a make that
+# recompiles ps.o and relinks ps prints exactly one line, `built .../bin/ps',
+# and the pattern matches nothing.  Measured: with work genuinely pending,
+# `make -q' says 1 and this expression said 0, so the guard reported PASS while
+# make did real work.  The count only ever matches under `-n', which shows the
+# commands a silent recipe would run.  That is the artefact-the-instrument-
+# actually-reads rule, arriving in the guard for the build itself.
 $MAKE >/dev/null 2>&1
-busy=$($MAKE 2>&1 | grep -cE '\-c \-o ')
+busy=$($MAKE -n 2>&1 | grep -cE '\-c \-o ')
 if [ "$busy" -eq 0 ]; then
 	pass=$((pass+1))
 else
 	fail=$((fail+1))
 	echo "FAIL build does not settle: $busy objects recompiled with nothing changed"
+fi
+
+# ...AND EVEN REPAIRED, THE COUNT ABOVE IS A PROXY.  It counts COMPILE steps,
+# so a spurious LINK, a re-`ar' or a re-`cp' into the rootfs is invisible to it
+# -- which is the shape of the defect that exposed all this: a $(BINDIR)/ps
+# that relinked after every `make test' and never recompiled anything.
+#
+# `make -q' IS the property rather than a proxy for it: exit 0 means make has
+# nothing to do, whatever kind of work that would have been.  It is asked here
+# with no target, which is the whole default goal, and it works because this
+# suite cd's to $ROOT -- the release -- rather than the repository above it,
+# where `all' forwards through a .PHONY and -q is therefore always non-zero.
+#
+# SAY WHAT IT CANNOT SEE.  It is stronger than the count above and it would
+# NOT have caught the ps relink either, because both run after the priming
+# `$MAKE' on the line above, which does the spurious work before anything
+# measures.  Measured, not reasoned: with $(ROOTFS_DEV) put back as an
+# ordinary prerequisite this case stays GREEN and only the dev/null case below
+# fires.  What this one covers is the KIND of work -- a link, an ar, a cp --
+# that `-c -o ' cannot match; what neither covers is work a make has already
+# absorbed.  For that you have to perturb the input yourself, which is what
+# the next case does.
+$MAKE -q >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL make -q says the tree is not settled; make -n wants:"
+	$MAKE -n 2>&1 | grep -vE '^make(\[[0-9]+\])?:' | head -5
+fi
+
+# --- a rootfs node the WORLD WRITES TO must not make a binary stale ----------
+# $(BINDIR)/ps names $(ROOTFS_DEV) because ps(1) calls error() and exits if
+# /dev/dk, /dev/pt or /dev/drum is missing (ps.c:21-28) -- a claim that they
+# EXIST, not that ps is made out of them.  Written as an ordinary prerequisite
+# make also compares mtimes, and rootfs/dev/null is a file the world writes to:
+# tests/wavea truncates it on purpose (`: > $DEVNULL') so that suite is a pure
+# function of the tree, and an O_TRUNC moves the mtime here even on a file that
+# is already empty -- measured.  So every `make test' left ps stale and the
+# next `make' relinked and reinstalled it.  The fix is one token, `|'.
+#
+# THE VACUITY GUARD IS THE FIRST OF THE TWO CASES, and it is not decoration.
+# make 3.81 compares mtimes at WHOLE-SECOND granularity, so a touch landing in
+# the same second as bin/ps compares EQUAL and "not stale" would be true for a
+# reason that has nothing to do with the fix.  Assert the ordering, then the
+# property.
+sleep 1
+touch "$ROOT/rootfs/dev/null"
+devt=$(stat -f %m "$ROOT/rootfs/dev/null" 2>/dev/null)
+pst=$(stat -f %m "$ROOT/$B/bin/ps" 2>/dev/null)
+if [ -n "$devt" ] && [ -n "$pst" ] && [ "$devt" -gt "$pst" ]; then
+	pass=$((pass+1))
+else
+	fail=$((fail+1))
+	echo "FAIL the touch did not put rootfs/dev/null strictly after bin/ps" \
+	     "(dev/null=$devt bin/ps=$pst) -- the case below cannot discriminate"
+fi
+if needs_remake "$B/bin/ps"; then
+	fail=$((fail+1))
+	echo "FAIL touching rootfs/dev/null made $B/bin/ps stale;" \
+	     "\$(ROOTFS_DEV) must be an ORDER-ONLY prerequisite of ps"
+else
+	pass=$((pass+1))
 fi
 
 # --- the repo root holds nothing but the known files ------------------------

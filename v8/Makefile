@@ -3397,6 +3397,22 @@ $(ROOTFS)/usr/bin/uptime: $(ROOTFS)/usr/bin/w
 # missing (ps.c:21-28).  Naming them here rather than under `rootfs' is what
 # makes `make ps' produce something that runs.
 #
+# AND IT IS ORDER-ONLY, because that sentence says EXIST and not MADE FROM.
+# ps contains nothing out of /dev; it needs the nodes to be there when it runs.
+# Written as an ordinary prerequisite make also compares mtimes, and three of
+# these are things the world WRITES TO: tests/wavea truncates rootfs/dev/null
+# on purpose (`: > $DEVNULL', so that suite is a pure function of the tree),
+# which moves its mtime past $(BINDIR)/ps and relinks ps on the next make --
+# every make test left the build one link short of idle.  Measured with
+# `make -qd': `Prerequisite rootfs/dev/null is newer than target bin/ps'.
+#
+# NEITHER GUARD FOR THAT PROPERTY COULD SEE IT, which is why this is a case in
+# tests/deps rather than only a fixed line.  The settle checks here and in
+# .github/workflows/ci.yml both count `-c -o ' -- COMPILE steps -- and the
+# spurious work is a LINK, so the proxy misses the whole class; and the one
+# here primes with a make first, which absorbs the relink before it counts.
+# A guard that measures a proxy for a property is only as good as the proxy.
+#
 # The object list is upstream's OFILES, unchanged.
 # ---------------------------------------------------------------------------
 PSSRC = $(SRC)/cmd/ps
@@ -3411,7 +3427,7 @@ $(BUILD)/ps/%.o: $(PSSRC)/%.c $(V8CC_DEPS)
 # Upstream's `$(OBJ): ps.h', which is the whole of its dependency information.
 $(PS_OBJ): $(PSSRC)/ps.h
 
-$(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) $(ROOTFS_DEV)
+$(BINDIR)/ps: $(PS_OBJ) $(V8DEPS) $(KMEMU_LIB) | $(ROOTFS_DEV)
 	@mkdir -p $(BINDIR)
 	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(PS_OBJ) \
 	    $(KMEMU_LDADD) $(V8LIBS)
