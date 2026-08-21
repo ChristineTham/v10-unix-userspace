@@ -968,12 +968,17 @@ argv, keep the entire user-facing flag surface. Milestone gates:
 
 **Deferred/dropped in toolchain:** `as`, `ld`, `nm`, `size`, `strip`, `ar`, `ranlib`,
 `prof`, `lcomp`, `adb`, `sdb` → host tools (exception list, §7). `f77`+`pcc1` backend,
-`cfront` (C++ 1.0!), `cyntax` → stretch goals, each needing separate scoping.
+`cfront` (C++ 1.0!) → stretch goals, each needing separate scoping.
+**`cyntax` is DONE** and was the cheapest of the three: 66 of 68 files
+byte-identical, two source changes, and the whole difficulty was a lexical one
+— the shipped sources are obfuscated and the obfuscator broke every compound
+assignment operator, which only V8's own compiler accepts. §4m and
+`src/cmd/cyntax/PORTING.md`.
 
 **`efl` is DONE** (Wave A2 batch 3, owner-picked over `lcomp`): 12k lines, 25
 objects, **zero source changes**, and the only defect it exposed was in our own
 back end. `src/cmd/efl/PORTING.md`. `ratfor` and `hoc` are likewise done, so
-the stretch-goal list above is now `f77`, `cfront`, `cyntax` — and `lcomp`,
+the stretch-goal list above is now `f77`, `cfront` — and `lcomp`,
 whose status this document **contradicts itself about**: it is a host-tool
 deferral in the line above and an owner-mandated language system in §the-big-
 language-systems below. That has to be settled by the owner before anyone
