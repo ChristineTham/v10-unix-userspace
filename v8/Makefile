@@ -3395,7 +3395,11 @@ $(ROOTFS)/usr/bin/uptime: $(ROOTFS)/usr/bin/w
 # So the dependency is $(ROOTFS_DEV) as well as $(KMEMU_LIB): ps calls error()
 # and exits before doing anything at all if /dev/dk, /dev/pt or /dev/drum is
 # missing (ps.c:21-28).  Naming them here rather than under `rootfs' is what
-# makes `make ps' produce something that runs.
+# makes a build of THIS target produce something that runs -- asking for
+# $(BINDIR)/ps by its absolute path, since there is no short `ps' target and
+# never has been.  (That sentence said ``make ps' '' for as long as the rule
+# has existed; `make -n ps' answers `No rule to make target'.  A comment naming
+# an invocation nobody tries is a comment nothing can correct.)
 #
 # AND IT IS ORDER-ONLY, because that sentence says EXIST and not MADE FROM.
 # ps contains nothing out of /dev; it needs the nodes to be there when it runs.
