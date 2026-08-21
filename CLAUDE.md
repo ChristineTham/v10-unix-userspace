@@ -4277,9 +4277,43 @@ this jail `kill` signals HOST pids and `sync` is the Mac's; it is `tar`'s
 /dev/rmt1 hazard with a signal instead of a file. `lorder` needs `nm`, which is
 on the host-tool exception list and which `tests/jail` asserts is REFUSED, so
 it is blocked by a decision this port already made rather than by the target.
-And `cmd/asd/` -- `seal unseal mkpkg inspkg` plus `asdrcv`, a 17-object library
-and `DEST = /usr/bin` -- is a genuine directory-port candidate that has simply
-not been assessed.
+**AND `cmd/asd/` IS ASSESSED NOW: IT BUILDS PERFECTLY AND IS NOT SHIPPED,
+WHICH IS A THIRD VERDICT BESIDE `in' AND `blocked'.** AT&T's Automated
+Software Distribution -- `mkpkg`/`inspkg` package and install, `seal`/`unseal`
+sign, `asdrcv` receives. 2771 lines, 22 files, a 17-object `lib.a`,
+`DEST = /usr/bin`. Measured:
+
+- **22 of 22 compile under v8cc, zero failures**, and 5 of 5 link with `nm -u`
+  EMPTY. The checklist's LP64 sweep has one hit and it is a *declaration*
+  (`asdrcv.c:30 static char *buildname();`), i.e. the fix rather than the
+  hazard; and it references no `kmem`, `ptrace`, `mount`, `nlist` or `sgttyb`.
+  On every build-level measure this port has, it is portable.
+- **AND `mkpkg` EXITS 1 ON EVERY INVOCATION**, with `phase error on /tmp/aaaNNN`
+  from `package.c:153`. It still writes a well-formed package -- `inspkg` reads
+  it back at exit 0 and correctly names the absolute path it would install to --
+  but `ship.sh` is `if mkpkg $* >$T.1; then`, so a non-zero status breaks the
+  only consumer. Not shipped, because `lprint` refusing honestly and `mkpkg`
+  reporting failure while succeeding are different things.
+- **THE OBVIOUS SUSPECT WAS MEASURED AND CLEARED.** `package.c:149-152` re-`fstat`s
+  the file it just copied and compares `st_dev`, `st_ino`, `st_uid`, `st_gid`,
+  `st_mode` and `st_size` against a recorded `stat` -- which is exactly this
+  port's folded-inode and folded-id surface, and `v8sys_pt_fstat` is documented
+  as doing something `stat(2)` does not. A ten-line probe says they AGREE on
+  every field, for a scratch file and a `/tmp` file. So the defect is upstream's
+  or is in the instructions temp file's size, and the next session starts from
+  that rather than from the attractive hypothesis.
+- **`seal` IS INTERACTIVE AND THAT IS NOT A DEFECT.** It prints `Key:` on stderr
+  and reads from stdin; a first run hung for five minutes against a harness
+  stdin that never reached EOF. With `</dev/null` it exits 0 and writes 541
+  bytes. **A hang in a program you have just built is a prompt until proven
+  otherwise** -- and the deadline that proves it is `perl -e 'alarm N; exec'`,
+  never a backgrounding wrapper, for `ex`'s recorded reason.
+- **AND AN IMPORT THAT IS NOT INSTALLED FAILS TWO CASES, WHICH IS THE SUITE
+  WORKING.** `tests/wavea` asserts imported == installed and that the
+  makefile-versus-`Admin/dest` disagreement set is exact, so leaving the source
+  in the tree "for later" turns both red. The import was therefore BACKED OUT
+  rather than left half-done: a directory under `src/cmd` is a claim that the
+  program ships.
 
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
