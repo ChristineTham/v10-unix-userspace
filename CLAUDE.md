@@ -43,7 +43,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 
 ```bash
 make -j8              # full build (~4s clean) -- dispatches to v8/
-make test             # all 17 suites (2794 cases, 2793 on a host whose $TMPDIR
+make test             # all 17 suites (2828 cases, 2827 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  Ends by checking that total against
                       # ARTICLE.md, so the number there cannot go stale again.
@@ -3901,6 +3901,162 @@ cites `where(1)`'s finding that macOS `/bin/sh`'s builtin echo does not take it;
 it printed `-n yes`. Third and fourth instances this session, after a `cd` that
 had drifted and a zsh `$F` that did not word-split.
 
+**AND `cyntax(1)` IS IN -- 186 -> 187 -- WHICH IS THE LARGEST PROGRAM THIS PORT
+HAS TAKEN, AND THE FIRST WHOSE BUILDABILITY IS A PROPERTY OF V8's OWN LEXER.**
+Bruce Ellis's whole-program type checker, September 1984: 23750 lines in
+`cyn/` (against `f77pass1`'s ~13000 and `cfront`'s 22442) plus 5787 in `cem/`.
+**66 of 68 imported files are byte-identical to pristine V8** and the two
+changes are `cc.c:112`'s and one address-0 read. Three binaries and no one of them means anything
+alone -- `/usr/bin/cyntax` execs `/lib/cpp`, then `ccom` per `.c` writing a
+`.O`, then `cem` over the `.O`s -- which is `bc`/`dc`'s shape at one more
+remove. `src/cmd/cyntax/PORTING.md`. Eight things generalise:
+
+- **THE SOURCE IS OBFUSCATED AND THE OBFUSCATOR BROKE EVERY COMPOUND
+  ASSIGNMENT OPERATOR, WHICH IS THE FIDELITY CONTRACT PAYING OUT IN THE
+  SHARPEST FORM YET.** Every identifier in `cyn/` is a random dictionary word
+  (`colonic *feller()`, `polymath`, `entoblast`) and all 41 files share an
+  identical 213-line preamble -- upstream's doing, not this port's. What
+  matters is the punctuation: it emitted a SPACE inside each compound
+  operator, so `cyn/c01.c:349` is `poignant | = girn`, meaning `|=`. Measured:
+  **clang rejects 21 of the 41 files with 119 `expected expression` errors;
+  v8cc compiles all 41.** The three-line control is `a | = b` with `a=6`,
+  `b=3`, which v8cc compiles and which yields **7** -- so the spelling is not
+  tolerated, it MEANS `|=`. **A port that had quietly used the host's compiler
+  could not have built this program at all**, which is the first time §1's
+  most expensive clause has been the only thing that worked rather than a
+  matter of principle.
+- **AND A FAILED BUILD TRANSCRIPT SHIPPED IN THE DIRECTORY IS NOT A VERDICT.**
+  `Made` records Bell Labs' own build ending `Undefined: _feller / *** Error
+  code 1`, which reads as "this program was unbuildable when it shipped". It
+  was not: `feller` is defined at `cyn/c18.c:272`, INSIDE the range that
+  transcript linked, so the failure names no missing file. It is a stale
+  snapshot of a bad afternoon. The `vi`-is-`ex` shape from the other side --
+  there a correct verdict on the wrong question, here a *record* that invites
+  the wrong verdict.
+- **AND THREE COPIES OF THE FILE LIST DISAGREE, WHICH IS THE TWO-COPIES TRAP
+  WITH A THIRD.** The directory and `cyn/Makefile`'s `OBS` say `c00..c40`;
+  `file-list` stops at `c38`; `Made`'s link line stops at `c37`. The makefile
+  is what the build reads and therefore what `CYN_NAMES` transcribes -- and a
+  transcription is a fourth copy, so `tests/wavea` compares the two as SETS IN
+  BOTH DIRECTIONS with a vacuity guard on each. **`c00.c` is ZERO BYTES** and
+  is in the list; asserted, so dropping it has to be a decision rather than a
+  tidy-up (`cb`'s precedent).
+- **AND A BUILD DIRECTORY AND A TARGET SHARING A NAME FAILS AT THE LINK,
+  NAMING NEITHER.** `$(BUILD)/cyntax/cem` was both the object directory for
+  `cem/` and the binary, and `ld` said `open() failed, errno=21 (Is a
+  directory)` -- which reads as a corrupt object. The binaries went to
+  `$(BUILD)/cyntax/bin/`.
+- **AND THE CRASH PROBE FOUND 49 DEATHS IN ONE ARM, WHERE A NULL GUARD
+  DEREFERENCED THE OTHER POINTER.** `ccom` SIGSEGV'd on **every unknown
+  option**, with no diagnostic at all. `Shylock` guards its null first
+  argument and then, INSIDE that guard, reads `perceptibly ->plangently` --
+  a different global, a tentative definition in all 41 files, and assigned
+  only ever in lockstep with `kerchief` (`c03.c:542` and eleven siblings), so
+  at option-parsing time both are unset. **It is the READ half of the
+  address-0 class and the value is DISCARDED** -- `kerchief` is 0, so the
+  branch below never uses it -- so a VAX printed the usage line and the guard
+  reproduces that exactly. Fixed rather than floored, which is the
+  discriminator this file already states: *is the page-0 access a READ or a
+  WRITE?* `cpio`'s `/dev/tty` is a write and stays recorded; this is a read
+  and has a VAX answer. **A GUARD ON ONE POINTER IS NOT A GUARD ON THE LINE
+  INSIDE IT** -- the fix-landed-on-one-line shape with the two lines being the
+  guard and its own body.
+- **AND `usr/lib` IS SCANNED RECURSIVELY, SO A SUBDIRECTORY OF BINARIES JOINS
+  THE PROBE POPULATION AUTOMATICALLY** (166 -> 169). That is the derived
+  population working -- but note cyntax's `ccom` and the compiler's `lib/ccom`
+  now share a BASENAME, and the floor keys on basenames, so a future crash in
+  either is attributed to "ccom" with nothing to say which.
+- **AND `/lib/sets` WAS ALREADY MISSING WHEN V8 SHIPPED**, so `cyntax -Z` was
+  dead on the original hardware; `cyntax.c:153-155` reach into
+  `/user1/other/brucee/`, a researcher's home directory, for `-G`/`-L`/`-P`;
+  and `COMP_PATH`/`COMP_NAME` are each defined twice, identically. All
+  recorded rather than repaired, per S1.
+
+**AND IT FOUND A LIVE BUG IN OUR COMPILER WITHIN THE HOUR, WHICH IS `efl`'s
+RESULT A SECOND TIME: A STATIC INITIALISER'S WIDTH WAS DERIVED TWICE.** `ld`
+refused both `ccom` and `cyntax` with `pointer not aligned`, naming the
+driver's option table. PLAN.md §4m and the note beside `MYINIT` in
+`compiler/ccom-arm64/macdefs.h`. Four things:
+
+- **`doinit()` computes `sz = tsize(...)`, advances `inoff` by it and lays the
+  object out with it -- and then pass 2 RE-DERIVES a width from the node's
+  type.** Two derivations of one number is a thing that can disagree, and for
+  an enum it did: `pftn.c:920-921` sizes every enum as `SZINT`, while
+  `econvert()` falls to `trees.c:1212`'s `else ty = LONG` whenever
+  `dimtab[csiz]` matches no basic size -- and an INIT node carries the TYPE
+  CODE in `csiz` rather than a `dimtab` index (measured `csiz=10`, and
+  `ENUMTY` is 10). So a four-byte member was emitted eight bytes wide.
+- **ON A VAX THE WRONG BRANCH GAVE THE RIGHT ANSWER**, because `SZLONG` and
+  `SZINT` were both 32. This port's signature class, and the first instance
+  inside `ccom`'s own pass-1/pass-2 seam.
+- **THE FIX IS TO REMOVE THE SECOND DERIVATION, NOT TO CORRECT IT.**
+  `pftn.c:1330`'s `MYINIT( optim(p), sz )` is pcc's own hook for exactly this,
+  receiving pass 1's `sz`; `ENDJOB` is the same shape and this port already
+  uses it, so no authentic source changed. **And the pass-2 emitter was
+  DELETED rather than left standing** -- `pftn.c:1304` is the only site that
+  sets `op = INIT`, so keeping it would have preserved exactly the hazard the
+  fix removes, dormant. Two implementation traps: the hook runs BEFORE
+  `p2tree()`, so `in.name` is not filled in yet and reading it **faulted the
+  compiler** in `sh/fault.o` and `termlib/tputs.o`, naming nothing to do with
+  enums (`trees.c:2191` is where p2tree derives it from `tn.rval`); and it
+  must advance `inoff` itself, because the generic arm's `inoff += sz` lives
+  in the `#else` it replaces.
+- **NOTHING IN 2794 CASES COULD HAVE SEEN IT**, because no program in the tree
+  had ever statically initialised an aggregate whose first member was an enum.
+  `STARG` going unnoticed through 156 Wave A programs until `grap` arrived,
+  exactly: **a back-end defect that depends on a code shape is found by the
+  first program with that shape, not by the size of the suite.** The guard is
+  five cases -- two structural (`.long` count, `.quad` count), one control (an
+  `int` member of the identical shape), one NEGATIVE control (a `long` member,
+  which a "fix" that made everything `.long` would break), and one that links
+  and runs. Mutation-verified: reverting the fix **fails the build** with the
+  original `ld` message, and against the surviving `ccom` fires exactly the
+  three aimed cases while leaving both controls green.
+
+**AND FOUR OF MY OWN INSTRUMENTS WERE WRONG BEFORE ANY CODE WAS, ALL FOUR
+ALREADY IN THIS FILE, AND ONE OF THEM IS THE SAME MISTAKE THIS FILE ALREADY
+RECORDS.**
+
+- **THE `PROVENANCE` PARSER READ `path hash` WHERE THE FORMAT IS `hash
+  path`** -- and this file already carries that exact finding from the lint
+  session, in the sentence that ends *"which reads as clean and was caught
+  only because the count was printed"*. Caught again the same way: `checked 0
+  files, 0 deviate`. **A recorded instrument bug is not a vaccine**; the only
+  thing that worked either time was printing the denominator.
+- **`echo "exit $?"` AFTER A PIPELINE REPORTED `head`'s STATUS**, in the very
+  experiment establishing that v8cc accepts `| =`. The evidence that survived
+  was the program printing 7, not the status. This file's most-cited shell
+  hazard, walked into while quoting it.
+- **A MUTATION THAT DID NOT BUILD**: pointing `arm64_myinit` at `tybytes()`
+  reproduces the defect exactly and does not link, because `tybytes` is
+  `static` in `gencode.c`. Caught by checking the build result rather than the
+  artefact hash -- the hash MOVED, so the object had compiled and only the
+  link failed, which is a shape the recorded rule does not cover. **Check the
+  build AND the hash; they can disagree.**
+- **AND A CITATION TO A FILE THAT DOES NOT EXIST.** The new PORTING.md pointed
+  at `compiler/ccom-arm64/PORTING.md`; there is none, and compiler decisions
+  live in PLAN.md §4. Invention rather than drift, which `cites.awk`
+  structurally cannot catch -- **a brand-new file's citations are ALL
+  candidates for invention**, and the cheap form of the check is to `ls` the
+  file as well as `sed -n "${l}p"` the line.
+
+**AND A NEW INTERMITTENT WAS SEEN ONCE IN FIVE, WITH A SPECIFIC OBSERVABLE
+RATHER THAN AN EMPTY ONE.** `tests/streams`' 5i case *"...and a relative `..`
+inside the image"* reported `want [top] got [cat: input ../g is output]` --
+V8's `cat` refusing because it found its input and its output to be the SAME
+FILE, which is a `st_dev`/`st_ino` comparison and therefore the folded-inode
+class. Four subsequent runs were clean; the failing one was at load **10.11**
+against 4.16-6.11 for the clean four, which is the same correlation the icheck
+sightings have. Recorded here rather than diagnosed because the observable is
+already specific -- unlike the `got []` family, this one NAMES the comparison
+that went wrong, so the next occurrence has something to match rather than a
+prescription to follow.
+
+**AND THE TEST COUNT WAS PREDICTED AND THE PREDICTION WAS ONE OUT, AGAIN.**
+2794 + 5 + 13 + 13 = 2825; the run said **2826**. The rule this file already
+states -- *a delta counted from your own diff is a prediction* -- with the
+smallest possible error and the same remedy: re-measure, do not increment.
+
 ## The world is a WORKING COPY of a golden image, and that is what makes it usable
 
 `make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
@@ -3990,7 +4146,7 @@ it counts `/etc/utmp`, which libkmemu manufactures lazily at first read — so t
 number was **139 on a tree that had never been used and 140 after anything ran
 `who`**, and the guard would have passed or failed on whether an earlier suite
 happened to. Fourth instance of that question. Count `-type f -perm -u+x`:
-**286 shipped, 186 installed**, stable. (It moves when something is imported,
+**286 shipped, 187 installed**, stable. (It moves when something is imported,
 which is the whole point; the guard is what makes it move in ARTICLE.md too,
 and awk took it from 138.  This sentence said 150 for several batches while the
 guard kept ARTICLE.md exact — **a number with a test beside it stays current and

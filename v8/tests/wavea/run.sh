@@ -4958,6 +4958,118 @@ check 'lint: the shared token set is not empty' 'many' \
 # than a discovery.
 check 'cflow.sh is the copy V8 shipped' 'same' \
     "$(cmp -s "$SHIPPED/usr/bin/cflow" "$ROOT/src/cmd/cflow/cflow.sh" && echo same || echo differs)"
+
+# ---------------------------------------------------------------------------
+# cyntax(1) -- Bruce Ellis's whole-program type checker.  THREE binaries and
+# two generated library descriptions, and no one of them means anything alone:
+# /usr/bin/cyntax execs /lib/cpp, then ccom per .c writing a .O, then cem over
+# the .Os.  See src/cmd/cyntax/PORTING.md.
+#
+# vsh for the same reason lint needs it: these run under V8's own sh so the
+# jail is in force, though cyntax itself is a binary and jailed by
+# construction -- it is the PATH and the cwd that the host shell gets wrong.
+# ---------------------------------------------------------------------------
+cat > cy1.c <<'CY1EOF'
+main()
+{
+	int i;
+	char *p;
+	p = i;
+}
+CY1EOF
+check 'cyntax reports a pointer/int assignment' 1 \
+    "$(vsh "/usr/bin/cyntax $TMP/cy1.c" | grep -c "operands of '=' are pointer to char")"
+
+# THE CASE THE PROGRAM EXISTS FOR.  A single-file checker catches the first;
+# only a whole-program one catches this, and it is what the .O files are for.
+cat > cy2a.c <<'CY2EOF'
+extern int sub();
+main()
+{
+	sub("a string");
+}
+CY2EOF
+cat > cy2b.c <<'CY3EOF'
+int sub(n) int n; { return (n); }
+CY3EOF
+check 'cyntax reports a CROSS-MODULE argument mismatch' 1 \
+    "$(vsh "/usr/bin/cyntax $TMP/cy2a.c $TMP/cy2b.c" | grep -c 'arg 1 expected int, found char \*')"
+
+# ...and against the GENERATED libc, which is the only thing that says
+# lib/Makefile's cpp->ccom->cem chain produced a real artefact rather than a
+# plausible-looking file.  The `libc' in the message is the library NAME the
+# record came from, so matching it is matching the round trip.
+cat > cy3.c <<'CY4EOF'
+main()
+{
+	int n;
+	n = strlen(42);
+	return (n);
+}
+CY4EOF
+check 'cyntax cross-references the generated libc' 1 \
+    "$(vsh "/usr/bin/cyntax $TMP/cy3.c" | grep -c 'function strlen: libc')"
+
+# The control: a checker that printed complaints whatever it read would pass
+# all three above.
+cat > cy4.c <<'CY5EOF'
+int g(a) int a; { return (a + 1); }
+main() { int x; x = g(2); printf("%d\n", x); exit(0); }
+CY5EOF
+check 'cyntax is quiet on a clean program' '' \
+    "$(vsh "/usr/bin/cyntax $TMP/cy4.c" | grep -vE '^$' | head -3)"
+
+# THREE COPIES OF ONE FILE LIST EXIST UPSTREAM AND THEY DISAGREE: the
+# directory and cyn/Makefile say c00..c40, `file-list' stops at c38, and the
+# `Made' transcript links c00..c37.  The makefile is what the build reads, so
+# it is what $(CYN_NAMES) transcribes -- and a transcription is a second copy,
+# so it is compared as SETS IN BOTH DIRECTIONS.  efl's gram.c/tokens shape.
+uobs=$(sed -n 's/^	\(c[0-9][0-9]\)\.o\\*$/\1/p' "$ROOT/src/cmd/cyntax/cyn/Makefile" | sort)
+mobs=$(sed -n 's/^CYN_NAMES = //p' "$ROOT/Makefile" | tr ' ' '\n' | grep -v '^$' | sort)
+# Vacuity guard on BOTH inputs, because a sed that matched nothing reports two
+# empty sets as agreeing -- cites.awk's 0-stale-over-0-checked exactly, and
+# the reason lint's token check above guards its own two.
+check 'cyntax: upstream OBS parses' 41 "$(printf '%s\n' "$uobs" | grep -c .)"
+check 'cyntax: CYN_NAMES parses'    41 "$(printf '%s\n' "$mobs" | grep -c .)"
+check 'cyntax: CYN_NAMES is upstream OBS, both directions' '' \
+    "$(printf '%s\n' "$uobs" > uo.txt; printf '%s\n' "$mobs" > mo.txt
+       comm -3 uo.txt mo.txt | tr -d '\t' | tr '\n' ' ' | sed 's/ *$//')"
+
+# c00.c IS ZERO BYTES and is in the list.  Asserted so that dropping it has to
+# be a decision rather than a tidy-up -- cb's precedent.
+check 'cyntax: c00.c is empty and still built' '0 yes' \
+    "$(wc -c < "$ROOT/src/cmd/cyntax/cyn/c00.c" | tr -d ' ') $(printf '%s\n' "$mobs" | grep -qx c00 && echo yes || echo no)"
+
+# THE LEXICAL FACT THE WHOLE PORT RESTS ON.  The obfuscator put a SPACE inside
+# every compound assignment operator, so `poignant | = girn' means |=.  clang
+# rejects 21 of the 41 files; v8cc accepts all 41.  If a future import ever
+# "cleans" these, this goes red and the cleaning has to be a decision.
+check 'cyntax: the sources really do spell |= as "| ="' 'many' \
+    "$(n=$(grep -lE '[|&^]  *=' "$ROOT"/src/cmd/cyntax/cyn/c*.c | wc -l | tr -d ' ')
+       if [ "$n" -ge 10 ]; then echo many; else echo "only $n"; fi)"
+
+# THE ADDRESS-0 READ, aimed.  ccom SIGSEGV'd on every unknown option, because
+# Shylock's guard for a null first argument dereferences a DIFFERENT global
+# inside itself.  The crash probe would see a regression here as 49 new
+# entries, but it is not in `make test' and this is one command.
+#
+# Both halves asserted: a signal death and a silent exit look the same in the
+# status alone, and upstream's observable answer is the USAGE LINE -- so a
+# "fix" that merely stopped the fault without restoring what a VAX printed
+# passes the first case and fails the second.
+cyq=$("$V8ROOT/usr/lib/cyntax/ccom" -q < /dev/null 2>&1; echo "st=$?")
+check 'cyntax ccom survives an unknown option' 'ok' \
+    "$(st=${cyq##*st=}; if [ "$st" -gt 128 ]; then echo "signal $((st-128))"; else echo ok; fi)"
+check 'cyntax ccom prints usage for one' 1 \
+    "$(printf '%s\n' "$cyq" | grep -c 'infile \[outfile\]')"
+
+# The five artefacts, because a program is not testable until it is installed
+# and four of these are not on any PATH.
+for f in usr/lib/cyntax/ccom usr/lib/cyntax/cem usr/lib/cyntax/libc \
+         usr/lib/cyntax/libj usr/bin/cyntax; do
+	check "cyntax: $f installed" yes \
+	    "$([ -s "$V8ROOT/$f" ] && echo yes || echo no)"
+done
 check 'the bare cmd/cflow.sh is the OTHER copy' 'differs' \
     "$(cmp -s "$SHIPPED/usr/bin/cflow" "$SHIPPED/usr/src/cmd/cflow.sh" && echo same || echo differs)"
 

@@ -1,0 +1,10 @@
+# Provenance for v8/src/cmd/cyntax/lib
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+63097462cdd11468cd77de4557395af1c0aa8715  v8/usr/src/cmd/cyntax/lib/llib-lj
+6c7e69d199a1b5d07dfc13c95088d64d243b3fac  v8/usr/src/cmd/cyntax/lib/llib-lc
+301f7217089680c3258a3ccb0e52afa3a8cac6f9  v8/usr/src/cmd/cyntax/lib/Makefile
+09088101ea02220864e243ba700cbfa5072b9b47  v8/usr/src/cmd/cyntax/lib/varc

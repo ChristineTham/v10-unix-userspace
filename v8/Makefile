@@ -3230,20 +3230,64 @@ CFLOW_INSTALL = $(patsubst %,$(ROOTFS)/usr/lib/%,$(CFLOW_NAMES)) \
 # the LOUD outcome, which is why no case is aimed at it.
 CFLOWFLAGS = -DFLEXNAMES -DUNIX5 -I$(MIPSRC) -I$(CFLOWSRC)
 
+# cyntax(1) -- Bruce Ellis's whole-program type checker, September 1984, and
+# the largest single program this port has taken: 23750 lines in cyn/ against
+# f77's ~13000 and cfront's 22442.  Same define-above-first-use rule as the
+# rest of this block.
+#
+# THREE binaries and all three are needed for any of it to mean anything:
+# /usr/bin/cyntax is a driver that execs /lib/cpp, then cyn's ccom once per
+# .c (writing a .O), then cem's cem over the .Os to check ACROSS modules.
+# bc/dc's shape -- correctness is a property of a second binary -- at one
+# more remove, and it is why this is one step rather than three.
+#
+# The sources are OBFUSCATED: every identifier in cyn/ is a random dictionary
+# word (`colonic *feller()', `polymath', `entoblast'), and all 41 files share
+# an identical 213-line preamble.  That is upstream's, not a transformation
+# this port applied.
+CYNSRC    = $(SRC)/cmd/cyntax/cyn
+CEMSRC    = $(SRC)/cmd/cyntax/cem
+CYNLIBSRC = $(SRC)/cmd/cyntax/lib
+CYNLIB    = $(ROOTFS)/usr/lib/cyntax
+
+# Upstream's own OBS from cyn/Makefile, verbatim -- and NOT a glob, because
+# THREE copies of this list exist upstream and they disagree: the directory
+# and cyn/Makefile say c00..c40, `file-list' stops at c38, and the `Made'
+# transcript links c00..c37.  The makefile is the one the build reads.
+# c00.c is ZERO BYTES and is in the list; it is kept because upstream lists
+# it.  tests/wavea compares this against upstream's OBS in both directions.
+CYN_NAMES = c00 c01 c02 c03 c04 c05 c06 c07 c08 c09 c10 c11 c12 c13 c14 c15 c16 c17 c18 c19 c20 c21 c22 c23 c24 c25 c26 c27 c28 c29 c30 c31 c32 c33 c34 c35 c36 c37 c38 c39 c40
+CYN_OBJ   = $(patsubst %,$(BUILD)/cyntax/cyn/%.o,$(CYN_NAMES))
+
+# cem/Makefile's OBS.  cyntax.c is deliberately NOT among them: it is the
+# driver, a separate program from the same directory -- pack/unpack's shape.
+CEM_NAMES = diag equiv fix main misc read string symbol table time type var
+CEM_OBJ   = $(patsubst %,$(BUILD)/cyntax/cem/%.o,$(CEM_NAMES))
+
+# The binaries go in their own subdirectory because $(BUILD)/cyntax/cem is
+# already the object directory for cem/, and a target that names a directory
+# fails at the LINK with `ld: open() failed, errno=21 (Is a directory)' --
+# which reads as a corrupt object rather than as a path collision.
+CYNTAX_BUILT   = $(BUILD)/cyntax/bin/ccom $(BUILD)/cyntax/bin/cem \
+                 $(BUILD)/cyntax/bin/cyntax
+CYNTAX_INSTALL = $(CYNLIB)/ccom $(CYNLIB)/cem $(CYNLIB)/libc $(CYNLIB)/libj \
+                 $(ROOTFS)/usr/bin/cyntax
+
 V8DIRBIN_BUILT   = $(patsubst %,$(BINDIR)/%,$(V8DIRBIN)) $(BINDIR)/ul $(BINDIR)/ex \
                    $(BINDIR)/awk $(BINDIR)/expr $(BINDIR)/egrep $(BINDIR)/bc \
                    $(ROOTFS)/usr/lib/lib.b \
                    $(BINDIR)/m4 $(BINDIR)/diff3 \
                    $(BINDIR)/pack $(BINDIR)/unpack $(B2D_BUILT) $(PLOT_BUILT) \
                    $(STRUCT_BUILT) $(CSH_BUILT) $(RAT_BUILT) $(EFL_BUILT) \
-                   $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT) $(DES_BUILT) $(LINT_BUILT) $(CFLOW_BUILT)
+                   $(F77LIB_BUILT) $(F77_BUILT) $(HIST_BUILT) $(DES_BUILT) $(LINT_BUILT) $(CFLOW_BUILT) \
+                   $(CYNTAX_BUILT)
 V8DIRBIN_INSTALL = $(call v8install,$(V8DIRBIN)) $(DIFF_INSTALL) $(UL_INSTALL) \
                    $(EX_INSTALL) $(call v8install,awk expr egrep bc m4) \
                    $(DIFF3_INSTALL) $(PACK_INSTALL) $(B2D_INSTALL) \
                    $(PLOT_INSTALL) $(STRUCT_INSTALL) $(CSH_INSTALL) \
                    $(RAT_INSTALL) $(EFL_INSTALL) $(F77LIB_INSTALL) $(F77_INSTALL) \
                    $(LINKED_INSTALL) $(HIST_INSTALL) $(DES_INSTALL) \
-                   $(LINT_INSTALL) $(CFLOW_INSTALL)
+                   $(LINT_INSTALL) $(CFLOW_INSTALL) $(CYNTAX_INSTALL)
 
 # Same reason as $(V8BIN_BUILT) above: without this make treats each of these
 # as an intermediate of the $(ROOTFS)/bin/% copy and deletes it, leaving a
@@ -4654,3 +4698,108 @@ $(ROOTFS)/usr/lib/flip: $(ROOTFS)/usr/lib/%: $(BINDIR)/%
 
 $(ROOTFS)/usr/bin/cflow: $(CFLOWSRC)/cflow.sh
 	@mkdir -p $(@D) && cp $< $@ && chmod +x $@
+
+# ---------------------------------------------------------------------------
+# cyntax(1).  See the definitions block above for what the three binaries are.
+#
+# ONE source change in 54 translation units, and it is cc.c:112's: the driver
+# hands cpp an explicit -I$V8ROOT/usr/include, because the installed /lib/cpp
+# is still the clang-built stage-0 binary, never sees rootpath(), and answers
+# "Can't find include file stdio.h" for every program otherwise.
+#
+# WHAT MADE THIS BUILDABLE AT ALL is a lexical fact about V8's compiler, not
+# anything in this Makefile.  The obfuscator put a SPACE inside every compound
+# assignment operator -- `poignant | = girn' is |=, `girn & = ~0x0080' is &= --
+# so clang rejects 21 of the 41 cyn files with 119 "expected expression"
+# errors, and v8cc accepts all 41.  Measured: `a | = b' with a=6 b=3 yields 7.
+# That is why $(V8CCRUN) is not interchangeable with $(HOSTCC) here.
+
+# cyn/ has ZERO #includes -- every one of the 41 files carries its own copy of
+# the same 213-line preamble -- so there are no header prerequisites to state.
+$(BUILD)/cyntax/cyn/%.o: $(CYNSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/cyntax/cyn
+	$(V8CCRUN) -c -o $@ $<
+
+$(BUILD)/cyntax/cem/%.o: $(CEMSRC)/%.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/cyntax/cem
+	$(V8CCRUN) -c -o $@ $<
+
+# The driver alone needs the world's location compiled in; see cyntax.c's
+# incdir.  A specific rule beats the pattern rule above.
+$(BUILD)/cyntax/cem/cyntax.o: $(CEMSRC)/cyntax.c $(V8CC_DEPS)
+	@mkdir -p $(BUILD)/cyntax/cem
+	$(V8CCRUN) $(V8CC_INC) -c -o $@ $<
+
+# cem/Makefile's own dependency lines, transcribed.  No -I is needed and none
+# is given: these are quoted includes and a quoted include tries the includer's
+# directory first, which is $(CEMSRC).
+$(BUILD)/cyntax/cem/diag.o $(BUILD)/cyntax/cem/table.o \
+$(BUILD)/cyntax/cem/type.o: $(CEMSRC)/cem.h $(CEMSRC)/obj_version.h \
+                            $(CEMSRC)/stdobj.h $(CEMSRC)/symbol.h $(CEMSRC)/type.h
+$(BUILD)/cyntax/cem/diag.o: $(CEMSRC)/types.h
+$(BUILD)/cyntax/cem/equiv.o $(BUILD)/cyntax/cem/var.o: \
+    $(CEMSRC)/cem.h $(CEMSRC)/obj_version.h $(CEMSRC)/stdobj.h \
+    $(CEMSRC)/types.h $(CEMSRC)/symbol.h $(CEMSRC)/type.h $(CEMSRC)/var.h
+$(BUILD)/cyntax/cem/var.o: $(CEMSRC)/equiv.h
+$(BUILD)/cyntax/cem/fix.o: $(CEMSRC)/cem.h $(CEMSRC)/obj_version.h \
+                           $(CEMSRC)/stdobj.h $(CEMSRC)/symbol.h $(CEMSRC)/type.h
+$(BUILD)/cyntax/cem/read.o: $(CEMSRC)/cem.h $(CEMSRC)/obj_version.h $(CEMSRC)/stdobj.h
+$(BUILD)/cyntax/cem/symbol.o: $(CEMSRC)/cem.h $(CEMSRC)/obj_version.h $(CEMSRC)/symbol.h
+$(BUILD)/cyntax/cem/main.o $(BUILD)/cyntax/cem/misc.o \
+$(BUILD)/cyntax/cem/string.o $(BUILD)/cyntax/cem/time.o: $(CEMSRC)/cem.h
+
+$(BUILD)/cyntax/bin/ccom: $(CYN_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(CYN_OBJ) $(V8LIBS)
+	@echo "built $@"
+
+$(BUILD)/cyntax/bin/cem: $(CEM_OBJ) $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $(CEM_OBJ) $(V8LIBS)
+	@echo "built $@"
+
+$(BUILD)/cyntax/bin/cyntax: $(BUILD)/cyntax/cem/cyntax.o $(V8DEPS)
+	@mkdir -p $(@D)
+	@$(HOSTCC) $(V8LDFLAGS) -o $@ $(BUILD)/crt0.o $< $(V8LIBS)
+	@echo "built $@"
+
+$(CYNLIB)/ccom: $(BUILD)/cyntax/bin/ccom
+	@mkdir -p $(@D) && cp $< $@
+$(CYNLIB)/cem: $(BUILD)/cyntax/bin/cem
+	@mkdir -p $(@D) && cp $< $@
+$(ROOTFS)/usr/bin/cyntax: $(BUILD)/cyntax/bin/cyntax
+	@mkdir -p $(@D) && cp $< $@
+
+# The library descriptions, and this is lint's llib-lc.ln rule with a second
+# program in the chain: upstream's lib/Makefile is
+#   cpp -M llib-lc | ccom `cat varc` -llibc - out && cem -p out && mv out libc
+# NOT a pipeline here, for llib-lc.ln's reason -- a pipeline puts the status on
+# the last stage, so a failing cpp would leave a plausible short description.
+# ccom takes `input output' as POSITIONALS, so nothing is lost to a redirect.
+#
+# `cat varc' is upstream's own variadic list (-Vprintf:1 and friends): the
+# argument number from which a function's arguments stop being type-checked.
+#
+# THE -I IS OURS, for the reason stated on cyntax.c's incdir -- cpp is a host
+# binary here and has no notion of $V8ROOT.
+$(CYNLIB)/libc: $(CYNLIBSRC)/llib-lc $(CYNLIBSRC)/varc $(CYNLIB)/ccom $(CYNLIB)/cem $(ROOTFS_CPP)
+	@mkdir -p $(@D)
+	@V8ROOT=$(ROOTFS) $(ROOTFS_CPP) -M $< $@.i -I$(ROOTFS)/usr/include
+	@V8ROOT=$(ROOTFS) $(CYNLIB)/ccom `cat $(CYNLIBSRC)/varc` -llibc $@.i $@.tmp
+	@V8ROOT=$(ROOTFS) $(CYNLIB)/cem -p $@.tmp
+	@mv $@.tmp $@ && rm -f $@.i
+	@echo "built $@"
+
+# libj is the jerq (Blit) description.  Its two headers are NOT in the rootfs
+# -- only jioctl.h is copied there, because ls(1) and mc(1) reach for that one
+# by absolute path -- so the build reads $(JERQINC) directly, which is what
+# the rootfs-include rule above already does.  Note the consequence, recorded
+# rather than worked around: `cyntax -j' at RUN time adds -I/usr/jerq/include,
+# which the unjailed cpp resolves against the Mac.
+$(CYNLIB)/libj: $(CYNLIBSRC)/llib-lj $(CYNLIB)/ccom $(CYNLIB)/cem $(ROOTFS_CPP)
+	@mkdir -p $(@D)
+	@V8ROOT=$(ROOTFS) $(ROOTFS_CPP) -M $< $@.i -I$(JERQINC) -I$(ROOTFS)/usr/include
+	@V8ROOT=$(ROOTFS) $(CYNLIB)/ccom -llibj $@.i $@.tmp
+	@V8ROOT=$(ROOTFS) $(CYNLIB)/cem -p $@.tmp
+	@mv $@.tmp $@ && rm -f $@.i
+	@echo "built $@"

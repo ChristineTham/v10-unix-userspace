@@ -1,0 +1,28 @@
+# Provenance for v8/src/cmd/cyntax/cem
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+97af3730df8df34c558ac39c9cca8ba4c7f5f080  v8/usr/src/cmd/cyntax/cem/type.h
+3f039663f2893ba1a38033ab33a6cb7f2c0e82c3  v8/usr/src/cmd/cyntax/cem/equiv.h
+dd38582267ad5a9aaa7512c1820fa3f716bed0c8  v8/usr/src/cmd/cyntax/cem/table.c
+ba8f1f5662654f5e5526a63d98948df703f717c3  v8/usr/src/cmd/cyntax/cem/symbol.h
+1e01f79efa9d407843c3f947fc2afefe12bad6be  v8/usr/src/cmd/cyntax/cem/obj_version.h
+4b9b802845a127624eeaea5782d99bd6a2a2a9a2  v8/usr/src/cmd/cyntax/cem/types.h
+e09668dd1b9f56b8f46ab10f7a595412d2a0a987  v8/usr/src/cmd/cyntax/cem/cem.h
+7b948e00007aff9259d5888e052f418bd8e51bb8  v8/usr/src/cmd/cyntax/cem/diag.c
+d4f8a558f28002813220520b7c06cfc8ddbfba0c  v8/usr/src/cmd/cyntax/cem/Makefile
+0af1d643afad5e08482468a07c4c05a89a906aca  v8/usr/src/cmd/cyntax/cem/var.h
+38968bc3db881828f01310650a574e41e51f0a35  v8/usr/src/cmd/cyntax/cem/string.c
+bc3e4c3ba3a322f69d4dd9141e8988ae304829d6  v8/usr/src/cmd/cyntax/cem/fix.c
+e6d10d566c9b3c90b4707b31fb11034fbfda36a5  v8/usr/src/cmd/cyntax/cem/read.c
+46f1ec8752b7537cbb49db4c36bcf8b0ac745d30  v8/usr/src/cmd/cyntax/cem/main.c
+b20ee8987a2222d2d2bf4fc24decc6646576d6e7  v8/usr/src/cmd/cyntax/cem/time.c
+9255b0358ae37d183a19cf0e759d9cb75c9f8b68  v8/usr/src/cmd/cyntax/cem/type.c
+50e0b591fdf60a21b9be8509b0d1d2ff15ad58d9  v8/usr/src/cmd/cyntax/cem/equiv.c
+b77be60537de8bf0d6cb63fd07d15ed1c8d3406e  v8/usr/src/cmd/cyntax/cem/symbol.c
+b7a37d6f3c99acc042829b962f6dbd1885e35e5b  v8/usr/src/cmd/cyntax/cem/var.c
+7aa3649790e726d79f24b1b4baef0c51d63066ec  v8/usr/src/cmd/cyntax/cem/cyntax.c
+703b5e30502b53def9cd68eb551ceed1f15c7138  v8/usr/src/cmd/cyntax/cem/misc.c
+1148df416342c3bed2411378753f91325bae84ca  v8/usr/src/cmd/cyntax/cem/stdobj.h

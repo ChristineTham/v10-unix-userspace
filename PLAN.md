@@ -4124,3 +4124,87 @@ crt0, measured `0x00`. Deliberately not changed in the same step — it alters
 output for every installed binary and at least one recorded behaviour depends
 on it (`yacc -o` with no name leaves `(null).tab.c`, where V8 would have
 written `.tab.c`). It is its own measured step.
+
+## 4m. An enum initialiser eight bytes wide — CLOSED, and cyntax found it
+
+`cyntax` would not link.  `ld` refused both `ccom` and `/usr/bin/cyntax` with
+
+```
+ld: pointer not aligned in '_lcase'+0x334 (cyntax.o)
+ld: pointer not aligned in '_sheared'+0x21C (c26.o)
+```
+
+`_lcase` is the driver's option table — an enum followed by three pointers —
+and the emitted initialiser was
+
+```
+_tab:
+	.quad	0	<- the enum, EIGHT bytes
+	.space	4	<- padding computed from the real layout
+	.quad	0	<- the first pointer, now at offset 12
+```
+
+`sizeof` said 32 bytes per element and the emission was 36, so every pointer
+after the enum was misaligned.  Measured across member types, exactly one is
+wrong: `int`, `short` and `char` all place the pointer correctly and only
+`enum` does not.
+
+### The width is derived TWICE, and that is the actual defect
+
+`doinit()` computes `sz = tsize(t,d,s)`, advances `inoff` by it, and lays the
+enclosing object out with it.  It then hands the INIT node to `ecode()`, and
+pass 2 **re-derives** a width from the node's type.  Two derivations of one
+number is a thing that can disagree, and for an enum it did:
+
+- `pftn.c:920-921` sizes every enum as `SZINT`, unconditionally.  Pass 1 is
+  right, and `sizeof(enum tag)` measured 4 throughout.
+- `econvert()` picks the underlying type from `dimtab[csiz]` (`trees.c:1209`).
+  An INIT node carries the **type code** in `csiz` rather than a `dimtab`
+  index — measured `csiz=10`, and `ENUMTY` is 10 — so the lookup reads an
+  unallocated slot, matches none of `SZCHAR`/`SZINT`/`SZSHORT`, and falls to
+  `trees.c:1212`, `else ty = LONG`.
+- `tybytes()` (`gencode.c:219`) then answers 8.
+
+**ON A VAX THAT FALLBACK WAS INVISIBLE.**  `SZLONG` and `SZINT` were both 32,
+so `LONG` and `INT` emitted the same four bytes and the wrong branch produced
+the right answer.  Under LP64 it emits eight.  This port's signature class,
+and the first instance of it inside `ccom`'s own pass-1/pass-2 seam.
+
+### The fix is upstream's own hook
+
+`pftn.c:1330` is `MYINIT( optim(p), sz )` inside an `# ifdef` — pcc's machine
+hook for exactly this, receiving pass 1's own `sz`.  Defining it removes the
+second derivation rather than correcting it, so no authentic source changes;
+`ENDJOB` is the same shape and this file already uses it.  `arm64_myinit()` is
+in `compiler/ccom-arm64/local.c` and the reasoning is beside `MYINIT` in
+`macdefs.h`.
+
+Two things the implementation had to get right:
+
+- **It runs BEFORE `p2tree()`, so `in.name` is not filled in yet.**  Reading it
+  faulted the compiler on the first build — a segfault in `sh/fault.o` and
+  `termlib/tputs.o`, naming nothing to do with enums.  `trees.c:2191` is where
+  p2tree derives the name from `tn.rval`, and `arm64_myinit` does the same
+  three cases, minus p2tree's `-strftn` arm (a function-return pseudo-node,
+  which no constant expression can contain).
+- **It must advance `inoff` itself**, because the generic arm's `inoff += sz`
+  lives in the `#else` the hook replaces.
+
+### The pass-2 emitter was DELETED rather than left standing
+
+`pftn.c:1304` is the only site in the tree that sets `op = INIT`, so with
+MYINIT defined the `case INIT:` in `gencode.c` was unreachable.  Keeping it
+would have preserved exactly the hazard the fix exists to remove — two
+independent width derivations, one of them dormant.  An INIT node arriving at
+pass 2 now hits that switch's `cerror`, which names the operator instead of
+mis-sizing it.
+
+### What it cost to find
+
+Nothing in 2794 cases could see it, because **no program in the tree had ever
+statically initialised an aggregate whose first member was an enum**.  The
+compiler is otherwise unchanged and all 17 suites stayed green across the fix.
+That is the same shape as `STARG` (passing a struct by value) going unnoticed
+through 156 Wave A programs until `grap` arrived: *a back-end defect that
+depends on a code shape is found by the first program with that shape, not by
+the size of the suite.*

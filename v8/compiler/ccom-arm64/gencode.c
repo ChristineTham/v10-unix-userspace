@@ -1808,40 +1808,15 @@ gen(p, want)
 		return (l);
 	}
 
-	case INIT:
-		/*
-		 * A static initialiser, NOT an expression: this runs with the
-		 * location counter in .data, so emitting code here silently
-		 * plants instructions in the data segment (`mov x9, #123` where
-		 * `.long 123` belonged).
-		 *
-		 * The VAX emitted `.long <operand>` unconditionally because
-		 * every initialiser datum was one 32-bit word.  Under LP64 the
-		 * width has to follow the type, or a pointer initialiser loses
-		 * its top half.
-		 */
-		{
-			NODE *q = p->in.left;
-			char *dir;
-
-			switch (tybytes(p->in.type)) {
-			case 1:  dir = ".byte";  break;
-			case 2:  dir = ".short"; break;
-			case 4:  dir = ".long";  break;
-			default: dir = ".quad";  break;
-			}
-			if (q->in.name && *q->in.name) {
-				/* address of a symbol, optionally offset */
-				if (q->tn.lval)
-					printx("\t%s\t%s+%ld\n", dir, q->in.name,
-					    (long)q->tn.lval);
-				else
-					printx("\t%s\t%s\n", dir, q->in.name);
-			} else {
-				printx("\t%s\t%ld\n", dir, (long)q->tn.lval);
-			}
-		}
-		return (res);
+	/*
+	 * There is deliberately no `case INIT:' here.  A static initialiser is
+	 * emitted by arm64_myinit() (local.c) via the MYINIT hook, using the
+	 * width pass 1 computed; see the note beside MYINIT in macdefs.h.  This
+	 * file used to carry a second emitter that re-derived the width from
+	 * tybytes(p->in.type), and the two disagreed for an enum.  An INIT node
+	 * reaching pass 2 now means MYINIT is not defined, which the cerror at
+	 * the bottom of this switch reports by name rather than mis-sizing.
+	 */
 
 	case FREE:
 		return (res);

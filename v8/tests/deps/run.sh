@@ -311,6 +311,38 @@ dep 'cflow lint.h -> dag.o'    src/cmd/cflow/lint.h            $B/cflow/dag.o
 dep 'cflow dag -> installed'   $B/bin/dag                      rootfs/usr/lib/dag
 dep 'cflow.sh -> installed'    src/cmd/cflow/cflow.sh          rootfs/usr/bin/cflow
 
+# cyntax.  cyn/ has ZERO #includes -- all 41 files carry their own copy of the
+# same preamble -- so there is no header edge on that side to state, and the
+# nodep below says so rather than leaving the absence implied.
+dep 'cyntax cem.h -> diag.o'   src/cmd/cyntax/cem/cem.h        $B/cyntax/cem/diag.o
+dep 'cyntax stdobj.h -> var.o' src/cmd/cyntax/cem/stdobj.h     $B/cyntax/cem/var.o
+dep 'cyntax equiv.h -> var.o'  src/cmd/cyntax/cem/equiv.h      $B/cyntax/cem/var.o
+
+# THE CHAIN THAT MATTERS, and it is lint's llib-lc.ln shape with a second
+# program in it: the library description is written by ccom AND cem, both of
+# which the build has just made.  A stale ccom writes a .O in a format cem
+# cannot read, and nothing in the exit status says so.
+dep 'cyntax ccom -> libc'      $B/cyntax/bin/ccom              rootfs/usr/lib/cyntax/libc
+dep 'cyntax cem -> libc'       $B/cyntax/bin/cem               rootfs/usr/lib/cyntax/libc
+dep 'cyntax llib-lc -> libc'   src/cmd/cyntax/lib/llib-lc      rootfs/usr/lib/cyntax/libc
+dep 'cyntax varc -> libc'      src/cmd/cyntax/lib/varc          rootfs/usr/lib/cyntax/libc
+dep 'cyntax llib-lj -> libj'   src/cmd/cyntax/lib/llib-lj      rootfs/usr/lib/cyntax/libj
+
+# c40 is the last object in upstream's OBS and the one a truncated list would
+# drop first -- `file-list' stops at c38 and the `Made' transcript at c37.
+dep 'cyntax c40 -> ccom'       $B/cyntax/cyn/c40.o             $B/cyntax/bin/ccom
+dep 'cyntax cyntax.o -> driver' $B/cyntax/cem/cyntax.o         $B/cyntax/bin/cyntax
+dep 'cyntax driver -> installed' $B/cyntax/bin/cyntax          rootfs/usr/bin/cyntax
+
+# cyntax.c is the DRIVER and is not part of cem: upstream's cem/Makefile lists
+# twelve objects and cyntax.o is not among them -- pack/unpack's shape, two
+# programs from one directory.  A dep here would be a lie about what cem is.
+nodep 'cyntax.c is not part of cem'  src/cmd/cyntax/cem/cyntax.c  $B/cyntax/bin/cem
+
+# ...and no cyn object depends on a cem header, which is what "zero #includes"
+# means in a form make can check.
+nodep 'cem.h is not a cyn input'     src/cmd/cyntax/cem/cem.h     $B/cyntax/cyn/c01.o
+
 # --- the rootfs the driver actually links against ---------------------------
 # Staleness incident #4: `make libv8c` refreshed build/ but not the copy under
 # rootfs/lib that cc links, so spell's sscanf kept reaching the host's.

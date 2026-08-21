@@ -1084,6 +1084,69 @@ char *cp2() { return (ct() + 4); }
 EOF
 
 # ---------------------------------------------------------------------------
+# A STATIC INITIALISER'S WIDTH IS PASS 1's, AND IT USED TO BE DERIVED TWICE.
+#
+# doinit() computes sz = tsize(...), advances inoff by it and lays the object
+# out with it; the generic arm then hands the INIT node to pass 2, which
+# re-derived a width from the node's type.  For an enum the two disagreed --
+# econvert() falls to `else ty = LONG' (trees.c:1212) whenever dimtab[csiz]
+# matches no basic size, and an INIT node carries the TYPE CODE in csiz --
+# so a four-byte member was emitted eight bytes wide and every pointer after
+# it in the aggregate was misaligned.  ld said `pointer not aligned' and
+# named the TABLE, not the enum.  See PLAN.md 4m.
+#
+# On a VAX SZLONG and SZINT were both 32, so the wrong branch emitted the
+# right four bytes and the defect could not exist.  Nothing in this tree had
+# statically initialised an aggregate whose first member was an enum, which
+# is why 2794 cases walked past it until cyntax(1) arrived.
+#
+# Read off the ASSEMBLY, because the alignment is what fails rather than the
+# value: with the padding computed from the real layout, a too-wide datum
+# still round-trips through the field the program reads.
+# ---------------------------------------------------------------------------
+echo
+echo "  -- an initialiser is exactly as wide as pass 1 says"
+
+# The bug, aimed: two elements, so two 4-byte enums and two 8-byte pointers.
+tasm 'enum initialiser is four bytes'      '^	\.long' 2 <<'EOF'
+enum tag { c_bad, c_flag };
+struct s { enum tag e; char *p; };
+struct s tab[2] = { {c_bad, 0}, {c_flag, 0} };
+EOF
+
+tasm 'and the pointers beside it are eight' '^	\.quad' 2 <<'EOF'
+enum tag { c_bad, c_flag };
+struct s { enum tag e; char *p; };
+struct s tab[2] = { {c_bad, 0}, {c_flag, 0} };
+EOF
+
+# The control that says the harness is looking at the right thing: an int
+# member of the identical shape was always correct.
+tasm 'an int member was always four'       '^	\.long' 2 <<'EOF'
+struct s { int e; char *p; };
+struct s tab[2] = { {0, 0}, {1, 0} };
+EOF
+
+# THE NEGATIVE CONTROL.  A "fix" that made every initialiser .long passes all
+# three cases above and fails this one: a long really is eight bytes, so this
+# table is four quads and no longs at all.
+tasm 'a long member is still eight'        '^	\.long' 0 <<'EOF'
+struct s2 { long l; char *p; };
+struct s2 t2[2] = { {1, 0}, {2, 0} };
+EOF
+
+# ...and the same thing as a program that has to LINK and RUN.  This is the
+# shape that failed: under the defect ld refuses the object outright, so the
+# case fires at (link) rather than on the value.
+t 'an enum-headed table links and reads back' '15' <<'EOF'
+enum tag { c_bad, c_flag };
+struct s { enum tag e; int *p; };
+int gv;
+struct s tab[2] = { {c_bad, 0}, {c_flag, &gv} };
+f() { gv = 5; return tab[1].e * 10 + *tab[1].p; }
+EOF
+
+# ---------------------------------------------------------------------------
 # ...AND THE SAME SEAM SWEPT ACROSS THE WHOLE INSTALLED TREE, which is the only
 # way to see it.  "Was this function declared where it was called" is not a
 # textual property -- the declaration may be in an #include'd non-header, or

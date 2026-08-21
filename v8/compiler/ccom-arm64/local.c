@@ -316,6 +316,68 @@ fincode(d, sz)			/* initialise sz bits to the value d */
 	inoff += sz;
 }
 
+/*
+ * MYINIT -- emit one static initialiser datum of EXACTLY sz bits.
+ *
+ * See the note beside MYINIT in macdefs.h for why the width comes from pass 1
+ * rather than from the node's type.  doinit() has already established that
+ * p->in.left is an ICON (a float went to fincode, a non-constant was refused),
+ * so the only two shapes here are a bare constant and the address of a symbol
+ * or label, with an optional byte offset.
+ *
+ * The name has to be derived here rather than read out of in.name.  This hook
+ * replaces the ecode() call, so it runs BEFORE p2tree(), and p2tree is what
+ * fills in.name in from the symbol table (trees.c:2191-2209) -- reading it
+ * first gets whatever else was in that union slot, which faulted the compiler
+ * on the first build.  The three arms below are p2tree's own, minus its
+ * -strftn arm: that names the pseudo-node holding a function's return value,
+ * which no constant expression can contain.
+ *
+ * inoff is advanced here because the generic arm's `inoff += sz' lives in the
+ * #else that this hook replaces; without it the location counter stops
+ * tracking what has been emitted and inforce() pads to the wrong offsets.
+ */
+arm64_myinit(p, sz)
+	NODE *p;
+	int sz;
+{
+	register NODE *q;
+	char *dir;
+	char *nm;
+	char lab[32];
+
+	q = p->in.left;
+
+	switch (sz / SZCHAR) {
+	case 1:  dir = ".byte";  break;
+	case 2:  dir = ".short"; break;
+	case 4:  dir = ".long";  break;
+	case 8:  dir = ".quad";  break;
+	default:
+		cerror("myinit: %d-bit initialiser", sz);
+		return;
+	}
+
+	if (q->tn.rval == NONAME)
+		nm = NULL;
+	else if (q->tn.rval >= 0)
+		nm = exname(stab[q->tn.rval].sname);
+	else {
+		sprintf(lab, LABFMT, -q->tn.rval);
+		nm = lab;
+	}
+
+	if (nm != NULL) {
+		if (q->tn.lval)
+			printx("\t%s\t%s+%ld\n", dir, nm, (long)q->tn.lval);
+		else
+			printx("\t%s\t%s\n", dir, nm);
+	} else
+		printx("\t%s\t%ld\n", dir, (long)q->tn.lval);
+
+	inoff += sz;
+}
+
 /* --------------------------------------------------- function prologue */
 
 int ftlab1, ftlab2;

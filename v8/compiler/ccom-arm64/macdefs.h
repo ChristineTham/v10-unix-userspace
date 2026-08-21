@@ -153,3 +153,26 @@
 	 * exactly this, so no original file needs changing.
 	 */
 # define ENDJOB arm64_endjob
+
+	/*
+	 * Static-initialiser hook, called by pftn.c's doinit() for every datum
+	 * of at least SZINT bits.  Without it the generic arm is
+	 * `ecode(optim(p)); inoff += sz;' -- which sends the INIT node through
+	 * pass 2 and lets the back end RE-DERIVE the width from the node's
+	 * type.  Pass 1 has already computed that width, already advanced inoff
+	 * by it and already laid the enclosing object out with it, so a second
+	 * derivation is one that can disagree; and for an enum it does.
+	 *
+	 * pftn.c:920-921 sizes every enum as SZINT.  econvert() picks the
+	 * underlying type from dimtab[csiz] (trees.c:1209-1212), and an INIT
+	 * node carries the TYPE CODE in csiz rather than a dimtab index -- so
+	 * the lookup reads an unallocated slot, matches none of SZCHAR/SZINT/
+	 * SZSHORT, and falls to `else ty = LONG'.  On a VAX that fallback was
+	 * invisible: SZLONG and SZINT were both 32, so LONG and INT emitted the
+	 * same four bytes.  Under LP64 it emits eight, the datum overruns its
+	 * own slot, and every pointer after it in the aggregate is misaligned
+	 * -- `ld: pointer not aligned'.
+	 *
+	 * Taking sz from pass 1 makes the two agree by construction instead.
+	 */
+# define MYINIT arm64_myinit

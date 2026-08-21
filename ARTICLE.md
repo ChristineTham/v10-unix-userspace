@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2794 tests across 17 suites** guard it.
+assembly. **2828 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -4181,7 +4181,7 @@ reads, it writes, `mv` of a directory works across directories, and you can
 `cd` into it and `pwd` from inside with `getwd.c` unmodified.
 
 What remains is breadth, and it is now the main line rather than a coda. The
-port installs **186** of the 286 V8 shipped, and the ones still missing mostly
+port installs **187** of the 286 V8 shipped, and the ones still missing mostly
 have source sitting in the tree.
 
 ### struct, which turns GOTOs back into loops
@@ -6077,6 +6077,108 @@ it. And the automated sweep that looks for values quietly cut in half found one
 the hand audit had missed: not a pointer, which is what I was looking for, but
 an ordinary integer-returning system call the sweep insists must be on a known
 list. It was right to insist.
+
+## A program written in nonsense words, and the compiler bug it found
+
+The last unexamined program on the list was a whole-program type checker
+written at Bell Labs in 1984. It is three programs rather than one: a driver, a
+front end that reads each source file and writes a summary of what it declared
+and what it used, and a third that reads all those summaries together and
+complains when two files disagree. That last step is the whole point. A
+compiler sees one file at a time and cannot know that the function you called
+with a string is defined elsewhere as taking a number.
+
+Opening the source is a shock. Every identifier in the twenty-four thousand
+lines of the front end is a random dictionary word. Functions are called things
+like `feller` and variables `polymath`, `entoblast`, `womb`. All forty-one
+files begin with the same two hundred lines of declarations, copied into each.
+Whoever shipped it ran it through a program that replaced every name with a
+word picked out of a list, and shipped that. It compiles and runs and does its
+job; it is simply unreadable, deliberately.
+
+That would be a curiosity except for what the scrambler also did to the
+punctuation. C has compound operators — `|=` means "or this into that" — and
+the scrambler put a space in the middle of every one of them, so the source
+says `a | = b`. A modern compiler rejects that outright: twenty-one of the
+forty-one files fail to compile, with a hundred and nineteen errors. The
+authentic 1985 compiler this project rebuilt accepts all forty-one, and a
+three-line test confirms it does not merely tolerate the spelling but reads it
+correctly, computing the right answer.
+
+**A port that had quietly used the host's compiler could not have built this
+program at all.** The central and most expensive commitment of this project —
+that the original compiler compiles the original sources — had until now been a
+matter of principle. Here it was the only thing that worked.
+
+There is a second shock in the directory: a file recording the authors' own
+build of this program, which *failed*. It ends with the linker reporting a
+missing function and the build stopping. Read as a verdict that would say the
+program was broken when it shipped. It is not one — the missing function is
+defined in a file that build was already reading, so the record is simply a
+stale snapshot of a bad afternoon that nobody cleaned up. Three different files
+in that directory list which sources make up the program, and all three
+disagree. The build description is the one that counts, and it is the one the
+port copies, with a test comparing the two lists in both directions so the copy
+cannot drift.
+
+### The bug was ours
+
+None of that stopped the port. What stopped it was the linker refusing to
+build two of the three programs, complaining that a pointer was not properly
+aligned. The complaint named a table in the driver — an ordinary list of
+command-line options — and the table looked fine.
+
+The cause was in this project's own compiler, and it had been there all along.
+When a program sets up a table of constant data at compile time, the size of
+each entry gets worked out twice: once by the front half of the compiler, which
+uses it to decide where everything sits, and once again by the back half, which
+uses it to decide how many bytes to write. Two calculations of one number is a
+thing that can disagree, and for one kind of value — a named list of
+constants — they did. The front half said four bytes; the back half wrote
+eight. Everything after it in the table was pushed out of position.
+
+On the original hardware the two answers were identical, because there the
+larger type was the same size as the smaller one. The wrong branch produced the
+right number, and the fault could not exist. It only becomes visible on a
+machine where those sizes differ, which is every machine made since.
+
+The fix is not to correct the second calculation but to remove it. The
+compiler's own design anticipates this: there is a hook, unused until now,
+whose entire purpose is to hand the back half the number the front half already
+worked out. Using it makes the two agree by construction. The second calculation
+was then deleted rather than left in place, because a dormant copy of a
+disagreement is still a disagreement.
+
+### Forty-nine crashes in one arm
+
+With the program building, the sweep that runs every installed command against
+every single-letter option found forty-nine new crashes, all in the same
+place: the checker died on any option it did not recognise, printing nothing
+at all. The cause is a small, very human thing. The routine that prints
+diagnostics takes a description of where in the source the problem is, and it
+carefully checks whether that description is missing — and then, inside that
+check, reaches for a *different* piece of global state that is also missing at
+that moment, and reads through it.
+
+The author knew the argument could be absent. They did not ask the same
+question of the thing they reached for instead. This project has a name for
+that shape by now: the fix lands on one line and the line beside it keeps the
+assumption — except here the two lines are the guard and the guard's own body.
+
+On the original hardware this read a harmless byte and carried on, and the
+value it read was then thrown away unused, so the program printed its usage
+line and exited. That makes it a case with a known right answer to restore
+rather than a bug to leave alone, and the distinction is one this project
+applies deliberately: reading from a bad address was survivable on that machine
+and writing to one never was. This is a read. It prints its usage line again.
+
+Nothing in the twenty-eight hundred existing tests could have caught this. Not
+one program in the entire collection had ever built a table whose first entry
+was that kind of value. This is the same shape as an earlier episode where a
+missing compiler feature went unnoticed through a hundred and fifty-six
+programs until one arrived that used it: **a fault in code generation that
+depends on the shape of the input is found by the first program with that
+shape, not by the size of the test suite.**
 
 ---
 

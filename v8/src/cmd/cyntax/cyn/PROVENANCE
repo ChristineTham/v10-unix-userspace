@@ -1,0 +1,48 @@
+# Provenance for v8/src/cmd/cyntax/cyn
+# Upstream: https://github.com/Alhadis/Research-Unix-v8.git
+# Commit:   389623b76d5b6e195361f0705b1826b00ae14d19
+# Written by tools/import.sh -- do not edit by hand.
+#
+# <git blob hash of pristine upstream file>  <upstream path>
+4dea57e642d5a47fe6957d929f28e1d21b434589  v8/usr/src/cmd/cyntax/cyn/c21.c
+98374738f2f9be3b60d3b728aa187e86fbb92856  v8/usr/src/cmd/cyntax/cyn/c40.c
+fad1d22c8858667558c59679f8f09c7150646f5a  v8/usr/src/cmd/cyntax/cyn/c04.c
+e69de29bb2d1d6434b8b29ae775ad8c2e48c5391  v8/usr/src/cmd/cyntax/cyn/c00.c
+fe0088f3f9ec7fdc302699f1888a2d9906d1fb35  v8/usr/src/cmd/cyntax/cyn/c25.c
+3f9d15a3786c2fcb44ee1ac30d84f73868d683a3  v8/usr/src/cmd/cyntax/cyn/c10.c
+6aa4cfc9b186edf3335723d9b7d1f856655df067  v8/usr/src/cmd/cyntax/cyn/c35.c
+3f2f6bcc73232359d0c3cbb46fdf9643eb6107e7  v8/usr/src/cmd/cyntax/cyn/c31.c
+9bc1dd65d2f6d06e640fc2fa759c75720e25e142  v8/usr/src/cmd/cyntax/cyn/c14.c
+9d538aba23105a76f231fc3f3ec36e5d52481357  v8/usr/src/cmd/cyntax/cyn/c07.c
+cf08234f0658d7e4fa8ae62ca07149c2c7170bfb  v8/usr/src/cmd/cyntax/cyn/Makefile
+84a3ed9ccaffd9dc7c2a58e1667f3600b0226a37  v8/usr/src/cmd/cyntax/cyn/c22.c
+7529685fabc91a8a95c5fd705592445553c1ca79  v8/usr/src/cmd/cyntax/cyn/c28.c
+fd13c9a772956fb56ca3c207dc420f133730fddc  v8/usr/src/cmd/cyntax/cyn/c26.c
+97d1e5040992aa1521014eca0558a80411ab6d87  v8/usr/src/cmd/cyntax/cyn/c09.c
+6b3e06ef28e666dd037d2f81edc6b763a90d558a  v8/usr/src/cmd/cyntax/cyn/c03.c
+77a6a0db1077982a9c0d3b238e94ed858f3a04ce  v8/usr/src/cmd/cyntax/cyn/c36.c
+247a3cdc391b26beb614a3914005031538bc68ea  v8/usr/src/cmd/cyntax/cyn/c19.c
+18177402993405cea057ed3a3452bb848ab9ddcd  v8/usr/src/cmd/cyntax/cyn/c13.c
+22ad94b269e67812949372cf3d8a2d49f48dce17  v8/usr/src/cmd/cyntax/cyn/c17.c
+d85111bad45c9257d1c0cb39d89ee7102b2899d7  v8/usr/src/cmd/cyntax/cyn/c32.c
+af75bb0e8ff7bb8310a25c5500ad538be5258ecf  v8/usr/src/cmd/cyntax/cyn/c38.c
+4633b9cb9a7618d1943805bb2fa82634010e716c  v8/usr/src/cmd/cyntax/cyn/c06.c
+f4a9738bbbfbcd80a5530de6132e3037813c363a  v8/usr/src/cmd/cyntax/cyn/c29.c
+2cbdc69d2be761b8ba403cd5cec5d83ab2508255  v8/usr/src/cmd/cyntax/cyn/c23.c
+d746e490ba58ff6e4de7431ad86ae9ef2b606f35  v8/usr/src/cmd/cyntax/cyn/c27.c
+959394c93cca16ef22a666638dcca44d07a36cdb  v8/usr/src/cmd/cyntax/cyn/c02.c
+990cfb6d6ab9978256ebfc8ae6d2c459830ba0c0  v8/usr/src/cmd/cyntax/cyn/c08.c
+d1d5226d47107dcd1e2e036e1944b0d9bcc48345  v8/usr/src/cmd/cyntax/cyn/c37.c
+a2a0bcceba5fce4751ab89f415d2afce09e527fa  v8/usr/src/cmd/cyntax/cyn/c12.c
+76436f7fdf3792974b026a15686df72dcf4ebb3b  v8/usr/src/cmd/cyntax/cyn/c18.c
+cad6d191de89c2bd694e019aa3292c27881d3037  v8/usr/src/cmd/cyntax/cyn/c16.c
+0ce92f158d702a1ffdf78f3fa27a914a6352d7fb  v8/usr/src/cmd/cyntax/cyn/c39.c
+d894b40291e6e330803813c1a408bae500eab377  v8/usr/src/cmd/cyntax/cyn/c33.c
+5f7ef264c22481d180a25218470d983194696170  v8/usr/src/cmd/cyntax/cyn/c20.c
+10bd43e9c8030907660f447fccc0eb9c426dcbfd  v8/usr/src/cmd/cyntax/cyn/c05.c
+7fbfe377eccb92e0544ae6e51d20d174b919a16a  v8/usr/src/cmd/cyntax/cyn/c01.c
+edce63fd991955f58f4bc0ea8459ac83ffd10301  v8/usr/src/cmd/cyntax/cyn/c24.c
+032deff415c397f98f85f427f181ce7d2f127ebd  v8/usr/src/cmd/cyntax/cyn/c11.c
+c7f004031715ae7ecd3b7ba20d460009766d724d  v8/usr/src/cmd/cyntax/cyn/c34.c
+322bea152f7d4b37d594da8b5b964035445b3c5a  v8/usr/src/cmd/cyntax/cyn/c30.c
+240c5a91a9b22bd4a34a1caedd4bc052d11430c1  v8/usr/src/cmd/cyntax/cyn/c15.c
