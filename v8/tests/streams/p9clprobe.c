@@ -144,6 +144,17 @@ dirsizes(const char *tag, const char *dir)
 	printf("%s-read-err %d\n", tag, n < 0 ? 1 : 0);
 	v8s_close(fd);
 
+	/*
+	 * A MOUNT NEEDS ITS OWN DEVICE NUMBER.  st_ino here is the server's raw
+	 * i_number and everything else in this world is a folded host inode, so
+	 * with st_dev zero on both sides the two number spaces are one -- and a
+	 * pipe is (0, 100), measured.  cat(1) refuses when an input's (dev, ino)
+	 * equals its output's, so a file whose i_number happened to be 100 made
+	 * `cat f' fail whenever stdout was a $( ).  This is the deterministic
+	 * half of that guard: the value cases cannot see it, because whether the
+	 * pair collides depends on which inode the image happened to allocate.
+	 */
+	printf("%s-stat-dev %ld\n", tag, (long)sst.st_dev);
 	printf("%s-stat-size %ld\n", tag, (long)sst.st_size);
 	printf("%s-fstat-size %ld\n", tag, (long)fst.st_size);
 	printf("%s-read-total %ld\n", tag, total);

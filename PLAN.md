@@ -3057,14 +3057,29 @@ IMPORT -- 91 imported, 98 installed, nothing stuck -- and two measurements say
 it was never difficulty: 156 of 163 single-file `cmd/*.c` compile, and
 `Admin/Mk` installs fifty in one run.
 
-**7a. The golden image and the working copy — DONE.** `make install` writes a
-pristine tree to `$(PREFIX)/golden`; `tools/v8launch.sh` clones it to
-`$HOME/.v8` on first run, synthesizes `/etc/passwd`, creates `/usr/<name>` and
-logs the user in there. Persistent across launches, upgrades and `make clean`.
-`--reset` (confirmed, user-initiated), `--golden`, `--pure`. `macos(1)`
-restores the host PATH and execs. Bare `/usr/` joined the mount table so a home
-directory exists inside the world; it is a union, so `/usr/include` still falls
-through. Exercised end to end, not asserted.
+**7a. Installation — DONE, and SIMPLER than it was.** `make install` writes one
+tree to `$(PREFIX)`, default `~/.local/share/v8`, with the launcher at
+`~/.local/bin/v8`. No sudo. `tools/v8launch.sh` sets `V8ROOT`, `PATH` and fd 3,
+and lands you in **your own macOS home directory** — §4b's requirement, met
+directly rather than approximated.
+
+It used to write a pristine `$(PREFIX)/golden` and clone it to `$HOME/.v8` on
+first run, giving each user a home at `/usr/<name>`. That whole apparatus
+existed to work around `$PREFIX` defaulting to root-owned `/usr/local`, which
+§4b never asked for — it says "`/usr/local` or `~/.local`; the latter needs no
+sudo and is the default". With the prefix corrected the world is ordinary
+writable installed software: V8's `Admin/Mk` can still `cp prog /bin`, the next
+`make install` replaces it like any other tool, and nothing of the user's lives
+there to lose. `--golden` and `--reset` are gone with it; `--pure` and
+`macos(1)` remain.
+
+**The one thing that needed care**: V8's `sh` reads `.profile` from the
+directory it starts in (`sh/main.c:109` is `pathopen(nullstr, profile)`), not
+from `$HOME` — measured. Landing straight in a macOS home therefore fed a 1985
+Bourne shell a `.profile` written for zsh, and `export PATH="$PATH:..."` is not
+1985 syntax. So the launcher starts the shell at the world's root, where the
+`.profile` is ours, and that profile `cd`s to `$V8START`. Which is what a login
+has always done.
 
 **7b. Wave A2 — IN PROGRESS, 91 → 161.** Batch 1: 37 single-file commands, all
 compiling with zero failures. Batch 2: `diff` (two programs and three derived

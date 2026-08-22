@@ -1310,7 +1310,32 @@ p9tostat(const struct p9stat *s, struct v8_stat *st)
 	int i;
 
 	for (i = 0; i < (int)sizeof *st; i++) q[i] = 0;
-	st->st_dev  = 0;
+	/*
+	 * A MOUNT NEEDS ITS OWN DEVICE NUMBER, AND st_dev = 0 COST A FLAKY TEST
+	 * FOR MONTHS.  st_ino below is the qid path -- the server's i_number,
+	 * raw and deliberately unfolded -- so it is a SMALL number from the
+	 * image's own space.  Everything else in this world gets
+	 * v8sys_fold_ino() of a host inode.  Two independent number spaces, and
+	 * with st_dev zero on both sides they share one (dev, ino) space.
+	 *
+	 * A PIPE IS (0, 100) HERE, measured, stable across runs.  So any file on
+	 * the image whose i_number is 100 compares EQUAL to the pipe a `$( )'
+	 * captures with -- and cat(1) refuses when an input is its output:
+	 *
+	 *	cat: input ../g is output
+	 *
+	 * which is what tests/streams' 5i case had been reporting once in three
+	 * or four runs.  It was recorded as load-correlated; it is not, and the
+	 * run that finally named it was at the LOWEST load of three.
+	 *
+	 * 200 is chosen to sit above every major macOS hands out -- hostdev()
+	 * passes the host's major straight through, and the ones this port has
+	 * measured on real filesystems are 1 and 54.  V8's dev_t is 16 bits and
+	 * makedev is (major << 8) | minor (types.h:44), so this is expressible
+	 * and distinct.  It is what a real mount has and what makes the pair
+	 * unique rather than the inode alone.
+	 */
+	st->st_dev  = (v8_dev_t)(200 << 8);
 	/*
 	 * The caller has already refused a qid that does not fit -- see
 	 * p9statfid.  Said here because the line reads like a bare truncation

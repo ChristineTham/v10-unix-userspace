@@ -27,7 +27,7 @@ Today the world has **97 installed binaries**, including the Bourne shell,
 citations against an index its own tools built. `mkfs` writes a V7 filesystem
 image that three independent checkers pronounce clean. The compiler reproduces
 itself: the ccom built by ccom, built by ccom, generates byte-identical
-assembly. **2876 tests across 17 suites** guard it.
+assembly. **2877 tests across 17 suites** guard it.
 
 The tree is 119k lines of authentic Bell Labs source under `src/`, against 8k
 lines of shim and 4k lines of ARM64 back end — and 12k lines of tests. That
@@ -6505,6 +6505,56 @@ correct are the handful with a test standing next to them — the command count,
 the test count, the crash floor — and the difference between those and the rest
 is not care. It is that one kind fails a build when it drifts and the other
 kind does not.
+
+## The workaround that had become the design
+
+Someone reading the installation instructions asked why entering the world put
+them in a directory called `/usr/christie` and kept their files in a hidden
+`~/.v8`, when the plan had always said you would be in your ordinary macOS home
+with your ordinary files, able to run `python3`.
+
+Going back to the plan, that is exactly what it says. It also says the install
+prefix is `~/.local`, "which needs no sudo and is the default", and its diagram
+shows a single installed tree.
+
+What had been built instead was two trees: a pristine image written once, and a
+per-user copy cloned out of it on first run, with a home directory invented
+inside the world and commands to reset the copy or inspect the original. The
+first line of its justification explained that the installed tree could not be
+used directly because it lands under `/usr/local`, which is root-owned, so the
+world would be read-only — and a read-only world cannot do the thing this
+project exists to demonstrate, which is V8 rebuilding V8 by copying programs
+into its own `/bin`.
+
+Every clause of that is true. The prefix was the part that should not have been
+there. Correct it to the one the plan named and the entire apparatus has nothing
+left to do: an installed tree under your own home is writable, so V8's build
+system can copy into it; the next install replaces it, exactly as it would
+replace any other tool; and none of your work is in there to lose, because your
+work is in your home directory where it always was. The two extra commands went
+with it.
+
+That is a workaround outliving its cause and being mistaken for a design — the
+same shape as a compensating error in code, where the fix looks deliberate
+because the explanation beside it is accurate. The tell is that its first stated
+reason names a *default*, and nobody had asked whether the default was ever
+argued for.
+
+One thing did need care, and it is a nice collision. V8's shell reads
+`.profile` from the directory it starts in, not from `$HOME` — a detail worth
+measuring rather than assuming, and easy to get backwards. So landing straight
+in a macOS home hands a 1985 Bourne shell a startup file written for zsh. Mine
+begins:
+
+    export PATH="$PATH:/Users/christie/.cache/lm-studio/bin"
+
+and `export NAME=value` is not 1985 syntax; that shell wants an assignment and
+an `export` on two separate lines. It said so, at length, quoting the entire
+several-thousand-character path back, before every session.
+
+The fix is the oldest one there is. Start the shell somewhere fixed, let it read
+*our* profile, and have that profile move you where you asked to go. Which is
+what a login has always done.
 
 ---
 

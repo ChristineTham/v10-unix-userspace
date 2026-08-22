@@ -2469,6 +2469,19 @@ check "and its units agree as well"		"1"	"$(cq subdir-entry-counts-agree)"
 check "and it holds three entries"		"3"	"$(cq subdir-entries)"
 # The numbers themselves, so a failure above is diagnosable rather than a bare
 # 0 -- and so the pair this port got wrong is written down correctly once.
+# A MOUNT HAS ITS OWN DEVICE NUMBER, AND THIS IS THE DETERMINISTIC HALF OF A
+# GUARD THE VALUE CASES CANNOT GIVE.  st_ino on a mount is the server's raw
+# i_number; everywhere else it is a folded host inode.  Two number spaces, and
+# with st_dev zero on both they become one -- a pipe is (0, 100), measured and
+# stable.  cat(1) refuses when an input's (dev, ino) equals its output's, so a
+# file whose i_number happened to be 100 made `cat f' fail whenever stdout was
+# a $( ).  That is what the 5i case had been reporting once in three or four
+# runs, and it was recorded as load-correlated when it is not.
+#
+# Asserted as NON-ZERO rather than as 51200, because what matters is that the
+# mount is distinguishable from a pipe, not which number it picked.
+check "a mount has its own st_dev, distinct from a pipe's 0" "nonzero" \
+	"$(d=$(cq dir-stat-dev); [ -n "$d" ] && [ "$d" != 0 ] && echo nonzero || echo "[$d]")"
 check "the root charges 64 bytes on the image"	"64"	"$(cq dir-stat-size)"
 check "and offers 1024 of records"		"1024"	"$(cq dir-fstat-size)"
 check "the subdirectory charges 48"		"48"	"$(cq subdir-stat-size)"

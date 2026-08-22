@@ -4586,12 +4586,29 @@ install:
 	@# `cp -R $(ROOTFS)/.' would ship both.  A rootfs is a build output and the
 	@# only honest way to change its shape is to rebuild it.
 	@$(MAKE) clean
-	@$(MAKE) V8ROOT_DEFAULT=$(PREFIX)/golden all
+	@$(MAKE) V8ROOT_DEFAULT=$(PREFIX) all
 	@mkdir -p $(PREFIX) $(BINDIR_HOST)
-	@rm -rf $(PREFIX)/golden && mkdir -p $(PREFIX)/golden
-	@cp -R $(ROOTFS)/. $(PREFIX)/golden/
+	@rm -rf $(PREFIX) && mkdir -p $(PREFIX)
+	@cp -R $(ROOTFS)/. $(PREFIX)/
+	@# WHO YOU ARE.  V8's /etc/passwd names Bell Labs people with 1985 uids,
+	@# so getpwuid() would not find whoever installed this and `ls -l' would
+	@# print numbers.  The home directory is the REAL one: the union makes it
+	@# reachable and a person's files are already there, so the world has no
+	@# business inventing a second home for them.  The launcher appends an
+	@# entry for any other account, which only matters for a shared install.
+	@printf 'root:*:0:0:Superuser:/:/bin/sh\n' > $(PREFIX)/etc/passwd
+	@printf '%s:*:%s:%s:%s:%s:/bin/sh\n' "$$(id -un)" "$$(id -u)" "$$(id -g)" \
+	    "$$(id -F 2>/dev/null || id -un)" "$$HOME" >> $(PREFIX)/etc/passwd
+	@# THE WORLD'S OWN .profile, in 1985 syntax, because V8's sh reads one
+	@# from the directory it starts in (sh/main.c:109 is `pathopen(nullstr,
+	@# profile)') and the launcher therefore starts it at the root.  $V8START
+	@# is where the person asked to be; note `X=v; export X' and not
+	@# `export X=v', which the Bourne shell of 1985 does not accept.
+	@printf 'cd $$V8START\n' > $(PREFIX)/.profile
+	@printf 'echo "Research Unix, Eighth Edition."\n' >> $(PREFIX)/.profile
+	@printf 'echo "$$V8HINT"\n' >> $(PREFIX)/.profile
 	@cp $(REPO)tools/v8launch.sh $(BINDIR_HOST)/v8
-	@sed -i '' 's|@GOLDEN@|$(PREFIX)/golden|' $(BINDIR_HOST)/v8
+	@sed -i '' 's|@ROOT@|$(PREFIX)|' $(BINDIR_HOST)/v8
 	@chmod 755 $(BINDIR_HOST)/v8
 	@echo "installed.  run: $(BINDIR_HOST)/v8"
 

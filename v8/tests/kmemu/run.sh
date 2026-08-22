@@ -77,7 +77,24 @@ prtrack() {
 	if [ -z "$prnproc" ]; then
 		bad "$_w" "the table size was never measured"
 	elif [ "$_h" -gt $((prnproc + 40)) ]; then
-		check "$_w -- saturated at the table" "$_sat" "$_v"
+		# A BAND, NOT AN EQUALITY, AND FOR THE SAME REASON THE TRACKING
+		# ARM BELOW HAS ONE.  The arm used to demand exactly $_sat and
+		# went red twice in one day -- `want [1025] got [1023]', then
+		# `got [1020]' -- because processes exit between /proc's
+		# directory read and the per-process opens that follow, so the
+		# count comes in a few SHORT of the table.  That is the host
+		# changing under a two-step measurement, not the port failing.
+		#
+		# It still discriminates: a /proc that TRACKED the host would
+		# report ~$_h, which at this arm is more than prnproc+40 away.
+		# Saturation and tracking are hundreds apart, so a 40-wide band
+		# separates them with room to spare.  Never one-sided upward --
+		# the table cannot report MORE than it holds, and a value above
+		# $_sat would be a real defect.
+		awk -v s="$_sat" -v v="$_v" \
+		    'BEGIN { exit !(v <= s && v > s - 40) }' &&
+			ok || bad "$_w -- saturated at the table" \
+			          "want $_sat (or up to 40 under), got $_v"
 	elif [ "$_h" -lt $((prnproc - 40)) ]; then
 		awk -v h="$_h" -v v="$_v" 'BEGIN { exit !(v > h - 40 && v < h + 40) }' &&
 			ok || bad "$_w" "host $_h, v8 $_v"

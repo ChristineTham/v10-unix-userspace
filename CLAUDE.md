@@ -44,7 +44,7 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 ```bash
 make -j8              # full build (~11s clean, measured; this said 4s for a
                       # long time and nobody re-ran it) -- dispatches to v8/
-make test             # all 17 suites (2876 cases, 2875 on a host whose $TMPDIR
+make test             # all 17 suites (2877 cases, 2876 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  Ends by checking that total against
                       # ARTICLE.md, so the number there cannot go stale again.
@@ -4041,7 +4041,49 @@ RECORDS.**
   candidates for invention**, and the cheap form of the check is to `ls` the
   file as well as `sed -n "${l}p"` the line.
 
-**AND A NEW INTERMITTENT WAS SEEN ONCE IN FIVE, WITH A SPECIFIC OBSERVABLE
+**AND THAT INTERMITTENT IS DIAGNOSED AND FIXED: TWO INODE NAMESPACES SHARING
+ONE (dev, ino) SPACE, AND THE RECORDED LOAD CORRELATION WAS FALSE.** A mount's
+`st_ino` is the server's raw `i_number` -- `p9cl.c` sets it from the qid path
+and deliberately does NOT fold it, because `getwd`'s
+`while (dir->d_ino != d.st_ino)` compares it against the directory snapshot.
+Every other object in this world gets `v8sys_fold_ino()` of a host inode. Two
+independent number spaces -- and `st_dev` was **0** on both sides, so they were
+one space.
+
+**A PIPE IS `(0, 100)` HERE, measured and stable across runs.** `cat(1)`
+refuses when an input's `(st_dev, st_ino)` equals its output's, so any file on
+the image whose `i_number` happened to be 100 made `cat f` fail whenever stdout
+was a `$( )` -- which is every `check` in the suite. Fixed by giving the mount
+its own device number, which is what a real mount has: `(200 << 8)`, chosen
+above every major macOS hands out, since `hostdev()` passes the host's major
+straight through and the ones measured on real filesystems are 1 and 54. Four
+things:
+
+- **THE LOAD CORRELATION WAS AN ARTEFACT OF THREE OBSERVATIONS.** It was
+  recorded as failing at load 10.11 against 4.16-6.11 for clean runs. Re-run
+  three times, it failed at **4.88 -- the LOWEST of the three**. A correlation
+  on two or three points is not a mechanism, and writing one down sends the
+  next reader to the scheduler instead of to the code.
+- **THE VALUE CASES CANNOT SEE IT AND NEVER COULD**, because whether the pair
+  collides depends on which inode the image happened to allocate. So the guard
+  is `st_dev != 0` from `p9clprobe`, asserted as NON-ZERO rather than as 51200:
+  what matters is that a mount is distinguishable from a pipe, not which number
+  it picked. Mutation-verified -- reverting to 0 fires exactly that one case.
+- **AND `st_dev = 0` HAD NO COMMENT AND NO REASON.** The struct is zeroed
+  immediately above it and the assignment was redundant. This file's rule about
+  a default nobody argued for, arriving in a struct field rather than in a
+  Makefile variable.
+- **A SUITE RUN DIRECTLY DOES NOT BUILD ITS PROBES.** `sh tests/streams/run.sh`
+  skips the `test-streams` prerequisites, so a probe edited seconds earlier is
+  the OLD binary and its new output line is simply absent -- which reads as the
+  case being wrong rather than unbuilt. `make -C v8 test-streams`. The Commands
+  block already says a suite can be run directly "same thing, no build first";
+  the cost of that convenience is exactly this.
+
+**AND THE ORIGINAL SIGHTING NOTE IS KEPT BELOW because its instinct was right
+and its conclusion was not.**
+
+**A NEW INTERMITTENT WAS SEEN ONCE IN FIVE, WITH A SPECIFIC OBSERVABLE
 RATHER THAN AN EMPTY ONE.** `tests/streams`' 5i case *"...and a relative `..`
 inside the image"* reported `want [top] got [cat: input ../g is output]` --
 V8's `cat` refusing because it found its input and its output to be the SAME
@@ -4350,39 +4392,64 @@ it. Binaries carry the installed root and **zero** references to the build tree
   home directory. Worth knowing before running an installer to see what it
   does.
 
-## The world is a WORKING COPY of a golden image, and that is what makes it usable
+## The world is INSTALLED SOFTWARE and you stay in your own home directory
 
-`make install` writes a **pristine** tree to `$(PREFIX)/golden` and never
-touches it again. `tools/v8launch.sh` copies it to `$HOME/.v8` on first run,
-synthesizes `/etc/passwd` for whoever is running, creates `/usr/<name>`, and
-lands them there. Everything after that persists -- a file, a program installed
-into `/bin`, an edited `/etc` -- across launches, across the next
-`make install`, and across a `make clean` in the build tree.
+`make install` writes ONE tree to `$(PREFIX)`, default `~/.local/share/v8`,
+with the launcher at `~/.local/bin/v8`. No sudo. `v8` sets `V8ROOT`, `PATH` and
+fd 3 and lands you in **your own macOS home**: `/bin`, `/lib`, `/etc` and
+`/usr` are V8's, your files are still your files, and every path V8 does not
+claim falls through -- so `~/Documents`, `/Volumes` and `python3` all work.
 
-**IT CANNOT BE THE INSTALLED TREE ITSELF, and the first reason is fatal alone.**
-`$PREFIX` defaults under `/usr/local`, which is root-owned on macOS, so the
-world would be read-only to the person using it -- and this port's central
-claim is that V8 rebuilds V8, which means `Admin/Mk` has to be able to
-`cp prog /bin`. A read-only world cannot do the one thing the port exists to
-demonstrate.
+**THIS REPLACED A GOLDEN IMAGE AND A WORKING COPY, AND THE WHOLE APPARATUS
+EXISTED TO WORK AROUND A DEFAULT THAT CONTRADICTED THE SPEC.** `make install`
+used to write a pristine `$(PREFIX)/golden`, `v8launch.sh` cloned it to
+`$HOME/.v8` on first run, and each user got a home at `/usr/<name>`. The stated
+first reason was *"`$PREFIX` defaults under `/usr/local`, which is root-owned on
+macOS, so the world would be read-only"* -- and PLAN.md §4b says
+**"`$PREFIX` is `/usr/local` or `~/.local`; the latter needs no sudo and is the
+default"**. The prefix was the drift; the two-tree design was the workaround for
+it; and §4b's own layout is a single tree, `$PREFIX/v8/` = `$V8ROOT`. Three
+things generalise:
 
-- **`v8 --reset`** is the only thing that destroys a working copy and requires
-  the literal word `RESET`; `--golden` enters the pristine image read-only;
-  `--pure` is `V8JAIL=strict`.
-- **A HOME DIRECTORY NEEDED BARE `/usr/` IN THE MOUNT TABLE.** `/etc/passwd`
-  gives a home of `/usr/<name>` and that path was the **Mac's**, so the world
-  had nowhere to live. Safe because the rule is a **union, not a capture**:
-  `rootpath()` returns the jailed path only `if (rootfs_has(buf))`, so
-  `/usr/include` and `/usr/local` still fall through. The eight specific
-  `/usr/*` rows above it are now redundant and kept, because first-match-wins
-  gives the same type and deleting them would lose their recorded reasons.
+- **A WORKAROUND OUTLIVES ITS CAUSE AND LOOKS LIKE A DESIGN**, which is 5h's
+  compensating-error shape in a build system. Every clause of the justification
+  was true -- `/usr/local` IS root-owned, a read-only world CANNOT run
+  `Admin/Mk` -- and the inference was never re-examined once the premise moved.
+  **When a design's first stated reason names a default, check whether the
+  default was ever argued for.**
+- **AND IT WAS COSTING THE THING THE SPEC PROMISED.** §4b says
+  *"`cd ~/work` reaches the real home"* and *"a native `python3` started from
+  the V8 shell needs no special case"*. Both were TRUE the whole time -- the
+  union works -- but the default landing spot was `/usr/christie` and the
+  greeting said "your files are in /usr/christie", which teaches a model the
+  port does not have. A correct mechanism with a misleading default reads as a
+  different system.
+- **V8's `sh` READS `.profile` FROM THE DIRECTORY IT STARTS IN, NOT FROM
+  `$HOME`.** `sh/main.c:109` is `pathopen(nullstr, profile)`; measured, with
+  `$HOME` and the cwd deliberately different. So landing straight in a macOS
+  home feeds a 1985 Bourne shell a `.profile` written for zsh -- and
+  `export PATH="$PATH:..."` is not 1985 syntax, it wants an assignment and an
+  `export` on separate lines, so the shell says `is not an identifier` and
+  echoes the whole PATH before every session. The launcher therefore starts the
+  shell at the world's ROOT, where the `.profile` is ours, and that profile
+  `cd`s to `$V8START`. Which is what a login has always done: the shell starts
+  somewhere fixed and the profile moves you.
+
+- **`--pure`** is `V8JAIL=strict` AND drops the host PATH, so nothing that is
+  not V8 is reachable -- the verification mode, and the one place §4b's
+  "V8-only PATH" rule lives. `--golden` and `--reset` are gone: there is no
+  second tree to enter and nothing of yours in the first one to reset.
+- **A HOME DIRECTORY NEEDED BARE `/usr/` IN THE MOUNT TABLE.** Kept, and the
+  reason is now only the second half of what it was: the world's own `/usr/src`
+  has to resolve for `Admin/Mk`. Safe because the rule is a **union, not a
+  capture**: `rootpath()` returns the jailed path only `if (rootfs_has(buf))`,
+  so `/usr/include` and `/usr/local` still fall through.
 - **AND THE LOGIN NEEDED NO CHANGE TO V8's SOURCE.** A first draft taught
   `v8.c` to read `$HOME`; `tests/jail` caught it in the same run, because a
   bare `v8` inherits the **Mac's** `HOME` and `chdir("/Users/...")` walks out
-  of the world -- `/Users` is not a mount-table prefix. `v8(1)` already takes
-  the directory as `argv[1]`, so the launcher passes it and `src/cmd/v8.c` is
-  untouched. **The environment is the launcher's to set and the argument is the
-  program's to take; crossing them made a host variable into a jail escape.**
+  of the world. `v8(1)` already takes the directory as `argv[1]`, so the
+  launcher passes it and `src/cmd/v8.c` is untouched. **The environment is the
+  launcher's to set and the argument is the program's to take.**
 
 **`macos(1)` IS THE ESCAPE AND IT SWITCHES WORLDS, NOT BINARIES.** Measured:
 this world provides **198** commands and **115 share a name with one the Mac

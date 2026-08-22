@@ -1,157 +1,77 @@
 #!/bin/sh
-# v8 -- enter the Research Unix V8 world.  Installed by `make install'.
 #
-# THE GOLDEN IMAGE AND THE WORKING COPY, which is the whole shape of this
-# script and the reason it stopped being four lines.
+# v8 -- enter the Research Unix Eighth Edition world.
 #
-# `make install' writes a PRISTINE tree and never touches it again.  The first
-# time a person runs this, that tree is copied to a working copy under their
-# own home, the user is created in it, and every run after that uses the copy.
-# So the world is a place to keep things: a file written in /usr/<name>, a
-# program built and installed into /bin, an edited /etc/motd all survive the
-# next launch, the next `make install', and a `make clean' in the build tree.
+# You stay in your own home directory and keep your own files.  What changes is
+# the SYSTEM around them: /bin, /lib, /etc and /usr belong to V8, and the tools
+# on PATH are Bell Labs' rather than the Mac's.  Your Mac is still there --
+# every path the V8 world does not claim falls through to the host, so
+# /Users/you, /Volumes and /usr/bin/python3 all still resolve.
 #
-# WHY IT CANNOT BE THE INSTALLED TREE ITSELF.  Three reasons, and the first is
-# fatal on its own.  $PREFIX defaults under /usr/local, which is root-owned on
-# macOS, so the world would be read-only to the person using it -- and this
-# port's central claim is that V8 rebuilds V8, which means Bell Labs' own
-# Admin/Mk has to be able to `cp prog /bin'.  A read-only world cannot do the
-# one thing the port exists to demonstrate.  Second, `make install' rebuilds
-# from clean and copies over the top, so anything a user had put there would be
-# destroyed by an upgrade.  Third, one root-owned tree is shared by every
-# account on the Mac, and a world you cannot write is a demo rather than a
-# system.
+# The jail is per-BINARY, not per-process-tree: host binaries are not linked
+# against libv8sys, so they never consult the V8 root and see the real macOS
+# with no special case.  Anything the V8 cc compiles does link it, and is
+# jailed by construction.  That is why python3 needs no exemption and why you
+# cannot compile your way out.
 #
-# RESET IS USER-INITIATED AND CONFIRMED.  `v8 --reset' is the only thing that
-# destroys a working copy, it says exactly what will be lost, and it requires
-# the word RESET rather than a bare y -- because the working copy is the only
-# place a person's work lives and nothing else backs it up.
+# INSTALLED WORLD, NOT A COPY OF ONE.  $V8ROOT below is the tree `make install'
+# wrote.  It is ordinary installed software under your own prefix: writable, so
+# V8's own Admin/Mk can `cp prog /bin' -- the port's central claim -- and
+# replaced wholesale by the next `make install', the same as any other tool.
+# Your work does not live there, so an upgrade costs you nothing.
 
-V8GOLDEN=@GOLDEN@
-V8WORK=${V8WORK:-$HOME/.v8}
+V8ROOT=@ROOT@
+export V8ROOT
 
 usage() {
 	cat <<EOF
-usage: v8 [--pure] [--golden] [--reset] [--help] [directory]
+usage: v8 [--pure] [--help] [directory]
 
-  (no options)  enter your world at $V8WORK, as yourself, in \$HOME
-  [directory]   land there instead of \$HOME -- v8(1) takes the landing
-                directory as its argument and always execs /bin/sh, so
-                this is a place to start, not a command to run
-  --pure        refuse every host binary but the documented toolchain
-                exception (V8JAIL=strict).  A pure V8 world: nothing that
-                is not V8 can be run, including python and git
-  --golden      enter the pristine installed image read-only, changing
-                nothing.  For seeing what a fresh world looks like
-  --reset       DELETE the working copy and recreate it from the golden
-                image on the next launch.  Confirms first
+  (no options)  enter the V8 world, in your own home directory
+  [directory]   start somewhere else instead
+  --pure        refuse every host binary except the documented
+                assembler/linker exception, and drop the host PATH.  A
+                strictly V8 world: python, git and make(1) are not reachable.
+                For checking that something really is V8 code
+
+Inside:  macos CMD   run CMD on the Mac, with the Mac's PATH
+         exit        leave
 EOF
 }
 
-# ---------------------------------------------------------------- options
-pure=0 golden=0 reset=0
+pure=0
 while [ $# -gt 0 ]; do
-	case "$1" in
-	--pure)    pure=1;   shift ;;
-	--golden)  golden=1; shift ;;
-	--reset)   reset=1;  shift ;;
-	-h|--help) usage; exit 0 ;;
-	--)        shift; break ;;
-	-*)        echo "v8: unknown option $1" >&2; usage >&2; exit 2 ;;
-	*)         break ;;
+	case $1 in
+	--pure)  pure=1; shift ;;
+	--help|-h) usage; exit 0 ;;
+	--) shift; break ;;
+	-*) echo "v8: unknown option $1" >&2; usage >&2; exit 2 ;;
+	*) break ;;
 	esac
 done
 
-if [ ! -d "$V8GOLDEN" ]; then
-	echo "v8: no golden image at $V8GOLDEN -- run 'make install' first" >&2
+if [ ! -d "$V8ROOT/bin" ]; then
+	echo "v8: no world at $V8ROOT -- run 'make install' first" >&2
 	exit 1
 fi
 
-# ------------------------------------------------------------------ reset
-if [ "$reset" = 1 ]; then
-	if [ ! -d "$V8WORK" ]; then
-		echo "v8: no working copy at $V8WORK -- nothing to reset."
-	else
-		echo "v8: this DELETES your world at $V8WORK."
-		echo "    Every file you created inside it is lost, including"
-		echo "    anything under /usr/$(id -un) and anything you installed."
-		echo "    Nothing else has a copy."
-		printf "    Type RESET to confirm: "
-		read ans
-		if [ "$ans" != RESET ]; then
-			echo "v8: not reset."
-			exit 1
-		fi
-		rm -rf "$V8WORK" || exit 1
-		echo "v8: world removed.  It is rebuilt from the golden image now."
+# WHO YOU ARE.  V8's own /etc/passwd names Bell Labs people with 1985 uids, so
+# getpwuid() would not find whoever is actually here and `ls -l' would print
+# numbers instead of names.  The installer writes an entry for the account that
+# ran it; this adds one for anybody else, which only matters for a shared
+# install under /usr/local.  If the tree is not writable we carry on -- a
+# numeric ls -l is a cosmetic loss, not a reason to refuse to start.
+_u=$(id -un)
+if ! grep -q "^$_u:" "$V8ROOT/etc/passwd" 2>/dev/null; then
+	if [ -w "$V8ROOT/etc/passwd" ]; then
+		_gecos=$(id -F 2>/dev/null) || _gecos=$_u
+		echo "$_u:*:$(id -u):$(id -g):$_gecos:$HOME:/bin/sh" \
+			>> "$V8ROOT/etc/passwd"
 	fi
 fi
-
-# ----------------------------------------------------- create the world
-#
-# ONE user, and it is whoever is running this.  /etc/passwd is synthesized
-# rather than copied for the reason the Makefile's own rule gives: V8's file
-# names Bell Labs people with 1985 uids, so getpwuid() would fail to find the
-# person actually here and `ls -l' would print numbers.  It is done HERE and
-# not at build time because the golden image may be installed by one account
-# and run by another -- `sudo make install' is exactly that case.
-makeuser() {
-	_w=$1 _u=$(id -un) _uid=$(id -u) _gid=$(id -g)
-	_gecos=$(id -F 2>/dev/null) || _gecos=$_u
-	[ -n "$_gecos" ] || _gecos=$_u
-
-	mkdir -p "$_w/etc" "$_w/usr/$_u"
-	{ echo "root:*:0:0:Superuser:/:/bin/sh"
-	  echo "$_u:*:$_uid:$_gid:$_gecos:/usr/$_u:/bin/sh"
-	} > "$_w/etc/passwd"
-
-	# A .profile, because the Bourne shell reads one and a world that greets
-	# you by name is the difference between a system and a demo.  Written
-	# only if absent, so a reset keeps nothing and an upgrade destroys
-	# nothing.
-	if [ ! -f "$_w/usr/$_u/.profile" ]; then
-		cat > "$_w/usr/$_u/.profile" <<EOF
-PATH=/bin:/usr/bin:/etc
-export PATH
-echo "Research Unix, Eighth Edition."
-echo "You are \$LOGNAME.  Your files are in \$HOME and they persist."
-EOF
-	fi
-}
-
-if [ "$golden" = 1 ]; then
-	V8ROOT=$V8GOLDEN
-elif [ ! -d "$V8WORK" ]; then
-	echo "v8: first run -- building your world at $V8WORK"
-	mkdir -p "$V8WORK" || exit 1
-	cp -R "$V8GOLDEN"/. "$V8WORK"/ || exit 1
-	# The golden may be root-owned and mode-restricted; the copy is ours and
-	# has to be writable, or the world is read-only for the second time.
-	chmod -R u+w "$V8WORK" 2>/dev/null
-	makeuser "$V8WORK"
-	echo "v8: done.  'v8 --reset' returns it to the golden image."
-	V8ROOT=$V8WORK
-else
-	# An upgrade can add a user to an existing world without touching
-	# anything else: makeuser only ever rewrites /etc/passwd, and leaves a
-	# .profile that is already there alone.
-	[ -d "$V8WORK/usr/$(id -un)" ] || makeuser "$V8WORK"
-	V8ROOT=$V8WORK
-fi
-export V8ROOT
-
-# ------------------------------------------------------------ the login
-#
-# V8ROOT overrides the root compiled into every binary, so a moved or copied
-# world still works.  V8's own make passes it down to everything it runs.
-V8USER=$(id -un)
-HOME=/usr/$V8USER
-USER=$V8USER
-LOGNAME=$V8USER
-export HOME USER LOGNAME
 
 # THE HOST PATH IS SAVED BEFORE IT IS SHADOWED, and that is what makes
-# `macos CMD' possible: 62 of this world's commands share a name with one of
+# `macos CMD' possible: 115 of this world's commands share a name with one of
 # the Mac's, so a native build started from in here would otherwise find V8's
 # make and V8's cc.  macos(1) restores this and execs.
 V8HOSTPATH=$PATH
@@ -160,10 +80,20 @@ export V8HOSTPATH
 # /etc is on PATH because V8's own sh has it there -- chgrp, chown and the
 # section-8 tools live in /etc, which Admin/etcfiles decides and this port
 # follows.
-PATH=$V8ROOT/bin:$V8ROOT/usr/bin:$V8ROOT/etc:$PATH
-export PATH
-
-[ "$pure" = 1 ] && { V8JAIL=strict; export V8JAIL; }
+#
+# The host's PATH is APPENDED rather than dropped, so python3, git and node
+# work by name.  --pure is what drops it: there the V8 world is the whole of
+# PATH, and an unported tool is conspicuous rather than silently satisfied by a
+# modern namesake.
+if [ "$pure" = 1 ]; then
+	PATH=$V8ROOT/bin:$V8ROOT/usr/bin:$V8ROOT/etc
+	V8JAIL=strict; export V8JAIL
+	V8HINT="Pure mode: no host binary is reachable."
+else
+	PATH=$V8ROOT/bin:$V8ROOT/usr/bin:$V8ROOT/etc:$PATH
+	V8HINT="Your Mac is still here: $HOME, and 'macos CMD' runs a Mac command."
+fi
+export PATH V8HINT
 
 # THIS SCRIPT IS THE INIT OF THIS WORLD, and fd 3 is the one thing an init has
 # to leave behind.  V8 has no /dev/tty driver: /dev/tty is a hard link to
@@ -183,24 +113,22 @@ export PATH
 # first means the exec only ever runs when it will succeed.
 ( : <>/dev/tty ) 2>/dev/null && exec 3<>/dev/tty
 
-# v8(1) TAKES THE LANDING DIRECTORY AS ITS ARGUMENT, which is upstream's own
-# interface -- `chdir(argc>1? argv[1]: "/")' -- so the login lands in the home
-# directory without one line of change to V8's source.
+# WHERE YOU LAND, AND WHY IT IS NOT DIRECTLY THERE.
 #
-# AND THAT IS WHY IT IS DONE HERE.  A first draft taught v8.c to read $HOME
-# itself, and tests/jail caught it within the run: a bare v8 invoked WITHOUT
-# this launcher inherits the Mac's HOME, so `chdir("/Users/christie")' walked
-# straight out of the world -- /Users is not a mount-table prefix, so the shim
-# leaves it alone.  The environment is the launcher's to set and the argument
-# is the program's to take; crossing them made a host variable into a jail
-# escape.
+# v8(1) chdirs to its argument and then execs /bin/sh with argv[0] `-', a LOGIN
+# shell -- and V8's sh reads `.profile' FROM THE DIRECTORY IT STARTS IN, not
+# from $HOME: main.c:109 is `pathopen(nullstr, profile)'.  Measured, with $HOME
+# and the cwd deliberately different.
 #
-# AND $1 IS A DIRECTORY, NOT A COMMAND.  The usage line said `[command ...]'
-# for as long as this script has existed, and nothing ever implemented it:
-# v8.c ends `execl("/bin/sh", "-", 0)' unconditionally, so there is nowhere for
-# a command to go.  What that cost is a bad diagnostic rather than a bad
-# feature -- `v8 /bin/echo hi' chdir'd to /bin/echo and printed
-# `v8: can't chdir', which reads as a broken install rather than as a wrong
-# invocation.  Found by installing to a scratch prefix and running the result,
-# which is the only thing that exercises this line at all.
-exec "$V8ROOT/usr/bin/v8" "${1:-$HOME}"
+# So landing straight in your Mac home would make a 1985 Bourne shell read a
+# .profile written for zsh or bash.  `export PATH="$PATH:..."' is not 1985
+# syntax -- it wants two lines, an assignment then an export -- and the shell
+# says so, at length, before every session.
+#
+# Landing at the world's root instead means the .profile read is OURS, and it
+# is the thing that puts you where you asked to be.  That is what a login has
+# always done: the shell starts somewhere fixed and the profile moves you.
+V8START=${1:-$HOME}
+export V8START
+
+exec "$V8ROOT/usr/bin/v8" /
