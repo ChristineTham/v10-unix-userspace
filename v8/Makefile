@@ -4548,8 +4548,28 @@ $(LIBC_OBJ): $(wildcard $(LIBCSRC)/stdio/*.h)
 # The launcher is a THIN SHELL SCRIPT, not a copy of $(ROOTFS)/usr/bin/v8.  The V8
 # binary is what runs once you are inside; the script is what a Mac user types,
 # and it exists to set PATH so the shell finds V8's tools before the host's.
-PREFIX      ?= /usr/local/v8
-BINDIR_HOST ?= /usr/local/bin
+# THE DEFAULT IS UNDER $HOME AND THAT IS A CHANGE, made because the old one --
+# /usr/local -- was never argued for anywhere.  It was taken as given, and it
+# costs `sudo' for a tool that is personal by construction: the golden image is
+# read-only after install, and every world a person actually uses is the
+# working copy at $HOME/.v8.  Measured on a stock Mac: /usr/local is NOT
+# writable, and ~/.local/bin is already on PATH.
+#
+# What /usr/local buys is ONE GOLDEN IMAGE SHARED BY EVERY ACCOUNT, which is a
+# real thing to want and is still one variable away:
+#
+#	make install PREFIX=/usr/local/v8 BINDIR_HOST=/usr/local/bin
+#
+# That still works, and v8launch.sh already handles it -- /etc/passwd is
+# synthesized at first run rather than at build time precisely so an image
+# installed by one account can be run by another, and the working copy is
+# chmod u+w'd because the golden may be root-owned.  Nothing about the shared
+# case was removed; it stopped being the default.
+#
+# $(HOME) rather than ~, because make does not expand a tilde in a variable
+# value -- it would install to a directory literally named "~".
+PREFIX      ?= $(HOME)/.local/share/v8
+BINDIR_HOST ?= $(HOME)/.local/bin
 
 .PHONY: install
 install:

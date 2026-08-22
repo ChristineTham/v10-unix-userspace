@@ -6467,6 +6467,45 @@ between the Mac and the world, and the only thing that exercises it is
 installing and then using what came out. A test suite that never leaves the
 building will not tell you the front door is mislabelled.
 
+## A default nobody had argued for
+
+Asked why the thing installed itself into `/usr/local` rather than the user's
+own `~/.local`, I went looking for the reason and there wasn't one. The line
+had said `/usr/local` since it was written, no comment explained it, and every
+place the prefix came up in prose treated it as a given — including one passage
+that used `/usr/local` being root-owned as *evidence* for an unrelated design
+decision, which is the sort of thing that makes an unexamined choice look
+deliberate.
+
+It cost a `sudo` for a tool that is personal by construction. The installed
+image is read-only the moment it exists; the world anyone actually uses is a
+working copy in their home directory. Measured on a stock Mac: `/usr/local` is
+not writable, and `~/.local/bin` is already on the search path. So the default
+was requiring a privilege escalation to install a private copy of a 1985
+operating system into a directory the user would then never write to again.
+
+It is `~/.local/share/v8` now, and installing needs no privilege. The shared
+case — one image for every account on the machine — is a real thing to want and
+is still one variable away, and nothing about it was removed: the launcher
+already synthesises `/etc/passwd` at first run precisely so an image installed
+by one account can be run by another.
+
+Writing the documentation for this turned up five more numbers that were wrong.
+The count of syscalls the shim implements was quoted as 63; it is 54, and the
+63 came from the *first commit in the repository* — an estimate written before
+anything was built, and never re-measured in the two hundred commits since. The
+number of commands that collide with the Mac's was 62, measured when the port
+had 81 commands; it now has 198 and the answer is 115. A clean build was
+advertised at four seconds and takes eleven. The list of editors named one the
+port does not have. Each was true once.
+
+That is the tax this project pays for writing a great deal down: prose rots,
+and it rots invisibly, because nothing runs it. The numbers that have stayed
+correct are the handful with a test standing next to them — the command count,
+the test count, the crash floor — and the difference between those and the rest
+is not care. It is that one kind fails a build when it drifts and the other
+kind does not.
+
 ---
 
 *Source: [github.com/ChristineTham/v10-unix-userspace](https://github.com/ChristineTham/v10-unix-userspace).

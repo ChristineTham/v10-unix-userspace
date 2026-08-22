@@ -42,7 +42,8 @@ line `src/sys/h/` and `shim/kern/h/` already draw one level down.
 ## Commands
 
 ```bash
-make -j8              # full build (~4s clean) -- dispatches to v8/
+make -j8              # full build (~11s clean, measured; this said 4s for a
+                      # long time and nobody re-ran it) -- dispatches to v8/
 make test             # all 17 suites (2876 cases, 2875 on a host whose $TMPDIR
                       # holds under 2 or over 65535 entries -- see wavea's inode
                       # distinctness case).  Ends by checking that total against
@@ -4384,7 +4385,9 @@ demonstrate.
   program's to take; crossing them made a host variable into a jail escape.**
 
 **`macos(1)` IS THE ESCAPE AND IT SWITCHES WORLDS, NOT BINARIES.** Measured:
-this world provides 81 commands and **62 share a name with one the Mac has** --
+this world provides **198** commands and **115 share a name with one the Mac
+has** (that said 62 of 81, measured when the port was that size -- a count that a
+correct import increases, so re-measure rather than carry it forward) --
 `make cc sed sh grep sort ls cp test` among them -- so a native build started
 from inside finds V8's make and V8's cc. That is correct and is the premise;
 the fix is to make the escape *sayable*. It restores `$V8HOSTPATH` before
